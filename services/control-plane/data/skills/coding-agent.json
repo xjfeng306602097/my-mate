@@ -1,0 +1,25 @@
+{
+  "skill_id": "coding-agent",
+  "name": "Coding Agent",
+  "description": "Demo coding skill for acceptance",
+  "category": "coding",
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "type": "object"
+  },
+  "tags": [
+    "demo"
+  ],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-09T07:51:53.598Z",
+  "updated_at": "2026-06-09T07:51:53.598Z"
+}

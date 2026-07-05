@@ -1,0 +1,28 @@
+{
+  "skill_id": "acceptance-research",
+  "name": "Acceptance Research",
+  "description": "Collect product and market context",
+  "category": "research",
+  "allowed_tools": [
+    "web",
+    "read"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "expected_artifacts": [
+      "research-notes"
+    ]
+  },
+  "tags": [
+    "acceptance",
+    "planner"
+  ],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-07T17:04:37.800Z",
+  "updated_at": "2026-06-07T17:04:37.800Z"
+}

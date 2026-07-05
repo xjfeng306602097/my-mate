@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/workflow/node-run.schema.json",
+  "title": "Node Run",
+  "type": "object",
+  "properties": {
+    "node_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "$ref": "../common/enums.schema.json#/$defs/nodeStatus"
+    },
+    "progress": {
+      "type": "object",
+      "properties": {
+        "percent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "message": {
+          "type": "string"
+        },
+        "updated_at": {
+          "$ref": "../common/timestamps.schema.json#/$defs/dateTime"
+        }
+      },
+      "required": ["percent", "message", "updated_at"],
+      "additionalProperties": false
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "started_at": {
+      "oneOf": [
+        { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+        { "type": "null" }
+      ]
+    },
+    "finished_at": {
+      "oneOf": [
+        { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "required": [
+    "node_run_id",
+    "run_id",
+    "status",
+    "progress",
+    "attempt",
+    "started_at",
+    "finished_at"
+  ],
+  "additionalProperties": false
+}

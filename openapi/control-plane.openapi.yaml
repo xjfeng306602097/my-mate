@@ -1,0 +1,2565 @@
+openapi: 3.1.0
+info:
+  title: My Mate Control Plane API
+  version: 0.1.0
+  description: >
+    Draft API contract for the My Mate workflow control plane.
+
+servers:
+  - url: https://api.my-mate.local
+
+tags:
+  - name: Templates
+  - name: Runs
+  - name: Mobile
+  - name: Approvals
+  - name: HumanInputs
+  - name: Planner
+  - name: Agents
+  - name: Sessions
+  - name: InternalOps
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+      required: [code, message]
+    PlannerValidationResult:
+      type: object
+      properties:
+        passed:
+          type: boolean
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >
+            Validation warnings. Includes required-input/DAG checks plus
+            registry readiness checks for unknown or disabled agent profiles,
+            unknown or disabled skills, profile-disallowed skills, and missing
+            OpenClaw agent bindings.
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                  - missing_required_input
+                  - missing_agent_profile
+                  - missing_openclaw_agent
+                  - unknown_agent_profile
+                  - disabled_agent_profile
+                  - unknown_skill
+                  - disabled_skill
+                  - disallowed_skill
+                  - no_ready_frontier
+                  - no_terminal_node
+              category:
+                type: string
+                enum: [required_input, registry, graph, other]
+              message:
+                type: string
+              field:
+                type: string
+                nullable: true
+              node_id:
+                type: string
+                nullable: true
+              node_name:
+                type: string
+                nullable: true
+              agent_profile_id:
+                type: string
+                nullable: true
+              skill_id:
+                type: string
+                nullable: true
+            required:
+              - code
+              - category
+              - message
+              - field
+              - node_id
+              - node_name
+              - agent_profile_id
+              - skill_id
+      required: [passed, warnings, details]
+    RunValidationFailure:
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          properties:
+            validation:
+              $ref: "#/components/schemas/PlannerValidationResult"
+          required: [validation]
+    TemplateSummary:
+      type: object
+      properties:
+        template_id:
+          type: string
+        version:
+          type: integer
+        name:
+          type: string
+        status:
+          type: string
+          enum: [draft, published, archived]
+      required: [template_id, version, name, status]
+    CreateTemplateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        input_schema:
+          type: object
+        policy:
+          type: object
+        nodes:
+          type: array
+          items:
+            type: object
+        edges:
+          type: array
+          items:
+            type: object
+      required: [name, description, input_schema, policy, nodes, edges]
+    PublishTemplateResponse:
+      type: object
+      properties:
+        template_id:
+          type: string
+        version:
+          type: integer
+        status:
+          type: string
+      required: [template_id, version, status]
+    DeriveTemplateRequest:
+      type: object
+      properties:
+        template_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        metadata:
+          type: object
+    TemplateLineageResponse:
+      type: object
+      properties:
+        family_id:
+          type: string
+        root_template_id:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+      required: [family_id, root_template_id, items]
+    AgentProfile:
+      type: object
+      properties:
+        profile_id:
+          type: string
+        name:
+          type: string
+        openclaw_agent_id:
+          type: string
+        default_skills:
+          type: array
+          items:
+            type: string
+        allowed_tools:
+          type: array
+          items:
+            type: string
+        disallowed_skills:
+          type: array
+          items:
+            type: string
+        policy_tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        metadata:
+          type: object
+      required: [profile_id, name, openclaw_agent_id, default_skills, allowed_tools, status]
+    AgentHostingSummary:
+      type: object
+      properties:
+        ownership:
+          type: object
+          properties:
+            execution_runtime:
+              type: string
+              enum: [openclaw]
+            orchestration_binding:
+              type: string
+              enum: [my_mate]
+          required: [execution_runtime, orchestration_binding]
+        profiles:
+          type: array
+          items:
+            type: object
+            properties:
+              profile_id:
+                type: string
+              name:
+                type: string
+              status:
+                type: string
+                enum: [active, disabled]
+              openclaw_agent_id:
+                type: string
+              default_skills:
+                type: array
+                items:
+                  type: string
+              provider:
+                type: string
+                nullable: true
+              model:
+                type: string
+                nullable: true
+              runtime_mode:
+                type: string
+                nullable: true
+              managed_by:
+                type: string
+                enum: [my_mate_registry]
+              health:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ready, needs_binding, disabled]
+                  detail:
+                    type: string
+                required: [status, detail]
+            required:
+              - profile_id
+              - name
+              - status
+              - openclaw_agent_id
+              - default_skills
+              - managed_by
+              - health
+      required: [ownership, profiles]
+    UpdateAgentHostingRequest:
+      type: object
+      properties:
+        openclaw_agent_id:
+          type: string
+        provider:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        runtime_mode:
+          type: string
+          nullable: true
+    Skill:
+      type: object
+      properties:
+        skill_id:
+          type: string
+        name:
+          type: string
+        category:
+          type: string
+        allowed_tools:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, disabled]
+      required: [skill_id, name, category, allowed_tools, status]
+    CreateRunRequest:
+      type: object
+      properties:
+        intent:
+          type: string
+        template_id:
+          type: string
+        inputs:
+          type: object
+        validation_mode:
+          type: string
+          enum: [warn, strict, bypass]
+          default: strict
+          description: >
+            warn runs validation and returns warnings without blocking. strict
+            blocks run creation when validation fails. bypass skips the gate.
+        proposal_id:
+          type: string
+          description: Optional durable DAG proposal source for lineage.
+        proposal_id:
+          type: string
+          description: Optional durable DAG proposal id that sourced the run.
+      required: [intent, template_id, inputs]
+    CreateRunResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+        validation:
+          $ref: "#/components/schemas/PlannerValidationResult"
+      required: [run_id, status, validation]
+    RunSummary:
+      type: object
+      properties:
+        run_id:
+          type: string
+        template_id:
+          type: string
+        status:
+          type: string
+        current_summary:
+          type: string
+        proposal_id:
+          type:
+            - string
+            - "null"
+      required: [run_id, template_id, status, current_summary]
+    RunDetail:
+      type: object
+      properties:
+        run_id:
+          type: string
+        template_id:
+          type: string
+        template_version:
+          type: integer
+        workspace_id:
+          type: string
+        requested_by:
+          type: string
+        intent:
+          type: string
+        status:
+          type: string
+        current_summary:
+          type: string
+        waiting_reason:
+          type:
+            - string
+            - "null"
+        blocked_reason:
+          type:
+            - string
+            - "null"
+        proposal_id:
+          type:
+            - string
+            - "null"
+      required:
+        - run_id
+        - template_id
+        - template_version
+        - workspace_id
+        - requested_by
+        - intent
+        - status
+        - current_summary
+        - waiting_reason
+        - blocked_reason
+        - proposal_id
+    DagProposalPlannerContext:
+      type: object
+      properties:
+        provider_id:
+          type:
+            - string
+            - "null"
+        model:
+          type:
+            - string
+            - "null"
+        orchestrator_profile_id:
+          type:
+            - string
+            - "null"
+        system_prompt_summary:
+          type:
+            - string
+            - "null"
+        fallback_used:
+          type: boolean
+        fallback_reason:
+          type:
+            - string
+            - "null"
+      required:
+        - provider_id
+        - model
+        - orchestrator_profile_id
+        - system_prompt_summary
+        - fallback_used
+        - fallback_reason
+    DagProposalAssignment:
+      type: object
+      properties:
+        node_id:
+          type: string
+        node_name:
+          type:
+            - string
+            - "null"
+        subagent_profile_id:
+          type:
+            - string
+            - "null"
+        provider:
+          type:
+            - string
+            - "null"
+        model:
+          type:
+            - string
+            - "null"
+        allowed_tools:
+          type: array
+          items:
+            type: string
+        allowed_skills:
+          type: array
+          items:
+            type: string
+        input_context:
+          type:
+            - string
+            - "null"
+        output_contract:
+          type:
+            - string
+            - "null"
+        metadata:
+          type: object
+      required:
+        - node_id
+        - node_name
+        - subagent_profile_id
+        - provider
+        - model
+        - allowed_tools
+        - allowed_skills
+        - input_context
+        - output_contract
+        - metadata
+    DagProposalRecord:
+      type: object
+      properties:
+        proposal_id:
+          type: string
+        mission_id:
+          type: string
+        session_id:
+          type: string
+        orchestrator_profile_id:
+          type:
+            - string
+            - "null"
+        source_message_id:
+          type:
+            - string
+            - "null"
+        source_revision:
+          type:
+            - integer
+            - "null"
+        source_option:
+          type:
+            - string
+            - "null"
+          enum: [primary, alternative, null]
+        status:
+          type: string
+          enum: [draft, review_ready, confirmed, rejected, superseded]
+        title:
+          type: string
+        summary:
+          type: string
+        mission_spec_contract:
+          type:
+            - object
+            - "null"
+        planner_context:
+          $ref: "#/components/schemas/DagProposalPlannerContext"
+        dag_draft:
+          type: object
+        route_compare:
+          type:
+            - object
+            - "null"
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/DagProposalAssignment"
+        warnings:
+          type: array
+          items:
+            type: string
+        checklist:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+      required:
+        - proposal_id
+        - mission_id
+        - session_id
+        - status
+        - title
+        - summary
+        - planner_context
+        - dag_draft
+        - assignments
+        - warnings
+        - checklist
+        - metadata
+    DagProposalSummary:
+      type: object
+      properties:
+        proposal_id:
+          type: string
+        session_id:
+          type: string
+        mission_id:
+          type: string
+        status:
+          type: string
+          enum: [draft, review_ready, confirmed, rejected, superseded]
+        title:
+          type: string
+        summary:
+          type: string
+        source_revision:
+          type:
+            - integer
+            - "null"
+        source_option:
+          type:
+            - string
+            - "null"
+          enum: [primary, alternative, null]
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - proposal_id
+        - session_id
+        - mission_id
+        - status
+        - title
+        - summary
+        - created_at
+        - updated_at
+    CreateDagProposalRequest:
+      type: object
+      properties:
+        source_message_id:
+          type: string
+        source_revision:
+          type: integer
+        source_option:
+          type: string
+          enum: [primary, alternative]
+        template_id:
+          type: string
+        inputs:
+          type: object
+    UpdateDagProposalAssignmentsRequest:
+      type: object
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/DagProposalAssignment"
+      required: [assignments]
+    ConfirmDagProposalRequest:
+      type: object
+      properties:
+        confirmed_by:
+          type: string
+    RejectDagProposalRequest:
+      type: object
+      properties:
+        rejected_by:
+          type: string
+        reason:
+          type: string
+    SupersedeDagProposalRequest:
+      type: object
+      properties:
+        source_message_id:
+          type: string
+        reason:
+          type: string
+        template_id:
+          type: string
+        inputs:
+          type: object
+    Event:
+      type: object
+      properties:
+        event_id:
+          type: string
+        run_id:
+          type: string
+        node_run_id:
+          type:
+            - string
+            - "null"
+        type:
+          type: string
+        actor_type:
+          type: string
+        actor_id:
+          type: string
+        payload:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+      required: [event_id, run_id, node_run_id, type, actor_type, actor_id, payload, created_at]
+    Artifact:
+      type: object
+      properties:
+        artifact_id:
+          type: string
+        run_id:
+          type: string
+        node_run_id:
+          type:
+            - string
+            - "null"
+        type:
+          type: string
+        name:
+          type: string
+        storage_uri:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - artifact_id
+        - run_id
+        - node_run_id
+        - type
+        - name
+        - storage_uri
+        - mime_type
+        - size_bytes
+        - created_at
+    CommentRequest:
+      type: object
+      properties:
+        comment:
+          type: string
+      required: [comment]
+    HumanInputSubmitRequest:
+      type: object
+      properties:
+        payload:
+          type: object
+      required: [payload]
+    PlannerTemplateSelectionRequest:
+      type: object
+      properties:
+        intent:
+          type: string
+      required: [intent]
+    PlannerTemplateCandidate:
+      type: object
+      properties:
+        template_id:
+          type: string
+        version:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        workspace_scope:
+          type: string
+        score:
+          type: number
+        matched_terms:
+          type: array
+          items:
+            type: string
+        reason:
+          type: string
+      required:
+        - template_id
+        - version
+        - name
+        - description
+        - workspace_scope
+        - score
+        - matched_terms
+        - reason
+    PlannerTemplateSelectionResponse:
+      type: object
+      properties:
+        selected_template:
+          $ref: "#/components/schemas/PlannerTemplateCandidate"
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlannerTemplateCandidate"
+        planner_context:
+          type: object
+          properties:
+            planner_model:
+              type: string
+              enum: [rule_based_v1]
+            intent_tokens:
+              type: array
+              items:
+                type: string
+          required: [planner_model, intent_tokens]
+      required: [selected_template, candidates, planner_context]
+    PlannerCandidatePlanRequest:
+      type: object
+      properties:
+        intent:
+          type: string
+        template_id:
+          type: string
+        inputs:
+          type: object
+      required: [intent, template_id, inputs]
+    PlannerCandidatePlanResponse:
+      type: object
+      properties:
+        candidate_plan:
+          type: object
+          description: >
+            Draft RunPlan preview. Its planner_context.registry_validation
+            follows PlannerRegistryValidation when present.
+        validation:
+          $ref: "#/components/schemas/PlannerValidationResult"
+      required: [candidate_plan, validation]
+    PlannerDagDraftRequest:
+      type: object
+      properties:
+        intent:
+          type: string
+        template_id:
+          type: string
+          description: Optional published template to use as the draft source.
+        inputs:
+          type: object
+        max_agent_nodes:
+          type: integer
+          minimum: 1
+          maximum: 6
+          default: 1
+      required: [intent]
+    PlannerRegistryRecommendation:
+      type: object
+      properties:
+        node_id:
+          type: string
+        node_name:
+          type: string
+        agent_profile_id:
+          type: [string, "null"]
+        agent_profile_name:
+          type: [string, "null"]
+        openclaw_agent_id:
+          type: [string, "null"]
+        skill_ids:
+          type: array
+          items:
+            type: string
+        score:
+          type: number
+        reason:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+      required:
+        - node_id
+        - node_name
+        - agent_profile_id
+        - agent_profile_name
+        - openclaw_agent_id
+        - skill_ids
+        - score
+        - reason
+        - warnings
+    PlannerDagDraftResponse:
+      type: object
+      properties:
+        draft_template:
+          allOf:
+            - $ref: "#/components/schemas/CreateTemplateRequest"
+            - type: object
+              properties:
+                template_id:
+                  type: string
+              required: [template_id]
+          description: Draft template payload. It is not persisted until POST /api/templates.
+        template_recommendation:
+          anyOf:
+            - $ref: "#/components/schemas/PlannerTemplateSelectionResponse"
+            - type: "null"
+        registry_recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlannerRegistryRecommendation"
+        validation:
+          $ref: "#/components/schemas/PlannerValidationResult"
+        planner_context:
+          type: object
+          properties:
+            planner_model:
+              type: string
+              enum: [rule_based_v1]
+            intent_tokens:
+              type: array
+              items:
+                type: string
+            source_template_id:
+              type: [string, "null"]
+            draft_strategy:
+              type: string
+              enum: [template_variant, registry_synthesis]
+            human_confirmation_required:
+              type: boolean
+          required:
+            - planner_model
+            - intent_tokens
+            - source_template_id
+            - draft_strategy
+            - human_confirmation_required
+      required:
+        - draft_template
+        - template_recommendation
+        - registry_recommendations
+        - validation
+        - planner_context
+    DagProposalStatus:
+      type: string
+      enum: [draft, review_ready, confirmed, rejected, superseded]
+    DagProposalPlannerContext:
+      type: object
+      properties:
+        provider_id:
+          type: [string, "null"]
+        model:
+          type: [string, "null"]
+        orchestrator_profile_id:
+          type: [string, "null"]
+        system_prompt_summary:
+          type: [string, "null"]
+        fallback_used:
+          type: boolean
+        fallback_reason:
+          type: [string, "null"]
+      required:
+        - provider_id
+        - model
+        - orchestrator_profile_id
+        - system_prompt_summary
+        - fallback_used
+        - fallback_reason
+    DagProposalAssignment:
+      type: object
+      properties:
+        node_id:
+          type: string
+        node_name:
+          type: [string, "null"]
+        subagent_profile_id:
+          type: [string, "null"]
+        provider:
+          type: [string, "null"]
+        model:
+          type: [string, "null"]
+        allowed_tools:
+          type: array
+          items:
+            type: string
+        allowed_skills:
+          type: array
+          items:
+            type: string
+        input_context:
+          type: [string, "null"]
+        output_contract:
+          type: [string, "null"]
+        metadata:
+          type: object
+      required:
+        - node_id
+        - node_name
+        - subagent_profile_id
+        - provider
+        - model
+        - allowed_tools
+        - allowed_skills
+        - input_context
+        - output_contract
+        - metadata
+    DagProposalRecord:
+      type: object
+      properties:
+        proposal_id:
+          type: string
+        mission_id:
+          type: string
+        session_id:
+          type: string
+        orchestrator_profile_id:
+          type: [string, "null"]
+        source_message_id:
+          type: [string, "null"]
+        source_revision:
+          type: [integer, "null"]
+        source_option:
+          type: [string, "null"]
+          enum: [primary, alternative, null]
+        status:
+          $ref: "#/components/schemas/DagProposalStatus"
+        title:
+          type: string
+        summary:
+          type: string
+        mission_spec_contract:
+          type: [object, "null"]
+        planner_context:
+          $ref: "#/components/schemas/DagProposalPlannerContext"
+        dag_draft:
+          type: object
+        route_compare:
+          type: [object, "null"]
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/DagProposalAssignment"
+        warnings:
+          type: array
+          items:
+            type: string
+        checklist:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        confirmed_at:
+          type: [string, "null"]
+          format: date-time
+        confirmed_by:
+          type: [string, "null"]
+        rejected_at:
+          type: [string, "null"]
+          format: date-time
+        rejected_by:
+          type: [string, "null"]
+        superseded_at:
+          type: [string, "null"]
+          format: date-time
+        superseded_by_proposal_id:
+          type: [string, "null"]
+        supersedes_proposal_id:
+          type: [string, "null"]
+        metadata:
+          type: object
+      required:
+        - proposal_id
+        - mission_id
+        - session_id
+        - orchestrator_profile_id
+        - source_message_id
+        - source_revision
+        - source_option
+        - status
+        - title
+        - summary
+        - mission_spec_contract
+        - planner_context
+        - dag_draft
+        - route_compare
+        - assignments
+        - warnings
+        - checklist
+        - created_at
+        - updated_at
+        - confirmed_at
+        - confirmed_by
+        - rejected_at
+        - rejected_by
+        - superseded_at
+        - superseded_by_proposal_id
+        - supersedes_proposal_id
+        - metadata
+    DagProposalSummary:
+      type: object
+      properties:
+        proposal_id:
+          type: string
+        session_id:
+          type: string
+        mission_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/DagProposalStatus"
+        title:
+          type: string
+        summary:
+          type: string
+        source_revision:
+          type: [integer, "null"]
+        source_option:
+          type: [string, "null"]
+          enum: [primary, alternative, null]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - proposal_id
+        - session_id
+        - mission_id
+        - status
+        - title
+        - summary
+        - source_revision
+        - source_option
+        - created_at
+        - updated_at
+    CreateDagProposalRequest:
+      type: object
+      properties:
+        source_message_id:
+          type: string
+        source_revision:
+          type: integer
+          minimum: 1
+        source_option:
+          type: string
+          enum: [primary, alternative]
+        template_id:
+          type: string
+        inputs:
+          type: object
+    UpdateDagProposalAssignmentsRequest:
+      type: object
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/DagProposalAssignment"
+      required: [assignments]
+    ConfirmDagProposalRequest:
+      type: object
+      properties:
+        confirmed_by:
+          type: string
+    RejectDagProposalRequest:
+      type: object
+      properties:
+        rejected_by:
+          type: string
+        reason:
+          type: string
+    SupersedeDagProposalRequest:
+      type: object
+      properties:
+        source_message_id:
+          type: string
+        reason:
+          type: string
+        template_id:
+          type: string
+        inputs:
+          type: object
+    DagProposalResponse:
+      type: object
+      properties:
+        proposal:
+          $ref: "#/components/schemas/DagProposalRecord"
+      required: [proposal]
+    CreateDagProposalResponse:
+      type: object
+      properties:
+        session:
+          type: object
+        proposal:
+          $ref: "#/components/schemas/DagProposalRecord"
+      required: [session, proposal]
+    ListDagProposalsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DagProposalSummary"
+        confirmed_proposal_id:
+          type: [string, "null"]
+      required: [items, confirmed_proposal_id]
+    ConfirmDagProposalResponse:
+      type: object
+      properties:
+        session:
+          type: object
+        proposal:
+          $ref: "#/components/schemas/DagProposalRecord"
+        message:
+          type: object
+      required: [session, proposal, message]
+    SupersedeDagProposalResponse:
+      type: object
+      properties:
+        session:
+          type: object
+        proposal:
+          $ref: "#/components/schemas/DagProposalRecord"
+        superseded_proposal:
+          anyOf:
+            - $ref: "#/components/schemas/DagProposalRecord"
+            - type: "null"
+      required: [session, proposal, superseded_proposal]
+    PlannerRegistryValidation:
+      type: object
+      properties:
+        executable_node_count:
+          type: integer
+        registry_bound_node_count:
+          type: integer
+        skill_reference_count:
+          type: integer
+        registry_bound_skill_count:
+          type: integer
+        missing_agent_profile_count:
+          type: integer
+        disabled_agent_profile_count:
+          type: integer
+        missing_skill_count:
+          type: integer
+        disabled_skill_count:
+          type: integer
+        disallowed_skill_count:
+          type: integer
+        missing_openclaw_agent_count:
+          type: integer
+    RegistryProvenance:
+      type: object
+      properties:
+        agent_profile_requested:
+          type: [string, "null"]
+        agent_profile_resolved:
+          type: [string, "null"]
+        agent_profile_status:
+          type: [string, "null"]
+          enum: [active, disabled, missing, null]
+        agent_profile_source:
+          type: string
+          enum: [registry, template_binding, fallback, none]
+        openclaw_agent_id_source:
+          type: string
+          enum: [registry, template_binding, fallback, none]
+        skill_bindings:
+          type: array
+          items:
+            type: object
+            properties:
+              skill_id:
+                type: string
+              sources:
+                type: array
+                items:
+                  type: string
+                  enum: [agent_profile_default, node_allowed]
+              registry_status:
+                type: string
+                enum: [active, disabled, missing]
+              included:
+                type: boolean
+              excluded_reason:
+                type: [string, "null"]
+                enum: [disallowed_by_agent_profile, disabled, missing, null]
+            required: [skill_id, sources, registry_status, included, excluded_reason]
+        tool_bindings:
+          type: array
+          items:
+            type: object
+            properties:
+              tool_id:
+                type: string
+              sources:
+                type: array
+                items:
+                  type: string
+                  enum: [agent_profile_allowed, node_allowed]
+            required: [tool_id, sources]
+      required:
+        - agent_profile_requested
+        - agent_profile_resolved
+        - agent_profile_status
+        - agent_profile_source
+        - openclaw_agent_id_source
+        - skill_bindings
+        - tool_bindings
+    ExecutionMaintenanceResult:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [dispatch_sweep]
+        adapter_kind:
+          type: string
+        supported:
+          type: boolean
+        message:
+          type:
+            - string
+            - "null"
+        summary:
+          type:
+            - object
+            - "null"
+          properties:
+            scanned:
+              type: integer
+            normalized:
+              type: integer
+            resumed:
+              type: integer
+            aligned:
+              type: integer
+            finalized:
+              type: integer
+          required: [scanned, normalized, resumed, aligned, finalized]
+      required: [action, adapter_kind, supported, message, summary]
+    MobileTask:
+      type: object
+      properties:
+        node_run_id:
+          type: string
+        node_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        progress:
+          type: object
+        attempt:
+          type: integer
+        started_at:
+          type: [string, "null"]
+        finished_at:
+          type: [string, "null"]
+        openclaw_agent_id:
+          type: [string, "null"]
+        registry_provenance:
+          $ref: "#/components/schemas/RegistryProvenance"
+        execution_ref:
+          type: object
+      required:
+        - node_run_id
+        - node_id
+        - name
+        - type
+        - status
+        - progress
+        - attempt
+        - started_at
+        - finished_at
+        - openclaw_agent_id
+        - registry_provenance
+        - execution_ref
+    MobileRunSummary:
+      type: object
+      properties:
+        run_id:
+          type: string
+        template_id:
+          type: string
+        template_version:
+          type: integer
+        status:
+          type: string
+        intent:
+          type: string
+        current_summary:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        active_task:
+          anyOf:
+            - $ref: "#/components/schemas/MobileTask"
+            - type: "null"
+        pending_approval_count:
+          type: integer
+        pending_human_input_count:
+          type: integer
+        artifact_count:
+          type: integer
+        next_actions:
+          type: array
+          items:
+            type: string
+      required:
+        - run_id
+        - template_id
+        - template_version
+        - status
+        - intent
+        - current_summary
+        - updated_at
+        - active_task
+        - pending_approval_count
+        - pending_human_input_count
+        - artifact_count
+        - next_actions
+    MobileInboxItem:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [approval, human_input]
+        request_id:
+          type: string
+        run_id:
+          type: string
+        node_run_id:
+          type: [string, "null"]
+        run_status:
+          type: string
+        intent:
+          type: string
+        summary:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+        task:
+          anyOf:
+            - $ref: "#/components/schemas/MobileTask"
+            - type: "null"
+        next_actions:
+          type: array
+          items:
+            type: string
+      required:
+        - kind
+        - request_id
+        - run_id
+        - node_run_id
+        - run_status
+        - intent
+        - summary
+        - requested_at
+        - task
+        - next_actions
+    MobileHomeResponse:
+      type: object
+      properties:
+        overview:
+          type: object
+        focus_run:
+          anyOf:
+            - $ref: "#/components/schemas/MobileRunSummary"
+            - type: "null"
+        recent_runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/MobileRunSummary"
+        inbox:
+          type: object
+      required: [overview, focus_run, recent_runs, inbox]
+    MobileRunDetail:
+      type: object
+      properties:
+        run:
+          $ref: "#/components/schemas/RunDetail"
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/MobileTask"
+        pending_approvals:
+          type: array
+          items:
+            type: object
+        pending_human_inputs:
+          type: array
+          items:
+            type: object
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Artifact"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+        next_actions:
+          type: array
+          items:
+            type: string
+      required:
+        - run
+        - tasks
+        - pending_approvals
+        - pending_human_inputs
+        - artifacts
+        - timeline
+        - next_actions
+    MobileRunFollowUp:
+      type: object
+      properties:
+        run:
+          $ref: "#/components/schemas/RunDetail"
+        blocker:
+          type: [string, "null"]
+        active_task:
+          anyOf:
+            - $ref: "#/components/schemas/MobileTask"
+            - type: "null"
+        pending_approvals:
+          type: array
+          items:
+            type: object
+        pending_human_inputs:
+          type: array
+          items:
+            type: object
+        latest_timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Artifact"
+        artifact_count:
+          type: integer
+        next_actions:
+          type: array
+          items:
+            type: string
+      required:
+        - run
+        - blocker
+        - active_task
+        - pending_approvals
+        - pending_human_inputs
+        - latest_timeline
+        - artifacts
+        - artifact_count
+        - next_actions
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/templates:
+    get:
+      tags: [Templates]
+      summary: List templates
+      responses:
+        "200":
+          description: Template list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TemplateSummary"
+                required: [items]
+    post:
+      tags: [Templates]
+      summary: Create template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateSummary"
+        "400":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/templates/{templateId}:
+    get:
+      tags: [Templates]
+      summary: Get template detail
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Template detail
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      tags: [Templates]
+      summary: Update template draft
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/templates/{templateId}/publish:
+    post:
+      tags: [Templates]
+      summary: Publish template version
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishTemplateResponse"
+
+  /api/templates/{templateId}/lineage:
+    get:
+      tags: [Templates]
+      summary: Get template lineage
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lineage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateLineageResponse"
+
+  /api/templates/{templateId}/derive:
+    post:
+      tags: [Templates]
+      summary: Derive a new draft template from source
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeriveTemplateRequest"
+      responses:
+        "201":
+          description: Draft derived
+
+  /api/templates/{templateId}/new-version:
+    post:
+      tags: [Templates]
+      summary: Create next-version draft from a published template
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeriveTemplateRequest"
+      responses:
+        "201":
+          description: Version draft created
+
+  /api/templates/{templateId}/archive:
+    post:
+      tags: [Templates]
+      summary: Archive template
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Archived
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishTemplateResponse"
+
+  /api/registry/agent-profiles:
+    get:
+      tags: [Templates]
+      summary: List agent profiles
+      responses:
+        "200":
+          description: Agent profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentProfile"
+                required: [items]
+    post:
+      tags: [Templates]
+      summary: Upsert agent profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentProfile"
+      responses:
+        "201":
+          description: Agent profile upserted
+
+  /api/registry/agent-profiles/{profileId}:
+    get:
+      tags: [Templates]
+      summary: Get agent profile
+      parameters:
+        - in: path
+          name: profileId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentProfile"
+
+  /api/registry/agent-profiles/{profileId}/disable:
+    post:
+      tags: [Templates]
+      summary: Disable agent profile
+      parameters:
+        - in: path
+          name: profileId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Disabled
+
+  /api/agents/hosting:
+    get:
+      tags: [Agents]
+      summary: List OpenClaw agent hosting bindings
+      responses:
+        "200":
+          description: Agent hosting summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentHostingSummary"
+
+  /api/agents/{profileId}/hosting:
+    put:
+      tags: [Agents]
+      summary: Update OpenClaw hosting fields for an agent profile
+      parameters:
+        - in: path
+          name: profileId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentHostingRequest"
+      responses:
+        "200":
+          description: Updated agent hosting binding
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profile:
+                    $ref: "#/components/schemas/AgentProfile"
+                  agent_hosting:
+                    $ref: "#/components/schemas/AgentHostingSummary"
+                required: [profile, agent_hosting]
+
+  /api/registry/skills:
+    get:
+      tags: [Templates]
+      summary: List skills
+      responses:
+        "200":
+          description: Skills
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Skill"
+                required: [items]
+    post:
+      tags: [Templates]
+      summary: Upsert skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Skill"
+      responses:
+        "201":
+          description: Skill upserted
+
+  /api/registry/skills/{skillId}:
+    get:
+      tags: [Templates]
+      summary: Get skill
+      parameters:
+        - in: path
+          name: skillId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Skill
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Skill"
+
+  /api/registry/skills/{skillId}/disable:
+    post:
+      tags: [Templates]
+      summary: Disable skill
+      parameters:
+        - in: path
+          name: skillId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Disabled
+
+  /api/sessions/{sessionId}/dag-proposals:
+    post:
+      tags: [Sessions]
+      summary: Create durable DAG proposal for a session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDagProposalRequest"
+      responses:
+        "201":
+          description: DAG proposal created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    type: object
+                  proposal:
+                    $ref: "#/components/schemas/DagProposalRecord"
+                required: [session, proposal]
+        "400":
+          description: Proposal generation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [Sessions]
+      summary: List session DAG proposals
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: DAG proposal summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DagProposalSummary"
+                  confirmed_proposal_id:
+                    type:
+                      - string
+                      - "null"
+                required: [items, confirmed_proposal_id]
+
+  /api/sessions/{sessionId}/dag-proposals/{proposalId}:
+    get:
+      tags: [Sessions]
+      summary: Get session DAG proposal
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: proposalId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: DAG proposal detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal:
+                    $ref: "#/components/schemas/DagProposalRecord"
+                required: [proposal]
+
+  /api/sessions/{sessionId}/dag-proposals/{proposalId}/assignments:
+    patch:
+      tags: [Sessions]
+      summary: Replace editable DAG proposal assignments
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: proposalId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDagProposalAssignmentsRequest"
+      responses:
+        "200":
+          description: Assignments updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal:
+                    $ref: "#/components/schemas/DagProposalRecord"
+                required: [proposal]
+
+  /api/sessions/{sessionId}/dag-proposals/{proposalId}/confirm:
+    post:
+      tags: [Sessions]
+      summary: Confirm a DAG proposal as the session execution source
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: proposalId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmDagProposalRequest"
+      responses:
+        "200":
+          description: Proposal confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    type: object
+                  proposal:
+                    $ref: "#/components/schemas/DagProposalRecord"
+                  message:
+                    type: object
+                required: [session, proposal, message]
+
+  /api/sessions/{sessionId}/dag-proposals/{proposalId}/reject:
+    post:
+      tags: [Sessions]
+      summary: Reject a DAG proposal
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: proposalId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectDagProposalRequest"
+      responses:
+        "200":
+          description: Proposal rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal:
+                    $ref: "#/components/schemas/DagProposalRecord"
+                required: [proposal]
+
+  /api/sessions/{sessionId}/dag-proposals/{proposalId}/supersede:
+    post:
+      tags: [Sessions]
+      summary: Supersede a DAG proposal with a newer proposal
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: proposalId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SupersedeDagProposalRequest"
+      responses:
+        "201":
+          description: Replacement proposal created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    type: object
+                  proposal:
+                    $ref: "#/components/schemas/DagProposalRecord"
+                  superseded_proposal:
+                    $ref: "#/components/schemas/DagProposalRecord"
+                required: [proposal, superseded_proposal]
+
+  /api/runs:
+    get:
+      tags: [Runs]
+      summary: List runs
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+        - in: query
+          name: template_id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Run list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RunSummary"
+                required: [items]
+    post:
+      tags: [Runs]
+      summary: Create run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRunResponse"
+        "409":
+          description: Template is not published or strict run validation failed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/RunValidationFailure"
+
+  /api/mobile/home:
+    get:
+      tags: [Mobile]
+      summary: Get mobile home overview
+      responses:
+        "200":
+          description: Mobile home payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MobileHomeResponse"
+
+  /api/mobile/inbox:
+    get:
+      tags: [Mobile]
+      summary: Get mobile inbox items
+      responses:
+        "200":
+          description: Mobile inbox payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MobileInboxItem"
+                required: [items]
+
+  /api/mobile/runs:
+    get:
+      tags: [Mobile]
+      summary: List mobile run summaries
+      responses:
+        "200":
+          description: Mobile run summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MobileRunSummary"
+                required: [items]
+
+  /api/mobile/runs/{runId}:
+    get:
+      tags: [Mobile]
+      summary: Get mobile run detail
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Mobile run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MobileRunDetail"
+
+  /api/mobile/runs/{runId}/follow-up:
+    get:
+      tags: [Mobile]
+      summary: Get mobile run follow-up payload
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Mobile run follow-up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MobileRunFollowUp"
+
+  /api/runs/{runId}:
+    get:
+      tags: [Runs]
+      summary: Get run detail
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunDetail"
+
+  /api/runs/{runId}/events:
+    get:
+      tags: [Runs]
+      summary: Get run events
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Event list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Event"
+                required: [items]
+
+  /api/runs/{runId}/artifacts:
+    get:
+      tags: [Runs]
+      summary: Get run artifacts
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Artifact list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Artifact"
+                required: [items]
+
+  /api/runs/{runId}/actions/pause:
+    post:
+      tags: [Runs]
+      summary: Pause run
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paused
+
+  /api/runs/{runId}/actions/resume:
+    post:
+      tags: [Runs]
+      summary: Resume run
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resumed
+
+  /api/runs/{runId}/actions/cancel:
+    post:
+      tags: [Runs]
+      summary: Cancel run
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancelled
+
+  /api/runs/{runId}/nodes/{nodeRunId}/actions/retry:
+    post:
+      tags: [Runs]
+      summary: Retry node
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: nodeRunId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Retried
+
+  /api/runs/{runId}/nodes/{nodeRunId}/actions/skip:
+    post:
+      tags: [Runs]
+      summary: Skip node
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: nodeRunId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Skipped
+
+  /api/approvals:
+    get:
+      tags: [Approvals]
+      summary: List pending approvals
+      responses:
+        "200":
+          description: Approval list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                required: [items]
+
+  /api/approvals/{approvalId}/approve:
+    post:
+      tags: [Approvals]
+      summary: Approve request
+      parameters:
+        - in: path
+          name: approvalId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentRequest"
+      responses:
+        "200":
+          description: Approved
+
+  /api/approvals/{approvalId}/reject:
+    post:
+      tags: [Approvals]
+      summary: Reject request
+      parameters:
+        - in: path
+          name: approvalId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentRequest"
+      responses:
+        "200":
+          description: Rejected
+
+  /api/human-inputs:
+    get:
+      tags: [HumanInputs]
+      summary: List pending human input requests
+      responses:
+        "200":
+          description: Human input list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                required: [items]
+
+  /api/human-inputs/{inputRequestId}/submit:
+    post:
+      tags: [HumanInputs]
+      summary: Submit human input payload
+      parameters:
+        - in: path
+          name: inputRequestId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HumanInputSubmitRequest"
+      responses:
+        "200":
+          description: Submitted
+
+  /api/internal/ops/execution/dispatch-sweep:
+    post:
+      tags: [InternalOps]
+      summary: Trigger execution adapter dispatch maintenance sweep
+      responses:
+        "202":
+          description: Maintenance triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionMaintenanceResult"
+        "409":
+          description: Maintenance unsupported for current adapter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/planner/template-selection:
+    post:
+      tags: [Planner]
+      summary: Recommend template for intent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlannerTemplateSelectionRequest"
+      responses:
+        "200":
+          description: Recommendation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlannerTemplateSelectionResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No published templates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/planner/dag-draft:
+    post:
+      tags: [Planner]
+      summary: Generate an editable DAG draft from intent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlannerDagDraftRequest"
+      responses:
+        "200":
+          description: DAG draft
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlannerDagDraftResponse"
+        "400":
+          description: Invalid request or draft generation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Template not published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/planner/candidate-plan:
+    post:
+      tags: [Planner]
+      summary: Generate candidate plan under template constraints
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlannerCandidatePlanRequest"
+      responses:
+        "200":
+          description: Candidate plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlannerCandidatePlanResponse"
+        "400":
+          description: Invalid request or planning failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Template not published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"

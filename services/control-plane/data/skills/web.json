@@ -1,0 +1,25 @@
+{
+  "skill_id": "web",
+  "name": "Web Skill",
+  "description": "Demo web skill for acceptance",
+  "category": "research",
+  "allowed_tools": [
+    "web",
+    "read"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "type": "object"
+  },
+  "tags": [
+    "demo"
+  ],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-09T07:50:46.419Z",
+  "updated_at": "2026-06-09T07:50:46.419Z"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@my-mate/studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "check": "node scripts/check.mjs",
+    "visual:chrome": "node scripts/visual-check.mjs",
+    "visual:openclaw": "node scripts/openclaw-visual-acceptance.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -1,0 +1,90 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Local assistant/tool state
+.codex-logs/
+.claude/*.local.json
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+.npmrc
+**/.npmrc
+!.npmrc.example
+!**/.npmrc.example
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Logs
+*.log
+*.err.log
+*.out.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary workspace output
+tmp/
+tmp-*
+.tmp-*
+.debug-*.png
+
+# JavaScript / TypeScript build output
+dist/
+build/
+coverage/
+.turbo/
+.cache/
+
+# Expo / React Native
+.expo/
+web-build/
+android/.gradle/
+android/.cxx/
+android/local.properties
+apps/mobile/.expo/
+apps/mobile/web.out.log
+apps/mobile/dev.out.log
+apps/mobile/dev.err.log
+apps/mobile/gradle-*.log
+apps/mobile/android/.gradle/
+apps/mobile/android/.cxx/
+apps/mobile/android/local.properties
+apps/mobile/android/certs/
+apps/mobile/android/gradle-truststore.jks
+apps/mobile/android/build/
+apps/mobile/android/app/build/
+apps/mobile/android/app/*.apk
+apps/mobile/android/app/*.aab
+
+# Studio generated visual artifacts
+apps/studio/tmp/
+apps/studio/dev.out.log
+apps/studio/dev.err.log
+apps/studio/studio-visual-check.png
+
+# Local runtime persistence
+services/execution-adapter/data/
+services/execution-adapter/dist/
+services/control-plane/data/approvals/
+services/control-plane/data/artifacts/
+services/control-plane/data/dag-patches/
+services/control-plane/data/dag-proposals/
+services/control-plane/data/events/
+services/control-plane/data/human-inputs/
+services/control-plane/data/node-runs/
+services/control-plane/data/run-plans/
+services/control-plane/data/runs/
+services/control-plane/data/session-attachments/
+services/control-plane/data/session-interventions/
+services/control-plane/data/session-messages/
+services/control-plane/data/sessions/

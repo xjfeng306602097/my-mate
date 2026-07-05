@@ -1,0 +1,78 @@
+{
+  "template_id": "studio-smoke-template-20260607215641",
+  "version": 1,
+  "name": "Studio Smoke Template 20260607215641",
+  "status": "published",
+  "description": "Created by Studio smoke test",
+  "workspace_scope": "default",
+  "input_schema": {
+    "properties": {
+      "goal": {
+        "type": "string"
+      }
+    },
+    "type": "object",
+    "required": [
+      "goal"
+    ]
+  },
+  "policy": {
+    "budget_policy": {},
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 300,
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "backend": "backend"
+  },
+  "nodes": [
+    {
+      "parallelism": 1,
+      "agent_profile": "backend",
+      "id": "node_backend",
+      "type": "agent_task",
+      "retry_policy": {
+        "backoff_seconds": 5,
+        "max_attempts": 1
+      },
+      "config": {},
+      "timeout_seconds": 300,
+      "approval_kind": null,
+      "name": "Backend Task",
+      "human_input_schema": null,
+      "allowed_skills": [
+        "coding-agent"
+      ]
+    },
+    {
+      "parallelism": 1,
+      "agent_profile": null,
+      "id": "node_end",
+      "type": "end",
+      "retry_policy": {
+        "backoff_seconds": 0,
+        "max_attempts": 0
+      },
+      "config": {},
+      "timeout_seconds": 60,
+      "approval_kind": null,
+      "name": "End",
+      "human_input_schema": null,
+      "allowed_skills": []
+    }
+  ],
+  "edges": [
+    {
+      "label": null,
+      "from": "node_backend",
+      "to": "node_end",
+      "condition": null
+    }
+  ],
+  "metadata": {
+    "domain": "studio-smoke"
+  },
+  "created_at": "2026-06-07T13:56:41.454Z",
+  "updated_at": "2026-06-07T13:56:41.494Z",
+  "published_at": "2026-06-07T13:56:41.494Z"
+}

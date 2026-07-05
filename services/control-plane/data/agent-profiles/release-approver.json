@@ -1,0 +1,23 @@
+{
+  "profile_id": "release-approver",
+  "name": "Release Approver",
+  "description": "审批 审核 审查 复核 把关 卡点 确认 上线 发布 申请 sign-off gate audit checkpoint review for production release",
+  "openclaw_agent_id": "review",
+  "default_skills": [
+    "release-approval"
+  ],
+  "allowed_tools": [
+    "read"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [
+    "review",
+    "human-gate"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "review"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

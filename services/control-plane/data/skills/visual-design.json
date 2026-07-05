@@ -1,0 +1,29 @@
+{
+  "skill_id": "visual-design",
+  "name": "Visual Design",
+  "description": "设计海报 配图 排版 图像 创意 ，design poster image and creative layout",
+  "category": "content",
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "expected_artifacts": [
+      "visual-design"
+    ]
+  },
+  "tags": [
+    "content",
+    "design",
+    "image"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "content"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

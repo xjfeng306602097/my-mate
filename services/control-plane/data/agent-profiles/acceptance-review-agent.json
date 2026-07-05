@@ -1,0 +1,23 @@
+{
+  "profile_id": "acceptance-review-agent",
+  "name": "Acceptance Review Agent",
+  "description": "Registry-backed reviewer with a human gate",
+  "openclaw_agent_id": "review",
+  "default_skills": [
+    "acceptance-review"
+  ],
+  "allowed_tools": [
+    "read"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [
+    "demo",
+    "human-gate"
+  ],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-07T17:04:37.878Z",
+  "updated_at": "2026-06-07T17:04:37.878Z"
+}

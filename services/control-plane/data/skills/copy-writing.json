@@ -1,0 +1,29 @@
+{
+  "skill_id": "copy-writing",
+  "name": "Copy Writing",
+  "description": "撰写小红书 文案 公众号 推文 海报 文字 脚本，draft and polish marketing copy and posts",
+  "category": "content",
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "expected_artifacts": [
+      "copy-draft"
+    ]
+  },
+  "tags": [
+    "content",
+    "writing",
+    "marketing"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "content"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

@@ -1,0 +1,21 @@
+{
+  "profile_id": "research-worker",
+  "name": "Research Worker",
+  "description": "Demo registry profile for retry demo",
+  "openclaw_agent_id": "backend",
+  "default_skills": [
+    "web"
+  ],
+  "allowed_tools": [
+    "read",
+    "web"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-09T07:50:46.416Z",
+  "updated_at": "2026-06-09T07:50:46.416Z"
+}

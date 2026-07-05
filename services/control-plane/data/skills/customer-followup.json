@@ -1,0 +1,29 @@
+{
+  "skill_id": "customer-followup",
+  "name": "Customer Followup",
+  "description": "客户 跟进 回访 线索 工单 售后 外联 客服 lead client follow-up outreach and CRM ticket handling",
+  "category": "customer",
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "expected_artifacts": [
+      "followup-summary"
+    ]
+  },
+  "tags": [
+    "customer",
+    "crm",
+    "outreach"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "customer"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

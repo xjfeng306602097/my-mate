@@ -1,0 +1,77 @@
+{
+  "template_id": "retry-demo",
+  "version": 1,
+  "name": "Retry Demo",
+  "status": "published",
+  "description": "Template for retry testing",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "subject": {
+        "type": "string"
+      }
+    }
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 600,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "research_worker": "research_worker"
+  },
+  "nodes": [
+    {
+      "id": "node_fail_once",
+      "name": "Fail Once",
+      "type": "agent_task",
+      "agent_profile": "research_worker",
+      "allowed_skills": [
+        "web"
+      ],
+      "config": {
+        "simulated_failure_count": 1
+      },
+      "retry_policy": {
+        "max_attempts": 2,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 300,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 0,
+        "backoff_seconds": 0
+      },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [
+    {
+      "from": "node_fail_once",
+      "to": "node_end",
+      "condition": null,
+      "label": null
+    }
+  ],
+  "metadata": {
+    "domain": "demo"
+  },
+  "created_at": "2026-06-06T13:21:25.079Z",
+  "updated_at": "2026-06-06T13:21:25.097Z",
+  "published_at": "2026-06-06T13:21:25.097Z"
+}

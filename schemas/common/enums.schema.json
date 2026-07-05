@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/common/enums.schema.json",
+  "title": "Common Enums",
+  "type": "object",
+  "$defs": {
+    "templateStatus": {
+      "type": "string",
+      "enum": ["draft", "published", "archived"]
+    },
+    "runStatus": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "queued",
+        "running",
+        "waiting_human",
+        "paused",
+        "blocked",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "nodeStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "ready",
+        "running",
+        "waiting_human",
+        "completed",
+        "failed",
+        "skipped",
+        "cancelled"
+      ]
+    },
+    "nodeType": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "agent_task",
+        "tool_task",
+        "fanout",
+        "reducer",
+        "approval",
+        "human_input",
+        "notify",
+        "condition",
+        "end"
+      ]
+    },
+    "approvalKind": {
+      "type": "string",
+      "enum": [
+        "human_review",
+        "prod_release",
+        "budget_override",
+        "privileged_tool_use"
+      ]
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "run.created",
+        "run.queued",
+        "run.started",
+        "run.paused",
+        "run.resumed",
+        "run.cancelled",
+        "run.blocked",
+        "run.completed",
+        "run.failed",
+        "node.ready",
+        "node.started",
+        "node.progress",
+        "node.completed",
+        "node.failed",
+        "node.skipped",
+        "approval.requested",
+        "approval.granted",
+        "approval.rejected",
+        "human_input.requested",
+        "human_input.submitted",
+        "artifact.created"
+      ]
+    },
+    "actorType": {
+      "type": "string",
+      "enum": ["user", "agent", "system", "operator"]
+    },
+    "artifactType": {
+      "type": "string",
+      "enum": ["document", "report", "patch", "summary", "attachment", "log", "other"]
+    }
+  }
+}

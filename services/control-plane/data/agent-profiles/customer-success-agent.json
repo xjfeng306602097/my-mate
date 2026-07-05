@@ -1,0 +1,23 @@
+{
+  "profile_id": "customer-success-agent",
+  "name": "Customer Success Agent",
+  "description": "客户 跟进 回访 线索 工单 售后 外联 客服 lead client follow-up outreach and CRM ticket handling",
+  "openclaw_agent_id": "backend",
+  "default_skills": [
+    "customer-followup"
+  ],
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [
+    "customer"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "customer"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

@@ -1,0 +1,81 @@
+{
+  "template_id": "release-approval-gate",
+  "version": 1,
+  "name": "Release Approval Gate",
+  "status": "published",
+  "description": "审批 审核 审查 复核 把关 卡点 确认 上线 发布 申请 sign-off gate audit checkpoint review for production release",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": { "type": "string" },
+      "release_id": { "type": "string" }
+    },
+    "required": ["goal"]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 600,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "release-approver": "review"
+  },
+  "nodes": [
+    {
+      "id": "node_review",
+      "name": "Review Release",
+      "type": "agent_task",
+      "agent_profile": "release-approver",
+      "allowed_skills": ["release-approval"],
+      "config": {
+        "allowed_tools": ["read"],
+        "output_contract": {
+          "expected_artifacts": ["approval-record"]
+        }
+      },
+      "retry_policy": { "max_attempts": 1, "backoff_seconds": 5 },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_gate",
+      "name": "Human Approval Gate",
+      "type": "approval",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": { "max_attempts": 0, "backoff_seconds": 0 },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": "prod_release",
+      "human_input_schema": null
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": { "max_attempts": 0, "backoff_seconds": 0 },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [
+    { "from": "node_review", "to": "node_gate", "condition": null, "label": null },
+    { "from": "node_gate", "to": "node_end", "condition": null, "label": null }
+  ],
+  "metadata": {
+    "domain": "review"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z",
+  "published_at": "2026-06-12T22:00:00.000Z"
+}

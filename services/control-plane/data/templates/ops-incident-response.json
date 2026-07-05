@@ -1,0 +1,68 @@
+{
+  "template_id": "ops-incident-response",
+  "version": 1,
+  "name": "Ops Incident Response",
+  "status": "published",
+  "description": "监控 告警 排查 运维 巡检 备份 回滚 调度 定时 monitor alert metric incident rotate backup rollback ops runbook",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": { "type": "string" },
+      "incident_id": { "type": "string" },
+      "service": { "type": "string" }
+    },
+    "required": ["goal"]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 600,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "ops-runner": "backend"
+  },
+  "nodes": [
+    {
+      "id": "node_triage",
+      "name": "Triage Incident",
+      "type": "agent_task",
+      "agent_profile": "ops-runner",
+      "allowed_skills": ["ops-runbook"],
+      "config": {
+        "allowed_tools": ["read", "shell"],
+        "output_contract": {
+          "expected_artifacts": ["ops-checklist"]
+        }
+      },
+      "retry_policy": { "max_attempts": 1, "backoff_seconds": 5 },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": { "max_attempts": 0, "backoff_seconds": 0 },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [
+    { "from": "node_triage", "to": "node_end", "condition": null, "label": null }
+  ],
+  "metadata": {
+    "domain": "ops"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z",
+  "published_at": "2026-06-12T22:00:00.000Z"
+}

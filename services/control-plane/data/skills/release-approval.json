@@ -1,0 +1,28 @@
+{
+  "skill_id": "release-approval",
+  "name": "Release Approval",
+  "description": "审批 审核 审查 复核 把关 卡点 确认 上线 发布 申请 sign-off gate audit checkpoint review for production release",
+  "category": "review",
+  "allowed_tools": [
+    "read"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "expected_artifacts": [
+      "approval-record"
+    ]
+  },
+  "tags": [
+    "review",
+    "approval",
+    "gate"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "review"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

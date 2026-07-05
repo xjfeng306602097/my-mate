@@ -1,0 +1,87 @@
+{
+  "template_id": "research-report",
+  "version": 1,
+  "name": "Research Report",
+  "status": "published",
+  "description": "调研 研究 分析 对比 竞品 报告 市场 现状 ，gather context and produce competitor analysis report",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": { "type": "string" },
+      "subject": { "type": "string" },
+      "scope": { "type": "string" }
+    },
+    "required": ["goal"]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 900,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "research-analyst": "backend"
+  },
+  "nodes": [
+    {
+      "id": "node_research",
+      "name": "Gather Research",
+      "type": "agent_task",
+      "agent_profile": "research-analyst",
+      "allowed_skills": ["competitive-research"],
+      "config": {
+        "allowed_tools": ["web", "read", "write"],
+        "output_contract": {
+          "expected_artifacts": ["research-notes"]
+        }
+      },
+      "retry_policy": { "max_attempts": 1, "backoff_seconds": 5 },
+      "timeout_seconds": 900,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_report",
+      "name": "Compose Report",
+      "type": "agent_task",
+      "agent_profile": "research-analyst",
+      "allowed_skills": ["competitive-research"],
+      "config": {
+        "allowed_tools": ["read", "write"],
+        "output_contract": {
+          "expected_artifacts": ["research-report"]
+        }
+      },
+      "retry_policy": { "max_attempts": 1, "backoff_seconds": 5 },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": { "max_attempts": 0, "backoff_seconds": 0 },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [
+    { "from": "node_research", "to": "node_report", "condition": null, "label": null },
+    { "from": "node_report", "to": "node_end", "condition": null, "label": null }
+  ],
+  "metadata": {
+    "domain": "research"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z",
+  "published_at": "2026-06-12T22:00:00.000Z"
+}

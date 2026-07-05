@@ -1,0 +1,75 @@
+{
+  "template_id": "e2e-backend-single-node",
+  "version": 1,
+  "name": "E2E Backend Single Node",
+  "status": "published",
+  "description": "Single backend node for OpenClaw direct-agent e2e",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": {
+        "type": "string"
+      },
+      "project_slug": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "goal",
+      "project_slug"
+    ]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 900,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "backend": "backend"
+  },
+  "nodes": [
+    {
+      "id": "node_backend",
+      "name": "Backend Task",
+      "type": "agent_task",
+      "agent_profile": "backend",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "allowed_tools": [
+          "read",
+          "write",
+          "shell"
+        ],
+        "output_contract": {
+          "expected_artifacts": [
+            "agent-report",
+            "handoff"
+          ]
+        }
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 900,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [],
+  "metadata": {},
+  "created_at": "2026-06-06T17:26:10.275Z",
+  "updated_at": "2026-06-06T17:26:24.887Z",
+  "published_at": "2026-06-06T17:26:24.887Z"
+}

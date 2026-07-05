@@ -1,0 +1,91 @@
+import type { DispatchRecord, DispatchRequest } from "../src/types.js";
+
+export function createDispatchRequest(overrides: Partial<DispatchRequest> = {}): DispatchRequest {
+  return {
+    run_id: "run_test_001",
+    node_run_id: "node_run_test_001",
+    node_id: "node_backend",
+    node_name: "Backend Task",
+    node_type: "agent_task",
+    template_id: "tpl_test",
+    template_version: 1,
+    workspace_id: "default",
+    requested_by: "tester",
+    intent: "run test dispatch",
+    openclaw_agent_id: "backend",
+    allowed_skills: ["coding-agent"],
+    allowed_tools: ["read", "write", "shell"],
+    timeout_seconds: 900,
+    parallelism_budget: 1,
+    retry_policy: {
+      max_attempts: 1,
+      attempt: 1,
+    },
+    input_payload: {},
+    output_contract: {},
+    callback: {
+      report_url: "http://127.0.0.1:4011/api/internal/openclaw/reports",
+      bearer_token: "token",
+    },
+    trace_context: {
+      run_id: "run_test_001",
+      node_run_id: "node_run_test_001",
+      requested_by: "tester",
+    },
+    openclaw_runtime: {
+      execution_mode: "container-exec",
+      gateway_base_url: "http://127.0.0.1:18789",
+      approval_console_base_url: "http://127.0.0.1:4315",
+      container_name: "openclaw-local",
+    },
+    ...overrides,
+  };
+}
+
+export function createDispatchRecord(overrides: Partial<DispatchRecord> = {}): DispatchRecord {
+  const request = createDispatchRequest();
+  return {
+    dispatch_id: "disp_test_001",
+    run_id: request.run_id,
+    node_run_id: request.node_run_id,
+    node_id: request.node_id,
+    node_name: request.node_name,
+    openclaw_agent_id: request.openclaw_agent_id,
+    status: "running",
+    mode: "container-exec",
+    callback_url: request.callback.report_url,
+    callback_bearer_token: request.callback.bearer_token,
+    openclaw_task_id: "task_test_001",
+    openclaw_session_id: "bridge-disp_test_001",
+    created_at: "2026-06-07T08:00:00.000Z",
+    updated_at: "2026-06-07T08:05:00.000Z",
+    last_error: null,
+    native_handoff_file: null,
+    openclaw_state_path: null,
+    openclaw_dispatch_file: null,
+    openclaw_result_session_id: "bridge-disp_test_001",
+    openclaw_result_session_key: "agent:backend:explicit:bridge-disp_test_001",
+    openclaw_result_session_file: null,
+    openclaw_result_run_id: "runid_test_001",
+    openclaw_result_trajectory_dir: null,
+    poll_started_at: "2026-06-07T08:00:00.000Z",
+    last_polled_at: "2026-06-07T08:05:00.000Z",
+    last_reported_status: "running",
+    direct_agent: {
+      attempted: true,
+      sessionId: "bridge-disp_test_001",
+      sessionKey: "agent:backend:explicit:bridge-disp_test_001",
+      sessionFile: null,
+      runId: null,
+      taskId: null,
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      completionText: null,
+      reportText: null,
+      mode: "async-task",
+    },
+    request_snapshot: request,
+    ...overrides,
+  };
+}

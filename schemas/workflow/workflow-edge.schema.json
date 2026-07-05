@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/workflow/workflow-edge.schema.json",
+  "title": "Workflow Edge",
+  "type": "object",
+  "properties": {
+    "from": {
+      "type": "string",
+      "minLength": 1
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1
+    },
+    "condition": {
+      "type": ["object", "null"]
+    },
+    "label": {
+      "type": ["string", "null"]
+    }
+  },
+  "required": ["from", "to", "condition", "label"],
+  "additionalProperties": false
+}

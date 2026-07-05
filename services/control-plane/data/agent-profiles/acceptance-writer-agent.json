@@ -1,0 +1,24 @@
+{
+  "profile_id": "acceptance-writer-agent",
+  "name": "Acceptance Writer Agent",
+  "description": "Registry-backed writing worker for visual acceptance",
+  "openclaw_agent_id": "backend",
+  "default_skills": [
+    "acceptance-writing"
+  ],
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [
+    "demo",
+    "safe-local"
+  ],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-07T17:04:37.865Z",
+  "updated_at": "2026-06-07T17:04:37.865Z"
+}

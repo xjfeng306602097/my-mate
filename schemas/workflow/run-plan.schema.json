@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/workflow/run-plan.schema.json",
+  "title": "Run Plan",
+  "type": "object",
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "template_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "template_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "workspace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requested_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "compiled_nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "node_run_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "node_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "$ref": "../common/enums.schema.json#/$defs/nodeType"
+          },
+          "agent_profile": {
+            "type": ["string", "null"]
+          },
+          "openclaw_agent_id": {
+            "type": ["string", "null"]
+          },
+          "allowed_skills": {
+            "type": "array",
+            "items": { "type": "string" },
+            "uniqueItems": true
+          },
+          "allowed_tools": {
+            "type": "array",
+            "items": { "type": "string" },
+            "uniqueItems": true
+          },
+          "approval_kind": {
+            "oneOf": [
+              { "$ref": "../common/enums.schema.json#/$defs/approvalKind" },
+              { "type": "null" }
+            ]
+          },
+          "human_input_schema": {
+            "type": ["object", "null"]
+          },
+          "status": {
+            "$ref": "../common/enums.schema.json#/$defs/nodeStatus"
+          },
+          "retry_policy": {
+            "type": "object",
+            "properties": {
+              "max_attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "attempt": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": ["max_attempts", "attempt"],
+            "additionalProperties": false
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "parallelism_budget": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "input_payload": {
+            "type": "object"
+          },
+          "output_contract": {
+            "type": "object"
+          },
+          "execution_ref": {
+            "type": "object",
+            "properties": {
+              "openclaw_task_id": {
+                "type": ["string", "null"]
+              },
+              "openclaw_session_id": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["openclaw_task_id", "openclaw_session_id"],
+            "additionalProperties": false
+          },
+          "registry_provenance": {
+            "type": "object",
+            "properties": {
+              "agent_profile_requested": {
+                "type": ["string", "null"]
+              },
+              "agent_profile_resolved": {
+                "type": ["string", "null"]
+              },
+              "agent_profile_status": {
+                "type": ["string", "null"],
+                "enum": ["active", "disabled", "missing", null]
+              },
+              "agent_profile_source": {
+                "type": "string",
+                "enum": ["registry", "template_binding", "fallback", "none"]
+              },
+              "openclaw_agent_id_source": {
+                "type": "string",
+                "enum": ["registry", "template_binding", "fallback", "none"]
+              },
+              "skill_bindings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skill_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["agent_profile_default", "node_allowed"]
+                      },
+                      "uniqueItems": true
+                    },
+                    "registry_status": {
+                      "type": "string",
+                      "enum": ["active", "disabled", "missing"]
+                    },
+                    "included": {
+                      "type": "boolean"
+                    },
+                    "excluded_reason": {
+                      "type": ["string", "null"],
+                      "enum": ["disallowed_by_agent_profile", "disabled", "missing", null]
+                    }
+                  },
+                  "required": [
+                    "skill_id",
+                    "sources",
+                    "registry_status",
+                    "included",
+                    "excluded_reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "tool_bindings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tool_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["agent_profile_allowed", "node_allowed"]
+                      },
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": ["tool_id", "sources"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "agent_profile_requested",
+              "agent_profile_resolved",
+              "agent_profile_status",
+              "agent_profile_source",
+              "openclaw_agent_id_source",
+              "skill_bindings",
+              "tool_bindings"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "node_run_id",
+          "node_id",
+          "name",
+          "type",
+          "agent_profile",
+          "openclaw_agent_id",
+          "allowed_skills",
+          "allowed_tools",
+          "approval_kind",
+          "human_input_schema",
+          "status",
+          "retry_policy",
+          "timeout_seconds",
+          "parallelism_budget",
+          "input_payload",
+          "output_contract",
+          "execution_ref",
+          "registry_provenance"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "./workflow-edge.schema.json" }
+    },
+    "frontier": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "policy_snapshot": {
+      "type": "object"
+    },
+    "planner_context": {
+      "type": "object"
+    },
+    "status": {
+      "$ref": "../common/enums.schema.json#/$defs/runStatus"
+    },
+    "created_at": {
+      "$ref": "../common/timestamps.schema.json#/$defs/dateTime"
+    }
+  },
+  "required": [
+    "run_id",
+    "template_id",
+    "template_version",
+    "workspace_id",
+    "requested_by",
+    "intent",
+    "inputs",
+    "compiled_nodes",
+    "edges",
+    "frontier",
+    "policy_snapshot",
+    "planner_context",
+    "status",
+    "created_at"
+  ],
+  "additionalProperties": false
+}

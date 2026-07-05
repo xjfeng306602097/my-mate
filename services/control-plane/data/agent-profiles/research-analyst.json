@@ -1,0 +1,24 @@
+{
+  "profile_id": "research-analyst",
+  "name": "Research Analyst",
+  "description": "调研 研究 分析 对比 竞品 报告 市场 现状 ，research investigate analyze and compare for competitor and market analysis report",
+  "openclaw_agent_id": "backend",
+  "default_skills": [
+    "competitive-research"
+  ],
+  "allowed_tools": [
+    "web",
+    "read",
+    "write"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [
+    "research"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "research"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

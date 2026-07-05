@@ -1,0 +1,27 @@
+{
+  "skill_id": "acceptance-review",
+  "name": "Acceptance Review",
+  "description": "Review generated outputs before completion",
+  "category": "review",
+  "allowed_tools": [
+    "read"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "expected_artifacts": [
+      "review-notes"
+    ]
+  },
+  "tags": [
+    "acceptance",
+    "gate"
+  ],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-07T17:04:37.842Z",
+  "updated_at": "2026-06-07T17:04:37.842Z"
+}

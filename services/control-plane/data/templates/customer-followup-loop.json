@@ -1,0 +1,68 @@
+{
+  "template_id": "customer-followup-loop",
+  "version": 1,
+  "name": "Customer Followup Loop",
+  "status": "published",
+  "description": "客户 跟进 回访 线索 工单 售后 外联 客服 lead client follow-up outreach and CRM ticket handling",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": { "type": "string" },
+      "lead_id": { "type": "string" },
+      "channel": { "type": "string" }
+    },
+    "required": ["goal"]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 600,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "customer-success-agent": "backend"
+  },
+  "nodes": [
+    {
+      "id": "node_followup",
+      "name": "Follow Up Customer",
+      "type": "agent_task",
+      "agent_profile": "customer-success-agent",
+      "allowed_skills": ["customer-followup"],
+      "config": {
+        "allowed_tools": ["read", "write"],
+        "output_contract": {
+          "expected_artifacts": ["followup-summary"]
+        }
+      },
+      "retry_policy": { "max_attempts": 1, "backoff_seconds": 5 },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": { "max_attempts": 0, "backoff_seconds": 0 },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [
+    { "from": "node_followup", "to": "node_end", "condition": null, "label": null }
+  ],
+  "metadata": {
+    "domain": "customer"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z",
+  "published_at": "2026-06-12T22:00:00.000Z"
+}

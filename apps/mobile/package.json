@@ -1,0 +1,34 @@
+{
+  "name": "@my-mate/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "dev": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --require ./test/register-paths.cjs --test ./test/planner.test.ts ./test/schema-form.test.ts ./test/task-thread.test.ts"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^14.1.0",
+    "@react-navigation/native": "^7.1.17",
+    "expo": "53.0.27",
+    "expo-linking": "7.1.7",
+    "expo-router": "5.1.11",
+    "expo-status-bar": "2.2.3",
+    "react": "19.0.0",
+    "react-dom": "^19.0.0",
+    "react-native": "0.79.6",
+    "react-native-safe-area-context": "5.4.0",
+    "react-native-screens": "4.11.1",
+    "react-native-web": "^0.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.1",
+    "@types/react": "~19.0.10",
+    "tsx": "^4.20.6",
+    "typescript": "~5.8.3"
+  }
+}

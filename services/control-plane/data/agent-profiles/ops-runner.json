@@ -1,0 +1,23 @@
+{
+  "profile_id": "ops-runner",
+  "name": "Ops Runner",
+  "description": "监控 告警 排查 运维 巡检 备份 回滚 调度 定时 monitor alert metric incident rotate backup schedule cron rollback",
+  "openclaw_agent_id": "backend",
+  "default_skills": [
+    "ops-runbook"
+  ],
+  "allowed_tools": [
+    "read",
+    "shell"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [
+    "ops"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "ops"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/workflow/workflow-node.schema.json",
+  "title": "Workflow Node",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "$ref": "../common/enums.schema.json#/$defs/nodeType"
+    },
+    "agent_profile": {
+      "type": ["string", "null"]
+    },
+    "allowed_skills": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "config": {
+      "type": "object"
+    },
+    "retry_policy": {
+      "type": "object",
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "backoff_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["max_attempts", "backoff_seconds"],
+      "additionalProperties": false
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "parallelism": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "approval_kind": {
+      "oneOf": [
+        { "$ref": "../common/enums.schema.json#/$defs/approvalKind" },
+        { "type": "null" }
+      ]
+    },
+    "human_input_schema": {
+      "type": ["object", "null"]
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "type",
+    "agent_profile",
+    "allowed_skills",
+    "config",
+    "retry_policy",
+    "timeout_seconds",
+    "parallelism",
+    "approval_kind",
+    "human_input_schema"
+  ],
+  "additionalProperties": false
+}

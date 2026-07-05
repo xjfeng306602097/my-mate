@@ -1,0 +1,21 @@
+{
+  "profile_id": "backend",
+  "name": "Backend",
+  "description": "Demo backend profile for mobile acceptance",
+  "openclaw_agent_id": "backend",
+  "default_skills": [
+    "coding-agent"
+  ],
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [],
+  "status": "active",
+  "metadata": {
+    "demo": "acceptance"
+  },
+  "created_at": "2026-06-09T07:51:53.469Z",
+  "updated_at": "2026-06-09T07:51:53.469Z"
+}

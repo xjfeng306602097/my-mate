@@ -1,0 +1,123 @@
+{
+  "template_id": "long-chain-demo",
+  "version": 1,
+  "name": "Long Chain Demo",
+  "status": "published",
+  "description": "Longer chain for control-plane actions",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "subject": {
+        "type": "string"
+      }
+    }
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 600,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "research_worker": "research_worker"
+  },
+  "nodes": [
+    {
+      "id": "node_a",
+      "name": "Node A",
+      "type": "agent_task",
+      "agent_profile": "research_worker",
+      "allowed_skills": [
+        "web"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 300,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_b",
+      "name": "Node B",
+      "type": "agent_task",
+      "agent_profile": "research_worker",
+      "allowed_skills": [
+        "web"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 300,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_c",
+      "name": "Node C",
+      "type": "agent_task",
+      "agent_profile": "research_worker",
+      "allowed_skills": [
+        "web"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 300,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 0,
+        "backoff_seconds": 0
+      },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [
+    {
+      "from": "node_a",
+      "to": "node_b",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_b",
+      "to": "node_c",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_c",
+      "to": "node_end",
+      "condition": null,
+      "label": null
+    }
+  ],
+  "metadata": {
+    "domain": "demo"
+  },
+  "created_at": "2026-06-06T13:11:53.859Z",
+  "updated_at": "2026-06-06T13:14:17.818Z",
+  "published_at": "2026-06-06T13:14:17.818Z"
+}

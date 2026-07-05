@@ -1,0 +1,29 @@
+{
+  "skill_id": "ops-runbook",
+  "name": "Ops Runbook",
+  "description": "监控 告警 排查 运维 巡检 备份 回滚 调度 定时 monitor alert metric incident rotate backup schedule cron rollback",
+  "category": "ops",
+  "allowed_tools": [
+    "read",
+    "shell"
+  ],
+  "input_schema": {
+    "type": "object"
+  },
+  "output_contract": {
+    "expected_artifacts": [
+      "ops-checklist"
+    ]
+  },
+  "tags": [
+    "ops",
+    "monitoring",
+    "incident"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "ops"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

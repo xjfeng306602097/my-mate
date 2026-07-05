@@ -1,0 +1,24 @@
+{
+  "profile_id": "content-writer",
+  "name": "Content Writer",
+  "description": "文案 写作 海报 创意 小红书 公众号 推文 设计师 ，content writing copy poster post and creative output",
+  "openclaw_agent_id": "backend",
+  "default_skills": [
+    "copy-writing",
+    "visual-design"
+  ],
+  "allowed_tools": [
+    "read",
+    "write"
+  ],
+  "disallowed_skills": [],
+  "policy_tags": [
+    "content"
+  ],
+  "status": "active",
+  "metadata": {
+    "domain": "content"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z"
+}

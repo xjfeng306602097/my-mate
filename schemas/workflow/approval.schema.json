@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/workflow/approval.schema.json",
+  "title": "Approval Request",
+  "type": "object",
+  "properties": {
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node_run_id": {
+      "type": ["string", "null"]
+    },
+    "kind": {
+      "$ref": "../common/enums.schema.json#/$defs/approvalKind"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "approved", "rejected", "cancelled"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "requested_at": {
+      "$ref": "../common/timestamps.schema.json#/$defs/dateTime"
+    },
+    "resolved_at": {
+      "oneOf": [
+        { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "required": [
+    "approval_id",
+    "run_id",
+    "node_run_id",
+    "kind",
+    "status",
+    "summary",
+    "requested_at",
+    "resolved_at"
+  ],
+  "additionalProperties": false
+}

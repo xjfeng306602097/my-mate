@@ -1,0 +1,87 @@
+{
+  "template_id": "content-writing-studio",
+  "version": 1,
+  "name": "Content Writing Studio",
+  "status": "published",
+  "description": "撰写小红书 文案 公众号 推文 海报 配图 ，draft and polish marketing copy with optional poster design",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": { "type": "string" },
+      "topic": { "type": "string" },
+      "channel": { "type": "string" }
+    },
+    "required": ["goal"]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 900,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "agent_profile_bindings": {
+    "content-writer": "backend"
+  },
+  "nodes": [
+    {
+      "id": "node_copy",
+      "name": "Draft Copy",
+      "type": "agent_task",
+      "agent_profile": "content-writer",
+      "allowed_skills": ["copy-writing"],
+      "config": {
+        "allowed_tools": ["read", "write"],
+        "output_contract": {
+          "expected_artifacts": ["copy-draft"]
+        }
+      },
+      "retry_policy": { "max_attempts": 1, "backoff_seconds": 5 },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_design",
+      "name": "Design Visual",
+      "type": "agent_task",
+      "agent_profile": "content-writer",
+      "allowed_skills": ["visual-design"],
+      "config": {
+        "allowed_tools": ["read", "write"],
+        "output_contract": {
+          "expected_artifacts": ["visual-design"]
+        }
+      },
+      "retry_policy": { "max_attempts": 1, "backoff_seconds": 5 },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_profile": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": { "max_attempts": 0, "backoff_seconds": 0 },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null
+    }
+  ],
+  "edges": [
+    { "from": "node_copy", "to": "node_design", "condition": null, "label": null },
+    { "from": "node_design", "to": "node_end", "condition": null, "label": null }
+  ],
+  "metadata": {
+    "domain": "content"
+  },
+  "created_at": "2026-06-12T22:00:00.000Z",
+  "updated_at": "2026-06-12T22:00:00.000Z",
+  "published_at": "2026-06-12T22:00:00.000Z"
+}

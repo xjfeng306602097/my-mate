@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "My Mate",
+    "slug": "my-mate-mobile",
+    "scheme": "mymate",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "android": {
+      "package": "com.anonymous.mymatemobile"
+    }
+  }
+}
