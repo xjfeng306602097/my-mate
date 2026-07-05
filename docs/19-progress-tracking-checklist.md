@@ -65,6 +65,13 @@ Latest implementation update:
   - Mission Workspace, inspector rail, and mission inventory labels prefer the
     versioned contract before compatibility fields
   - Studio smoke check now guards the contract-version helper/model markers
+- `MW-00` final cross-surface stage verification landed
+  - Control Plane now has a stage matrix test covering `draft`, `planned`,
+    `confirmed`, `running`, `waiting_human`, and `completed`
+  - Mobile now has a contract-consumption smoke test guarding the versioned
+    `mission_snapshot` path
+  - Studio smoke check now guards the versioned spec and section-consumption
+    markers
 - validated after landing:
   - `cd services/control-plane && npm run check`
   - `cd services/control-plane && npm test`
@@ -568,7 +575,7 @@ This also means the following may land incrementally:
 
 | ID | Area | Status | Priority | Task | Notes |
 |---|---|---|---|---|---|
-| `MW-00` | Mission Workspace | Verification | P0 | Define a unified `Mission Workspace` contract in the Control Plane and align Mobile and Studio to consume it. | `MW-00A` through `MW-00D` have landed. Remaining closeout is final cross-surface stage verification before moving the whole task to shipped baseline. |
+| `MW-00` | Mission Workspace | Done | P0 | Define a unified `Mission Workspace` contract in the Control Plane and align Mobile and Studio to consume it. | Contract definition, Control Plane normalization, Mobile cleanup, Studio cleanup, and cross-stage verification have landed. |
 | `MW-01` | Mission Workspace | Active | P0 | Make the center workspace feel persistent rather than mainly card-derived. | Current gap called out in [`docs/08-current-status-and-next-steps.md`](/C:/project/my-mate/docs/08-current-status-and-next-steps.md). |
 | `MW-02` | Mission Workspace | Active | P0 | Promote outputs, checkpoints, pipelines, and generated deliverables into stronger first-class surfaces in both Mobile and Studio. | This iteration targets first-class visibility, reviewability, and stage linkage, not a full management back office. |
 | `MW-03` | Mission Workspace | Active | P0 | Keep raw plan/run/evidence cards secondary while making mission state the main product shell. | Conversation remains explanation / decision / audit context rather than the main work surface. |
@@ -599,7 +606,7 @@ This also means the following may land incrementally:
 
 Close these items first:
 
-- [ ] `MW-00`
+- [x] `MW-00`
 - [ ] `MW-01`
 - [ ] `MW-02`
 - [ ] `MW-03`
@@ -617,7 +624,7 @@ Exit condition:
 - [x] `MW-00B` first-pass Control Plane normalization landed
 - [x] `MW-00C` Mobile consumer cleanup landed
 - [x] `MW-00D` Studio consumer cleanup landed
-- [ ] `MW-00` final cross-surface stage verification pending
+- [x] `MW-00` final cross-surface stage verification landed
 
 ### Milestone B: Runtime Steering Maturity
 

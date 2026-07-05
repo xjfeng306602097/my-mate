@@ -1235,13 +1235,17 @@ export function buildMissionWorkspaceProjection(input: {
     [...messages]
       .reverse()
       .find((message) => message.kind === "plan_options_card" || message.kind === "plan_card") || null;
+  const latestDraftMessage =
+    [...messages]
+      .reverse()
+      .find((message) => message.kind === "draft_card") || null;
   const activeRouteRevision = missionSpec.route.activeRevision;
   const activeRouteOption = missionSpec.route.activeOption;
 
   const activeStageKey: MissionStageSummary["key"] =
     session.status === "running" || session.status === "waiting_human" || session.latest_run_id
       ? "execution"
-      : latestPlanningMessage
+      : latestPlanningMessage || latestDraftMessage
         ? "plan"
         : pipelines.length > 0
           ? "work"
@@ -1291,7 +1295,7 @@ export function buildMissionWorkspaceProjection(input: {
       title:
         typeof activeRouteRevision === "number"
           ? `Route revision v${activeRouteRevision}`
-          : messages.some((message) => message.kind === "draft_card")
+          : latestDraftMessage
             ? "Draft workflow shape is ready"
             : "No route yet",
       detail:
@@ -1301,19 +1305,19 @@ export function buildMissionWorkspaceProjection(input: {
       metric:
         latestPlanningMessage?.kind === "plan_options_card"
           ? `${isPlainObject(latestPlanningMessage.content.alternative) ? 2 : 1} option(s)`
-          : messages.some((message) => message.kind === "draft_card")
+          : latestDraftMessage
             ? `${typeof workspaceState.draft_node_count === "number" ? workspaceState.draft_node_count : 0} draft node(s)`
             : "route pending",
       tone:
         typeof workspaceState.plan_stale === "boolean" && workspaceState.plan_stale
           ? "warn"
-          : latestPlanningMessage || messages.some((message) => message.kind === "draft_card")
+          : latestPlanningMessage || latestDraftMessage
             ? "warn"
             : "neutral",
       status:
         activeStageKey === "plan"
           ? "active"
-          : latestPlanningMessage || messages.some((message) => message.kind === "draft_card")
+          : latestPlanningMessage || latestDraftMessage
             ? "done"
             : "pending",
     },

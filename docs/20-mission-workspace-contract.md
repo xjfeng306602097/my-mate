@@ -201,6 +201,16 @@ Current `MW-00` implementation status:
   the versioned `mission_snapshot` over `mission_spec` and `mission_view`
   helper fields.
 
+Current verification coverage:
+
+- `services/control-plane/test/mission-workspace.test.ts` covers contract
+  stability across `draft`, `planned`, `confirmed`, `running`,
+  `waiting_human`, and `completed`.
+- `apps/mobile/test/mission-workspace-contract.test.ts` guards Mobile's
+  versioned contract-consumption path.
+- `apps/studio/scripts/check.mjs` guards Studio's versioned contract
+  consumption markers.
+
 ## Stage Coverage
 
 The contract must remain stable across:

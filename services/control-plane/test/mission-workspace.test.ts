@@ -1,8 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildMissionWorkspaceProjection } from "../src/mission-workspace.js";
-import type { SessionMessageRecord, SessionRecord } from "../src/types.js";
+import {
+  MISSION_WORKSPACE_CONTRACT_VERSION,
+  buildMissionWorkspaceProjection,
+} from "../src/mission-workspace.js";
+import type {
+  MissionWorkspaceSectionKey,
+  MissionWorkspaceStageKey,
+  SessionMessageRecord,
+  SessionRecord,
+} from "../src/types.js";
 
 const ISO = "2026-06-27T12:00:00.000Z";
 
@@ -47,6 +55,302 @@ function buildMessage(
     linked_node_run_id: input.linked_node_run_id || null,
   };
 }
+
+const EXPECTED_STAGE_KEYS: MissionWorkspaceStageKey[] = [
+  "briefing",
+  "work",
+  "plan",
+  "execution",
+  "thread",
+];
+
+const EXPECTED_WORKSPACE_SECTION_KEYS: MissionWorkspaceSectionKey[] = [
+  "brief",
+  "work",
+  "checkpoints",
+  "outputs",
+  "runtime",
+];
+
+function buildRouteMessage(overrides: Partial<SessionMessageRecord> = {}): SessionMessageRecord {
+  return buildMessage({
+    message_id: "plan-1",
+    kind: "plan_options_card",
+    content: {
+      revision: 1,
+      selected_option: "primary",
+      primary: {
+        template_id: "route-primary",
+        template_name: "Primary Route",
+        candidate_plan: {
+          compiled_nodes: [
+            {
+              node_id: "draft_summary",
+              name: "Draft Summary",
+              status: "ready",
+              agent_profile: "writer",
+              output_contract: {
+                expected_artifacts: ["summary-draft"],
+              },
+            },
+          ],
+        },
+      },
+      alternative: {
+        template_id: "route-alternative",
+        template_name: "Alternative Route",
+        candidate_plan: {
+          compiled_nodes: [
+            {
+              node_id: "draft_summary_alt",
+              name: "Draft Summary Alt",
+              status: "ready",
+            },
+          ],
+        },
+      },
+    },
+    created_at: "2026-06-27T12:01:00.000Z",
+    ...overrides,
+  });
+}
+
+test("mission workspace contract remains stable across core mission stages", () => {
+  const routeMessage = buildRouteMessage();
+  const confirmedRouteMessage = buildRouteMessage({
+    message_id: "plan-confirmed",
+    content: {
+      revision: 2,
+      template_id: "confirmed-route",
+      template_name: "Confirmed Route",
+      candidate_plan: {
+        compiled_nodes: [
+          {
+            node_id: "confirmed_summary",
+            name: "Confirmed Summary",
+            status: "ready",
+            output_contract: {
+              expected_artifacts: ["confirmed-summary"],
+            },
+          },
+        ],
+      },
+    },
+    kind: "plan_card",
+  });
+  const scenarios: Array<{
+    name: string;
+    session: SessionRecord;
+    messages: SessionMessageRecord[];
+    workspaceState: Record<string, unknown>;
+    activeStage: MissionWorkspaceStageKey;
+  }> = [
+    {
+      name: "draft",
+      session: buildSession({
+        status: "draft",
+        title: "Draft Stage Mission",
+        current_goal: "Shape a draft route",
+      }),
+      messages: [
+        buildMessage({
+          message_id: "user-draft",
+          role: "user",
+          kind: "text",
+          content: { text: "Shape a draft route." },
+        }),
+        buildMessage({
+          message_id: "draft-stage-card",
+          kind: "draft_card",
+          content: {
+            draft_template: {
+              template_id: "draft-route",
+              name: "Draft Route",
+              nodes: [{ node_id: "draft_node" }],
+            },
+          },
+          created_at: "2026-06-27T12:01:00.000Z",
+        }),
+      ],
+      workspaceState: {
+        working_goal: "Shape a draft route",
+        draft_node_count: 1,
+      },
+      activeStage: "plan",
+    },
+    {
+      name: "planned",
+      session: buildSession({
+        status: "planning",
+        title: "Planned Stage Mission",
+      }),
+      messages: [routeMessage],
+      workspaceState: {
+        working_goal: "Choose a planned route",
+        active_plan_revision: 1,
+        active_plan_option: "primary",
+        latest_plan_revision: 1,
+      },
+      activeStage: "plan",
+    },
+    {
+      name: "confirmed",
+      session: buildSession({
+        status: "ready_to_run",
+        title: "Confirmed Stage Mission",
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      }),
+      messages: [confirmedRouteMessage],
+      workspaceState: {
+        working_goal: "Run the confirmed route",
+        active_plan_revision: 2,
+        active_plan_option: "primary",
+        latest_plan_revision: 2,
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      },
+      activeStage: "plan",
+    },
+    {
+      name: "running",
+      session: buildSession({
+        status: "running",
+        title: "Running Stage Mission",
+        latest_run_id: "run-running",
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      }),
+      messages: [
+        confirmedRouteMessage,
+        buildMessage({
+          message_id: "summary-running",
+          kind: "summary_card",
+          content: {
+            status: "running",
+            current_summary: "Runtime is producing the confirmed summary.",
+          },
+          linked_run_id: "run-running",
+        }),
+      ],
+      workspaceState: {
+        working_goal: "Run the confirmed route",
+        latest_run_id: "run-running",
+        run_status: "running",
+        latest_run_summary: "Runtime is producing the confirmed summary.",
+        latest_subtask: { node_name: "Confirmed Summary" },
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      },
+      activeStage: "execution",
+    },
+    {
+      name: "waiting_human",
+      session: buildSession({
+        status: "waiting_human",
+        title: "Waiting Stage Mission",
+        latest_run_id: "run-waiting",
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      }),
+      messages: [
+        confirmedRouteMessage,
+        buildMessage({
+          message_id: "approval-waiting",
+          kind: "approval_card",
+          content: {
+            approval_id: "approval-1",
+            summary: "Review the generated summary before continuing.",
+          },
+          linked_run_id: "run-waiting",
+        }),
+      ],
+      workspaceState: {
+        working_goal: "Review before continuing",
+        latest_run_id: "run-waiting",
+        run_status: "waiting_human",
+        latest_run_summary: "Runtime is waiting for human review.",
+        pending_approval_count: 1,
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      },
+      activeStage: "execution",
+    },
+    {
+      name: "completed",
+      session: buildSession({
+        status: "completed",
+        title: "Completed Stage Mission",
+        latest_run_id: "run-completed",
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      }),
+      messages: [
+        confirmedRouteMessage,
+        buildMessage({
+          message_id: "artifact-completed",
+          kind: "artifact_card",
+          content: {
+            name: "confirmed-summary",
+            storage_uri: "file://confirmed-summary.md",
+          },
+          linked_run_id: "run-completed",
+        }),
+        buildMessage({
+          message_id: "summary-completed",
+          kind: "summary_card",
+          content: {
+            status: "completed",
+            current_summary: "The confirmed summary is complete.",
+          },
+          linked_run_id: "run-completed",
+        }),
+      ],
+      workspaceState: {
+        working_goal: "Deliver the confirmed summary",
+        latest_run_id: "run-completed",
+        run_status: "completed",
+        latest_run_summary: "The confirmed summary is complete.",
+        confirmed_plan_revision: 2,
+        confirmed_plan_option: "primary",
+      },
+      activeStage: "execution",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const projection = buildMissionWorkspaceProjection({
+      session: scenario.session,
+      messages: scenario.messages,
+      workspaceState: scenario.workspaceState,
+    });
+    const { missionSnapshot } = projection;
+    const activeStages = missionSnapshot.stages.filter((stage) => stage.status === "active");
+
+    assert.equal(
+      missionSnapshot.workspace_contract_version,
+      MISSION_WORKSPACE_CONTRACT_VERSION,
+      scenario.name,
+    );
+    assert.deepEqual(missionSnapshot.spec, projection.missionSpec, scenario.name);
+    assert.deepEqual(
+      missionSnapshot.stages.map((stage) => stage.key),
+      EXPECTED_STAGE_KEYS,
+      scenario.name,
+    );
+    assert.deepEqual(
+      missionSnapshot.workspaceSections.map((section) => section.key),
+      EXPECTED_WORKSPACE_SECTION_KEYS,
+      scenario.name,
+    );
+    assert.equal(activeStages.length, 1, scenario.name);
+    assert.equal(activeStages[0]?.key, scenario.activeStage, scenario.name);
+    for (const section of missionSnapshot.workspaceSections) {
+      assert.ok(section.title.trim(), `${scenario.name}:${section.key}:title`);
+      assert.ok(section.summary.trim(), `${scenario.name}:${section.key}:summary`);
+    }
+  }
+});
 
 test("mission workspace projection covers draft-only missions", () => {
   const session = buildSession({

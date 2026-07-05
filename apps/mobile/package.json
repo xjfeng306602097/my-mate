@@ -9,7 +9,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --require ./test/register-paths.cjs --test ./test/planner.test.ts ./test/schema-form.test.ts ./test/task-thread.test.ts"
+    "test": "node --import tsx --require ./test/register-paths.cjs --test ./test/planner.test.ts ./test/schema-form.test.ts ./test/task-thread.test.ts ./test/mission-workspace-contract.test.ts"
   },
   "dependencies": {
     "@expo/vector-icons": "^14.1.0",
