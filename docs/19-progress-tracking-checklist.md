@@ -122,7 +122,7 @@ Support tracks may move in service of that mainline, but they do not replace
 it:
 
 - `RT-01` runtime steering usability expansion for already-supported live patch
-  operations
+  operations has landed; broader runtime steering remains in `RT-02` / `RT-03`
 - `STU-01` graph-canvas information model and minimum skeleton planning
 
 ### Exit Criteria For Mission Workspace Tightening
@@ -310,6 +310,7 @@ The frontend rule for `MW-00` is:
     operations
   - do **not** expand this iteration into a broad new runtime primitive
     program
+  - keep broader patch-review UX and runtime monitoring in `RT-02` / `RT-03`
 - `STU-01`
   - define the graph canvas information model, interaction boundaries, and
     minimum viable skeleton
@@ -602,7 +603,7 @@ This also means the following may land incrementally:
 | `PLAN-01` | Planner / Orchestrator | Active | P1 | Broaden revise-plan understanding beyond the current deterministic structural mutations. | Current revise flow is intentionally narrow and rule-based. |
 | `PLAN-02` | Planner / Orchestrator | Planned | P1 | Improve agent and skill recommendation quality beyond the current basic registry-aware matching. | Follow-up after Mission shell tightening. |
 | `PLAN-03` | Planner / Orchestrator | Deferred | P2 | Add stronger DAG synthesis/orchestrator generation behavior beyond deterministic fallback planning. | Explicitly out of scope until Mission Workspace tightening exits. |
-| `RT-01` | Runtime Steering | Support Track | P1 | Expand natural-language runtime steering beyond the current pause/resume/skip/add/change/parallelism mappings. | Limit this iteration to already-supported live operations and better usability/auditability. |
+| `RT-01` | Runtime Steering | Done | P1 | Expand natural-language runtime steering beyond the current pause/resume/skip/add/change/parallelism mappings. | Multi-operation parsing, natural current/final targets, word-number parallelism, and parse audit metadata now land on existing live operations only. |
 | `RT-02` | Runtime Steering | Planned | P1 | Improve mobile and Studio patch review ergonomics, including clearer patch history and topology review. | Supported operations already apply live. |
 | `RT-03` | Runtime Steering | Planned | P1 | Add richer monitoring surfaces for runtime progress, checkpoints, and cost-aware intervention. | Product gap, not engine absence. |
 | `STU-01` | Studio Authoring | Support Track | P1 | Define the interactive graph-canvas information model, interaction boundaries, and minimum viable skeleton. | Do not require this iteration to fully replace the form-based authoring path. |
@@ -697,7 +698,7 @@ Exit condition:
 
 Close these items next:
 
-- [ ] `RT-01`
+- [x] `RT-01`
 - [ ] `RT-02`
 - [ ] `RT-03`
 
@@ -705,6 +706,21 @@ Exit condition:
 
 - users can steer active work more naturally
 - runtime patch review is easier to understand and audit
+
+### RT-01 Implementation Status
+
+- [x] A single runtime intervention can now produce multiple already-supported
+      live patch operations, such as `pause_for_replan` + `add_node` +
+      `resume_with_patch` or `skip_node` + `resume_with_patch`.
+- [x] Natural target language now covers current/active/next/final/last step
+      references before falling back to the active run frontier.
+- [x] Parallelism parsing now accepts digit and word-number requests such as
+      `Use three workers`, while still writing `change_parallelism`.
+- [x] `DagPatchRecord.metadata.runtime_steering_parse` and intervention
+      metadata now preserve detected cues, operation kinds, target text,
+      requested step, requested parallelism, and replacement intent.
+- [x] Control Plane tests guard combined pause/add/resume, current-node skip
+      plus resume, and word-number parallelism.
 
 ### Milestone C: Studio Graph Workbench
 

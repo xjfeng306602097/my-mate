@@ -3187,25 +3187,56 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     return `${prefix}_${sessionId}_${suffix}`;
   }
 
+  type RuntimeSteeringIntentKind = Exclude<SessionInterventionKind, "guidance">;
+
+  interface RuntimeSteeringParse {
+    input_kind: SessionInterventionKind;
+    detected_kinds: RuntimeSteeringIntentKind[];
+    operation_kinds: SessionInterventionKind[];
+    detected_cues: string[];
+    target_text: string | null;
+    requested_step: string | null;
+    requested_parallelism: number | null;
+    requested_change: Record<string, unknown> | null;
+    resume_requested: boolean;
+  }
+
+  function hasRuntimeCue(content: string, kind: RuntimeSteeringIntentKind): boolean {
+    switch (kind) {
+      case "pause_request":
+        return /(?:pause|hold|stop|wait|\u6682\u505c|\u5148\u6682\u505c|\u505c\u4e00\u4e0b|\u7b49\u4e00\u4e0b)/iu.test(content);
+      case "resume_request":
+        return /(?:resume|continue|carry on|proceed|restart|\u7ee7\u7eed|\u6062\u590d|\u7ee7\u7eed\u6267\u884c)/iu.test(content);
+      case "skip_request":
+        return /(?:skip|omit|bypass|\u8df3\u8fc7|\u7565\u8fc7|\u4e0d\u8981\u6267\u884c)/iu.test(content);
+      case "add_node_request":
+        return /(?:add|insert|append|include|\u6dfb\u52a0|\u65b0\u589e|\u52a0\u4e00\u4e2a|\u52a0\u4e2a|\u63d2\u5165|\u8865\u4e00\u4e2a)/iu.test(content);
+      case "parallelism_request":
+        return /(?:parallel|fan-?out|concurrent|concurrency|workers?|agents?|\u5e76\u884c|\u5e76\u53d1|\u540c\u65f6|\u591a\u8def)/iu.test(content);
+      case "change_request":
+        return /(?:change|revise|adjust|replace|swap|\u8c03\u6574|\u4fee\u6539|\u53d8\u66f4|\u66ff\u6362)/iu.test(content);
+    }
+  }
+
   function inferInterventionKind(content: string): SessionInterventionKind {
     const normalized = content.toLowerCase();
-    if (/(resume|continue|carry on|proceed|restart|\u7ee7\u7eed|\u6062\u590d|\u7ee7\u7eed\u6267\u884c)/iu.test(content)) {
-      return "resume_request";
-    }
-    if (/(pause|hold|stop|wait|\u6682\u505c|\u5148\u6682\u505c|\u505c\u4e00\u4e0b|\u7b49\u4e00\u4e0b)/iu.test(content)) {
+    if (hasRuntimeCue(content, "pause_request")) {
       return "pause_request";
     }
-    if (/(skip|omit|bypass|\u8df3\u8fc7|\u7565\u8fc7|\u4e0d\u8981\u6267\u884c)/iu.test(content)) {
+    if (hasRuntimeCue(content, "skip_request")) {
       return "skip_request";
     }
-    if (/(add|insert|append|include|\u6dfb\u52a0|\u65b0\u589e|\u52a0\u4e00\u4e2a|\u63d2\u5165|\u8865\u4e00\u4e2a)/iu.test(content)) {
+    if (hasRuntimeCue(content, "add_node_request")) {
       return "add_node_request";
     }
-    if (/(parallel|fan-?out|concurrent|concurrency|workers?|agents?|\u5e76\u884c|\u5e76\u53d1|\u540c\u65f6|\u591a\u8def)/iu.test(content)) {
+    if (hasRuntimeCue(content, "parallelism_request")) {
       return "parallelism_request";
     }
-    if (/(change|revise|adjust|replace|\u8c03\u6574|\u4fee\u6539|\u53d8\u66f4|\u66ff\u6362)/iu.test(content)) {
+    if (hasRuntimeCue(content, "change_request")) {
       return "change_request";
+    }
+    if (hasRuntimeCue(content, "resume_request")) {
+      return "resume_request";
     }
     if (normalized.trim()) {
       return "guidance";
@@ -3230,6 +3261,29 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       .trim();
   }
 
+  function firstRuntimeNodeByStatus(
+    plan: RunPlanRecord,
+    statuses: string[],
+  ): RunPlanRecord["compiled_nodes"][number] | null {
+    return (
+      plan.compiled_nodes.find(
+        (node) => node.type !== "end" && statuses.includes(node.status),
+      ) || null
+    );
+  }
+
+  function lastNonEndRuntimeNode(
+    plan: RunPlanRecord,
+  ): RunPlanRecord["compiled_nodes"][number] | null {
+    for (let index = plan.compiled_nodes.length - 1; index >= 0; index -= 1) {
+      const node = plan.compiled_nodes[index];
+      if (node.type !== "end") {
+        return node;
+      }
+    }
+    return null;
+  }
+
   function resolveTextTargetNode(
     plan: RunPlanRecord,
     text: string,
@@ -3237,6 +3291,15 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     const normalizedText = normalizeRuntimeReference(text);
     if (!normalizedText) {
       return null;
+    }
+    if (/\b(?:current|active|running)\s*(?:node|step|task)?\b/i.test(normalizedText)) {
+      return firstRuntimeNodeByStatus(plan, ["running", "waiting_human", "ready", "pending"]);
+    }
+    if (/\bnext\s*(?:node|step|task)?\b/i.test(normalizedText)) {
+      return firstRuntimeNodeByStatus(plan, ["ready", "pending", "waiting_human", "running"]);
+    }
+    if (/\b(?:final delivery|final step|last step|last node|end step|delivery)\b/i.test(normalizedText)) {
+      return lastNonEndRuntimeNode(plan);
     }
     const candidates = [...plan.compiled_nodes]
       .filter((node) => node.type !== "end")
@@ -3261,10 +3324,15 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
 
   function extractRequestedRuntimeStep(value: string): string {
     const compact = value.replace(/\s+/g, " ").trim();
-    const match = compact.match(
-      /\b(?:add|insert|append|include)\b\s+(?:one\s+more|another|a|an|one|the)?\s*(.+?)(?:\s+\b(?:before|after|to|into|for)\b.+)?$/i,
+    const englishMatch = compact.match(
+      /\b(?:add|insert|append|include)\b\s+(?:one\s+more|another|a|an|one|the)?\s*(.+?)(?:\s*(?:[,;]|\band then\b|\bthen\b|\bbefore\b|\bafter\b|\bto\b|\binto\b|\bfor\b).*)?$/i,
     );
-    const candidate = match?.[1]?.replace(/[.]+$/g, "").trim();
+    const chineseMatch = compact.match(
+      /(?:\u6dfb\u52a0|\u65b0\u589e|\u52a0\u4e00\u4e2a|\u52a0\u4e2a|\u63d2\u5165|\u8865\u4e00\u4e2a)\s*(.+?)(?:[\uff0c,;]|\u7136\u540e|\u518d|\u5728|\u5230|$)/iu,
+    );
+    const candidate = (englishMatch?.[1] || chineseMatch?.[1] || "")
+      .replace(/[.。]+$/g, "")
+      .trim();
     if (candidate && candidate.length >= 3) {
       return candidate;
     }
@@ -3285,6 +3353,97 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     }
     return {
       requested_change: compact,
+    };
+  }
+
+  function extractRuntimeTargetText(value: string): string | null {
+    const compact = value.replace(/\s+/g, " ").trim();
+    if (!compact) {
+      return null;
+    }
+    const skipTarget = compact.match(
+      /\b(?:skip|omit|bypass)\b\s+(?:the\s+)?(.+?)(?:\s+\b(?:and|then)\b.+)?$/i,
+    );
+    if (skipTarget?.[1]?.trim()) {
+      return skipTarget[1].trim().replace(/[.]+$/g, "");
+    }
+    const placementTarget = compact.match(
+      /\b(?:before|after)\b\s+(?:the\s+)?(.+?)(?:[,;.]|\s+\b(?:and|then)\b|$)/i,
+    );
+    if (placementTarget?.[1]?.trim()) {
+      return placementTarget[1].trim();
+    }
+    const replacement = extractRequestedRuntimeChange(compact);
+    if (typeof replacement.replace_from === "string" && replacement.replace_from.trim()) {
+      return replacement.replace_from.trim();
+    }
+    return null;
+  }
+
+  function buildRuntimeSteeringParse(input: {
+    kind: SessionInterventionKind;
+    summary: string;
+    metadata?: Record<string, unknown>;
+  }): RuntimeSteeringParse {
+    const detectedKinds: RuntimeSteeringIntentKind[] = [];
+    const detectedCues: string[] = [];
+    const appendDetectedKind = (kind: RuntimeSteeringIntentKind, cue: string) => {
+      if (!detectedKinds.includes(kind)) {
+        detectedKinds.push(kind);
+      }
+      if (!detectedCues.includes(cue)) {
+        detectedCues.push(cue);
+      }
+    };
+
+    const hasParallelism = hasRuntimeCue(input.summary, "parallelism_request");
+    const requestedParallelism =
+      resolveRequestedParallelism(input.metadata?.requested_parallelism) ||
+      extractRequestedParallelismFromText(input.summary);
+
+    if (hasRuntimeCue(input.summary, "pause_request")) {
+      appendDetectedKind("pause_request", "pause");
+    }
+    if (hasRuntimeCue(input.summary, "skip_request")) {
+      appendDetectedKind("skip_request", "skip");
+    }
+    if (hasRuntimeCue(input.summary, "add_node_request")) {
+      appendDetectedKind("add_node_request", "add_node");
+    }
+    if (hasParallelism || requestedParallelism !== null) {
+      appendDetectedKind("parallelism_request", "parallelism");
+    }
+    if (hasRuntimeCue(input.summary, "change_request") && !hasParallelism) {
+      appendDetectedKind("change_request", "change");
+    }
+    if (hasRuntimeCue(input.summary, "resume_request")) {
+      appendDetectedKind("resume_request", "resume");
+    }
+
+    const operationKinds: SessionInterventionKind[] =
+      detectedKinds.length > 0
+        ? [...detectedKinds]
+        : input.kind === "guidance"
+          ? ["guidance"]
+          : [input.kind];
+    const requestedStep = operationKinds.includes("add_node_request")
+      ? extractRequestedRuntimeStep(input.summary)
+      : null;
+    const requestedChange = operationKinds.includes("change_request")
+      ? extractRequestedRuntimeChange(input.summary)
+      : null;
+    const targetText = extractRuntimeTargetText(input.summary);
+
+    return {
+      input_kind: input.kind,
+      detected_kinds: detectedKinds,
+      operation_kinds: operationKinds,
+      detected_cues: detectedCues,
+      target_text: targetText,
+      requested_step: requestedStep,
+      requested_parallelism: requestedParallelism,
+      requested_change: requestedChange,
+      resume_requested: operationKinds.includes("resume_request"),
     };
   }
 
@@ -3346,7 +3505,11 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     summary: string;
     metadata?: Record<string, unknown>;
   }): DagPatchOperation | null {
-    const targetNode = resolvePatchTargetNode(input.runId, input.nodeRunId, input.summary);
+    const targetText =
+      typeof input.metadata?.target_text === "string" && input.metadata.target_text.trim()
+        ? input.metadata.target_text.trim()
+        : input.summary;
+    const targetNode = resolvePatchTargetNode(input.runId, input.nodeRunId, targetText);
     const target = {
       node_run_id: targetNode?.node_run_id || input.nodeRunId || null,
       node_id: targetNode?.node_id || null,
@@ -3382,7 +3545,10 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
           op: "add_node",
           ...target,
           value: {
-            requested_step: extractRequestedRuntimeStep(input.summary),
+            requested_step:
+              typeof input.metadata?.requested_step === "string" && input.metadata.requested_step.trim()
+                ? input.metadata.requested_step.trim()
+                : extractRequestedRuntimeStep(input.summary),
             placement: target.node_id ? "after_target_or_before_final_delivery" : "append_before_final_delivery",
           },
           reason: "Insert a new work step that captures the requested additional work.",
@@ -3405,7 +3571,9 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         return {
           op: "pause_for_replan",
           ...target,
-          value: extractRequestedRuntimeChange(input.summary),
+          value: isPlainObject(input.metadata?.requested_change)
+            ? input.metadata.requested_change
+            : extractRequestedRuntimeChange(input.summary),
           reason: "Hold the run and replan from the current state because the user requested a route change.",
           supported: true,
         };
@@ -3444,12 +3612,47 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     | "resumed_topology"
     | "graph_preview"
     | "metadata"
-  > {
-    const operation = buildPatchOperation(input);
-    const operations = operation ? [operation] : [];
+  > & {
+    metadata: Record<string, unknown>;
+  } {
+    const runtimeSteeringParse = buildRuntimeSteeringParse(input);
+    const operationMetadata = {
+      ...(input.metadata || {}),
+      target_text: runtimeSteeringParse.target_text,
+      requested_step: runtimeSteeringParse.requested_step,
+      requested_parallelism: runtimeSteeringParse.requested_parallelism,
+      requested_change: runtimeSteeringParse.requested_change,
+    };
+    const primaryOperationKinds =
+      runtimeSteeringParse.operation_kinds.length === 1 &&
+      runtimeSteeringParse.operation_kinds[0] === "resume_request"
+        ? runtimeSteeringParse.operation_kinds
+        : runtimeSteeringParse.operation_kinds.filter((kind) => kind !== "resume_request");
+    const operations = primaryOperationKinds
+      .map((kind) =>
+        buildPatchOperation({
+          kind,
+          runId: input.runId,
+          nodeRunId: input.nodeRunId,
+          summary: input.summary,
+          metadata: operationMetadata,
+        }),
+      )
+      .filter((operation): operation is DagPatchOperation => operation !== null);
+    const hasResumeCompanion = operations.some(
+      (operation) =>
+        operation.op === "add_node" ||
+        operation.op === "change_parallelism" ||
+        operation.op === "skip_node",
+    );
+    const shouldResumeAfterPatch =
+      operations.some(
+        (operation) => operation.op === "add_node" || operation.op === "change_parallelism",
+      ) ||
+      (runtimeSteeringParse.resume_requested && hasResumeCompanion);
     if (
-      operation &&
-      (operation.op === "add_node" || operation.op === "change_parallelism")
+      shouldResumeAfterPatch &&
+      !operations.some((operation) => operation.op === "resume_with_patch")
     ) {
       operations.push({
         op: "resume_with_patch",
@@ -3460,7 +3663,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         supported: true,
       });
     }
-    const patchLike = input.kind !== "guidance";
+    const patchLike = operations.some((operation) => operation.op !== "record_guidance");
     const allOperationsSupported =
       operations.length > 0 && operations.every((item) => item.supported);
     const allOperationsApplyReady =
@@ -3483,6 +3686,9 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
             ? null
             : "One or more operations in this patch are not yet wired to a live apply path."
           : "No applicable live DAG patch could be safely inferred.",
+      metadata: {
+        runtime_steering_parse: runtimeSteeringParse,
+      },
     };
   }
 
@@ -3644,19 +3850,79 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     return null;
   }
 
+  function parseRuntimeNumberToken(value: string): number | null {
+    const normalized = value.trim().toLowerCase();
+    if (/^\d{1,2}$/.test(normalized)) {
+      const parsed = Number.parseInt(normalized, 10);
+      return parsed > 0 ? parsed : null;
+    }
+    const englishNumbers: Record<string, number> = {
+      one: 1,
+      two: 2,
+      three: 3,
+      four: 4,
+      five: 5,
+      six: 6,
+      seven: 7,
+      eight: 8,
+      nine: 9,
+      ten: 10,
+    };
+    if (englishNumbers[normalized]) {
+      return englishNumbers[normalized];
+    }
+    const chineseNumbers: Record<string, number> = {
+      "\u4e00": 1,
+      "\u4e8c": 2,
+      "\u4e24": 2,
+      "\u4e09": 3,
+      "\u56db": 4,
+      "\u4e94": 5,
+      "\u516d": 6,
+      "\u4e03": 7,
+      "\u516b": 8,
+      "\u4e5d": 9,
+      "\u5341": 10,
+    };
+    return chineseNumbers[normalized] || null;
+  }
+
   function extractRequestedParallelismFromText(value: string): number | null {
     const compact = value.replace(/\s+/g, " ").trim();
     if (!compact) {
       return null;
     }
+    const numberToken = String.raw`(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341])`;
     const patterns = [
-      /\b(?:parallelism|parallel|concurrency|concurrent|fan-?out|agents?)\s*(?:to|=|:)?\s*(\d{1,2})\b/i,
-      /\b(\d{1,2})\s*(?:parallel|concurrent|agents?|workers?)\b/i,
+      new RegExp(
+        String.raw`\b(?:parallelism|parallel|concurrency|concurrent|fan-?out|agents?|workers?|lanes?)\s*(?:to|=|:|at|as)?\s*${numberToken}\b`,
+        "iu",
+      ),
+      new RegExp(
+        String.raw`\b(?:set|raise|increase|bump|switch|move)\s+(?:parallelism|concurrency|fan-?out|worker|agent|lane|workers|agents|lanes)\s*(?:to|up to|at|as)?\s*${numberToken}\b`,
+        "iu",
+      ),
+      new RegExp(
+        String.raw`\b(?:use|run)\s+${numberToken}\s*(?:parallel|concurrent|agents?|workers?|lanes?)\b`,
+        "iu",
+      ),
+      new RegExp(
+        String.raw`\b${numberToken}\s*(?:parallel|concurrent|agents?|workers?|lanes?)\b`,
+        "iu",
+      ),
+      new RegExp(
+        String.raw`(?:\u5e76\u884c|\u5e76\u53d1|\u540c\u65f6|\u591a\u8def).{0,8}${numberToken}`,
+        "iu",
+      ),
+      new RegExp(
+        String.raw`${numberToken}.{0,4}(?:\u4e2a)?(?:\u5de5\u4f5c\u8005|\u4ee3\u7406|\u5e76\u884c|\u5e76\u53d1)`,
+        "iu",
+      ),
     ];
     for (const pattern of patterns) {
       const match = compact.match(pattern);
-      const parsed = match ? Number.parseInt(match[1], 10) : Number.NaN;
-      if (Number.isInteger(parsed) && parsed > 0) {
+      const parsed = match ? parseRuntimeNumberToken(match[1]) : null;
+      if (parsed && parsed > 0) {
         return Math.max(1, Math.floor(parsed));
       }
     }
@@ -8378,12 +8644,13 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         ? req.body.target_node_run_id.trim()
         : null;
     const summary = summarizeInterventionContent(content);
+    const requestMetadata = isPlainObject(req.body.metadata) ? req.body.metadata : {};
     const patchProposal = buildDagPatchProposal({
       kind,
       runId,
       nodeRunId,
       summary,
-      metadata: isPlainObject(req.body.metadata) ? req.body.metadata : undefined,
+      metadata: requestMetadata,
     });
     const graphPreview = buildDagPatchGraphPreview({
       runId,
@@ -8406,7 +8673,10 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       summary,
       interpretedIntent: buildInterventionIntent(kind),
       patchPreview,
-      metadata: isPlainObject(req.body.metadata) ? req.body.metadata : {},
+      metadata: {
+        ...requestMetadata,
+        ...patchProposal.metadata,
+      },
     });
     const dagPatch = createDagPatch({
       sessionId,
@@ -8425,6 +8695,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         intervention_kind: kind,
         intervention_status: status,
         graph_preview: graphPreview,
+        ...patchProposal.metadata,
       },
       createdAt: intervention.created_at,
     });

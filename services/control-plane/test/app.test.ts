@@ -3057,7 +3057,18 @@ test("session intervention API records runtime intent and projects intervention 
     assert.equal(intervention.body.intervention.kind, "pause_request");
     assert.equal(intervention.body.intervention.status, "needs_review");
     assert.equal(intervention.body.intervention.patch_preview.supported, true);
-    assert.equal(intervention.body.intervention.patch_preview.operations[0].op, "pause_for_replan");
+    assert.deepEqual(
+      intervention.body.intervention.patch_preview.operations.map(
+        (operation: { op: string }) => operation.op,
+      ),
+      ["pause_for_replan", "add_node", "resume_with_patch"],
+    );
+    assert.equal(
+      intervention.body.intervention.patch_preview.operations.find(
+        (operation: { op: string; value?: { requested_step?: string } }) => operation.op === "add_node",
+      )?.value?.requested_step,
+      "review step",
+    );
     assert.ok(
       intervention.body.messages.some(
         (message: { kind: string; content: { intervention_id?: string } }) =>
@@ -3074,13 +3085,17 @@ test("session intervention API records runtime intent and projects intervention 
             status?: string;
             apply_supported?: boolean;
             operations?: Array<{ op?: string }>;
+            metadata?: { runtime_steering_parse?: { operation_kinds?: string[] } };
           };
         }) =>
           message.kind === "dag_patch_card" &&
           message.content.intervention_id === intervention.body.intervention.intervention_id &&
           message.content.status === "needs_confirmation" &&
           message.content.apply_supported === true &&
-          message.content.operations?.[0]?.op === "pause_for_replan",
+          message.content.operations?.[0]?.op === "pause_for_replan" &&
+          message.content.operations?.some((operation) => operation.op === "add_node") === true &&
+          message.content.operations?.some((operation) => operation.op === "resume_with_patch") === true &&
+          message.content.metadata?.runtime_steering_parse?.operation_kinds?.includes("add_node_request") === true,
       ),
     );
     assert.ok(
@@ -3115,7 +3130,8 @@ test("session intervention API records runtime intent and projects intervention 
         (message: { kind: string; content: { status?: string; operations?: Array<{ op?: string }> } }) =>
           message.kind === "dag_patch_card" &&
           message.content.status === "needs_confirmation" &&
-          message.content.operations?.[0]?.op === "pause_for_replan",
+          message.content.operations?.[0]?.op === "pause_for_replan" &&
+          message.content.operations?.some((operation) => operation.op === "add_node") === true,
       ),
     );
 
@@ -3125,7 +3141,12 @@ test("session intervention API records runtime intent and projects intervention 
     });
     assert.equal(chineseIntervention.status, 201);
     assert.equal(chineseIntervention.body.intervention.kind, "pause_request");
-    assert.equal(chineseIntervention.body.intervention.patch_preview.operations[0].op, "pause_for_replan");
+    assert.deepEqual(
+      chineseIntervention.body.intervention.patch_preview.operations.map(
+        (operation: { op: string }) => operation.op,
+      ),
+      ["pause_for_replan", "add_node", "resume_with_patch"],
+    );
   } finally {
     await server.close();
     cleanupTestArtifacts({
@@ -6474,6 +6495,25 @@ test("runtime skip intervention targets a node mentioned in natural language", a
     });
     runId = runCreated.body.run_id;
 
+    const currentNodeIntervention = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/interventions`, {
+      content: "Skip the current node and continue",
+      target_run_id: runId,
+    });
+    const currentNodePatchCard = currentNodeIntervention.body.messages.find(
+      (message: { kind: string }) => message.kind === "dag_patch_card",
+    );
+    assert.ok(currentNodePatchCard);
+    assert.equal(currentNodeIntervention.body.intervention.kind, "skip_request");
+    assert.deepEqual(
+      currentNodePatchCard.content.operations.map((operation: { op: string }) => operation.op),
+      ["skip_node", "resume_with_patch"],
+    );
+    assert.equal(currentNodePatchCard.content.operations[0].node_id, "node_a");
+    assert.equal(
+      currentNodePatchCard.content.metadata.runtime_steering_parse.target_text,
+      "current node",
+    );
+
     const intervention = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/interventions`, {
       content: "Skip Node B",
       target_run_id: runId,
@@ -6730,7 +6770,7 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
     assert.equal(adapter.dispatchEnvelopes.length, 1);
 
     const intervention = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/interventions`, {
-      content: "Set concurrency to 2",
+      content: "Use three workers",
       target_run_id: runId,
     });
     const patchCard = intervention.body.messages.find(
@@ -6741,7 +6781,7 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
     assert.equal(
       patchCard.content.operations.find((operation: { op: string }) => operation.op === "change_parallelism")?.value
         ?.requested_parallelism,
-      2,
+      3,
     );
 
     const patchId = patchCard.content.patch_id;
@@ -6754,21 +6794,21 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
     assert.equal(confirmResponse.body.operation_outcomes[0].op, "change_parallelism");
     assert.equal(confirmResponse.body.operation_outcomes[0].applied, true);
     assert.equal(confirmResponse.body.patch.operation_outcomes[0].details.previous_parallelism, 1);
-    assert.equal(confirmResponse.body.patch.operation_outcomes[0].details.next_parallelism, 2);
+    assert.equal(confirmResponse.body.patch.operation_outcomes[0].details.next_parallelism, 3);
     assert.ok(
       confirmResponse.body.operation_outcomes.some(
         (outcome: { op: string; applied: boolean }) =>
           outcome.op === "resume_with_patch" && outcome.applied === true,
       ),
     );
-    assert.equal(confirmResponse.body.patch.resumed_topology.max_parallel_nodes, 2);
+    assert.equal(confirmResponse.body.patch.resumed_topology.max_parallel_nodes, 3);
     assert.equal(confirmResponse.body.patch.resumed_topology.running_node_run_ids.length, 2);
 
     assert.equal(adapter.dispatchEnvelopes.length, 2);
 
     const plan = getRunPlan(runId);
     assert.ok(plan);
-    assert.equal(plan!.policy_snapshot.max_parallel_nodes, 2);
+    assert.equal(plan!.policy_snapshot.max_parallel_nodes, 3);
     assert.equal(
       plan!.compiled_nodes.filter((node) => node.status === "running").length,
       2,
