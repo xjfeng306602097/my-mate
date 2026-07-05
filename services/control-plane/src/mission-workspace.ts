@@ -355,6 +355,7 @@ function buildMissionPipelinesFromSession(
           : "This work package is compiled and ready for orchestration.",
       status,
       tone,
+      stageKey: status === "pending" ? "work" : "execution",
       nodeCount: 1,
       readyCount: nodeStatus === "ready" ? 1 : 0,
       primaryAgentLabel:
@@ -362,6 +363,11 @@ function buildMissionPipelinesFromSession(
           ? node.agent_profile.trim()
           : null,
       artifactExpectation: expectedArtifacts.length > 0 ? expectedArtifacts.slice(0, 2).join(", ") : null,
+      outputKeys: expectedArtifacts.map((artifact) => slugKey(artifact, `pipeline_${index + 1}`)),
+      checkpointKeys: [
+        "route-compiled",
+        status === "active" || status === "blocked" || status === "done" ? "runtime-state" : null,
+      ].filter((item): item is string => !!item),
       blocker:
         nodeStatus === "waiting_human"
           ? "This pipeline is waiting on human input or approval."
@@ -369,6 +375,16 @@ function buildMissionPipelinesFromSession(
             ? "This pipeline needs intervention before it can continue."
             : null,
       activeNodeName: status === "active" || status === "blocked" ? title : null,
+      nextActionLabel:
+        status === "blocked"
+          ? "Resolve blocker"
+          : status === "active"
+            ? "Track execution"
+            : status === "done"
+              ? expectedArtifacts.length > 0
+                ? "Review outputs"
+                : "Review package"
+              : "Queue after route",
     };
   });
 }
@@ -392,11 +408,34 @@ function buildMissionCheckpointsFromSession(
   const humanInputCount = messages.filter((message) => message.kind === "human_input_card").length;
   const interventionCount = messages.filter((message) => message.kind === "intervention_card").length;
   const dagPatchCount = messages.filter((message) => message.kind === "dag_patch_card").length;
-  const artifactCount = messages.filter((message) => message.kind === "artifact_card").length;
+  const artifactMessages = messages.filter((message) => message.kind === "artifact_card");
+  const artifactCount = artifactMessages.length;
+  const latestRunId =
+    (typeof workspaceState.latest_run_id === "string" && workspaceState.latest_run_id.trim()
+      ? workspaceState.latest_run_id.trim()
+      : null) ||
+    session.latest_run_id;
+  const latestPlanRevision =
+    latestPlanMessage && typeof latestPlanMessage.content.revision === "number"
+      ? latestPlanMessage.content.revision
+      : null;
+  const returnedOutputKeys = uniqueStrings(
+    artifactMessages.map((message) => {
+      const artifactName =
+        (typeof message.content.name === "string" && message.content.name.trim()
+          ? message.content.name.trim()
+          : null) ||
+        (typeof message.content.artifact_id === "string" && message.content.artifact_id.trim()
+          ? message.content.artifact_id.trim()
+          : null);
+      return artifactName ? slugKey(artifactName, message.message_id) : null;
+    }),
+  );
 
   const checkpoints: MissionCheckpoint[] = [
     {
       key: "brief-captured",
+      type: "objective",
       label: "Mission brief",
       detail:
         typeof workspaceState.working_goal === "string" && workspaceState.working_goal.trim()
@@ -410,28 +449,49 @@ function buildMissionCheckpointsFromSession(
         typeof workspaceState.working_goal === "string" && workspaceState.working_goal.trim()
           ? "done"
           : "active",
+      relatedRouteRevision: null,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel:
+        typeof workspaceState.working_goal === "string" && workspaceState.working_goal.trim()
+          ? "Review objective"
+          : "Capture objective",
     },
     {
       key: "draft-shaped",
+      type: "route",
       label: "Workflow draft",
       detail: latestDraftMessage
         ? "A draft workflow shape exists and can be promoted into full route options."
         : "No DAG draft has been shaped yet.",
       tone: latestDraftMessage ? "warn" : "neutral",
       status: latestDraftMessage ? "done" : "pending",
+      relatedRouteRevision: null,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel: latestDraftMessage ? "Create route options" : "Draft workflow",
     },
     {
       key: "route-compiled",
+      type: "route",
       label: "Route comparison",
       detail:
-        latestPlanMessage && typeof latestPlanMessage.content.revision === "number"
-          ? `Revision v${latestPlanMessage.content.revision} is available in the workspace.`
+        typeof latestPlanRevision === "number"
+          ? `Revision v${latestPlanRevision} is available in the workspace.`
           : "Comparable routes are not compiled yet.",
       tone: latestPlanMessage ? "warn" : "neutral",
       status: latestPlanMessage ? "done" : "pending",
+      relatedRouteRevision: latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel: latestPlanMessage ? "Review route" : "Compile route",
     },
     {
       key: "launch-gate",
+      type: "launch",
       label: "Launch gate",
       detail:
         typeof session.confirmed_plan_revision === "number"
@@ -444,9 +504,19 @@ function buildMissionCheckpointsFromSession(
           : latestPlanMessage
             ? "active"
             : "pending",
+      relatedRouteRevision:
+        typeof session.confirmed_plan_revision === "number"
+          ? session.confirmed_plan_revision
+          : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel:
+        typeof session.confirmed_plan_revision === "number" ? "Launch run" : "Confirm route",
     },
     {
       key: "runtime-state",
+      type: "runtime",
       label: "Runtime",
       detail:
         latestRunMessage
@@ -464,12 +534,21 @@ function buildMissionCheckpointsFromSession(
           ? getRunTone(latestRunMessage.content.status)
           : "neutral",
       status: latestRunMessage ? "active" : "pending",
+      relatedRouteRevision:
+        typeof session.confirmed_plan_revision === "number"
+          ? session.confirmed_plan_revision
+          : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: latestRunId,
+      nextActionLabel: latestRunMessage ? "Review execution" : "Launch run",
     },
   ];
 
   if (approvalCount > 0 || humanInputCount > 0) {
     checkpoints.push({
       key: "human-gates",
+      type: "human_gate",
       label: "Human gates",
       detail:
         approvalCount > 0
@@ -477,22 +556,40 @@ function buildMissionCheckpointsFromSession(
           : `${humanInputCount} structured input request(s) are blocking the next step.`,
       tone: "warn",
       status: "active",
+      relatedRouteRevision:
+        typeof session.confirmed_plan_revision === "number"
+          ? session.confirmed_plan_revision
+          : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: latestRunId,
+      nextActionLabel: approvalCount > 0 ? "Review approval" : "Provide input",
     });
   }
 
   if (artifactCount > 0) {
     checkpoints.push({
       key: "outputs-returned",
+      type: "output",
       label: "Outputs returned",
       detail: `${artifactCount} artifact(s) have been projected back into the mission record.`,
       tone: "success",
       status: session.status === "completed" ? "done" : "active",
+      relatedRouteRevision:
+        typeof session.confirmed_plan_revision === "number"
+          ? session.confirmed_plan_revision
+          : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: returnedOutputKeys,
+      relatedRunId: latestRunId,
+      nextActionLabel: "Review outputs",
     });
   }
 
   if (interventionCount > 0 || dagPatchCount > 0) {
     checkpoints.push({
       key: "runtime-steering",
+      type: "runtime_steering",
       label: "Runtime steering",
       detail:
         dagPatchCount > 0
@@ -500,6 +597,14 @@ function buildMissionCheckpointsFromSession(
           : `${interventionCount} runtime intervention record(s) are attached to the mission.`,
       tone: dagPatchCount > 0 ? "warn" : "neutral",
       status: "active",
+      relatedRouteRevision:
+        typeof session.confirmed_plan_revision === "number"
+          ? session.confirmed_plan_revision
+          : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: latestRunId,
+      nextActionLabel: dagPatchCount > 0 ? "Review patch" : "Review intervention",
     });
   }
 
@@ -613,6 +718,21 @@ function buildMissionOutputsFromSession(input: {
     returned: 4,
   };
 
+  function mergeOutputHistory(
+    left: MissionOutput["history"],
+    right: MissionOutput["history"],
+  ): MissionOutput["history"] {
+    const history = new Map<string, MissionOutput["history"][number]>();
+    for (const entry of [...left, ...right]) {
+      history.set(entry.key, entry);
+    }
+    return [...history.values()].sort((leftEntry, rightEntry) => {
+      const leftTime = leftEntry.createdAt || "";
+      const rightTime = rightEntry.createdAt || "";
+      return rightTime.localeCompare(leftTime);
+    });
+  }
+
   function upsert(inputOutput: MissionOutput) {
     const existing = outputs.get(inputOutput.key);
     if (!existing) {
@@ -623,22 +743,29 @@ function buildMissionOutputsFromSession(input: {
       statusRank[inputOutput.status] > statusRank[existing.status]
         ? inputOutput.status
         : existing.status;
+    const preferInput = statusRank[inputOutput.status] >= statusRank[existing.status];
     outputs.set(inputOutput.key, {
       ...existing,
       title: inputOutput.title || existing.title,
-      summary: statusRank[inputOutput.status] >= statusRank[existing.status]
-        ? inputOutput.summary
-        : existing.summary,
+      summary: preferInput ? inputOutput.summary : existing.summary,
       status,
       tone: getMissionOutputTone(status),
-      source: statusRank[inputOutput.status] >= statusRank[existing.status]
-        ? inputOutput.source
-        : existing.source,
+      source: preferInput ? inputOutput.source : existing.source,
+      stageKey: preferInput ? inputOutput.stageKey : existing.stageKey,
       pipelineKeys: uniqueStrings([...existing.pipelineKeys, ...inputOutput.pipelineKeys]),
       artifactMessageIds: uniqueStrings([
         ...existing.artifactMessageIds,
         ...inputOutput.artifactMessageIds,
       ]),
+      relatedCheckpointKeys: uniqueStrings([
+        ...existing.relatedCheckpointKeys,
+        ...inputOutput.relatedCheckpointKeys,
+      ]),
+      latestArtifactMessageId: inputOutput.latestArtifactMessageId || existing.latestArtifactMessageId,
+      currentActionLabel: preferInput
+        ? inputOutput.currentActionLabel
+        : existing.currentActionLabel || inputOutput.currentActionLabel,
+      history: mergeOutputHistory(existing.history, inputOutput.history),
       detailLines: uniqueStrings([...existing.detailLines, ...inputOutput.detailLines]),
     });
   }
@@ -652,8 +779,24 @@ function buildMissionOutputsFromSession(input: {
       status: "requested",
       tone: "neutral",
       source: "mission_spec",
+      stageKey: "plan",
       pipelineKeys: [],
       artifactMessageIds: [],
+      relatedCheckpointKeys: ["route-compiled"],
+      latestArtifactMessageId: null,
+      currentActionLabel: "Plan route for output",
+      history: [
+        {
+          key: `${key}:requested`,
+          title: output,
+          summary: "Requested by the mission contract.",
+          status: "requested",
+          source: "mission_spec",
+          createdAt: null,
+          pipelineKeys: [],
+          artifactMessageIds: [],
+        },
+      ],
       detailLines: ["Tracked from MissionSpec requested outputs."],
     });
   }
@@ -674,8 +817,27 @@ function buildMissionOutputsFromSession(input: {
         status: pipeline.status === "done" ? "in_progress" : "prepared",
         tone: pipeline.status === "done" ? "warn" : "warn",
         source: "pipeline",
+        stageKey: pipeline.stageKey,
         pipelineKeys: [pipeline.key],
         artifactMessageIds: [],
+        relatedCheckpointKeys: pipeline.checkpointKeys.length > 0 ? pipeline.checkpointKeys : ["route-compiled"],
+        latestArtifactMessageId: null,
+        currentActionLabel:
+          pipeline.status === "done" || pipeline.status === "active"
+            ? "Track output"
+            : "Prepare output",
+        history: [
+          {
+            key: `${key}:prepared:${pipeline.key}`,
+            title: output,
+            summary: `${pipeline.title} is prepared to produce this output.`,
+            status: pipeline.status === "done" ? "in_progress" : "prepared",
+            source: "pipeline",
+            createdAt: null,
+            pipelineKeys: [pipeline.key],
+            artifactMessageIds: [],
+          },
+        ],
         detailLines: [
           `Prepared by ${pipeline.title}.`,
           pipeline.primaryAgentLabel ? `Lead agent: ${pipeline.primaryAgentLabel}` : null,
@@ -709,8 +871,24 @@ function buildMissionOutputsFromSession(input: {
       status: "returned",
       tone: "success",
       source: "artifact",
+      stageKey: "execution",
       pipelineKeys: [],
       artifactMessageIds: [message.message_id],
+      relatedCheckpointKeys: ["outputs-returned"],
+      latestArtifactMessageId: message.message_id,
+      currentActionLabel: "Review returned output",
+      history: [
+        {
+          key: `${slugKey(artifactName, message.message_id)}:returned:${message.message_id}`,
+          title: artifactName,
+          summary: "Returned by runtime and attached to the mission record.",
+          status: "returned",
+          source: "artifact",
+          createdAt: message.created_at,
+          pipelineKeys: [],
+          artifactMessageIds: [message.message_id],
+        },
+      ],
       detailLines: [
         storageUri ? `Storage: ${storageUri}` : null,
         mimeType ? `Type: ${mimeType}` : null,
@@ -756,8 +934,24 @@ function buildMissionOutputsFromSession(input: {
       status,
       tone: getMissionOutputTone(status),
       source: "runtime",
+      stageKey: "execution",
       pipelineKeys: [],
       artifactMessageIds: [],
+      relatedCheckpointKeys: ["runtime-state"],
+      latestArtifactMessageId: null,
+      currentActionLabel: status === "returned" ? "Review handoff" : "Track run",
+      history: [
+        {
+          key: `runtime-handoff:${status}`,
+          title: "Runtime handoff",
+          summary: runSummary || "Runtime state is being projected back into the mission.",
+          status,
+          source: "runtime",
+          createdAt: null,
+          pipelineKeys: [],
+          artifactMessageIds: [],
+        },
+      ],
       detailLines: [
         input.session.latest_run_id ? `Run: ${input.session.latest_run_id}` : null,
         runStatus ? `Status: ${runStatus}` : null,
@@ -771,6 +965,12 @@ function buildMissionOutputsFromSession(input: {
         output.status = "in_progress";
         output.tone = getMissionOutputTone(output.status);
         output.source = output.source === "artifact" ? output.source : "runtime";
+        output.stageKey = "execution";
+        output.relatedCheckpointKeys = uniqueStrings([
+          ...output.relatedCheckpointKeys,
+          "runtime-state",
+        ]);
+        output.currentActionLabel = "Track run";
         output.summary = runSummary || output.summary;
       }
     }

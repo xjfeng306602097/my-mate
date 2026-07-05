@@ -203,8 +203,13 @@ export type MissionOutput = {
   status: "requested" | "prepared" | "in_progress" | "returned";
   tone: ThreadTone;
   source: "mission_spec" | "pipeline" | "runtime" | "artifact";
+  stageKey: MissionWorkspaceStageKey;
   pipelineKeys: string[];
   artifactMessageIds: string[];
+  relatedCheckpointKeys: string[];
+  latestArtifactMessageId: string | null;
+  currentActionLabel: string | null;
+  history: MissionOutputHistoryEntry[];
   detailLines: string[];
 };
 
@@ -284,20 +289,50 @@ export type MissionPipeline = {
   summary: string;
   status: WorkPackage["status"];
   tone: ThreadTone;
+  stageKey: MissionWorkspaceStageKey;
   nodeCount: number;
   readyCount: number;
   primaryAgentLabel: string | null;
   artifactExpectation: string | null;
+  outputKeys: string[];
+  checkpointKeys: string[];
   blocker: string | null;
   activeNodeName: string | null;
+  nextActionLabel: string | null;
 };
+
+export type MissionCheckpointType =
+  | "objective"
+  | "route"
+  | "launch"
+  | "runtime"
+  | "human_gate"
+  | "output"
+  | "runtime_steering";
 
 export type MissionCheckpoint = {
   key: string;
+  type: MissionCheckpointType;
   label: string;
   detail: string;
   tone: ThreadTone;
   status: "done" | "active" | "pending";
+  relatedRouteRevision: number | null;
+  relatedPipelineKeys: string[];
+  relatedOutputKeys: string[];
+  relatedRunId: string | null;
+  nextActionLabel: string | null;
+};
+
+export type MissionOutputHistoryEntry = {
+  key: string;
+  title: string;
+  summary: string;
+  status: MissionOutput["status"];
+  source: MissionOutput["source"];
+  createdAt: string | null;
+  pipelineKeys: string[];
+  artifactMessageIds: string[];
 };
 
 export type MissionWorkspaceSectionKey =
@@ -3218,12 +3253,34 @@ export function buildMissionPipelines(
     summary: pkg.summary,
     status: pkg.status,
     tone: pkg.tone,
+    stageKey: pkg.status === "pending" ? "work" : "execution",
     nodeCount: pkg.nodeCount,
     readyCount: pkg.readyCount,
     primaryAgentLabel: pkg.primaryAgentLabel,
     artifactExpectation: pkg.artifactExpectation,
+    outputKeys: pkg.artifactExpectation
+      ? pkg.artifactExpectation
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .map((item) => slugKey(item, pkg.key))
+      : [],
+    checkpointKeys: [
+      "route-compiled",
+      pkg.status === "active" || pkg.status === "blocked" || pkg.status === "done" ? "runtime-state" : null,
+    ].filter((item): item is string => !!item),
     blocker: pkg.blocker,
     activeNodeName: pkg.activeNodeName,
+    nextActionLabel:
+      pkg.status === "blocked"
+        ? "Resolve blocker"
+        : pkg.status === "active"
+          ? "Track execution"
+          : pkg.status === "done"
+            ? pkg.artifactExpectation
+              ? "Review outputs"
+              : "Review package"
+            : "Queue after route",
   }));
 }
 
@@ -3240,12 +3297,22 @@ export function buildMissionCheckpoints(
   const humanInputCount = visibleMessages.filter((message) => message.kind === "human_input_card").length;
   const interventionCount = visibleMessages.filter((message) => message.kind === "intervention_card").length;
   const dagPatchCount = visibleMessages.filter((message) => message.kind === "dag_patch_card").length;
-  const artifactCount = visibleMessages.filter((message) => message.kind === "artifact_card").length;
+  const artifactMessages = visibleMessages.filter((message) => message.kind === "artifact_card");
+  const artifactCount = artifactMessages.length;
   const confirmedRevision = detail.session.confirmed_plan_revision ?? null;
+  const latestPlanRevision = latestPlanMessage ? getPlanRevision(latestPlanMessage) || 1 : null;
+  const latestRunId = detail.latest_run?.run_id || detail.session.latest_run_id || workspace.latestRunId;
+  const returnedOutputKeys = uniqueStrings(
+    artifactMessages.map((message) => {
+      const artifactName = asString(message.content.name) || asString(message.content.artifact_id);
+      return artifactName ? slugKey(artifactName, message.message_id) : null;
+    }),
+  );
 
   const checkpoints: MissionCheckpoint[] = [
     {
       key: "brief-captured",
+      type: "objective",
       label: "Mission brief",
       detail:
         workspace.workingGoal ||
@@ -3253,27 +3320,45 @@ export function buildMissionCheckpoints(
         "Mission brief has not been stabilized yet.",
       tone: workspace.workingGoal ? "success" : "neutral",
       status: workspace.workingGoal ? "done" : "active",
+      relatedRouteRevision: null,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel: workspace.workingGoal ? "Review objective" : "Capture objective",
     },
     {
       key: "draft-shaped",
+      type: "route",
       label: "Workflow draft",
       detail: latestDraftMessage
         ? "A draft workflow shape exists and can be promoted into full route options."
         : "No DAG draft has been shaped yet.",
       tone: latestDraftMessage ? "warn" : "neutral",
       status: latestDraftMessage ? "done" : "pending",
+      relatedRouteRevision: null,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel: latestDraftMessage ? "Create route options" : "Draft workflow",
     },
     {
       key: "route-compiled",
+      type: "route",
       label: "Route comparison",
       detail: latestPlanMessage
-        ? `Revision v${getPlanRevision(latestPlanMessage) || 1} is available in the workspace.`
+        ? `Revision v${latestPlanRevision || 1} is available in the workspace.`
         : "Comparable routes are not compiled yet.",
       tone: latestPlanMessage ? "warn" : "neutral",
       status: latestPlanMessage ? "done" : "pending",
+      relatedRouteRevision: latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel: latestPlanMessage ? "Review route" : "Compile route",
     },
     {
       key: "launch-gate",
+      type: "launch",
       label: "Launch gate",
       detail:
         typeof confirmedRevision === "number"
@@ -3281,9 +3366,15 @@ export function buildMissionCheckpoints(
           : "No route has been confirmed for execution yet.",
       tone: typeof confirmedRevision === "number" ? "success" : "warn",
       status: typeof confirmedRevision === "number" ? "done" : latestPlanMessage ? "active" : "pending",
+      relatedRouteRevision: typeof confirmedRevision === "number" ? confirmedRevision : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: null,
+      nextActionLabel: typeof confirmedRevision === "number" ? "Launch run" : "Confirm route",
     },
     {
       key: "runtime-state",
+      type: "runtime",
       label: "Runtime",
       detail: latestRunMessage
         ? asString(latestSummaryMessage?.content.current_summary) ||
@@ -3292,12 +3383,18 @@ export function buildMissionCheckpoints(
         : "No real run has been opened yet.",
       tone: latestRunMessage ? getRunTone(asString(latestRunMessage.content.status)) : "neutral",
       status: latestRunMessage ? "active" : "pending",
+      relatedRouteRevision: typeof confirmedRevision === "number" ? confirmedRevision : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: latestRunId,
+      nextActionLabel: latestRunMessage ? "Review execution" : "Launch run",
     },
   ];
 
   if (approvalCount > 0 || humanInputCount > 0) {
     checkpoints.push({
       key: "human-gates",
+      type: "human_gate",
       label: "Human gates",
       detail:
         approvalCount > 0
@@ -3305,22 +3402,34 @@ export function buildMissionCheckpoints(
           : `${humanInputCount} structured input request(s) are blocking the next step.`,
       tone: "warn",
       status: "active",
+      relatedRouteRevision: typeof confirmedRevision === "number" ? confirmedRevision : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: latestRunId,
+      nextActionLabel: approvalCount > 0 ? "Review approval" : "Provide input",
     });
   }
 
   if (artifactCount > 0) {
     checkpoints.push({
       key: "outputs-returned",
+      type: "output",
       label: "Outputs returned",
       detail: `${artifactCount} artifact(s) have been projected back into the mission record.`,
       tone: "success",
       status: detail.session.status === "completed" ? "done" : "active",
+      relatedRouteRevision: typeof confirmedRevision === "number" ? confirmedRevision : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: returnedOutputKeys,
+      relatedRunId: latestRunId,
+      nextActionLabel: "Review outputs",
     });
   }
 
   if (interventionCount > 0 || dagPatchCount > 0) {
     checkpoints.push({
       key: "runtime-steering",
+      type: "runtime_steering",
       label: "Runtime steering",
       detail:
         dagPatchCount > 0
@@ -3328,6 +3437,11 @@ export function buildMissionCheckpoints(
           : `${interventionCount} runtime intervention record(s) are attached to the mission.`,
       tone: dagPatchCount > 0 ? "warn" : "neutral",
       status: "active",
+      relatedRouteRevision: typeof confirmedRevision === "number" ? confirmedRevision : latestPlanRevision,
+      relatedPipelineKeys: [],
+      relatedOutputKeys: [],
+      relatedRunId: latestRunId,
+      nextActionLabel: dagPatchCount > 0 ? "Review patch" : "Review intervention",
     });
   }
 
@@ -3359,6 +3473,21 @@ export function buildMissionOutputs(
     returned: 4,
   };
 
+  function mergeOutputHistory(
+    left: MissionOutput["history"],
+    right: MissionOutput["history"],
+  ): MissionOutput["history"] {
+    const history = new Map<string, MissionOutput["history"][number]>();
+    for (const entry of [...left, ...right]) {
+      history.set(entry.key, entry);
+    }
+    return [...history.values()].sort((leftEntry, rightEntry) => {
+      const leftTime = leftEntry.createdAt || "";
+      const rightTime = rightEntry.createdAt || "";
+      return rightTime.localeCompare(leftTime);
+    });
+  }
+
   function upsert(inputOutput: MissionOutput) {
     const existing = outputs.get(inputOutput.key);
     if (!existing) {
@@ -3369,38 +3498,60 @@ export function buildMissionOutputs(
       statusRank[inputOutput.status] > statusRank[existing.status]
         ? inputOutput.status
         : existing.status;
+    const preferInput = statusRank[inputOutput.status] >= statusRank[existing.status];
     outputs.set(inputOutput.key, {
       ...existing,
       title: inputOutput.title || existing.title,
-      summary:
-        statusRank[inputOutput.status] >= statusRank[existing.status]
-          ? inputOutput.summary
-          : existing.summary,
+      summary: preferInput ? inputOutput.summary : existing.summary,
       status,
       tone: getMissionOutputTone(status),
-      source:
-        statusRank[inputOutput.status] >= statusRank[existing.status]
-          ? inputOutput.source
-          : existing.source,
+      source: preferInput ? inputOutput.source : existing.source,
+      stageKey: preferInput ? inputOutput.stageKey : existing.stageKey,
       pipelineKeys: uniqueStrings([...existing.pipelineKeys, ...inputOutput.pipelineKeys]),
       artifactMessageIds: uniqueStrings([
         ...existing.artifactMessageIds,
         ...inputOutput.artifactMessageIds,
       ]),
+      relatedCheckpointKeys: uniqueStrings([
+        ...existing.relatedCheckpointKeys,
+        ...inputOutput.relatedCheckpointKeys,
+      ]),
+      latestArtifactMessageId: inputOutput.latestArtifactMessageId || existing.latestArtifactMessageId,
+      currentActionLabel: preferInput
+        ? inputOutput.currentActionLabel
+        : existing.currentActionLabel || inputOutput.currentActionLabel,
+      history: mergeOutputHistory(existing.history, inputOutput.history),
       detailLines: uniqueStrings([...existing.detailLines, ...inputOutput.detailLines]),
     });
   }
 
   for (const output of requestedOutputs) {
+    const key = slugKey(output, "requested-output");
     upsert({
-      key: slugKey(output, "requested-output"),
+      key,
       title: output,
       summary: "Requested by the mission contract.",
       status: "requested",
       tone: "neutral",
       source: "mission_spec",
+      stageKey: "plan",
       pipelineKeys: [],
       artifactMessageIds: [],
+      relatedCheckpointKeys: ["route-compiled"],
+      latestArtifactMessageId: null,
+      currentActionLabel: "Plan route for output",
+      history: [
+        {
+          key: `${key}:requested`,
+          title: output,
+          summary: "Requested by the mission contract.",
+          status: "requested",
+          source: "mission_spec",
+          createdAt: null,
+          pipelineKeys: [],
+          artifactMessageIds: [],
+        },
+      ],
       detailLines: ["Tracked from MissionSpec requested outputs."],
     });
   }
@@ -3414,15 +3565,35 @@ export function buildMissionOutputs(
       : [];
     for (const output of expectedOutputs) {
       const status: MissionOutput["status"] = pipeline.status === "done" ? "in_progress" : "prepared";
+      const key = slugKey(output, pipeline.key);
       upsert({
-        key: slugKey(output, pipeline.key),
+        key,
         title: output,
         summary: `${pipeline.title} is prepared to produce this output.`,
         status,
         tone: getMissionOutputTone(status),
         source: "pipeline",
+        stageKey: pipeline.stageKey,
         pipelineKeys: [pipeline.key],
         artifactMessageIds: [],
+        relatedCheckpointKeys: pipeline.checkpointKeys.length > 0 ? pipeline.checkpointKeys : ["route-compiled"],
+        latestArtifactMessageId: null,
+        currentActionLabel:
+          pipeline.status === "done" || pipeline.status === "active"
+            ? "Track output"
+            : "Prepare output",
+        history: [
+          {
+            key: `${key}:prepared:${pipeline.key}`,
+            title: output,
+            summary: `${pipeline.title} is prepared to produce this output.`,
+            status,
+            source: "pipeline",
+            createdAt: null,
+            pipelineKeys: [pipeline.key],
+            artifactMessageIds: [],
+          },
+        ],
         detailLines: [
           `Prepared by ${pipeline.title}.`,
           pipeline.primaryAgentLabel ? `Lead agent: ${pipeline.primaryAgentLabel}` : null,
@@ -3439,15 +3610,32 @@ export function buildMissionOutputs(
       "Returned artifact";
     const storageUri = asString(message.content.storage_uri);
     const mimeType = asString(message.content.mime_type);
+    const key = slugKey(artifactName, message.message_id);
     upsert({
-      key: slugKey(artifactName, message.message_id),
+      key,
       title: artifactName,
       summary: "Returned by runtime and attached to the mission record.",
       status: "returned",
       tone: "success",
       source: "artifact",
+      stageKey: "execution",
       pipelineKeys: [],
       artifactMessageIds: [message.message_id],
+      relatedCheckpointKeys: ["outputs-returned"],
+      latestArtifactMessageId: message.message_id,
+      currentActionLabel: "Review returned output",
+      history: [
+        {
+          key: `${key}:returned:${message.message_id}`,
+          title: artifactName,
+          summary: "Returned by runtime and attached to the mission record.",
+          status: "returned",
+          source: "artifact",
+          createdAt: message.created_at,
+          pipelineKeys: [],
+          artifactMessageIds: [message.message_id],
+        },
+      ],
       detailLines: [
         storageUri ? `Storage: ${storageUri}` : null,
         mimeType ? `Type: ${mimeType}` : null,
@@ -3481,8 +3669,24 @@ export function buildMissionOutputs(
       status,
       tone: getMissionOutputTone(status),
       source: "runtime",
+      stageKey: "execution",
       pipelineKeys: [],
       artifactMessageIds: [],
+      relatedCheckpointKeys: ["runtime-state"],
+      latestArtifactMessageId: null,
+      currentActionLabel: status === "returned" ? "Review handoff" : "Track run",
+      history: [
+        {
+          key: `runtime-handoff:${status}`,
+          title: "Runtime handoff",
+          summary: runSummary || "Runtime state is being projected back into the mission.",
+          status,
+          source: "runtime",
+          createdAt: null,
+          pipelineKeys: [],
+          artifactMessageIds: [],
+        },
+      ],
       detailLines: [
         latestRunId ? `Run: ${latestRunId}` : null,
         runStatus ? `Status: ${runStatus}` : null,
@@ -3496,6 +3700,12 @@ export function buildMissionOutputs(
         output.status = "in_progress";
         output.tone = getMissionOutputTone(output.status);
         output.source = output.source === "artifact" ? output.source : "runtime";
+        output.stageKey = "execution";
+        output.relatedCheckpointKeys = uniqueStrings([
+          ...output.relatedCheckpointKeys,
+          "runtime-state",
+        ]);
+        output.currentActionLabel = "Track run";
         output.summary = runSummary || output.summary;
       }
     }

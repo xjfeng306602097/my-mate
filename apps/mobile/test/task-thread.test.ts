@@ -1156,6 +1156,13 @@ test("buildMissionSnapshot assembles mission-first workspace state", () => {
   assert.ok(mission.stages.some((stage) => stage.key === "plan" && /Route revision v4/i.test(stage.title)));
   assert.ok(mission.pipelines.some((pipeline) => pipeline.title === "Context collection"));
   assert.ok(mission.checkpoints.some((checkpoint) => checkpoint.label === "Route comparison"));
+  assert.deepEqual(mission.pipelines[0]?.outputKeys, ["research-notes"]);
+  assert.ok(mission.pipelines[0]?.checkpointKeys.includes("route-compiled"));
+  assert.equal(mission.pipelines[0]?.nextActionLabel, "Track execution");
+  assert.equal(
+    mission.checkpoints.find((checkpoint) => checkpoint.key === "route-compiled")?.type,
+    "route",
+  );
   assert.deepEqual(
     mission.workspaceSections.map((section) => section.key),
     [
@@ -1171,6 +1178,10 @@ test("buildMissionSnapshot assembles mission-first workspace state", () => {
   );
   assert.equal(mission.outputs[0]?.title, "research-notes");
   assert.equal(mission.outputs[0]?.status, "prepared");
+  assert.equal(mission.outputs[0]?.stageKey, "execution");
+  assert.deepEqual(mission.outputs[0]?.relatedCheckpointKeys, ["route-compiled", "runtime-state"]);
+  assert.equal(mission.outputs[0]?.currentActionLabel, "Track output");
+  assert.ok((mission.outputs[0]?.history.length || 0) >= 2);
   assert.equal(mission.workspaceSections.find((section) => section.key === "outputs")?.itemCount, 1);
 });
 

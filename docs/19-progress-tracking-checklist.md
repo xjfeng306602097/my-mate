@@ -79,6 +79,12 @@ Latest implementation update:
   - Mobile adapts the same 8 modules as persistent center-workspace sections
     across workspace stages
   - Studio sorts versioned `workspaceSections` by the same 8-module order
+- `MW-02` first-class work/checkpoint/output surfaces landed
+  - `pipelines`, `checkpoints`, and `outputs` now carry structured stage,
+    relation, next-action, and output-history fields
+  - Mobile and Studio display those fields inside the center workspace
+  - contract tests guard output history, checkpoint relation, and work-package
+    linkage
 - validated after landing:
   - `cd services/control-plane && npm run check`
   - `cd services/control-plane && npm test`
@@ -584,7 +590,7 @@ This also means the following may land incrementally:
 |---|---|---|---|---|---|
 | `MW-00` | Mission Workspace | Done | P0 | Define a unified `Mission Workspace` contract in the Control Plane and align Mobile and Studio to consume it. | Contract definition, Control Plane normalization, Mobile cleanup, Studio cleanup, and cross-stage verification have landed. |
 | `MW-01` | Mission Workspace | Done | P0 | Make the center workspace feel persistent rather than mainly card-derived. | Stable 8-module workspace skeleton now lands in Control Plane, Mobile, and Studio. |
-| `MW-02` | Mission Workspace | Active | P0 | Promote outputs, checkpoints, pipelines, and generated deliverables into stronger first-class surfaces in both Mobile and Studio. | This iteration targets first-class visibility, reviewability, and stage linkage, not a full management back office. |
+| `MW-02` | Mission Workspace | Done | P0 | Promote outputs, checkpoints, pipelines, and generated deliverables into stronger first-class surfaces in both Mobile and Studio. | Structured stage, relation, next-action, and output-history fields now drive Mobile and Studio displays. |
 | `MW-03` | Mission Workspace | Active | P0 | Keep raw plan/run/evidence cards secondary while making mission state the main product shell. | Conversation remains explanation / decision / audit context rather than the main work surface. |
 | `PLAN-01` | Planner / Orchestrator | Active | P1 | Broaden revise-plan understanding beyond the current deterministic structural mutations. | Current revise flow is intentionally narrow and rule-based. |
 | `PLAN-02` | Planner / Orchestrator | Planned | P1 | Improve agent and skill recommendation quality beyond the current basic registry-aware matching. | Follow-up after Mission shell tightening. |
@@ -615,7 +621,7 @@ Close these items first:
 
 - [x] `MW-00`
 - [x] `MW-01`
-- [ ] `MW-02`
+- [x] `MW-02`
 - [ ] `MW-03`
 
 Exit condition:
@@ -646,6 +652,22 @@ Exit condition:
       8-module order.
 - [x] Contract and smoke tests have been updated to guard the MW-01 section
       order.
+
+### MW-02 Implementation Status
+
+- [x] Work packages now expose `stageKey`, `outputKeys`, `checkpointKeys`, and
+      `nextActionLabel` so they read as mission work surfaces instead of raw
+      node cards.
+- [x] Checkpoints now expose `type`, related route/run/output fields, and
+      `nextActionLabel` so they show structural gate meaning and related
+      context.
+- [x] Outputs now expose `stageKey`, `relatedCheckpointKeys`,
+      `latestArtifactMessageId`, `currentActionLabel`, and focused `history`
+      entries for requested/prepared/runtime/returned progression.
+- [x] Mobile and Studio surface the same structured fields inside their center
+      workspace modules.
+- [x] Control Plane, Mobile, and Studio verification now guard the MW-02
+      relation/history fields.
 
 ### Milestone B: Runtime Steering Maturity
 

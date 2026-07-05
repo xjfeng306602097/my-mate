@@ -1109,6 +1109,21 @@ function renderMissionWorkPackagesPanel(pipelines) {
                             ? `<small>${escapeHtml(`Expected outputs: ${pipeline.artifactExpectation}`)}</small>`
                             : ""
                         }
+                        ${
+                          Array.isArray(pipeline.outputKeys) && pipeline.outputKeys.length
+                            ? `<small>${escapeHtml(`Output keys: ${pipeline.outputKeys.slice(0, 3).join(", ")}`)}</small>`
+                            : ""
+                        }
+                        ${
+                          Array.isArray(pipeline.checkpointKeys) && pipeline.checkpointKeys.length
+                            ? `<small>${escapeHtml(`Checkpoints: ${pipeline.checkpointKeys.slice(0, 3).join(", ")}`)}</small>`
+                            : ""
+                        }
+                        ${
+                          pipeline.nextActionLabel
+                            ? `<small>${escapeHtml(`Next: ${pipeline.nextActionLabel}`)}</small>`
+                            : ""
+                        }
                       </div>
                     </div>
                   `,
@@ -2366,6 +2381,25 @@ function renderMissionCheckpointsPanel(detail, checkpoints) {
                       </div>
                       <p>${escapeHtml(checkpoint.detail || "Checkpoint detail is not available yet.")}</p>
                       ${renderMissionEvidenceChips(evidence.evidence)}
+                      <div class="mission-detail-meta">
+                        ${checkpoint.type ? `<small>${escapeHtml(`Type: ${formatWorkspaceLabel(checkpoint.type)}`)}</small>` : ""}
+                        ${
+                          typeof checkpoint.relatedRouteRevision === "number"
+                            ? `<small>${escapeHtml(`Route: v${checkpoint.relatedRouteRevision}`)}</small>`
+                            : ""
+                        }
+                        ${checkpoint.relatedRunId ? `<small>${escapeHtml(`Run: ${checkpoint.relatedRunId}`)}</small>` : ""}
+                        ${
+                          Array.isArray(checkpoint.relatedOutputKeys) && checkpoint.relatedOutputKeys.length
+                            ? `<small>${escapeHtml(`Outputs: ${checkpoint.relatedOutputKeys.slice(0, 3).join(", ")}`)}</small>`
+                            : ""
+                        }
+                        ${
+                          checkpoint.nextActionLabel
+                            ? `<small>${escapeHtml(`Next: ${checkpoint.nextActionLabel}`)}</small>`
+                            : ""
+                        }
+                      </div>
                       ${
                         evidence.lines.length
                           ? `<div class="mission-detail-meta">${evidence.lines
@@ -2388,6 +2422,19 @@ function renderMissionCheckpointsPanel(detail, checkpoints) {
 function renderMissionOutputsPanel(detail, outputs, requestedOutputs) {
   const values = Array.isArray(outputs) ? outputs : [];
   const requested = Array.isArray(requestedOutputs) ? requestedOutputs : [];
+  const outputRank = {
+    returned: 4,
+    in_progress: 3,
+    prepared: 2,
+    requested: 1,
+  };
+  const sortedValues = [...values].sort((left, right) => {
+    const rankDelta = (outputRank[right.status] || 0) - (outputRank[left.status] || 0);
+    if (rankDelta !== 0) return rankDelta;
+    const leftTime = Array.isArray(left.history) ? left.history[0]?.createdAt || "" : "";
+    const rightTime = Array.isArray(right.history) ? right.history[0]?.createdAt || "" : "";
+    return rightTime.localeCompare(leftTime);
+  });
   if (!values.length && !requested.length) {
     return "";
   }
@@ -2400,7 +2447,7 @@ function renderMissionOutputsPanel(detail, outputs, requestedOutputs) {
       ${
         values.length
           ? `<div class="mission-output-ledger">
-              ${values
+              ${sortedValues
                 .map((output) => {
                   const evidence = buildMissionSurfaceEvidence(detail, "output", output);
                   return `
@@ -2411,11 +2458,35 @@ function renderMissionOutputsPanel(detail, outputs, requestedOutputs) {
                       </div>
                       <p>${escapeHtml(output.summary || "Output is tracked by the mission workspace.")}</p>
                       ${renderMissionEvidenceChips(evidence.evidence)}
+                      <div class="mission-output-lines">
+                        ${output.stageKey ? `<small>${escapeHtml(`Stage: ${formatWorkspaceLabel(output.stageKey)}`)}</small>` : ""}
+                        ${output.currentActionLabel ? `<small>${escapeHtml(`Next: ${output.currentActionLabel}`)}</small>` : ""}
+                        ${
+                          Array.isArray(output.relatedCheckpointKeys) && output.relatedCheckpointKeys.length
+                            ? `<small>${escapeHtml(`Checkpoints: ${output.relatedCheckpointKeys.slice(0, 3).join(", ")}`)}</small>`
+                            : ""
+                        }
+                        ${
+                          output.latestArtifactMessageId
+                            ? `<small>${escapeHtml(`Latest artifact: ${output.latestArtifactMessageId}`)}</small>`
+                            : ""
+                        }
+                        ${
+                          Array.isArray(output.history) && output.history.length
+                            ? `<small>${escapeHtml(`History: ${output.history.length} step${output.history.length === 1 ? "" : "s"}`)}</small>`
+                            : ""
+                        }
+                      </div>
                       ${
                         (Array.isArray(output.detailLines) && output.detailLines.length) || evidence.lines.length
                           ? `<div class="mission-output-lines">${uniqueWorkspaceLabels([
                               ...(Array.isArray(output.detailLines) ? output.detailLines.slice(0, 3) : []),
                               ...evidence.lines,
+                              ...(Array.isArray(output.history)
+                                ? output.history
+                                    .slice(0, 2)
+                                    .map((entry) => `${formatWorkspaceLabel(entry.status)}: ${entry.summary}`)
+                                : []),
                             ])
                               .map((line) => `<small>${escapeHtml(line)}</small>`)
                               .join("")}</div>`

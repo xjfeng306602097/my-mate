@@ -1203,7 +1203,17 @@ export default function TaskThreadScreen() {
       "The orchestrator is reading the mission.";
     const missionConstraints = spec?.constraints || [];
     const missionOutputs = spec?.requestedOutputs || [];
-    const missionOutputItems = missionSnapshot?.outputs || [];
+    const missionOutputStatusRank: Record<string, number> = {
+      returned: 4,
+      in_progress: 3,
+      prepared: 2,
+      requested: 1,
+    };
+    const missionOutputItems = [...(missionSnapshot?.outputs || [])].sort(
+      (left, right) =>
+        (missionOutputStatusRank[right.status] || 0) -
+        (missionOutputStatusRank[left.status] || 0),
+    );
     const missionCheckpoints = missionSnapshot?.checkpoints || [];
     const missionWorkspaceSections = missionSnapshot?.workspaceSections || [];
     const useContractWorkspaceSections =
@@ -1481,6 +1491,29 @@ export default function TaskThreadScreen() {
                     />
                   </View>
                   <Text style={styles.workspaceArtifactSummary}>{checkpoint.detail}</Text>
+                  <View style={styles.workspaceArtifactDetailList}>
+                    <Text style={styles.workspaceArtifactDetail}>
+                      Type: {formatStatus(checkpoint.type || "checkpoint")}
+                    </Text>
+                    {typeof checkpoint.relatedRouteRevision === "number" ? (
+                      <Text style={styles.workspaceArtifactDetail}>
+                        Route: v{checkpoint.relatedRouteRevision}
+                      </Text>
+                    ) : null}
+                    {checkpoint.relatedRunId ? (
+                      <Text style={styles.workspaceArtifactDetail}>Run: {checkpoint.relatedRunId}</Text>
+                    ) : null}
+                    {checkpoint.relatedOutputKeys?.length ? (
+                      <Text style={styles.workspaceArtifactDetail}>
+                        Outputs: {checkpoint.relatedOutputKeys.slice(0, 3).join(", ")}
+                      </Text>
+                    ) : null}
+                    {checkpoint.nextActionLabel ? (
+                      <Text style={styles.workspaceArtifactDetail}>
+                        Next: {checkpoint.nextActionLabel}
+                      </Text>
+                    ) : null}
+                  </View>
                 </View>
               ))
             ) : (
@@ -1595,11 +1628,54 @@ export default function TaskThreadScreen() {
                       <Badge label={formatStatus(output.status)} tone={output.tone} />
                     </View>
                     <Text style={styles.workspacePreparedOutputDetail}>{output.summary}</Text>
-                    {output.detailLines.length > 0 ? (
+                    <View style={styles.workspaceOutputRow}>
+                      <View style={styles.workspaceOutputChip}>
+                        <Text style={styles.workspaceOutputText}>
+                          Stage {formatStatus(output.stageKey || "plan")}
+                        </Text>
+                      </View>
+                      {output.currentActionLabel ? (
+                        <View style={styles.workspaceOutputChip}>
+                          <Text style={styles.workspaceOutputText}>{output.currentActionLabel}</Text>
+                        </View>
+                      ) : null}
+                      {output.history?.length ? (
+                        <View style={styles.workspaceOutputChip}>
+                          <Text style={styles.workspaceOutputText}>
+                            {output.history.length} history
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    {output.detailLines.length > 0 ||
+                    output.pipelineKeys.length > 0 ||
+                    output.relatedCheckpointKeys?.length ||
+                    output.latestArtifactMessageId ||
+                    output.history?.length ? (
                       <View style={styles.workspaceArtifactDetailList}>
+                        {output.pipelineKeys.length > 0 ? (
+                          <Text style={styles.workspaceArtifactDetail}>
+                            Work packages: {output.pipelineKeys.slice(0, 3).join(", ")}
+                          </Text>
+                        ) : null}
+                        {output.relatedCheckpointKeys?.length ? (
+                          <Text style={styles.workspaceArtifactDetail}>
+                            Checkpoints: {output.relatedCheckpointKeys.slice(0, 3).join(", ")}
+                          </Text>
+                        ) : null}
+                        {output.latestArtifactMessageId ? (
+                          <Text style={styles.workspaceArtifactDetail}>
+                            Latest artifact: {output.latestArtifactMessageId}
+                          </Text>
+                        ) : null}
                         {output.detailLines.slice(0, 3).map((line) => (
                           <Text key={`${output.key}-${line}`} style={styles.workspaceArtifactDetail}>
                             {line}
+                          </Text>
+                        ))}
+                        {output.history?.slice(0, 2).map((entry) => (
+                          <Text key={`${output.key}-${entry.key}`} style={styles.workspaceArtifactDetail}>
+                            {formatStatus(entry.status)}: {entry.summary}
                           </Text>
                         ))}
                       </View>
@@ -2026,56 +2102,86 @@ export default function TaskThreadScreen() {
         <View style={styles.workspaceStack}>
           {workPackages.length > 0 ? (
             <View style={styles.workspacePackageGrid}>
-              {workPackages.map((pkg) => (
-                <View key={pkg.key} style={styles.workspacePackageSurface}>
-                  <View style={styles.workspacePackageHeader}>
-                    <Text style={styles.workspacePackageTitle}>{pkg.title}</Text>
-                    <Badge
-                      label={
-                        pkg.status === "done"
-                          ? "Done"
-                          : pkg.status === "active"
-                            ? "Live"
+              {workPackages.map((pkg) => {
+                const packageContract = pkg as unknown as {
+                  outputKeys?: string[];
+                  checkpointKeys?: string[];
+                  nextActionLabel?: unknown;
+                };
+                const packageOutputKeys = Array.isArray(packageContract.outputKeys)
+                  ? packageContract.outputKeys
+                  : [];
+                const packageCheckpointKeys = Array.isArray(packageContract.checkpointKeys)
+                  ? packageContract.checkpointKeys
+                  : [];
+                const packageNextAction =
+                  typeof packageContract.nextActionLabel === "string"
+                    ? packageContract.nextActionLabel
+                    : null;
+                return (
+                  <View key={pkg.key} style={styles.workspacePackageSurface}>
+                    <View style={styles.workspacePackageHeader}>
+                      <Text style={styles.workspacePackageTitle}>{pkg.title}</Text>
+                      <Badge
+                        label={
+                          pkg.status === "done"
+                            ? "Done"
+                            : pkg.status === "active"
+                              ? "Live"
+                              : pkg.status === "blocked"
+                                ? "Blocked"
+                                : "Queued"
+                        }
+                        tone={
+                          pkg.status === "done"
+                            ? "success"
                             : pkg.status === "blocked"
-                              ? "Blocked"
-                              : "Queued"
-                      }
-                      tone={
-                        pkg.status === "done"
-                          ? "success"
-                          : pkg.status === "blocked"
-                            ? "warn"
-                            : pkg.tone
-                      }
-                    />
-                  </View>
-                  <Text style={styles.workspacePackageSummary}>{pkg.summary}</Text>
-                  <View style={styles.metricRow}>
-                    <View style={styles.metricChip}>
-                      <Text style={styles.metricLabel}>Nodes</Text>
-                      <Text style={styles.metricValue}>{pkg.nodeCount}</Text>
+                              ? "warn"
+                              : pkg.tone
+                        }
+                      />
                     </View>
-                    <View style={styles.metricChip}>
-                      <Text style={styles.metricLabel}>Ready frontier</Text>
-                      <Text style={styles.metricValue}>{pkg.readyCount}</Text>
+                    <Text style={styles.workspacePackageSummary}>{pkg.summary}</Text>
+                    <View style={styles.metricRow}>
+                      <View style={styles.metricChip}>
+                        <Text style={styles.metricLabel}>Nodes</Text>
+                        <Text style={styles.metricValue}>{pkg.nodeCount}</Text>
+                      </View>
+                      <View style={styles.metricChip}>
+                        <Text style={styles.metricLabel}>Ready frontier</Text>
+                        <Text style={styles.metricValue}>{pkg.readyCount}</Text>
+                      </View>
                     </View>
+                    {pkg.primaryAgentLabel ? (
+                      <Text style={styles.workspacePackageMeta}>Lead agent: {pkg.primaryAgentLabel}</Text>
+                    ) : null}
+                    {pkg.activeNodeName ? (
+                      <Text style={styles.workspacePackageMeta}>Current node: {pkg.activeNodeName}</Text>
+                    ) : null}
+                    {packageOutputKeys.length ? (
+                      <Text style={styles.workspacePackageMeta}>
+                        Outputs: {packageOutputKeys.slice(0, 3).join(", ")}
+                      </Text>
+                    ) : null}
+                    {packageCheckpointKeys.length ? (
+                      <Text style={styles.workspacePackageMeta}>
+                        Checkpoints: {packageCheckpointKeys.slice(0, 3).join(", ")}
+                      </Text>
+                    ) : null}
+                    {packageNextAction ? (
+                      <Text style={styles.workspacePackageMeta}>Next: {packageNextAction}</Text>
+                    ) : null}
+                    {pkg.blocker ? (
+                      <Text style={[styles.workspacePackageMeta, styles.signalWarn]}>Blocker: {pkg.blocker}</Text>
+                    ) : null}
+                    {runtimeGraph ? (
+                      <Pressable onPress={() => focusWorkspaceStage("execution")}>
+                        <Text style={styles.linkText}>Open topology</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
-                  {pkg.primaryAgentLabel ? (
-                    <Text style={styles.workspacePackageMeta}>Lead agent: {pkg.primaryAgentLabel}</Text>
-                  ) : null}
-                  {pkg.activeNodeName ? (
-                    <Text style={styles.workspacePackageMeta}>Current node: {pkg.activeNodeName}</Text>
-                  ) : null}
-                  {pkg.blocker ? (
-                    <Text style={[styles.workspacePackageMeta, styles.signalWarn]}>Blocker: {pkg.blocker}</Text>
-                  ) : null}
-                  {runtimeGraph ? (
-                    <Pressable onPress={() => focusWorkspaceStage("execution")}>
-                      <Text style={styles.linkText}>Open topology</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              ))}
+                );
+              })}
             </View>
           ) : (
             <View style={styles.emptyStage}>

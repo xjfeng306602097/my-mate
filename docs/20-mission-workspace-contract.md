@@ -136,6 +136,13 @@ It is not:
 - a runtime frontier dump
 - a deep project-management task tree
 
+Each work package should expose:
+
+- `stageKey`
+- `outputKeys`
+- `checkpointKeys`
+- `nextActionLabel`
+
 ### Checkpoints
 
 Represents structural mission gates and milestone checkpoints.
@@ -145,6 +152,9 @@ Each checkpoint should carry:
 - structural type
 - current state
 - related mission context
+- related route revision, work package, output, or run identifiers where
+  available
+- next action label when the gate needs user or system movement
 
 It is distinct from `Pending Decisions`, which describe the current human
 action needed now.
@@ -158,6 +168,16 @@ Outputs should emphasize:
 - current deliverables
 - meaningful recent history
 - linkage to work/stage/evidence context
+
+Each output should expose:
+
+- `stageKey`
+- `pipelineKeys`
+- `relatedCheckpointKeys`
+- `latestArtifactMessageId`
+- `currentActionLabel`
+- focused `history` entries for requested, prepared, runtime, and returned
+  progression
 
 ### Pending Decisions
 
@@ -224,6 +244,10 @@ Current `MW-00` and `MW-01` implementation status:
 - Control Plane emits the stable `MW-01` 8-module `workspaceSections` order.
 - Mobile adapts the same 8 modules as persistent center-workspace sections.
 - Studio sorts versioned workspace section cards by the same 8-module order.
+- Control Plane emits `MW-02` relation/history fields for work packages,
+  checkpoints, and outputs.
+- Mobile and Studio display those relation/history fields in the center
+  workspace.
 
 Current verification coverage:
 

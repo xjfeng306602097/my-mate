@@ -588,10 +588,34 @@ test("mission workspace projection promotes outputs checkpoints and pipelines in
   );
   assert.equal(projection.missionSnapshot.workspaceSections[2]?.key, "work_packages");
   assert.equal(projection.missionSnapshot.workspaceSections[4]?.key, "outputs");
+  assert.deepEqual(projection.missionSnapshot.pipelines[0]?.outputKeys, ["research-notes"]);
+  assert.deepEqual(projection.missionSnapshot.pipelines[0]?.checkpointKeys, [
+    "route-compiled",
+    "runtime-state",
+  ]);
+  assert.equal(projection.missionSnapshot.pipelines[0]?.nextActionLabel, "Track execution");
+  assert.equal(
+    projection.missionSnapshot.checkpoints.find((checkpoint) => checkpoint.key === "outputs-returned")
+      ?.type,
+    "output",
+  );
+  assert.deepEqual(
+    projection.missionSnapshot.checkpoints.find((checkpoint) => checkpoint.key === "outputs-returned")
+      ?.relatedOutputKeys,
+    ["research-notes"],
+  );
   assert.equal(projection.missionSnapshot.outputs[0]?.title, "research-notes");
   assert.equal(projection.missionSnapshot.outputs[0]?.status, "returned");
   assert.deepEqual(projection.missionSnapshot.outputs[0]?.pipelineKeys, ["collect_context"]);
   assert.deepEqual(projection.missionSnapshot.outputs[0]?.artifactMessageIds, ["artifact-1"]);
+  assert.deepEqual(projection.missionSnapshot.outputs[0]?.relatedCheckpointKeys, [
+    "route-compiled",
+    "runtime-state",
+    "outputs-returned",
+  ]);
+  assert.equal(projection.missionSnapshot.outputs[0]?.latestArtifactMessageId, "artifact-1");
+  assert.equal(projection.missionSnapshot.outputs[0]?.currentActionLabel, "Review returned output");
+  assert.ok((projection.missionSnapshot.outputs[0]?.history.length || 0) >= 2);
   assert.ok(
     projection.missionSnapshot.workspaceSections
       .find((section) => section.key === "outputs")

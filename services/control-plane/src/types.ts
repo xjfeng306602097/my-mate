@@ -225,20 +225,39 @@ export interface MissionPipeline {
   summary: string;
   status: "done" | "active" | "pending" | "blocked";
   tone: "neutral" | "warn" | "success" | "danger";
+  stageKey: MissionWorkspaceStageKey;
   nodeCount: number;
   readyCount: number;
   primaryAgentLabel: string | null;
   artifactExpectation: string | null;
+  outputKeys: string[];
+  checkpointKeys: string[];
   blocker: string | null;
   activeNodeName: string | null;
+  nextActionLabel: string | null;
 }
+
+export type MissionCheckpointType =
+  | "objective"
+  | "route"
+  | "launch"
+  | "runtime"
+  | "human_gate"
+  | "output"
+  | "runtime_steering";
 
 export interface MissionCheckpoint {
   key: string;
+  type: MissionCheckpointType;
   label: string;
   detail: string;
   tone: "neutral" | "warn" | "success" | "danger";
   status: "done" | "active" | "pending";
+  relatedRouteRevision: number | null;
+  relatedPipelineKeys: string[];
+  relatedOutputKeys: string[];
+  relatedRunId: string | null;
+  nextActionLabel: string | null;
 }
 
 export interface WorkspaceArtifactSurface {
@@ -250,6 +269,17 @@ export interface WorkspaceArtifactSurface {
   detailLines: string[];
 }
 
+export interface MissionOutputHistoryEntry {
+  key: string;
+  title: string;
+  summary: string;
+  status: "requested" | "prepared" | "in_progress" | "returned";
+  source: "mission_spec" | "pipeline" | "runtime" | "artifact";
+  createdAt: string | null;
+  pipelineKeys: string[];
+  artifactMessageIds: string[];
+}
+
 export interface MissionOutput {
   key: string;
   title: string;
@@ -257,8 +287,13 @@ export interface MissionOutput {
   status: "requested" | "prepared" | "in_progress" | "returned";
   tone: "neutral" | "warn" | "success" | "danger";
   source: "mission_spec" | "pipeline" | "runtime" | "artifact";
+  stageKey: MissionWorkspaceStageKey;
   pipelineKeys: string[];
   artifactMessageIds: string[];
+  relatedCheckpointKeys: string[];
+  latestArtifactMessageId: string | null;
+  currentActionLabel: string | null;
+  history: MissionOutputHistoryEntry[];
   detailLines: string[];
 }
 
