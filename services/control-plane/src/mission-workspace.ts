@@ -794,6 +794,24 @@ function buildMissionWorkspaceSectionsFromSession(input: {
   ).length;
   const blockedPipelineCount = input.pipelines.filter((pipeline) => pipeline.status === "blocked").length;
   const activeCheckpointCount = input.checkpoints.filter((checkpoint) => checkpoint.status === "active").length;
+  const route = input.missionSpec.route;
+  const routeRevision = route.confirmedRevision ?? route.activeRevision ?? route.latestRevision;
+  const routeTone =
+    route.stale
+      ? "warn"
+      : typeof route.confirmedRevision === "number"
+        ? "success"
+        : typeof routeRevision === "number"
+          ? "warn"
+          : "neutral";
+  const routeStatus =
+    route.stale
+      ? "active"
+      : typeof route.confirmedRevision === "number"
+        ? "done"
+        : typeof routeRevision === "number"
+          ? "active"
+          : "pending";
   const activeRunId =
     (typeof input.workspaceState.latest_run_id === "string" && input.workspaceState.latest_run_id.trim()
       ? input.workspaceState.latest_run_id.trim()
@@ -804,16 +822,38 @@ function buildMissionWorkspaceSectionsFromSession(input: {
       ? input.workspaceState.run_status.trim()
       : null) ||
     input.session.status;
+  const runSummary =
+    typeof input.workspaceState.latest_run_summary === "string" &&
+    input.workspaceState.latest_run_summary.trim()
+      ? input.workspaceState.latest_run_summary.trim()
+      : null;
+  const workspaceString = (key: string): string | null => {
+    const value = input.workspaceState[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  };
+  const pendingDecisionLines = uniqueStrings([
+    input.missionSpec.decisionFocus,
+    workspaceString("pending_decision"),
+    workspaceString("next_recommended_label"),
+    workspaceString("next_recommended_detail"),
+    ...input.missionSpec.openQuestions,
+  ]);
+  const conversationTurnCount = input.messages.filter((message) => message.kind === "text").length;
+  const evidenceMessageCount = input.messages.filter((message) => message.kind !== "text").length;
+  const artifactMessageCount = input.messages.filter((message) => message.kind === "artifact_card").length;
+  const hasRuntimeSignal =
+    !!activeRunId ||
+    ["running", "waiting_human", "completed", "failed", "cancelled"].includes(input.session.status);
 
   return [
     {
-      key: "brief",
-      label: "Brief",
-      title: input.missionSpec.objective || "Mission brief",
+      key: "objective",
+      label: "Objective",
+      title: input.missionSpec.objective || "Mission objective not set",
       summary:
         input.missionSpec.sourceBrief ||
         input.missionSpec.decisionFocus ||
-        "Mission context is still being shaped.",
+        "Mission context is still being shaped before execution can be routed.",
       tone: input.missionSpec.objective ? "success" : "neutral",
       status: input.missionSpec.objective ? "done" : "active",
       itemCount: input.missionSpec.constraints.length + input.missionSpec.openQuestions.length,
@@ -827,8 +867,45 @@ function buildMissionWorkspaceSectionsFromSession(input: {
       ],
     },
     {
-      key: "work",
-      label: "Work",
+      key: "route",
+      label: "Route",
+      title:
+        route.stale
+          ? "Route needs refresh"
+          : typeof route.confirmedRevision === "number"
+            ? `Confirmed route v${route.confirmedRevision}`
+            : typeof route.activeRevision === "number"
+              ? `Active route v${route.activeRevision}`
+              : typeof route.latestRevision === "number"
+                ? `Route revision v${route.latestRevision}`
+                : "Route not selected",
+      summary:
+        route.staleReason ||
+        (route.selectedTemplateName || route.selectedTemplateId
+          ? `Selected template: ${route.selectedTemplateName || route.selectedTemplateId}.`
+          : input.missionSpec.decisionFocus || "A normalized route will appear after planning."),
+      tone: routeTone,
+      status: routeStatus,
+      itemCount:
+        (typeof route.activeRevision === "number" ? 1 : 0) +
+        (typeof route.confirmedRevision === "number" ? 1 : 0) +
+        (route.alternativeAvailable ? 1 : 0),
+      detailLines: [
+        route.selectedTemplateName || route.selectedTemplateId
+          ? `Template: ${route.selectedTemplateName || route.selectedTemplateId}`
+          : "No selected route template yet.",
+        typeof route.activeRevision === "number"
+          ? `Active: v${route.activeRevision} / ${route.activeOption || "primary"}`
+          : "No active route revision.",
+        typeof route.confirmedRevision === "number"
+          ? `Confirmed: v${route.confirmedRevision} / ${route.confirmedOption || "primary"}`
+          : "No confirmed route revision.",
+        route.alternativeAvailable ? "Alternative route is available." : null,
+      ].filter((item): item is string => !!item),
+    },
+    {
+      key: "work_packages",
+      label: "Work Packages",
       title:
         input.pipelines.length > 0
           ? `${input.pipelines.length} work package${input.pipelines.length === 1 ? "" : "s"} materialized`
@@ -892,20 +969,37 @@ function buildMissionWorkspaceSectionsFromSession(input: {
       detailLines: input.outputs.slice(0, 4).map((output) => `${output.title}: ${output.status}`),
     },
     {
-      key: "runtime",
-      label: "Runtime",
-      title: activeRunId ? `Run ${activeRunId}` : "Runtime not launched",
+      key: "pending_decisions",
+      label: "Pending Decisions",
+      title:
+        pendingDecisionLines.length > 0
+          ? "Decision needed before the mission moves"
+          : "No blocking decision",
       summary:
-        (typeof input.workspaceState.latest_run_summary === "string" &&
-        input.workspaceState.latest_run_summary.trim()
-          ? input.workspaceState.latest_run_summary.trim()
-          : null) ||
-        "Runtime state will become active after launch.",
+        pendingDecisionLines[0] ||
+        "No human decision is currently blocking progress or changing mission direction.",
+      tone: pendingDecisionLines.length > 0 ? "warn" : "neutral",
+      status: pendingDecisionLines.length > 0 ? "active" : "pending",
+      itemCount: pendingDecisionLines.length,
+      detailLines:
+        pendingDecisionLines.length > 0
+          ? pendingDecisionLines.slice(0, 4)
+          : ["No pending decision is recorded in mission state."],
+    },
+    {
+      key: "execution_summary",
+      label: "Execution Summary",
+      title: activeRunId ? `Execution run ${activeRunId}` : "Execution not launched",
+      summary:
+        runSummary ||
+        (input.session.status === "completed"
+          ? "Mission execution has completed."
+          : "Execution summary will appear after launch."),
       tone: getRunTone(runStatus),
       status:
         input.session.status === "failed" || input.session.status === "cancelled"
           ? "blocked"
-          : activeRunId
+          : activeRunId || hasRuntimeSignal
             ? input.session.status === "completed"
               ? "done"
               : "active"
@@ -914,6 +1008,26 @@ function buildMissionWorkspaceSectionsFromSession(input: {
       detailLines: [
         runStatus ? `Status: ${runStatus}` : "No runtime status yet.",
         activeRunId ? `Run id: ${activeRunId}` : "No active run id.",
+      ],
+    },
+    {
+      key: "evidence_summary",
+      label: "Evidence Summary",
+      title:
+        evidenceMessageCount > 0
+          ? `${evidenceMessageCount} evidence signal${evidenceMessageCount === 1 ? "" : "s"} attached`
+          : "Evidence not attached yet",
+      summary:
+        evidenceMessageCount > 0
+          ? "Planner, route, run, patch, and artifact details are preserved as audit context."
+          : "Raw evidence and drilldown entries will appear after planning or execution signals exist.",
+      tone: "neutral",
+      status: evidenceMessageCount > 0 ? "done" : "pending",
+      itemCount: evidenceMessageCount,
+      detailLines: [
+        `${conversationTurnCount} conversation turn(s).`,
+        `${evidenceMessageCount} evidence signal(s).`,
+        `${artifactMessageCount} artifact signal(s).`,
       ],
     },
   ];

@@ -72,6 +72,13 @@ Latest implementation update:
     `mission_snapshot` path
   - Studio smoke check now guards the versioned spec and section-consumption
     markers
+- `MW-01` workspace structure skeleton landed
+  - Control Plane now emits the stable 8-module `workspaceSections` order:
+    `objective`, `route`, `work_packages`, `checkpoints`, `outputs`,
+    `pending_decisions`, `execution_summary`, `evidence_summary`
+  - Mobile adapts the same 8 modules as persistent center-workspace sections
+    across workspace stages
+  - Studio sorts versioned `workspaceSections` by the same 8-module order
 - validated after landing:
   - `cd services/control-plane && npm run check`
   - `cd services/control-plane && npm test`
@@ -576,7 +583,7 @@ This also means the following may land incrementally:
 | ID | Area | Status | Priority | Task | Notes |
 |---|---|---|---|---|---|
 | `MW-00` | Mission Workspace | Done | P0 | Define a unified `Mission Workspace` contract in the Control Plane and align Mobile and Studio to consume it. | Contract definition, Control Plane normalization, Mobile cleanup, Studio cleanup, and cross-stage verification have landed. |
-| `MW-01` | Mission Workspace | Active | P0 | Make the center workspace feel persistent rather than mainly card-derived. | Current gap called out in [`docs/08-current-status-and-next-steps.md`](/C:/project/my-mate/docs/08-current-status-and-next-steps.md). |
+| `MW-01` | Mission Workspace | Done | P0 | Make the center workspace feel persistent rather than mainly card-derived. | Stable 8-module workspace skeleton now lands in Control Plane, Mobile, and Studio. |
 | `MW-02` | Mission Workspace | Active | P0 | Promote outputs, checkpoints, pipelines, and generated deliverables into stronger first-class surfaces in both Mobile and Studio. | This iteration targets first-class visibility, reviewability, and stage linkage, not a full management back office. |
 | `MW-03` | Mission Workspace | Active | P0 | Keep raw plan/run/evidence cards secondary while making mission state the main product shell. | Conversation remains explanation / decision / audit context rather than the main work surface. |
 | `PLAN-01` | Planner / Orchestrator | Active | P1 | Broaden revise-plan understanding beyond the current deterministic structural mutations. | Current revise flow is intentionally narrow and rule-based. |
@@ -607,7 +614,7 @@ This also means the following may land incrementally:
 Close these items first:
 
 - [x] `MW-00`
-- [ ] `MW-01`
+- [x] `MW-01`
 - [ ] `MW-02`
 - [ ] `MW-03`
 
@@ -625,6 +632,20 @@ Exit condition:
 - [x] `MW-00C` Mobile consumer cleanup landed
 - [x] `MW-00D` Studio consumer cleanup landed
 - [x] `MW-00` final cross-surface stage verification landed
+
+### MW-01 Implementation Status
+
+- [x] Control Plane `mission_snapshot.workspaceSections` emits the stable
+      8-module order:
+      `objective -> route -> work_packages -> checkpoints -> outputs ->
+      pending_decisions -> execution_summary -> evidence_summary`
+- [x] Mobile task workspace consumes the same section keys, keeps the stable
+      modules visible across workspace stages, and retains local builders only
+      as fallback/body adapters.
+- [x] Studio Mission Workspace sorts versioned section cards by the same
+      8-module order.
+- [x] Contract and smoke tests have been updated to guard the MW-01 section
+      order.
 
 ### Milestone B: Runtime Steering Maturity
 

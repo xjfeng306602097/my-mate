@@ -65,11 +65,14 @@ const EXPECTED_STAGE_KEYS: MissionWorkspaceStageKey[] = [
 ];
 
 const EXPECTED_WORKSPACE_SECTION_KEYS: MissionWorkspaceSectionKey[] = [
-  "brief",
-  "work",
+  "objective",
+  "route",
+  "work_packages",
   "checkpoints",
   "outputs",
-  "runtime",
+  "pending_decisions",
+  "execution_summary",
+  "evidence_summary",
 ];
 
 function buildRouteMessage(overrides: Partial<SessionMessageRecord> = {}): SessionMessageRecord {
@@ -581,10 +584,10 @@ test("mission workspace projection promotes outputs checkpoints and pipelines in
 
   assert.deepEqual(
     projection.missionSnapshot.workspaceSections.map((section) => section.key),
-    ["brief", "work", "checkpoints", "outputs", "runtime"],
+    EXPECTED_WORKSPACE_SECTION_KEYS,
   );
-  assert.equal(projection.missionSnapshot.workspaceSections[1]?.key, "work");
-  assert.equal(projection.missionSnapshot.workspaceSections[3]?.key, "outputs");
+  assert.equal(projection.missionSnapshot.workspaceSections[2]?.key, "work_packages");
+  assert.equal(projection.missionSnapshot.workspaceSections[4]?.key, "outputs");
   assert.equal(projection.missionSnapshot.outputs[0]?.title, "research-notes");
   assert.equal(projection.missionSnapshot.outputs[0]?.status, "returned");
   assert.deepEqual(projection.missionSnapshot.outputs[0]?.pipelineKeys, ["collect_context"]);

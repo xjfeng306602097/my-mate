@@ -1,7 +1,8 @@
 # Mission Workspace Contract
 
 This document defines the formal `Mission Workspace` contract used by My Mate
- during the `MW-00` contract-normalization phase.
+during the `MW-00` contract-normalization and `MW-01` workspace-structure
+phases.
 
 It is the implementation companion to:
 
@@ -78,6 +79,26 @@ Allowed nullable fields:
 - `activeRouteRevision`
 - `activeRouteOption`
 - `activeRunId`
+
+## Workspace Section Order
+
+`mission_snapshot.workspaceSections` uses this stable top-level order:
+
+1. `objective`
+2. `route`
+3. `work_packages`
+4. `checkpoints`
+5. `outputs`
+6. `pending_decisions`
+7. `execution_summary`
+8. `evidence_summary`
+
+The first five sections are the durable workspace skeleton and must remain
+present across core mission stages, using stage-aware empty states when data is
+not available yet.
+
+The last three sections are stage-sensitive emphasis blocks, but they still use
+the same keys and relative order in the contract.
 
 Compatibility note:
 
@@ -186,7 +207,7 @@ Frontends must not:
 
 ## Current Consumer Alignment
 
-Current `MW-00` implementation status:
+Current `MW-00` and `MW-01` implementation status:
 
 - Mobile treats a `mission_snapshot` with `workspace_contract_version > 0` as
   the primary workspace contract.
@@ -200,6 +221,9 @@ Current `MW-00` implementation status:
 - Studio Mission Workspace, inspector rail, and mission inventory labels prefer
   the versioned `mission_snapshot` over `mission_spec` and `mission_view`
   helper fields.
+- Control Plane emits the stable `MW-01` 8-module `workspaceSections` order.
+- Mobile adapts the same 8 modules as persistent center-workspace sections.
+- Studio sorts versioned workspace section cards by the same 8-module order.
 
 Current verification coverage:
 

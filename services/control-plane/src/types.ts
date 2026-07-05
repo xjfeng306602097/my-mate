@@ -273,11 +273,14 @@ export interface MissionStageSummary {
 }
 
 export type MissionWorkspaceSectionKey =
-  | "brief"
-  | "work"
+  | "objective"
+  | "route"
+  | "work_packages"
   | "checkpoints"
   | "outputs"
-  | "runtime";
+  | "pending_decisions"
+  | "execution_summary"
+  | "evidence_summary";
 
 export interface MissionWorkspaceSection {
   key: MissionWorkspaceSectionKey;

@@ -1033,11 +1033,14 @@ function renderMissionWorkspaceSectionGrid(sections) {
     return "";
   }
   const rank = {
-    brief: 0,
-    work: 1,
-    checkpoints: 2,
-    outputs: 3,
-    runtime: 4,
+    objective: 0,
+    route: 1,
+    work_packages: 2,
+    checkpoints: 3,
+    outputs: 4,
+    pending_decisions: 5,
+    execution_summary: 6,
+    evidence_summary: 7,
   };
   return `
     <section class="subpanel mission-main-surface-panel">
@@ -2052,7 +2055,7 @@ function buildMissionWorkspaceViewModel(detail) {
       objective: snapshot?.objective || spec?.objective || session?.current_goal || "Mission contract is forming",
       sourceBrief:
         spec?.sourceBrief ||
-        "Objective, work, checkpoints, outputs, and runtime stay visible while the mission moves.",
+        "Objective, route, work packages, checkpoints, outputs, pending decisions, execution summary, and evidence summary stay visible while the mission moves.",
       routeTemplate: route?.selectedTemplateName || route?.selectedTemplateId || "No selected route template",
     },
     summaryStats: [

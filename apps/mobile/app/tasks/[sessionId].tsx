@@ -1181,6 +1181,13 @@ export default function TaskThreadScreen() {
 
   const workspaceSections = useMemo<WorkspaceSection[]>(() => {
     const sections: WorkspaceSection[] = [];
+    const stableWorkspaceStages: WorkspaceStageKey[] = [
+      "briefing",
+      "work",
+      "plan",
+      "execution",
+      "thread",
+    ];
     const routeRefreshNeeded =
       workspaceState?.planStale === true &&
       workspaceState.stage !== "execute" &&
@@ -1201,9 +1208,19 @@ export default function TaskThreadScreen() {
     const missionWorkspaceSections = missionSnapshot?.workspaceSections || [];
     const useContractWorkspaceSections =
       hasVersionedWorkspaceContract && missionWorkspaceSections.length > 0;
-    const missionWorkspaceSectionByKey = new Map<string, (typeof missionWorkspaceSections)[number]>(
-      missionWorkspaceSections.map((section) => [section.key, section]),
-    );
+    const missionWorkspaceSectionByKey = new Map<string, (typeof missionWorkspaceSections)[number]>();
+    const legacySectionAliases: Record<string, string> = {
+      brief: "objective",
+      work: "work_packages",
+      runtime: "execution_summary",
+    };
+    for (const section of missionWorkspaceSections) {
+      missionWorkspaceSectionByKey.set(section.key, section);
+      const alias = legacySectionAliases[section.key];
+      if (alias && !missionWorkspaceSectionByKey.has(alias)) {
+        missionWorkspaceSectionByKey.set(alias, section);
+      }
+    }
     const pushWorkspaceSection = (section: WorkspaceSection) => {
       const contractSection = useContractWorkspaceSections
         ? missionWorkspaceSectionByKey.get(section.key)
@@ -1256,8 +1273,8 @@ export default function TaskThreadScreen() {
           : "No outputs have been requested or returned yet");
 
     pushWorkspaceSection({
-      key: "brief",
-      eyebrow: "Mission brief",
+      key: "objective",
+      eyebrow: "Objective",
       title: missionObjective,
       detail:
         missionConstraints.length > 0
@@ -1267,7 +1284,7 @@ export default function TaskThreadScreen() {
         orchestratorBriefing?.summary ||
         "The workspace is holding the mission context and waiting for the next orchestration move.",
       tone: threadOverview?.stageTone || orchestratorBriefing?.tone || "neutral",
-      stages: ["briefing", "thread"],
+      stages: stableWorkspaceStages,
       layout: "full",
       body: (
         <View style={styles.workspaceSignalGrid}>
@@ -1318,66 +1335,116 @@ export default function TaskThreadScreen() {
               <Text style={[styles.workspaceSignalText, styles.signalWarn]}>{question}</Text>
             </View>
           ))}
+        </View>
+      ),
+    });
+
+    const routeSection = missionWorkspaceSectionByKey.get("route");
+    pushWorkspaceSection({
+      key: "route",
+      eyebrow: routeSection?.label || "Route",
+      title:
+        routeSection?.title ||
+        (routeRefreshNeeded
+          ? "Route needs refresh"
+          : missionRoute
+            ? getMissionRouteLabel(missionRoute)
+            : latestDraftMessage
+              ? "Draft route is ready"
+              : "Route not selected"),
+      detail:
+        routeSection?.summary ||
+        (routeRefreshNeeded
+          ? workspaceState?.staleReason ||
+            workspaceState?.nextRecommendedDetail ||
+            "The latest mission note changed the route and it should be refreshed."
+          : planOptionsNarrative?.comparisonSummary ||
+            missionRoute?.selectedTemplateName ||
+            missionRoute?.selectedTemplateId ||
+            "A normalized route will appear after planning."),
+      tone:
+        routeSection?.tone ||
+        (routeRefreshNeeded
+          ? "warn"
+          : typeof missionRoute?.confirmedRevision === "number"
+            ? "success"
+            : planOptionsNarrative || latestDraftMessage
+              ? "warn"
+              : "neutral"),
+      stages: stableWorkspaceStages,
+      layout: "full",
+      body: (
+        <View style={styles.workspaceSignalGrid}>
+          {routeRefreshNeeded ? (
+            <View style={styles.workspaceSignalCard}>
+              <Text style={styles.workspaceSignalLabel}>Route status</Text>
+              <Text style={[styles.workspaceSignalText, styles.signalWarn]}>
+                {workspaceState.hasActivePlan ? "Current plan is stale" : "Current draft is stale"}
+              </Text>
+              {workspaceState.staleReason ? (
+                <Text style={styles.workspaceSignalMeta}>{workspaceState.staleReason}</Text>
+              ) : null}
+            </View>
+          ) : null}
+          <View style={styles.workspaceSignalCard}>
+            <Text style={styles.workspaceSignalLabel}>Active route</Text>
+            <Text
+              style={[
+                styles.workspaceSignalText,
+                missionRoute?.stale
+                  ? styles.signalWarn
+                  : typeof missionRoute?.confirmedRevision === "number"
+                    ? styles.signalSuccess
+                    : null,
+              ]}
+            >
+              {getMissionRouteLabel(missionRoute)}
+            </Text>
+            <Text style={styles.workspaceSignalMeta}>
+              Template:{" "}
+              {missionRoute?.selectedTemplateName ||
+                missionRoute?.selectedTemplateId ||
+                "No route template selected yet"}
+            </Text>
+            {missionRoute?.alternativeAvailable ? (
+              <Text style={styles.workspaceSignalMeta}>Alternative route available</Text>
+            ) : null}
+          </View>
           {spec ? (
-            <>
-              <View style={styles.workspaceSignalCard}>
-                <Text style={styles.workspaceSignalLabel}>Active route</Text>
-                <Text
-                  style={[
-                    styles.workspaceSignalText,
-                    missionRoute?.stale
-                      ? styles.signalWarn
-                      : typeof missionRoute?.confirmedRevision === "number"
-                        ? styles.signalSuccess
-                        : null,
-                  ]}
-                >
-                  {getMissionRouteLabel(missionRoute)}
-                </Text>
-                <Text style={styles.workspaceSignalMeta}>
-                  Template:{" "}
-                  {missionRoute?.selectedTemplateName ||
-                    missionRoute?.selectedTemplateId ||
-                    "No route template selected yet"}
-                </Text>
-                {missionRoute?.alternativeAvailable ? (
-                  <Text style={styles.workspaceSignalMeta}>Alternative route available</Text>
-                ) : null}
-              </View>
-              <View style={styles.workspaceSignalCard}>
-                <Text style={styles.workspaceSignalLabel}>Work</Text>
-                <Text style={styles.workspaceSignalText}>
-                  {pipelineSummary?.active || 0} live / {pipelineSummary?.total || 0} total
-                </Text>
-                <Text style={styles.workspaceSignalMeta}>
-                  {pipelineSummary?.ready || 0} ready, {pipelineSummary?.blocked || 0} blocked,{" "}
-                  {pipelineSummary?.completed || 0} completed
-                </Text>
-              </View>
-              <View style={styles.workspaceSignalCard}>
-                <Text style={styles.workspaceSignalLabel}>Checkpoints</Text>
-                <Text style={styles.workspaceSignalText}>
-                  {checkpointSummary?.completed || 0}/{checkpointSummary?.total || 0} complete
-                </Text>
-                <Text style={styles.workspaceSignalMeta}>
-                  {checkpointSummary?.active || 0} active, {checkpointSummary?.pending || 0} pending
-                </Text>
-              </View>
-              <View style={styles.workspaceSignalCard}>
-                <Text style={styles.workspaceSignalLabel}>Revision lineage</Text>
-                <Text style={styles.workspaceSignalText}>
-                  Latest {spec.revisionLineage.latestRevision ?? "none"}
-                </Text>
-                <Text style={styles.workspaceSignalMeta}>
-                  Confirmed{" "}
-                  {typeof spec.revisionLineage.confirmedRevision === "number"
-                    ? `v${spec.revisionLineage.confirmedRevision} / ${
-                        spec.revisionLineage.confirmedOption || "primary"
-                      }`
-                    : "none"}
-                </Text>
-              </View>
-            </>
+            <View style={styles.workspaceSignalCard}>
+              <Text style={styles.workspaceSignalLabel}>Revision lineage</Text>
+              <Text style={styles.workspaceSignalText}>
+                Latest {spec.revisionLineage.latestRevision ?? "none"}
+              </Text>
+              <Text style={styles.workspaceSignalMeta}>
+                Confirmed{" "}
+                {typeof spec.revisionLineage.confirmedRevision === "number"
+                  ? `v${spec.revisionLineage.confirmedRevision} / ${
+                      spec.revisionLineage.confirmedOption || "primary"
+                    }`
+                  : "none"}
+              </Text>
+            </View>
+          ) : null}
+          {planOptionsNarrative ? (
+            <View style={styles.workspaceSignalCard}>
+              <Text style={styles.workspaceSignalLabel}>Route options</Text>
+              <Text style={styles.workspaceSignalText}>
+                {planOptionsNarrative.summaries.length} option
+                {planOptionsNarrative.summaries.length === 1 ? "" : "s"} ready
+              </Text>
+              <Text style={styles.workspaceSignalMeta}>
+                Focus: {planOptionsNarrative.focusedOption} / v{planOptionsNarrative.revision}
+              </Text>
+            </View>
+          ) : latestDraftMessage ? (
+            <View style={styles.workspaceSignalCard}>
+              <Text style={styles.workspaceSignalLabel}>Draft route</Text>
+              <Text style={styles.workspaceSignalText}>Draft DAG is ready</Text>
+              <Text style={styles.workspaceSignalMeta}>
+                Promote the draft into route options before execution.
+              </Text>
+            </View>
           ) : null}
         </View>
       ),
@@ -1393,7 +1460,7 @@ export default function TaskThreadScreen() {
           checkpointSection?.summary ||
           "Mission checkpoints keep mission intent, route, launch, runtime, gates, and outputs visible without opening raw cards.",
         tone: checkpointSection?.tone || (checkpointSummary?.active ? "warn" : "success"),
-        stages: ["briefing", "work", "execution"],
+        stages: stableWorkspaceStages,
         layout: "full",
         body: (
           <View style={styles.workspaceCheckpointGrid}>
@@ -1455,7 +1522,7 @@ export default function TaskThreadScreen() {
         (artifactMessages.length > 0
           ? "success"
           : outputArtifactSurface?.tone || (missionOutputs.length > 0 ? "warn" : "neutral")),
-      stages: ["briefing", "plan", "execution", "thread"],
+      stages: stableWorkspaceStages,
       layout: "full",
       body: (
         <View style={styles.workspaceArtifactGrid}>
@@ -1765,23 +1832,67 @@ export default function TaskThreadScreen() {
       ),
     });
 
+    const pendingDecisionSection = missionWorkspaceSectionByKey.get("pending_decisions");
+    const pendingDecisionItems = [
+      workspaceState?.pendingDecision,
+      workspaceState?.nextRecommendedLabel,
+      workspaceState?.nextRecommendedDetail,
+      ...missionQuestions,
+    ].filter((item): item is string => typeof item === "string" && !!item.trim());
     pushWorkspaceSection({
-      key: "runtime",
-      eyebrow: missionWorkspaceSectionByKey.get("runtime")?.label || "Runtime",
+      key: "pending_decisions",
+      eyebrow: pendingDecisionSection?.label || "Pending Decisions",
       title:
-        missionWorkspaceSectionByKey.get("runtime")?.title ||
+        pendingDecisionSection?.title ||
+        (pendingDecisionItems.length > 0
+          ? "Decision needed before the mission moves"
+          : "No blocking decision"),
+      detail:
+        pendingDecisionSection?.summary ||
+        pendingDecisionItems[0] ||
+        "No human decision is currently blocking progress or changing mission direction.",
+      tone: pendingDecisionSection?.tone || (pendingDecisionItems.length > 0 ? "warn" : "neutral"),
+      stages: stableWorkspaceStages,
+      layout: "full",
+      body: (
+        <View style={styles.workspaceSignalGrid}>
+          {pendingDecisionItems.length > 0 ? (
+            pendingDecisionItems.slice(0, 6).map((item, index) => (
+              <View key={`pending-decision-${index}`} style={styles.workspaceSignalCard}>
+                <Text style={styles.workspaceSignalLabel}>
+                  {index === 0 ? "Current decision" : "Decision context"}
+                </Text>
+                <Text style={[styles.workspaceSignalText, styles.signalWarn]}>{item}</Text>
+              </View>
+            ))
+          ) : (
+            <View style={styles.emptyStage}>
+              <Text style={styles.timelineDetail}>
+                No blocking decision is recorded. This module will surface human gates or direction changes when they matter.
+              </Text>
+            </View>
+          )}
+        </View>
+      ),
+    });
+
+    pushWorkspaceSection({
+      key: "execution_summary",
+      eyebrow: missionWorkspaceSectionByKey.get("execution_summary")?.label || "Execution Summary",
+      title:
+        missionWorkspaceSectionByKey.get("execution_summary")?.title ||
         runtimeGraphNarrative?.title ||
         (latestRunId ? `Run ${latestRunId}` : "Runtime not launched"),
       detail:
-        missionWorkspaceSectionByKey.get("runtime")?.summary ||
+        missionWorkspaceSectionByKey.get("execution_summary")?.summary ||
         latestRunSummary ||
         runtimeGraphNarrative?.detail ||
         "Runtime state will appear here after a real run starts.",
       tone:
-        missionWorkspaceSectionByKey.get("runtime")?.tone ||
+        missionWorkspaceSectionByKey.get("execution_summary")?.tone ||
         runtimeGraphNarrative?.tone ||
         (interventionMessages.length > 0 ? "warn" : latestRunStatus ? "success" : "neutral"),
-      stages: ["execution", "work", "thread"],
+      stages: stableWorkspaceStages,
       layout: "full",
       body: (
         <View style={styles.workspaceStack}>
@@ -1793,6 +1904,59 @@ export default function TaskThreadScreen() {
                   {renderMessageBody(message)}
                 </View>
               ))}
+            </View>
+          ) : null}
+          {!runtimeGraph && !latestRunId && interventionMessages.length === 0 ? (
+            <View style={styles.emptyStage}>
+              <Text style={styles.timelineDetail}>
+                Execution summary will appear here after a run starts or the mission records a runtime handoff.
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ),
+    });
+
+    const evidenceSection = missionWorkspaceSectionByKey.get("evidence_summary");
+    pushWorkspaceSection({
+      key: "evidence_summary",
+      eyebrow: evidenceSection?.label || "Evidence Summary",
+      title:
+        evidenceSection?.title ||
+        (evidenceMessages.length > 0
+          ? `${evidenceMessages.length} mission signal${evidenceMessages.length === 1 ? "" : "s"}`
+          : "Evidence not attached yet"),
+      detail:
+        evidenceSection?.summary ||
+        (evidenceMessages.length > 0
+          ? "Planner, route, run, patch, and artifact details are preserved as audit context."
+          : "Raw evidence and drilldown entries will appear after planning or execution signals exist."),
+      tone: evidenceSection?.tone || "neutral",
+      stages: stableWorkspaceStages,
+      layout: "full",
+      body: (
+        <View style={styles.workspaceStack}>
+          {outputEvidenceMessages.length > 0 ? (
+            <View style={styles.workspaceArtifactCard}>
+              <View style={styles.workspaceArtifactTop}>
+                <Text style={styles.workspaceArtifactTitle}>Recent evidence</Text>
+                <Badge
+                  label={`${outputEvidenceMessages.length} signal${
+                    outputEvidenceMessages.length === 1 ? "" : "s"
+                  }`}
+                  tone="neutral"
+                />
+              </View>
+              <Text style={styles.workspaceArtifactSummary}>
+                Recent run updates and returned outputs stay attached to the mission as auditable evidence.
+              </Text>
+              <View style={styles.workspaceEvidenceStack}>
+                {outputEvidenceMessages.map((message) => (
+                  <View key={`evidence-summary-${message.message_id}`} style={styles.workspaceEvidenceCard}>
+                    {renderTimelineMessage(message, true)}
+                  </View>
+                ))}
+              </View>
             </View>
           ) : null}
           <View style={styles.workspaceAuditBlock}>
@@ -1828,32 +1992,35 @@ export default function TaskThreadScreen() {
     });
 
     pushWorkspaceSection({
-      key: "work",
-      eyebrow: missionWorkspaceSectionByKey.get("work")?.label || "Active work",
+      key: "work_packages",
+      eyebrow: missionWorkspaceSectionByKey.get("work_packages")?.label || "Work Packages",
       title:
-        workspaceState?.stage === "deliver"
+        missionWorkspaceSectionByKey.get("work_packages")?.title ||
+        (workspaceState?.stage === "deliver"
           ? "Mission delivered a final state"
           : workspaceState?.stage === "waiting"
             ? "The orchestration is paused at a human gate"
             : routeRefreshNeeded
               ? "The route needs refresh against the latest brief"
-            : workspaceState?.stage === "execute"
-              ? workspaceState?.latestSubtask?.nodeName || "Execution is active"
-              : activeExecutionBeat?.title || orchestratorTurns[0]?.title || "The mission flow is being shaped.",
+              : workspaceState?.stage === "execute"
+                ? workspaceState?.latestSubtask?.nodeName || "Execution is active"
+                : activeExecutionBeat?.title || orchestratorTurns[0]?.title || "The mission flow is being shaped."),
       detail:
-        routeRefreshNeeded
+        missionWorkspaceSectionByKey.get("work_packages")?.summary ||
+        (routeRefreshNeeded
           ? workspaceState?.staleReason || workspaceState?.nextRecommendedDetail ||
             "The workspace is pausing execution framing until the route is refreshed."
           : workspaceState?.latestSubtask?.progressMessage ||
             workspaceState?.latestRunSummary ||
             activeExecutionBeat?.detail ||
             orchestratorTurns.find((turn) => turn.status === "active")?.detail ||
-            "The current execution flow will appear here as the mission moves from route into run.",
+            "The current execution flow will appear here as the mission moves from route into run."),
       tone:
-        routeRefreshNeeded
+        missionWorkspaceSectionByKey.get("work_packages")?.tone ||
+        (routeRefreshNeeded
           ? "warn"
-          : activeExecutionBeat?.tone || orchestratorTurns.find((turn) => turn.status === "active")?.tone || "neutral",
-      stages: ["briefing", "execution"],
+          : activeExecutionBeat?.tone || orchestratorTurns.find((turn) => turn.status === "active")?.tone || "neutral"),
+      stages: stableWorkspaceStages,
       layout: "split",
       body: (
         <View style={styles.workspaceStack}>
@@ -1989,11 +2156,14 @@ export default function TaskThreadScreen() {
     });
 
     const sectionRank: Record<string, number> = {
-      brief: 0,
-      work: 1,
-      checkpoints: 2,
-      outputs: 3,
-      runtime: 4,
+      objective: 0,
+      route: 1,
+      work_packages: 2,
+      checkpoints: 3,
+      outputs: 4,
+      pending_decisions: 5,
+      execution_summary: 6,
+      evidence_summary: 7,
     };
     const contractSectionRank = new Map<string, number>(
       missionWorkspaceSections.map((section, index) => [section.key, index]),

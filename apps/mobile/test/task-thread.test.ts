@@ -1158,7 +1158,16 @@ test("buildMissionSnapshot assembles mission-first workspace state", () => {
   assert.ok(mission.checkpoints.some((checkpoint) => checkpoint.label === "Route comparison"));
   assert.deepEqual(
     mission.workspaceSections.map((section) => section.key),
-    ["brief", "work", "checkpoints", "outputs", "runtime"],
+    [
+      "objective",
+      "route",
+      "work_packages",
+      "checkpoints",
+      "outputs",
+      "pending_decisions",
+      "execution_summary",
+      "evidence_summary",
+    ],
   );
   assert.equal(mission.outputs[0]?.title, "research-notes");
   assert.equal(mission.outputs[0]?.status, "prepared");

@@ -301,11 +301,14 @@ export type MissionCheckpoint = {
 };
 
 export type MissionWorkspaceSectionKey =
-  | "brief"
-  | "work"
+  | "objective"
+  | "route"
+  | "work_packages"
   | "checkpoints"
   | "outputs"
-  | "runtime";
+  | "pending_decisions"
+  | "execution_summary"
+  | "evidence_summary";
 
 export type MissionWorkspaceSection = {
   key: MissionWorkspaceSectionKey;
@@ -3517,15 +3520,49 @@ export function buildMissionWorkspaceSections(
   ).length;
   const blockedPipelineCount = pipelines.filter((pipeline) => pipeline.status === "blocked").length;
   const activeCheckpointCount = checkpoints.filter((checkpoint) => checkpoint.status === "active").length;
+  const route = spec.route;
+  const routeRevision = route.confirmedRevision ?? route.activeRevision ?? route.latestRevision;
+  const routeTone =
+    route.stale
+      ? "warn"
+      : typeof route.confirmedRevision === "number"
+        ? "success"
+        : typeof routeRevision === "number"
+          ? "warn"
+          : "neutral";
+  const routeStatus =
+    route.stale
+      ? "active"
+      : typeof route.confirmedRevision === "number"
+        ? "done"
+        : typeof routeRevision === "number"
+          ? "active"
+          : "pending";
   const latestRunId = detail.latest_run?.run_id || detail.session.latest_run_id || workspace.latestRunId;
   const runStatus = workspace.runStatus || detail.latest_run?.status || detail.session.status;
+  const pendingDecisionLines = uniqueStrings([
+    spec.decisionFocus,
+    workspace.pendingDecision,
+    workspace.nextRecommendedLabel,
+    workspace.nextRecommendedDetail,
+    ...spec.openQuestions,
+  ]);
+  const conversationTurnCount = visibleMessages.filter((message) => message.kind === "text").length;
+  const evidenceMessageCount = visibleMessages.filter((message) => message.kind !== "text").length;
+  const artifactMessageCount = visibleMessages.filter((message) => message.kind === "artifact_card").length;
+  const hasRuntimeSignal =
+    !!latestRunId ||
+    ["running", "waiting_human", "completed", "failed", "cancelled"].includes(detail.session.status);
 
   return [
     {
-      key: "brief",
-      label: "Brief",
-      title: spec.objective || "Mission brief",
-      summary: spec.sourceBrief || spec.decisionFocus || "Mission context is still being shaped.",
+      key: "objective",
+      label: "Objective",
+      title: spec.objective || "Mission objective not set",
+      summary:
+        spec.sourceBrief ||
+        spec.decisionFocus ||
+        "Mission context is still being shaped before execution can be routed.",
       tone: spec.objective ? "success" : "neutral",
       status: spec.objective ? "done" : "active",
       itemCount: spec.constraints.length + spec.openQuestions.length,
@@ -3535,15 +3572,52 @@ export function buildMissionWorkspaceSections(
       ],
     },
     {
-      key: "work",
-      label: "Active work",
+      key: "route",
+      label: "Route",
+      title:
+        route.stale
+          ? "Route needs refresh"
+          : typeof route.confirmedRevision === "number"
+            ? `Confirmed route v${route.confirmedRevision}`
+            : typeof route.activeRevision === "number"
+              ? `Active route v${route.activeRevision}`
+              : typeof route.latestRevision === "number"
+                ? `Route revision v${route.latestRevision}`
+                : "Route not selected",
+      summary:
+        route.staleReason ||
+        (route.selectedTemplateName || route.selectedTemplateId
+          ? `Selected template: ${route.selectedTemplateName || route.selectedTemplateId}.`
+          : spec.decisionFocus || "A normalized route will appear after planning."),
+      tone: routeTone,
+      status: routeStatus,
+      itemCount:
+        (typeof route.activeRevision === "number" ? 1 : 0) +
+        (typeof route.confirmedRevision === "number" ? 1 : 0) +
+        (route.alternativeAvailable ? 1 : 0),
+      detailLines: [
+        route.selectedTemplateName || route.selectedTemplateId
+          ? `Template: ${route.selectedTemplateName || route.selectedTemplateId}`
+          : "No selected route template yet.",
+        typeof route.activeRevision === "number"
+          ? `Active: v${route.activeRevision} / ${route.activeOption || "primary"}`
+          : "No active route revision.",
+        typeof route.confirmedRevision === "number"
+          ? `Confirmed: v${route.confirmedRevision} / ${route.confirmedOption || "primary"}`
+          : "No confirmed route revision.",
+        route.alternativeAvailable ? "Alternative route is available." : null,
+      ].filter((item): item is string => !!item),
+    },
+    {
+      key: "work_packages",
+      label: "Work Packages",
       title:
         pipelines.length > 0
-          ? `${pipelines.length} pipeline${pipelines.length === 1 ? "" : "s"} materialized`
-          : "Pipelines not materialized",
+          ? `${pipelines.length} work package${pipelines.length === 1 ? "" : "s"} materialized`
+          : "Work packages not materialized",
       summary:
         blockedPipelineCount > 0
-          ? `${blockedPipelineCount} pipeline(s) need attention before execution can continue.`
+          ? `${blockedPipelineCount} work package(s) need attention before execution can continue.`
           : pipelines[0]?.summary || "Compiled work packages will appear here once a route exists.",
       tone: blockedPipelineCount > 0 ? "warn" : pipelines.length > 0 ? "success" : "neutral",
       status:
@@ -3558,7 +3632,7 @@ export function buildMissionWorkspaceSections(
       detailLines: [
         `${pipelines.filter((pipeline) => pipeline.status === "active").length} active.`,
         `${pipelines.filter((pipeline) => pipeline.status === "done").length} complete.`,
-        `${preparedOutputCount} output target(s) prepared by pipelines.`,
+        `${preparedOutputCount} output target(s) prepared by work packages.`,
       ],
     },
     {
@@ -3598,15 +3672,37 @@ export function buildMissionWorkspaceSections(
       detailLines: outputs.slice(0, 4).map((output) => `${output.title}: ${output.status}`),
     },
     {
-      key: "runtime",
-      label: "Runtime",
-      title: latestRunId ? `Run ${latestRunId}` : "Runtime not launched",
-      summary: workspace.latestRunSummary || "Runtime state will become active after launch.",
+      key: "pending_decisions",
+      label: "Pending Decisions",
+      title:
+        pendingDecisionLines.length > 0
+          ? "Decision needed before the mission moves"
+          : "No blocking decision",
+      summary:
+        pendingDecisionLines[0] ||
+        "No human decision is currently blocking progress or changing mission direction.",
+      tone: pendingDecisionLines.length > 0 ? "warn" : "neutral",
+      status: pendingDecisionLines.length > 0 ? "active" : "pending",
+      itemCount: pendingDecisionLines.length,
+      detailLines:
+        pendingDecisionLines.length > 0
+          ? pendingDecisionLines.slice(0, 4)
+          : ["No pending decision is recorded in mission state."],
+    },
+    {
+      key: "execution_summary",
+      label: "Execution Summary",
+      title: latestRunId ? `Execution run ${latestRunId}` : "Execution not launched",
+      summary:
+        workspace.latestRunSummary ||
+        (detail.session.status === "completed"
+          ? "Mission execution has completed."
+          : "Execution summary will appear after launch."),
       tone: getRunTone(runStatus),
       status:
         detail.session.status === "failed" || detail.session.status === "cancelled"
           ? "blocked"
-          : latestRunId
+          : latestRunId || hasRuntimeSignal
             ? detail.session.status === "completed"
               ? "done"
               : "active"
@@ -3615,6 +3711,26 @@ export function buildMissionWorkspaceSections(
       detailLines: [
         runStatus ? `Status: ${runStatus}` : "No runtime status yet.",
         latestRunId ? `Run id: ${latestRunId}` : "No active run id.",
+      ],
+    },
+    {
+      key: "evidence_summary",
+      label: "Evidence Summary",
+      title:
+        evidenceMessageCount > 0
+          ? `${evidenceMessageCount} evidence signal${evidenceMessageCount === 1 ? "" : "s"} attached`
+          : "Evidence not attached yet",
+      summary:
+        evidenceMessageCount > 0
+          ? "Planner, route, run, patch, and artifact details are preserved as audit context."
+          : "Raw evidence and drilldown entries will appear after planning or execution signals exist.",
+      tone: "neutral",
+      status: evidenceMessageCount > 0 ? "done" : "pending",
+      itemCount: evidenceMessageCount,
+      detailLines: [
+        `${conversationTurnCount} conversation turn(s).`,
+        `${evidenceMessageCount} evidence signal(s).`,
+        `${artifactMessageCount} artifact signal(s).`,
       ],
     },
   ];
