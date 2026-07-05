@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildComposerDirectiveChips,
   buildComposerDirectiveChipsV2,
+  buildDagPatchReviewSummary,
   buildExecutionNarrative,
   buildExecutionNarrativeV2,
   buildMissionPipelines,
@@ -1430,8 +1431,8 @@ test("buildExecutionNarrativeV2 surfaces DAG patch proposals separately from int
 
   assert.ok(beats.some((beat) => beat.key === "dag-patch-patch-1"));
   assert.ok(beats.some((beat) => /runtime DAG change/i.test(beat.title)));
-  assert.ok(beats.some((beat) => /add_node/i.test(beat.detail)));
-  assert.ok(beats.some((beat) => /can be applied after confirmation/i.test(beat.detail)));
+  assert.ok(beats.some((beat) => /add node/i.test(beat.detail)));
+  assert.ok(beats.some((beat) => /apply-ready after human confirmation/i.test(beat.detail)));
 });
 
 test("buildExecutionNarrativeV2 summarizes applied DAG patch outcomes", () => {
@@ -1476,10 +1477,62 @@ test("buildExecutionNarrativeV2 summarizes applied DAG patch outcomes", () => {
 
   assert.ok(patchBeat);
   assert.match(patchBeat.title, /Applied a runtime DAG patch/i);
-  assert.match(patchBeat.detail, /Outcome: 2 applied/i);
-  assert.match(patchBeat.detail, /Runtime topology was updated/i);
+  assert.match(patchBeat.detail, /Outcomes: 2 applied/i);
+  assert.match(patchBeat.detail, /runtime audit trail/i);
   assert.equal(patchBeat.tone, "success");
   assert.equal(patchBeat.status, "done");
+});
+
+test("buildDagPatchReviewSummary explains graph impact and topology snapshots", () => {
+  const review = buildDagPatchReviewSummary({
+    status: "needs_confirmation",
+    operations: [
+      {
+        op: "add_node",
+        node_name: "QA Review",
+        supported: true,
+      },
+      {
+        op: "resume_with_patch",
+        supported: true,
+      },
+    ],
+    apply_supported: true,
+    graph_preview: {
+      summary_lines: [
+        "2 operation(s): add node: QA Review, resume with patch.",
+        "Predicted graph delta: +1 node(s), +1 edge(s).",
+      ],
+      operation_labels: ["add node: QA Review", "resume with patch"],
+      before_topology: {
+        node_count: 2,
+        edge_count: 1,
+        ready_node_run_ids: ["node-a"],
+        running_node_run_ids: [],
+        waiting_node_run_ids: [],
+        max_parallel_nodes: 1,
+      },
+      predicted_topology: {
+        node_count: 3,
+        edge_count: 2,
+        ready_node_run_ids: ["node-a"],
+        running_node_run_ids: [],
+        waiting_node_run_ids: [],
+        max_parallel_nodes: 1,
+      },
+      actual_topology: null,
+      node_delta: 1,
+      edge_delta: 1,
+      parallelism_delta: null,
+    },
+  });
+
+  assert.equal(review.statusLabel, "Needs confirmation");
+  assert.equal(review.operationSummary, "Operations: add node: QA Review, resume with patch");
+  assert.equal(review.graphImpactSummary, "Graph impact: nodes +1, edges +1");
+  assert.equal(review.topologySnapshots.length, 2);
+  assert.match(review.topologySnapshots[0].line, /2 nodes \/ 1 edges/);
+  assert.match(review.confirmationSummary, /apply-ready/i);
 });
 
 test("buildOrchestratorBriefing ignores confirm echo messages when resolving confirmed plan context", () => {

@@ -52,6 +52,7 @@ import { Badge, Panel, PrimaryButton, Screen, Section } from "@/components/ui";
 import {
   buildComposerDirectiveChipsV2,
   buildExecutionNarrativeV2,
+  buildDagPatchReviewSummary,
   buildMissionSnapshot,
   buildOrchestratorBriefing,
   buildOrchestratorTurns,
@@ -4762,13 +4763,13 @@ function MessageBody(props: {
       asString(message.content.summary) ||
       "A structured DAG patch proposal was generated from the runtime intervention.";
     const reason = asString(message.content.reason);
-    const unsupportedReason = asString(message.content.unsupported_reason);
     const operations = Array.isArray(message.content.operations)
       ? message.content.operations.filter(isObject)
       : [];
     const outcomes = getPatchOperationOutcomes(message.content);
     const topology = getPatchTopology(message.content);
     const graphPreview = getPatchGraphPreview(message.content);
+    const patchReview = buildDagPatchReviewSummary(message.content);
     const graphPreviewLines = Array.isArray(graphPreview?.summary_lines)
       ? graphPreview.summary_lines.filter((line): line is string => typeof line === "string" && !!line.trim())
       : [];
@@ -4791,33 +4792,7 @@ function MessageBody(props: {
     const canAct = !!patchId && applySupported && status === "needs_confirmation";
     const isBusy = !!patchId && props.busyId === patchId;
     const patchStateLabel =
-      status === "applied"
-        ? "Applied"
-        : status === "applied_with_errors"
-          ? "Partial"
-          : status === "rejected"
-            ? "Rejected"
-            : applySupported
-              ? "Apply ready"
-              : "Apply disabled";
-    const patchStateTone =
-      status === "applied"
-        ? "success"
-        : status === "applied_with_errors"
-          ? "warn"
-          : status === "rejected"
-            ? "neutral"
-            : "warn";
-    const patchStateText =
-      status === "applied"
-        ? "This patch has been applied and its operation outcomes are recorded in the mission workspace."
-        : status === "applied_with_errors"
-          ? "This patch was partially applied. Review the failed operation outcomes."
-          : status === "rejected"
-            ? "This patch was rejected and kept for audit."
-            : applySupported
-              ? "This patch can be applied after confirmation."
-              : unsupportedReason || "This proposal is kept for audit, but it is not live-apply ready yet.";
+      status === "needs_confirmation" && applySupported ? "Apply ready" : patchReview.statusLabel;
     return (
       <View style={styles.cardContent}>
         <Text style={styles.cardTitle}>DAG patch proposal</Text>
@@ -4838,6 +4813,32 @@ function MessageBody(props: {
         </View>
         <Text style={styles.messageText}>{summary}</Text>
         {reason ? <Text style={styles.messageText}>{reason}</Text> : null}
+        <View style={styles.calloutBlock}>
+          <Badge label="Review summary" tone={patchReview.tone} />
+          <Text style={styles.calloutText}>{patchReview.operationSummary}</Text>
+          {patchReview.graphImpactSummary ? (
+            <Text style={styles.calloutText}>{patchReview.graphImpactSummary}</Text>
+          ) : null}
+          {patchReview.outcomeSummary ? (
+            <Text style={styles.calloutText}>{patchReview.outcomeSummary}</Text>
+          ) : null}
+          {patchReview.topologySummary ? (
+            <Text style={styles.calloutText}>{patchReview.topologySummary}</Text>
+          ) : null}
+        </View>
+        {patchReview.topologySnapshots.length > 0 ? (
+          <View style={styles.patchTopologyStack}>
+            {patchReview.topologySnapshots.map((snapshot) => (
+              <View key={snapshot.label} style={styles.patchTopologyCard}>
+                <View style={styles.optionTopline}>
+                  <Badge label={snapshot.label} tone={snapshot.tone} />
+                  <Text style={styles.optionSummaryText}>Topology snapshot</Text>
+                </View>
+                <Text style={styles.messageText}>{snapshot.line}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
         {graphPreviewLines.length > 0 ? (
           <View style={styles.calloutBlock}>
             <Badge label="Graph preview" tone={status === "needs_confirmation" ? "warn" : "success"} />
@@ -4921,8 +4922,8 @@ function MessageBody(props: {
           </View>
         ) : null}
         <View style={styles.calloutBlock}>
-          <Badge label={patchStateLabel} tone={patchStateTone} />
-          <Text style={styles.calloutText}>{patchStateText}</Text>
+          <Badge label={patchStateLabel} tone={patchReview.tone} />
+          <Text style={styles.calloutText}>{patchReview.confirmationSummary}</Text>
         </View>
         {canAct && patchId ? (
           <View style={styles.inlineActions}>
@@ -5675,6 +5676,17 @@ const styles = StyleSheet.create({
   },
   patchOperationStack: {
     gap: 8,
+  },
+  patchTopologyStack: {
+    gap: 8,
+  },
+  patchTopologyCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+    backgroundColor: "#f8fbff",
+    padding: 10,
+    gap: 6,
   },
   patchOperationCard: {
     borderRadius: 8,

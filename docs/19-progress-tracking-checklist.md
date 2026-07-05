@@ -604,7 +604,7 @@ This also means the following may land incrementally:
 | `PLAN-02` | Planner / Orchestrator | Planned | P1 | Improve agent and skill recommendation quality beyond the current basic registry-aware matching. | Follow-up after Mission shell tightening. |
 | `PLAN-03` | Planner / Orchestrator | Deferred | P2 | Add stronger DAG synthesis/orchestrator generation behavior beyond deterministic fallback planning. | Explicitly out of scope until Mission Workspace tightening exits. |
 | `RT-01` | Runtime Steering | Done | P1 | Expand natural-language runtime steering beyond the current pause/resume/skip/add/change/parallelism mappings. | Multi-operation parsing, natural current/final targets, word-number parallelism, and parse audit metadata now land on existing live operations only. |
-| `RT-02` | Runtime Steering | Planned | P1 | Improve mobile and Studio patch review ergonomics, including clearer patch history and topology review. | Supported operations already apply live. |
+| `RT-02` | Runtime Steering | Done | P1 | Improve mobile and Studio patch review ergonomics, including clearer patch history and topology review. | Mobile and Studio now summarize operations, graph impact, topology snapshots, outcomes, and confirmation state for patch review/history. |
 | `RT-03` | Runtime Steering | Planned | P1 | Add richer monitoring surfaces for runtime progress, checkpoints, and cost-aware intervention. | Product gap, not engine absence. |
 | `STU-01` | Studio Authoring | Support Track | P1 | Define the interactive graph-canvas information model, interaction boundaries, and minimum viable skeleton. | Do not require this iteration to fully replace the form-based authoring path. |
 | `STU-02` | Studio Authoring | Planned | P1 | Add richer route compare/history selectors and a stronger graph diff browser. | Compare read model exists today. |
@@ -699,7 +699,7 @@ Exit condition:
 Close these items next:
 
 - [x] `RT-01`
-- [ ] `RT-02`
+- [x] `RT-02`
 - [ ] `RT-03`
 
 Exit condition:
@@ -721,6 +721,21 @@ Exit condition:
       requested step, requested parallelism, and replacement intent.
 - [x] Control Plane tests guard combined pause/add/resume, current-node skip
       plus resume, and word-number parallelism.
+
+### RT-02 Implementation Status
+
+- [x] Mobile now builds a reusable `DagPatchReviewSummary` with operation
+      summary, graph impact, topology snapshots, outcome counts, and
+      confirmation state.
+- [x] Mobile DAG patch cards now show a review summary and before/predicted/
+      actual topology snapshots before the confirm/reject controls.
+- [x] Mobile execution narrative now uses the same patch review summary so
+      patch history reads consistently outside the raw card.
+- [x] Studio execution queue now renders per-patch review summaries, operation
+      details, outcome details, and topology comparison cards.
+- [x] Studio runtime patch history now uses the same richer patch review
+      summary and topology comparison instead of only listing operation names.
+- [x] Mobile tests and Studio smoke checks guard the new review summary path.
 
 ### Milestone C: Studio Graph Workbench
 

@@ -76,6 +76,24 @@ export type ExecutionNarrativeBeat = {
   status: "done" | "active" | "pending";
 };
 
+export type DagPatchTopologySummary = {
+  label: string;
+  line: string;
+  tone: ThreadTone;
+};
+
+export type DagPatchReviewSummary = {
+  statusLabel: string;
+  tone: ThreadTone;
+  operationSummary: string;
+  graphImpactSummary: string | null;
+  outcomeSummary: string | null;
+  topologySummary: string | null;
+  confirmationSummary: string;
+  graphPreviewLines: string[];
+  topologySnapshots: DagPatchTopologySummary[];
+};
+
 export type ComposerDirectiveChip = {
   key: string;
   label: string;
@@ -507,6 +525,149 @@ function getPatchOperationOutcomes(content: Record<string, unknown>): Record<str
   return Array.isArray(metadata?.operation_outcomes)
     ? metadata.operation_outcomes.filter(isObject)
     : [];
+}
+
+function getPatchTopology(content: Record<string, unknown>): Record<string, unknown> | null {
+  if (isObject(content.resumed_topology)) {
+    return content.resumed_topology;
+  }
+  const metadata = isObject(content.metadata) ? content.metadata : null;
+  return isObject(metadata?.resumed_topology) ? metadata.resumed_topology : null;
+}
+
+function getPatchGraphPreview(content: Record<string, unknown>): Record<string, unknown> | null {
+  if (isObject(content.graph_preview)) {
+    return content.graph_preview;
+  }
+  const metadata = isObject(content.metadata) ? content.metadata : null;
+  return isObject(metadata?.graph_preview) ? metadata.graph_preview : null;
+}
+
+function countArray(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function formatTopologySnapshotLine(topology: Record<string, unknown> | null): string {
+  if (!topology) {
+    return "No topology snapshot";
+  }
+  const nodeCount = asNumber(topology.node_count);
+  const edgeCount = asNumber(topology.edge_count);
+  const readyCount = countArray(topology.ready_node_run_ids);
+  const runningCount = countArray(topology.running_node_run_ids);
+  const waitingCount = countArray(topology.waiting_node_run_ids);
+  const maxParallel = asNumber(topology.max_parallel_nodes);
+  const base = `${nodeCount ?? "-"} nodes / ${edgeCount ?? "-"} edges / ${readyCount} ready / ${runningCount} running / ${waitingCount} waiting`;
+  return typeof maxParallel === "number" ? `${base} / max parallel ${maxParallel}` : base;
+}
+
+function formatSignedDelta(label: string, value: unknown): string | null {
+  const numeric = asNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+  return `${label} ${numeric >= 0 ? "+" : ""}${numeric}`;
+}
+
+export function buildDagPatchReviewSummary(
+  content: Record<string, unknown>,
+): DagPatchReviewSummary {
+  const status = asString(content.status) || "proposed";
+  const operations = Array.isArray(content.operations) ? content.operations.filter(isObject) : [];
+  const outcomes = getPatchOperationOutcomes(content);
+  const graphPreview = getPatchGraphPreview(content);
+  const topology = getPatchTopology(content);
+  const unsupportedReason = asString(content.unsupported_reason);
+  const applySupported = content.apply_supported === true;
+
+  const graphPreviewLines = Array.isArray(graphPreview?.summary_lines)
+    ? graphPreview.summary_lines.filter((line): line is string => typeof line === "string" && !!line.trim())
+    : [];
+  const operationLabels = Array.isArray(graphPreview?.operation_labels)
+    ? graphPreview.operation_labels.filter((line): line is string => typeof line === "string" && !!line.trim())
+    : [];
+  const operationNames =
+    operationLabels.length > 0
+      ? operationLabels
+      : operations
+          .map((operation) => {
+            const op = asString(operation.op) || "operation";
+            const nodeName = asString(operation.node_name);
+            return nodeName ? `${op.replace(/_/g, " ")}: ${nodeName}` : op.replace(/_/g, " ");
+          })
+          .filter((item) => !!item);
+  const operationSummary = operationNames.length
+    ? `Operations: ${operationNames.join(", ")}`
+    : "Operations: none recorded";
+
+  const impactParts = [
+    formatSignedDelta("nodes", graphPreview?.node_delta),
+    formatSignedDelta("edges", graphPreview?.edge_delta),
+    formatSignedDelta("parallelism", graphPreview?.parallelism_delta),
+  ].filter((item): item is string => !!item);
+  const graphImpactSummary = impactParts.length ? `Graph impact: ${impactParts.join(", ")}` : null;
+
+  const appliedOutcomeCount = outcomes.filter((outcome) => outcome.applied === true).length;
+  const failedOutcomeCount = outcomes.filter((outcome) => outcome.applied !== true).length;
+  const outcomeSummary =
+    outcomes.length > 0
+      ? `Outcomes: ${appliedOutcomeCount} applied${
+          failedOutcomeCount > 0 ? `, ${failedOutcomeCount} failed` : ""
+        }`
+      : null;
+  const topologySummary = topology ? `Latest topology: ${formatTopologySnapshotLine(topology)}` : null;
+
+  const beforeTopology = isObject(graphPreview?.before_topology) ? graphPreview.before_topology : null;
+  const predictedTopology = isObject(graphPreview?.predicted_topology)
+    ? graphPreview.predicted_topology
+    : null;
+  const actualTopology = isObject(graphPreview?.actual_topology) ? graphPreview.actual_topology : null;
+  const topologySnapshots = [
+    beforeTopology
+      ? { label: "Before", line: formatTopologySnapshotLine(beforeTopology), tone: "neutral" as ThreadTone }
+      : null,
+    predictedTopology
+      ? { label: "Predicted", line: formatTopologySnapshotLine(predictedTopology), tone: "warn" as ThreadTone }
+      : null,
+    actualTopology
+      ? { label: "Actual", line: formatTopologySnapshotLine(actualTopology), tone: "success" as ThreadTone }
+      : null,
+  ].filter((item): item is DagPatchTopologySummary => item !== null);
+
+  const confirmationSummary =
+    status === "applied"
+      ? "This patch has been applied and is now part of the runtime audit trail."
+      : status === "applied_with_errors"
+        ? "This patch was partially applied; review failed operation outcomes before continuing."
+        : status === "rejected"
+          ? "This patch was rejected and preserved as an audit record."
+          : applySupported
+            ? "This patch is apply-ready after human confirmation."
+            : unsupportedReason || "This proposal is preserved for audit, but is not live-apply ready.";
+
+  return {
+    statusLabel:
+      status === "needs_confirmation"
+        ? "Needs confirmation"
+        : status === "applied_with_errors"
+          ? "Applied with errors"
+          : status.replace(/_/g, " "),
+    tone:
+      status === "applied"
+        ? "success"
+        : status === "applied_with_errors" || status === "needs_confirmation"
+          ? "warn"
+          : status === "unsupported" || status === "rejected"
+            ? "neutral"
+            : "warn",
+    operationSummary,
+    graphImpactSummary,
+    outcomeSummary,
+    topologySummary,
+    confirmationSummary,
+    graphPreviewLines,
+    topologySnapshots,
+  };
 }
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -4617,33 +4778,15 @@ export function buildExecutionNarrativeV2(
     const summary =
       asString(message.content.summary) ||
       "A structured DAG patch proposal was generated from the runtime intervention.";
-    const operations = Array.isArray(message.content.operations)
-      ? message.content.operations.filter(isObject)
-      : [];
-    const operationNames = operations
-      .map((operation) => asString(operation.op))
-      .filter((operation): operation is string => !!operation);
-    const applySupported = message.content.apply_supported === true;
-    const unsupportedReason = asString(message.content.unsupported_reason);
-    const outcomes = getPatchOperationOutcomes(message.content);
-    const appliedOutcomeCount = outcomes.filter((outcome) => outcome.applied === true).length;
-    const failedOutcomeCount = outcomes.filter((outcome) => outcome.applied !== true).length;
-    const outcomeSummary =
-      outcomes.length > 0
-        ? ` Outcome: ${appliedOutcomeCount} applied${
-            failedOutcomeCount > 0 ? `, ${failedOutcomeCount} failed` : ""
-          }.`
-        : "";
-    const applyStateText =
-      status === "applied"
-        ? "Runtime topology was updated and the patch is now part of the audit trail."
-        : status === "applied_with_errors"
-          ? "Runtime topology was partially updated; review the failed operation outcomes."
-          : status === "rejected"
-            ? "The patch was rejected and kept as an audit record."
-            : applySupported
-              ? "This patch can be applied after confirmation."
-              : unsupportedReason || "This proposal is recorded for audit, but it is not yet live-apply ready.";
+    const patchReview = buildDagPatchReviewSummary(message.content);
+    const reviewDetails = [
+      patchReview.operationSummary,
+      patchReview.graphImpactSummary,
+      patchReview.outcomeSummary,
+      patchReview.topologySummary,
+      patchReview.confirmationSummary,
+    ].filter((item): item is string => !!item);
+    const reviewDetailText = reviewDetails.join(". ").replace(/[.]+$/g, ".");
 
     beats.push({
       key: `dag-patch-${asString(message.content.patch_id) || message.message_id}`,
@@ -4657,15 +4800,8 @@ export function buildExecutionNarrativeV2(
               : status === "rejected"
                 ? "Rejected a runtime DAG patch"
                 : "Recorded a DAG patch proposal",
-      detail: `${summary}${
-        operationNames.length > 0 ? ` Operation: ${operationNames.join(", ")}.` : ""
-      }${outcomeSummary} ${applyStateText}`,
-      tone:
-        status === "applied"
-          ? "success"
-          : status === "unsupported" || status === "rejected"
-            ? "neutral"
-            : "warn",
+      detail: `${summary} ${reviewDetailText}`,
+      tone: patchReview.tone,
       status:
         status === "applied" || status === "applied_with_errors" || status === "rejected"
           ? "done"

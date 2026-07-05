@@ -754,6 +754,133 @@ function getPatchGraphPreview(patch) {
   return null;
 }
 
+function getPatchOperations(patch) {
+  return Array.isArray(patch?.operations)
+    ? patch.operations.filter((operation) => operation && typeof operation === "object")
+    : [];
+}
+
+function formatSignedPatchDelta(label, value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${label} ${value >= 0 ? "+" : ""}${value}`
+    : null;
+}
+
+function patchConfirmationSummary(patch) {
+  const status = patch?.status || "proposed";
+  if (status === "applied") return "Applied and preserved in the runtime audit trail.";
+  if (status === "applied_with_errors") return "Partially applied; inspect failed operation outcomes.";
+  if (status === "rejected") return "Rejected and preserved as an audit record.";
+  if (patch?.apply_supported) return "Apply-ready after human confirmation.";
+  return patch?.unsupported_reason || "Preserved for audit, but not live-apply ready.";
+}
+
+function renderPatchReviewSummary(patch) {
+  const operations = getPatchOperations(patch);
+  const outcomes = getPatchOperationOutcomes(patch);
+  const preview = getPatchGraphPreview(patch);
+  const impact = [
+    formatSignedPatchDelta("nodes", preview?.node_delta),
+    formatSignedPatchDelta("edges", preview?.edge_delta),
+    formatSignedPatchDelta("parallelism", preview?.parallelism_delta),
+  ].filter(Boolean);
+  const appliedCount = outcomes.filter((outcome) => outcome.applied === true).length;
+  const failedCount = outcomes.filter((outcome) => outcome.applied !== true).length;
+  return `
+    <div class="patch-review-summary">
+      <span>${escapeHtml(`${operations.length} operation${operations.length === 1 ? "" : "s"}`)}</span>
+      ${impact.length ? `<span>${escapeHtml(`Impact: ${impact.join(", ")}`)}</span>` : ""}
+      ${
+        outcomes.length
+          ? `<span>${escapeHtml(`Outcomes: ${appliedCount} applied${failedCount ? `, ${failedCount} failed` : ""}`)}</span>`
+          : ""
+      }
+      <span>${escapeHtml(patchConfirmationSummary(patch))}</span>
+    </div>
+  `;
+}
+
+function renderPatchOperationReview(patch) {
+  const operations = getPatchOperations(patch);
+  if (!operations.length) {
+    return '<small>No structured patch operations recorded.</small>';
+  }
+  return `
+    <div class="patch-operation-review">
+      ${operations
+        .map((operation, index) => {
+          const op = operation.op || "operation";
+          const value = operation.value && typeof operation.value === "object" ? operation.value : null;
+          const requestedStep = value && typeof value.requested_step === "string" ? value.requested_step : null;
+          const requestedParallelism =
+            value && value.requested_parallelism !== undefined ? String(value.requested_parallelism) : null;
+          return `
+            <div class="patch-operation-row">
+              <div class="patch-outcome-head">
+                <strong>${escapeHtml(op.replace(/_/g, " "))}</strong>
+                <span class="badge ${operation.supported === false ? "neutral" : "warn"}">${escapeHtml(operation.supported === false ? "mapping needed" : "mapped")}</span>
+              </div>
+              ${
+                operation.node_name || operation.node_id
+                  ? `<small>${escapeHtml(`Target: ${operation.node_name || operation.node_id}`)}</small>`
+                  : ""
+              }
+              ${requestedStep ? `<small>${escapeHtml(`Requested step: ${requestedStep}`)}</small>` : ""}
+              ${requestedParallelism ? `<small>${escapeHtml(`Requested parallelism: ${requestedParallelism}`)}</small>` : ""}
+              ${operation.reason ? `<small>${escapeHtml(operation.reason)}</small>` : ""}
+              <small>${escapeHtml(`Order: ${index + 1}`)}</small>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderPatchOutcomeReview(patch) {
+  const outcomes = getPatchOperationOutcomes(patch);
+  if (!outcomes.length) {
+    return "";
+  }
+  return `
+    <div class="patch-outcome-list">
+      ${outcomes
+        .map(
+          (outcome) => `
+            <div class="patch-outcome-line">
+              <span class="badge ${outcome.applied ? "success" : "danger"}">${escapeHtml(outcome.applied ? "applied" : "failed")}</span>
+              <small>${escapeHtml(outcome.op || "operation")}${outcome.node_name ? ` / ${escapeHtml(outcome.node_name)}` : ""}${outcome.error ? ` / ${escapeHtml(outcome.error)}` : ""}</small>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderPatchTopologyComparison(patch) {
+  const preview = getPatchGraphPreview(patch);
+  const topology = getPatchTopology(patch);
+  const before = preview?.before_topology && typeof preview.before_topology === "object"
+    ? preview.before_topology
+    : null;
+  const predicted = preview?.predicted_topology && typeof preview.predicted_topology === "object"
+    ? preview.predicted_topology
+    : null;
+  const actual = preview?.actual_topology && typeof preview.actual_topology === "object"
+    ? preview.actual_topology
+    : null;
+  const cards = [
+    before ? renderPatchTopologySnapshotCard("Before", before, "neutral") : "",
+    predicted ? renderPatchTopologySnapshotCard("Predicted", predicted, "warn") : "",
+    actual ? renderPatchTopologySnapshotCard("Actual", actual, "success") : "",
+  ].filter(Boolean);
+  if (!cards.length && topology) {
+    cards.push(renderPatchTopologySnapshotCard("Latest", topology, patchStatusTone(patch?.status)));
+  }
+  return cards.length ? `<div class="patch-topology-compact-grid">${cards.join("")}</div>` : "";
+}
+
 function renderPatchGraphPreview(patch) {
   const preview = getPatchGraphPreview(patch);
   if (!preview) return "";
@@ -3219,7 +3346,10 @@ function renderExecutionQueuePanel(detail) {
                   <span class="badge ${statusTone(patch.status || "pending")}">${escapeHtml(patch.status || "proposed")}</span>
                 </div>
                 <p>${escapeHtml(patch.reason || "Patch proposal generated from a runtime intervention.")}</p>
-                <small>${escapeHtml((patch.operations || []).map((operation) => operation.op || "operation").join(", ") || "No operations")}</small>
+                ${renderPatchReviewSummary(patch)}
+                ${renderPatchOperationReview(patch)}
+                ${renderPatchOutcomeReview(patch)}
+                ${renderPatchTopologyComparison(patch)}
                 ${renderPatchGraphPreview(patch)}
                 <div class="orchestrator-actions execution-inline-actions">
                   <button class="secondary" data-action="confirm-patch" data-patch-id="${escapeHtml(patch.patch_id)}" ${confirmLoading || !canConfirm ? "disabled" : ""}>${confirmLoading ? "Applying..." : "Confirm patch"}</button>
@@ -6060,7 +6190,6 @@ function renderDesktopRail() {
         .slice(-feed.itemLimit)
         .reverse()
         .map((patch) => {
-          const outcomes = getPatchOperationOutcomes(patch);
           const topology = getPatchTopology(patch);
           const readyCount = Array.isArray(topology?.ready_node_run_ids)
             ? topology.ready_node_run_ids.length
@@ -6075,27 +6204,15 @@ function renderDesktopRail() {
                 <span class="badge ${patchStatusTone(patch.status)}">${escapeHtml(patch.status || "proposed")}</span>
               </div>
               <small>${escapeHtml(patch.patch_id || "patch")}</small>
-              ${
-                outcomes.length
-                  ? `<div class="patch-outcome-list">
-                      ${outcomes
-                        .map(
-                          (outcome) => `
-                            <div class="patch-outcome-line">
-                              <span class="badge ${outcome.applied ? "success" : "danger"}">${escapeHtml(outcome.applied ? "applied" : "failed")}</span>
-                              <small>${escapeHtml(outcome.op || "operation")}${outcome.node_name ? ` / ${escapeHtml(outcome.node_name)}` : ""}${outcome.error ? ` / ${escapeHtml(outcome.error)}` : ""}</small>
-                            </div>
-                          `,
-                        )
-                        .join("")}
-                    </div>`
-                  : '<small>No operation outcomes yet.</small>'
-              }
+              ${renderPatchReviewSummary(patch)}
+              ${renderPatchOperationReview(patch)}
+              ${renderPatchOutcomeReview(patch) || '<small>No operation outcomes yet.</small>'}
               ${
                 topology
                   ? `<small>${escapeHtml(`Topology: ${topology.node_count ?? "-"} nodes / ${topology.edge_count ?? "-"} edges / ${readyCount} ready / ${runningCount} running`)}</small>`
                   : ""
               }
+              ${renderPatchTopologyComparison(patch)}
               ${renderPatchGraphPreview(patch)}
             </div>
           `;
