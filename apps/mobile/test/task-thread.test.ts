@@ -709,6 +709,46 @@ test("buildRuntimeGraphNarrative summarizes live frontier and human gates", () =
         blockedCount: 1,
       },
     ],
+    runtimeMonitoring: {
+      progress: {
+        totalNodes: 2,
+        completedNodes: 0,
+        skippedNodes: 0,
+        activeNodes: 2,
+        readyNodes: 0,
+        waitingNodes: 1,
+        blockedNodes: 0,
+        frontierCount: 1,
+        percentComplete: 0,
+        averageNodeProgress: 23,
+        label: "Waiting checkpoint",
+        detail: "0/2 node(s) terminal, 2 active, 0 ready, 0 blocked.",
+        tone: "warn",
+      },
+      checkpoints: {
+        approvalGateCount: 1,
+        humanInputGateCount: 0,
+        waitingHumanCount: 1,
+        blockedGateCount: 0,
+        nextCheckpointLabel: "Review plan",
+        nextActionLabel: "Resolve waiting checkpoint",
+        detail: "1 node(s) are waiting on human approval or input.",
+        tone: "warn",
+      },
+      cost: {
+        label: "Cost posture needs attention",
+        detail: "Capacity 2/2 active, 0 ready, timeout budget 1800s, retry budget 2.",
+        posture: "attention",
+        maxParallelNodes: 2,
+        activeCapacity: 2,
+        readyQueue: 0,
+        capacityUtilization: 1,
+        timeoutBudgetSeconds: 1800,
+        remainingRetryBudget: 2,
+        budgetPolicyPresent: false,
+        tone: "warn",
+      },
+    },
     summaryLines: [
       "2 node(s), 1 edge(s), 2 work package(s).",
       "1 node(s) are currently in the active frontier.",
@@ -720,6 +760,7 @@ test("buildRuntimeGraphNarrative summarizes live frontier and human gates", () =
 
   assert.equal(narrative?.tone, "warn");
   assert.match(narrative?.title || "", /attention/i);
+  assert.equal(narrative?.detail, "0/2 node(s) terminal, 2 active, 0 ready, 0 blocked.");
   assert.deepEqual(narrative?.activeNodeLabels, ["Research context", "Review plan"]);
   assert.deepEqual(narrative?.blockedNodeLabels, ["Review plan"]);
   assert.deepEqual(narrative?.packageLabels, ["Context collection", "Review and approval"]);

@@ -1300,6 +1300,29 @@ button.mission-history-item {
   text-transform: uppercase;
 }
 
+.runtime-monitoring-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.runtime-monitoring-card {
+  border: 1px solid #dbeafe;
+  background: #f8fbff;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.runtime-monitoring-card p,
+.runtime-monitoring-card small {
+  display: block;
+  margin: 6px 0 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .runtime-graph-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
@@ -2492,6 +2515,7 @@ textarea {
 
   .execution-cockpit-grid,
   .runtime-graph-layout,
+  .runtime-monitoring-grid,
   .mission-support-grid,
   .desktop-two-column,
   .patch-graph-review-grid {

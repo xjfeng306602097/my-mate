@@ -724,6 +724,10 @@ function statusTone(status) {
   return "neutral";
 }
 
+function normalizeTone(value) {
+  return ["neutral", "warn", "success", "danger"].includes(value) ? value : statusTone(value);
+}
+
 function getPatchOperationOutcomes(patch) {
   if (Array.isArray(patch?.operation_outcomes)) {
     return patch.operation_outcomes.filter((item) => item && typeof item === "object");
@@ -3492,6 +3496,9 @@ function renderRuntimeGraphPanel(graph) {
   const summary =
     (graph.summaryLines || []).find((line) => /frontier|waiting|blocked|skipped/i.test(line)) ||
     `${nodes.length} node(s), ${edges.length} edge(s), ${packages.length} work package(s).`;
+  const monitoring = graph.runtimeMonitoring && typeof graph.runtimeMonitoring === "object"
+    ? graph.runtimeMonitoring
+    : null;
 
   return `
     <section class="subpanel runtime-graph-panel" data-workspace-focus="graph">
@@ -3506,6 +3513,44 @@ function renderRuntimeGraphPanel(graph) {
         <div><strong>${escapeHtml(String(frontier.length))}</strong><span>Frontier</span></div>
         <div><strong>${escapeHtml(String(packages.length))}</strong><span>Packages</span></div>
       </div>
+      ${
+        monitoring
+          ? `<div class="runtime-monitoring-grid">
+              <div class="runtime-monitoring-card">
+                <div class="runtime-package-head">
+                  <strong>${escapeHtml(monitoring.progress?.label || "Runtime progress")}</strong>
+                  <span class="badge ${normalizeTone(monitoring.progress?.tone || "neutral")}">${escapeHtml(`${monitoring.progress?.percentComplete ?? 0}%`)}</span>
+                </div>
+                <p>${escapeHtml(monitoring.progress?.detail || "Progress detail is not available.")}</p>
+                <small>${escapeHtml(`Average node progress ${monitoring.progress?.averageNodeProgress ?? 0}% / frontier ${monitoring.progress?.frontierCount ?? frontier.length}`)}</small>
+              </div>
+              <div class="runtime-monitoring-card">
+                <div class="runtime-package-head">
+                  <strong>Checkpoints</strong>
+                  <span class="badge ${normalizeTone(monitoring.checkpoints?.tone || "neutral")}">${escapeHtml(monitoring.checkpoints?.nextActionLabel || "Monitor")}</span>
+                </div>
+                <p>${escapeHtml(monitoring.checkpoints?.detail || "No checkpoint detail is available.")}</p>
+                ${
+                  monitoring.checkpoints?.nextCheckpointLabel
+                    ? `<small>${escapeHtml(`Next: ${monitoring.checkpoints.nextCheckpointLabel}`)}</small>`
+                    : ""
+                }
+              </div>
+              <div class="runtime-monitoring-card">
+                <div class="runtime-package-head">
+                  <strong>${escapeHtml(monitoring.cost?.label || "Cost posture")}</strong>
+                  <span class="badge ${normalizeTone(monitoring.cost?.tone || "neutral")}">${escapeHtml(
+                    typeof monitoring.cost?.capacityUtilization === "number"
+                      ? `${Math.round(monitoring.cost.capacityUtilization * 100)}% capacity`
+                      : "capacity open",
+                  )}</span>
+                </div>
+                <p>${escapeHtml(monitoring.cost?.detail || "No capacity detail is available.")}</p>
+                <small>${escapeHtml(monitoring.cost?.budgetPolicyPresent ? "Budget policy present" : "No explicit budget policy")}</small>
+              </div>
+            </div>`
+          : ""
+      }
       <div class="runtime-graph-layout">
         <div class="runtime-node-list">
           ${nodes

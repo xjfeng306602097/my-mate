@@ -605,7 +605,7 @@ This also means the following may land incrementally:
 | `PLAN-03` | Planner / Orchestrator | Deferred | P2 | Add stronger DAG synthesis/orchestrator generation behavior beyond deterministic fallback planning. | Explicitly out of scope until Mission Workspace tightening exits. |
 | `RT-01` | Runtime Steering | Done | P1 | Expand natural-language runtime steering beyond the current pause/resume/skip/add/change/parallelism mappings. | Multi-operation parsing, natural current/final targets, word-number parallelism, and parse audit metadata now land on existing live operations only. |
 | `RT-02` | Runtime Steering | Done | P1 | Improve mobile and Studio patch review ergonomics, including clearer patch history and topology review. | Mobile and Studio now summarize operations, graph impact, topology snapshots, outcomes, and confirmation state for patch review/history. |
-| `RT-03` | Runtime Steering | Planned | P1 | Add richer monitoring surfaces for runtime progress, checkpoints, and cost-aware intervention. | Product gap, not engine absence. |
+| `RT-03` | Runtime Steering | Done | P1 | Add richer monitoring surfaces for runtime progress, checkpoints, and cost-aware intervention. | Runtime graph summaries now expose progress, checkpoint, and capacity/budget posture; Mobile and Studio render those monitoring surfaces. |
 | `STU-01` | Studio Authoring | Support Track | P1 | Define the interactive graph-canvas information model, interaction boundaries, and minimum viable skeleton. | Do not require this iteration to fully replace the form-based authoring path. |
 | `STU-02` | Studio Authoring | Planned | P1 | Add richer route compare/history selectors and a stronger graph diff browser. | Compare read model exists today. |
 | `STU-03` | Studio Authoring | Planned | P1 | Add more desktop-native file/context workflows such as drag-and-drop attach and workspace browsing. | Attachment model exists, native ergonomics do not. |
@@ -700,7 +700,7 @@ Close these items next:
 
 - [x] `RT-01`
 - [x] `RT-02`
-- [ ] `RT-03`
+- [x] `RT-03`
 
 Exit condition:
 
@@ -736,6 +736,21 @@ Exit condition:
 - [x] Studio runtime patch history now uses the same richer patch review
       summary and topology comparison instead of only listing operation names.
 - [x] Mobile tests and Studio smoke checks guard the new review summary path.
+
+### RT-03 Implementation Status
+
+- [x] Control Plane `RuntimeGraphSummary` now includes `runtimeMonitoring`
+      with progress, checkpoint, and capacity/budget posture summaries.
+- [x] Runtime graph summary lines now include progress percentage, checkpoint
+      state, and capacity/budget context for monitoring surfaces.
+- [x] Mobile execution summary renders progress, checkpoint, and cost/capacity
+      monitoring cards above the runtime topology.
+- [x] Studio Runtime Graph renders the same monitoring cards for desktop review.
+- [x] The cost-aware surface is intentionally a capacity/budget posture based
+      on existing policy, timeout, retry, and parallelism data; actual spend
+      accounting remains deferred under `OBS-02`.
+- [x] Control Plane, Mobile, and Studio verification guard the new monitoring
+      summary path.
 
 ### Milestone C: Studio Graph Workbench
 

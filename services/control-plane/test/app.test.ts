@@ -294,8 +294,17 @@ test("run graph projects initial topology frontier and work package mapping", as
     assert.equal(graph.body.nodes[0].workPackageKey, "research");
     assert.equal(graph.body.nodes[1].workPackageKey, "deliver");
     assert.equal(graph.body.edges[0].status, "pending");
+    assert.equal(graph.body.runtimeMonitoring.progress.totalNodes, 2);
+    assert.equal(graph.body.runtimeMonitoring.progress.readyNodes, 1);
+    assert.equal(graph.body.runtimeMonitoring.progress.frontierCount, 1);
+    assert.equal(graph.body.runtimeMonitoring.checkpoints.nextActionLabel, "Monitor run");
+    assert.equal(graph.body.runtimeMonitoring.cost.maxParallelNodes, 1);
+    assert.equal(graph.body.runtimeMonitoring.cost.timeoutBudgetSeconds, 1800);
     assert.ok(
       graph.body.summaryLines.some((line: string) => /2 node\(s\), 1 edge\(s\)/.test(line)),
+    );
+    assert.ok(
+      graph.body.summaryLines.some((line: string) => /Runtime progress is/i.test(line)),
     );
   } finally {
     await server.close();

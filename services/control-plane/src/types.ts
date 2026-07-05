@@ -1149,6 +1149,47 @@ export interface RuntimeGraphWorkPackage {
   blockedCount: number;
 }
 
+export interface RuntimeMonitoringSummary {
+  progress: {
+    totalNodes: number;
+    completedNodes: number;
+    skippedNodes: number;
+    activeNodes: number;
+    readyNodes: number;
+    waitingNodes: number;
+    blockedNodes: number;
+    frontierCount: number;
+    percentComplete: number;
+    averageNodeProgress: number;
+    label: string;
+    detail: string;
+    tone: "neutral" | "warn" | "success" | "danger";
+  };
+  checkpoints: {
+    approvalGateCount: number;
+    humanInputGateCount: number;
+    waitingHumanCount: number;
+    blockedGateCount: number;
+    nextCheckpointLabel: string | null;
+    nextActionLabel: string;
+    detail: string;
+    tone: "neutral" | "warn" | "success" | "danger";
+  };
+  cost: {
+    label: string;
+    detail: string;
+    posture: "nominal" | "attention" | "blocked";
+    maxParallelNodes: number | null;
+    activeCapacity: number;
+    readyQueue: number;
+    capacityUtilization: number | null;
+    timeoutBudgetSeconds: number;
+    remainingRetryBudget: number;
+    budgetPolicyPresent: boolean;
+    tone: "neutral" | "warn" | "success" | "danger";
+  };
+}
+
 export interface RuntimeGraphSummary {
   runId: string;
   templateId: string;
@@ -1167,6 +1208,7 @@ export interface RuntimeGraphSummary {
     skipped: string[];
   };
   workPackages: RuntimeGraphWorkPackage[];
+  runtimeMonitoring: RuntimeMonitoringSummary;
   summaryLines: string[];
 }
 

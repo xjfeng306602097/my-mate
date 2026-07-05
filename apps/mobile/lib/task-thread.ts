@@ -794,6 +794,7 @@ export function buildRuntimeGraphNarrative(
     return null;
   }
 
+  const monitoring = graph.runtimeMonitoring || null;
   const activeNodes = graph.nodes.filter((node) =>
     node.markers.includes("active_frontier") ||
     node.status === "running" ||
@@ -822,6 +823,7 @@ export function buildRuntimeGraphNarrative(
           ? "Runtime topology is live"
           : "Runtime topology is ready";
   const detail =
+    monitoring?.progress?.detail ||
     graph.summaryLines.find((line) => /frontier|waiting|blocked|skipped/i.test(line)) ||
     `${graph.nodes.length} node(s), ${graph.edges.length} edge(s), ${graph.workPackages.length} work package(s).`;
 

@@ -3318,6 +3318,7 @@ export default function TaskThreadScreen() {
       mode === "compact" ? runtimeGraph.edges.slice(0, 4) : runtimeGraph.edges;
     const visiblePackages =
       mode === "compact" ? runtimeGraph.workPackages.slice(0, 4) : runtimeGraph.workPackages;
+    const monitoring = runtimeGraph.runtimeMonitoring;
 
     return (
       <View style={styles.runtimeGraphSurface}>
@@ -3353,6 +3354,49 @@ export default function TaskThreadScreen() {
               <Text style={styles.metricValue}>{runtimeGraph.workPackages.length}</Text>
             </View>
           </View>
+          {monitoring ? (
+            <View style={styles.runtimeMonitoringGrid}>
+              <View style={styles.runtimeMonitoringCard}>
+                <View style={styles.optionTopline}>
+                  <Badge label={monitoring.progress.label} tone={monitoring.progress.tone} />
+                  <Text style={styles.optionSummaryText}>
+                    {monitoring.progress.percentComplete}% complete
+                  </Text>
+                </View>
+                <Text style={styles.runtimeGraphNodeDetail}>{monitoring.progress.detail}</Text>
+                <Text style={styles.runtimeGraphNodeMeta}>
+                  Avg node progress {monitoring.progress.averageNodeProgress}% / frontier{" "}
+                  {monitoring.progress.frontierCount}
+                </Text>
+              </View>
+              <View style={styles.runtimeMonitoringCard}>
+                <View style={styles.optionTopline}>
+                  <Badge label="Checkpoints" tone={monitoring.checkpoints.tone} />
+                  <Text style={styles.optionSummaryText}>{monitoring.checkpoints.nextActionLabel}</Text>
+                </View>
+                <Text style={styles.runtimeGraphNodeDetail}>{monitoring.checkpoints.detail}</Text>
+                {monitoring.checkpoints.nextCheckpointLabel ? (
+                  <Text style={styles.runtimeGraphNodeMeta}>
+                    Next: {monitoring.checkpoints.nextCheckpointLabel}
+                  </Text>
+                ) : null}
+              </View>
+              <View style={styles.runtimeMonitoringCard}>
+                <View style={styles.optionTopline}>
+                  <Badge label={monitoring.cost.label} tone={monitoring.cost.tone} />
+                  <Text style={styles.optionSummaryText}>
+                    {monitoring.cost.capacityUtilization !== null
+                      ? `${Math.round(monitoring.cost.capacityUtilization * 100)}% capacity`
+                      : "Capacity open"}
+                  </Text>
+                </View>
+                <Text style={styles.runtimeGraphNodeDetail}>{monitoring.cost.detail}</Text>
+                <Text style={styles.runtimeGraphNodeMeta}>
+                  {monitoring.cost.budgetPolicyPresent ? "Budget policy present" : "No explicit budget policy"}
+                </Text>
+              </View>
+            </View>
+          ) : null}
         </View>
 
         {visiblePackages.length > 0 ? (
@@ -6159,6 +6203,17 @@ const styles = StyleSheet.create({
   },
   runtimeGraphPackageList: {
     gap: 8,
+  },
+  runtimeMonitoringGrid: {
+    gap: 8,
+  },
+  runtimeMonitoringCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+    backgroundColor: "#f8fbff",
+    padding: 10,
+    gap: 6,
   },
   runtimeGraphPackageCard: {
     borderRadius: 8,

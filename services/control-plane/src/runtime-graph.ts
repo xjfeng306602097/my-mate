@@ -7,6 +7,7 @@ import type {
   RuntimeGraphEdge,
   RuntimeGraphMarker,
   RuntimeGraphNode,
+  RuntimeMonitoringSummary,
   RuntimeGraphSummary,
   RuntimeGraphWorkPackage,
 } from "./types.js";
@@ -101,6 +102,20 @@ function isBlockedStatus(status: NodeStatus): boolean {
 
 function isDoneStatus(status: NodeStatus): boolean {
   return status === "completed" || status === "skipped";
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function asPositiveInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(1, Math.floor(value));
 }
 
 function mergeNodeStatus(node: CompiledNodeRecord, nodeRun: NodeRunRecord | null): NodeStatus {
@@ -261,6 +276,7 @@ function buildSummaryLines(input: {
   edges: RuntimeGraphEdge[];
   frontier: string[];
   workPackages: RuntimeGraphWorkPackage[];
+  monitoring: RuntimeMonitoringSummary;
 }): string[] {
   const waitingCount = input.nodes.filter((node) => node.status === "waiting_human").length;
   const blockedCount = input.nodes.filter((node) => node.status === "failed" || node.status === "cancelled").length;
@@ -268,6 +284,9 @@ function buildSummaryLines(input: {
   const completedCount = input.nodes.filter((node) => node.status === "completed").length;
   const lines = [
     `${input.nodes.length} node(s), ${input.edges.length} edge(s), ${input.workPackages.length} work package(s).`,
+    `Runtime progress is ${input.monitoring.progress.percentComplete}% complete with ${input.monitoring.progress.frontierCount} node(s) in the active frontier.`,
+    input.monitoring.checkpoints.detail,
+    input.monitoring.cost.detail,
   ];
   if (input.frontier.length > 0) {
     lines.push(`${input.frontier.length} node(s) are currently in the active frontier.`);
@@ -285,6 +304,154 @@ function buildSummaryLines(input: {
     lines.push(`${completedCount} node(s) completed in the final run topology.`);
   }
   return lines;
+}
+
+function buildRuntimeMonitoringSummary(input: {
+  run: RunRecord;
+  plan: RunPlanRecord;
+  nodes: RuntimeGraphNode[];
+  frontier: string[];
+}): RuntimeMonitoringSummary {
+  const totalNodes = input.nodes.length;
+  const completedNodes = input.nodes.filter((node) => node.status === "completed").length;
+  const skippedNodes = input.nodes.filter((node) => node.status === "skipped").length;
+  const readyNodes = input.nodes.filter((node) => node.status === "ready").length;
+  const runningNodes = input.nodes.filter((node) => node.status === "running").length;
+  const waitingNodes = input.nodes.filter((node) => node.status === "waiting_human").length;
+  const blockedNodes = input.nodes.filter((node) => node.status === "failed" || node.status === "cancelled").length;
+  const activeNodes = runningNodes + waitingNodes;
+  const progressValues = input.nodes.map((node) =>
+    typeof node.progress?.percent === "number" && Number.isFinite(node.progress.percent)
+      ? node.progress.percent
+      : isDoneStatus(node.status)
+        ? 100
+        : 0,
+  );
+  const averageNodeProgress = clampPercent(
+    progressValues.length
+      ? progressValues.reduce((sum, value) => sum + value, 0) / progressValues.length
+      : 0,
+  );
+  const percentComplete = clampPercent(totalNodes ? ((completedNodes + skippedNodes) / totalNodes) * 100 : 0);
+  const progressTone: RuntimeMonitoringSummary["progress"]["tone"] =
+    blockedNodes > 0
+      ? "danger"
+      : waitingNodes > 0
+        ? "warn"
+        : input.run.status === "completed"
+          ? "success"
+          : activeNodes > 0 || readyNodes > 0
+            ? "success"
+            : "neutral";
+
+  const approvalGateCount = input.nodes.filter((node) => node.markers.includes("approval_gate")).length;
+  const humanInputGateCount = input.nodes.filter((node) => node.markers.includes("human_input_gate")).length;
+  const blockedGateCount = input.nodes.filter(
+    (node) =>
+      (node.markers.includes("approval_gate") || node.markers.includes("human_input_gate")) &&
+      (node.status === "failed" || node.status === "cancelled"),
+  ).length;
+  const nextCheckpointNode =
+    input.nodes.find((node) => node.status === "waiting_human") ||
+    input.nodes.find((node) => node.markers.includes("approval_gate") && node.status !== "completed") ||
+    input.nodes.find((node) => node.markers.includes("human_input_gate") && node.status !== "completed") ||
+    null;
+  const checkpointTone: RuntimeMonitoringSummary["checkpoints"]["tone"] =
+    blockedGateCount > 0 ? "danger" : waitingNodes > 0 ? "warn" : approvalGateCount + humanInputGateCount > 0 ? "success" : "neutral";
+
+  const maxParallelNodes = asPositiveInteger(input.plan.policy_snapshot?.max_parallel_nodes);
+  const activeCapacity = runningNodes + waitingNodes;
+  const readyQueue = readyNodes;
+  const capacityUtilization =
+    maxParallelNodes && maxParallelNodes > 0
+      ? Math.min(1, Number((activeCapacity / maxParallelNodes).toFixed(2)))
+      : null;
+  const timeoutBudgetSeconds = input.plan.compiled_nodes.reduce(
+    (sum, node) => sum + (typeof node.timeout_seconds === "number" ? Math.max(0, node.timeout_seconds) : 0),
+    0,
+  );
+  const remainingRetryBudget = input.plan.compiled_nodes.reduce((sum, node) => {
+    const maxAttempts = typeof node.retry_policy.max_attempts === "number" ? node.retry_policy.max_attempts : 0;
+    const attempt = typeof node.retry_policy.attempt === "number" ? node.retry_policy.attempt : 0;
+    return sum + Math.max(0, maxAttempts - attempt);
+  }, 0);
+  const budgetPolicy = isPlainObject(input.plan.policy_snapshot?.budget_policy)
+    ? input.plan.policy_snapshot.budget_policy
+    : {};
+  const budgetPolicyPresent = Object.keys(budgetPolicy).length > 0;
+  const costPosture: RuntimeMonitoringSummary["cost"]["posture"] =
+    blockedNodes > 0
+      ? "blocked"
+      : (capacityUtilization !== null && capacityUtilization >= 1 && readyQueue > 0) || waitingNodes > 0
+        ? "attention"
+        : "nominal";
+  const costTone: RuntimeMonitoringSummary["cost"]["tone"] =
+    costPosture === "blocked" ? "danger" : costPosture === "attention" ? "warn" : "success";
+
+  return {
+    progress: {
+      totalNodes,
+      completedNodes,
+      skippedNodes,
+      activeNodes,
+      readyNodes,
+      waitingNodes,
+      blockedNodes,
+      frontierCount: input.frontier.length,
+      percentComplete,
+      averageNodeProgress,
+      label:
+        blockedNodes > 0
+          ? "Runtime blocked"
+          : waitingNodes > 0
+            ? "Waiting checkpoint"
+            : input.run.status === "completed"
+              ? "Runtime complete"
+              : activeNodes > 0
+                ? "Runtime active"
+                : "Runtime ready",
+      detail: `${completedNodes + skippedNodes}/${totalNodes} node(s) terminal, ${activeNodes} active, ${readyNodes} ready, ${blockedNodes} blocked.`,
+      tone: progressTone,
+    },
+    checkpoints: {
+      approvalGateCount,
+      humanInputGateCount,
+      waitingHumanCount: waitingNodes,
+      blockedGateCount,
+      nextCheckpointLabel: nextCheckpointNode?.name || null,
+      nextActionLabel:
+        waitingNodes > 0
+          ? "Resolve waiting checkpoint"
+          : nextCheckpointNode
+            ? "Prepare checkpoint"
+            : "Monitor run",
+      detail:
+        waitingNodes > 0
+          ? `${waitingNodes} node(s) are waiting on human approval or input.`
+          : approvalGateCount + humanInputGateCount > 0
+            ? `${approvalGateCount + humanInputGateCount} human checkpoint node(s) are present in this run.`
+            : "No human checkpoint is currently blocking runtime progress.",
+      tone: checkpointTone,
+    },
+    cost: {
+      label:
+        costPosture === "blocked"
+          ? "Cost posture blocked"
+          : costPosture === "attention"
+            ? "Cost posture needs attention"
+            : "Cost posture nominal",
+      detail: `Capacity ${activeCapacity}/${maxParallelNodes ?? "unbounded"} active, ${readyQueue} ready, timeout budget ${timeoutBudgetSeconds}s, retry budget ${remainingRetryBudget}.`,
+      posture: costPosture,
+      maxParallelNodes,
+      activeCapacity,
+      readyQueue,
+      capacityUtilization,
+      timeoutBudgetSeconds,
+      remainingRetryBudget,
+      budgetPolicyPresent,
+      tone: costTone,
+    },
+  };
 }
 
 export function buildRuntimeGraphSummary(input: {
@@ -306,6 +473,12 @@ export function buildRuntimeGraphSummary(input: {
     input.plan.frontier.filter((nodeRunId) => nodes.some((node) => node.nodeRunId === nodeRunId)),
   );
   const workPackages = buildWorkPackages(nodes);
+  const runtimeMonitoring = buildRuntimeMonitoringSummary({
+    run: input.run,
+    plan: input.plan,
+    nodes,
+    frontier,
+  });
 
   return {
     runId: input.run.run_id,
@@ -331,12 +504,14 @@ export function buildRuntimeGraphSummary(input: {
         .map((node) => node.nodeRunId),
     },
     workPackages,
+    runtimeMonitoring,
     summaryLines: buildSummaryLines({
       run: input.run,
       nodes,
       edges,
       frontier,
       workPackages,
+      monitoring: runtimeMonitoring,
     }),
   };
 }
