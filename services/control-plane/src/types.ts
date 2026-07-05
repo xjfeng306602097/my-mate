@@ -328,6 +328,45 @@ export interface MissionWorkspaceSection {
   detailLines: string[];
 }
 
+export type MissionConversationResponsibility =
+  | "intent_record"
+  | "orchestrator_explanation"
+  | "decision_record"
+  | "audit_trail";
+
+export interface MissionConversationRail {
+  title: string;
+  summary: string;
+  responsibilities: MissionConversationResponsibility[];
+  latestIntent: string | null;
+  latestExplanation: string | null;
+  latestDecision: string | null;
+  auditMessageCount: number;
+}
+
+export interface MissionEvidenceSummary {
+  title: string;
+  summary: string;
+  role: "technical_evidence";
+  defaultState: "collapsed";
+  totalSignals: number;
+  plannerSignals: number;
+  runtimeSignals: number;
+  artifactSignals: number;
+  patchSignals: number;
+  drilldownLabels: string[];
+}
+
+export interface MissionRawCardPolicy {
+  role: "secondary_audit";
+  defaultState: "collapsed";
+  drilldownOnly: boolean;
+  hiddenFromConversationCount: number;
+  foldedPlanningRevisionCount: number;
+  preservedKinds: SessionMessageKind[];
+  summary: string;
+}
+
 export interface MissionSnapshot {
   workspace_contract_version: number;
   missionTitle: string;
@@ -352,6 +391,9 @@ export interface MissionSnapshot {
   activeRunId: string | null;
   conversationTurns: number;
   evidenceCount: number;
+  conversationRail: MissionConversationRail;
+  evidenceSummary: MissionEvidenceSummary;
+  rawCardPolicy: MissionRawCardPolicy;
 }
 
 export interface MissionView {

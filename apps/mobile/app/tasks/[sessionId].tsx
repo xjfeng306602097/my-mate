@@ -797,6 +797,9 @@ export default function TaskThreadScreen() {
     missionSpec?.sourceBrief ||
     threadOverview?.detail ||
     "Use the workspace to shape, confirm, and run work.";
+  const missionConversationRail = missionSnapshot?.conversationRail || null;
+  const missionEvidenceSummary = missionSnapshot?.evidenceSummary || null;
+  const missionRawCardPolicy = missionSnapshot?.rawCardPolicy || null;
 
   const directiveChips = useMemo(() => {
     if (!data) {
@@ -1010,12 +1013,15 @@ export default function TaskThreadScreen() {
           ? latestConversationMessage.role === "user"
             ? "Waiting for orchestrator"
             : "Latest orchestrator reply"
-          : "Mission coordination",
+          : missionConversationRail?.title || "Mission coordination",
         detail: latestConversationMessage
           ? getConversationMessageText(latestConversationMessage) ||
             `${latestConversationMessage.role === "user" ? "You" : "Orchestrator"} posted the latest turn.`
-          : "Mission instructions and orchestrator replies stay here while route, runtime, and outputs remain organized above.",
-        metric: `${conversationMessages.length} update${conversationMessages.length === 1 ? "" : "s"}`,
+          : missionConversationRail?.summary ||
+            "Mission instructions and orchestrator replies stay here while route, runtime, and outputs remain organized above.",
+        metric: `${missionConversationRail?.auditMessageCount ?? conversationMessages.length} update${
+          (missionConversationRail?.auditMessageCount ?? conversationMessages.length) === 1 ? "" : "s"
+        }`,
         tone: latestConversationMessage ? messageTone(latestConversationMessage) : "neutral",
       },
     ];
@@ -1027,6 +1033,7 @@ export default function TaskThreadScreen() {
     latestPlanningMessage,
     hasVersionedWorkspaceContract,
     missionSnapshot,
+    missionConversationRail,
     orchestratorBriefing,
     planOptionsNarrative,
     runtimeGraph,
@@ -1999,11 +2006,13 @@ export default function TaskThreadScreen() {
       eyebrow: evidenceSection?.label || "Evidence Summary",
       title:
         evidenceSection?.title ||
+        missionEvidenceSummary?.title ||
         (evidenceMessages.length > 0
           ? `${evidenceMessages.length} mission signal${evidenceMessages.length === 1 ? "" : "s"}`
           : "Evidence not attached yet"),
       detail:
         evidenceSection?.summary ||
+        missionEvidenceSummary?.summary ||
         (evidenceMessages.length > 0
           ? "Planner, route, run, patch, and artifact details are preserved as audit context."
           : "Raw evidence and drilldown entries will appear after planning or execution signals exist."),
@@ -2038,11 +2047,20 @@ export default function TaskThreadScreen() {
           <View style={styles.workspaceAuditBlock}>
             <View style={styles.workspaceAuditSummary}>
               <Text style={styles.workspaceAuditText}>
-                {conversationMessages.length} coordination updates, {evidenceMessages.length} mission signals,
-                {` ${messageProjection.hiddenPlanningRevisionCount} folded revision(s).`}
+                {missionConversationRail?.auditMessageCount ?? conversationMessages.length} coordination updates,{" "}
+                {missionEvidenceSummary?.totalSignals ?? evidenceMessages.length} mission signals,
+                {` ${
+                  missionRawCardPolicy?.foldedPlanningRevisionCount ??
+                  messageProjection.hiddenPlanningRevisionCount
+                } folded revision(s).`}
               </Text>
+              {missionRawCardPolicy?.summary ? (
+                <Text style={styles.workspaceAuditText}>{missionRawCardPolicy.summary}</Text>
+              ) : null}
               <Pressable onPress={() => setShowThreadEvidence((current) => !current)}>
-                <Text style={styles.linkText}>{showThreadEvidence ? "Hide signals" : "Open signals"}</Text>
+                <Text style={styles.linkText}>
+                  {showThreadEvidence ? "Hide audit cards" : "Open audit cards"}
+                </Text>
               </Pressable>
             </View>
             {showThreadEvidence ? (
@@ -3488,8 +3506,20 @@ export default function TaskThreadScreen() {
         <View style={styles.timelineHeader}>
           <View style={styles.overviewCopy}>
             <Text style={styles.timelineDetail}>
-              This conversation is the live collaboration rail. The orchestrator should answer here, while route changes and evidence stay attached to the workspace instead of replacing the conversation.
+              {missionConversationRail?.summary ||
+                "This conversation is the live collaboration rail. The orchestrator should answer here, while route changes and evidence stay attached to the workspace instead of replacing the conversation."}
             </Text>
+            {missionConversationRail?.responsibilities?.length ? (
+              <View style={styles.conversationResponsibilityRow}>
+                {missionConversationRail.responsibilities.map((responsibility) => (
+                  <View key={responsibility} style={styles.conversationResponsibilityChip}>
+                    <Text style={styles.conversationResponsibilityText}>
+                      {formatStatus(responsibility)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
             {messageProjection.hiddenPlanningRevisionCount > 0 ||
             messageProjection.hiddenPlannerMessageCount > 0 ? (
               <Text style={styles.timelineFoldHint}>
@@ -3527,14 +3557,16 @@ export default function TaskThreadScreen() {
               <View style={styles.overviewCopy}>
                 <Text style={styles.evidenceTitle}>Mission signals</Text>
                 <Text style={styles.evidenceDetail}>
-                  {latestEvidenceMessage
+                  {missionEvidenceSummary?.summary ||
+                  missionRawCardPolicy?.summary ||
+                  (latestEvidenceMessage
                     ? `Latest artifact: ${getMessageKindLabel(latestEvidenceMessage.kind)}.`
-                    : "Planner cards, run updates, approvals, and artifacts are kept out of the main coordination rail."}
+                    : "Planner cards, run updates, approvals, and artifacts are kept out of the main coordination rail.")}
                 </Text>
               </View>
               <Pressable onPress={() => setShowThreadEvidence((current) => !current)}>
                 <Text style={styles.linkText}>
-                  {showThreadEvidence ? "Hide cards" : "Show cards"}
+                  {showThreadEvidence ? "Hide audit cards" : "Show audit cards"}
                 </Text>
               </Pressable>
             </View>
@@ -3814,11 +3846,14 @@ export default function TaskThreadScreen() {
         <View style={styles.auditSummaryPanel}>
           <Text style={styles.auditSummaryTitle}>Mission record</Text>
           <Text style={styles.auditSummaryText}>
-            {conversationMessages.length} coordination update{conversationMessages.length === 1 ? "" : "s"} and {evidenceMessages.length} mission signal{evidenceMessages.length === 1 ? "" : "s"}.
+            {missionConversationRail?.auditMessageCount ?? conversationMessages.length} coordination update{(missionConversationRail?.auditMessageCount ?? conversationMessages.length) === 1 ? "" : "s"} and {missionEvidenceSummary?.totalSignals ?? evidenceMessages.length} mission signal{(missionEvidenceSummary?.totalSignals ?? evidenceMessages.length) === 1 ? "" : "s"}.
           </Text>
+          {missionRawCardPolicy?.summary ? (
+            <Text style={styles.auditSummaryText}>{missionRawCardPolicy.summary}</Text>
+          ) : null}
           <Pressable onPress={() => setShowThreadEvidence((current) => !current)}>
             <Text style={styles.linkText}>
-              {showThreadEvidence ? "Hide signals" : "Open signals"}
+              {showThreadEvidence ? "Hide audit cards" : "Open audit cards"}
             </Text>
           </Pressable>
         </View>
@@ -3907,20 +3942,43 @@ export default function TaskThreadScreen() {
         <View style={styles.conversationRailHeader}>
           <View style={styles.overviewCopy}>
             <Text style={styles.eyebrowLabel}>Coordination</Text>
-            <Text style={styles.conversationRailTitle}>Mission coordination</Text>
-            <Text style={styles.timelineDetail}>
-              Every user note and orchestrator reply lands here, while the workspace keeps the evolving route, mission signals, and runtime state in view.
+            <Text style={styles.conversationRailTitle}>
+              {missionConversationRail?.title || "Mission coordination"}
             </Text>
+            <Text style={styles.timelineDetail}>
+              {missionConversationRail?.summary ||
+                "Every user note and orchestrator reply lands here, while the workspace keeps the evolving route, mission signals, and runtime state in view."}
+            </Text>
+            {missionConversationRail?.responsibilities?.length ? (
+              <View style={styles.conversationResponsibilityRow}>
+                {missionConversationRail.responsibilities.map((responsibility) => (
+                  <View key={responsibility} style={styles.conversationResponsibilityChip}>
+                    <Text style={styles.conversationResponsibilityText}>
+                      {formatStatus(responsibility)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
           </View>
           <Badge
-            label={`${conversationMessages.length} update${conversationMessages.length === 1 ? "" : "s"}`}
+            label={`${missionConversationRail?.auditMessageCount ?? conversationMessages.length} update${
+              (missionConversationRail?.auditMessageCount ?? conversationMessages.length) === 1 ? "" : "s"
+            }`}
             tone="neutral"
           />
         </View>
         <View style={styles.conversationBridgeCard}>
           <Text style={styles.conversationBridgeLabel}>Current mission read</Text>
           <Text style={styles.conversationBridgeTitle}>{workspaceBridge.focusTitle}</Text>
-          <Text style={styles.conversationBridgeText}>{workspaceBridge.orchestratorRead}</Text>
+          <Text style={styles.conversationBridgeText}>
+            {missionConversationRail?.latestExplanation || workspaceBridge.orchestratorRead}
+          </Text>
+          {missionConversationRail?.latestDecision ? (
+            <Text style={styles.conversationBridgeText}>
+              Decision: {missionConversationRail.latestDecision}
+            </Text>
+          ) : null}
         </View>
         <ScrollView
           style={styles.conversationRailScroll}
@@ -5781,6 +5839,25 @@ const styles = StyleSheet.create({
   conversationRailContent: {
     gap: 10,
     paddingBottom: 6,
+  },
+  conversationResponsibilityRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+  },
+  conversationResponsibilityChip: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+    backgroundColor: "#eff6ff",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  conversationResponsibilityText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#1d4ed8",
   },
   conversationBridgeCard: {
     borderRadius: 8,

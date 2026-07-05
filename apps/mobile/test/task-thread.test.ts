@@ -1182,6 +1182,15 @@ test("buildMissionSnapshot assembles mission-first workspace state", () => {
   assert.deepEqual(mission.outputs[0]?.relatedCheckpointKeys, ["route-compiled", "runtime-state"]);
   assert.equal(mission.outputs[0]?.currentActionLabel, "Track output");
   assert.ok((mission.outputs[0]?.history.length || 0) >= 2);
+  assert.deepEqual(mission.conversationRail.responsibilities, [
+    "intent_record",
+    "orchestrator_explanation",
+    "decision_record",
+    "audit_trail",
+  ]);
+  assert.equal(mission.evidenceSummary.defaultState, "collapsed");
+  assert.equal(mission.rawCardPolicy.role, "secondary_audit");
+  assert.equal(mission.rawCardPolicy.defaultState, "collapsed");
   assert.equal(mission.workspaceSections.find((section) => section.key === "outputs")?.itemCount, 1);
 });
 

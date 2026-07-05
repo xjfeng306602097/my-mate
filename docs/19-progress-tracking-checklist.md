@@ -85,6 +85,13 @@ Latest implementation update:
   - Mobile and Studio display those fields inside the center workspace
   - contract tests guard output history, checkpoint relation, and work-package
     linkage
+- `MW-03` conversation/evidence role correction landed
+  - `mission_snapshot` now carries `conversationRail`, `evidenceSummary`, and
+    `rawCardPolicy`
+  - Mobile and Studio consume those fields so conversation and raw cards stay
+    available as secondary explanation, decision, audit, and drilldown context
+  - contract tests and smoke checks guard the collapsed secondary raw-card
+    policy
 - validated after landing:
   - `cd services/control-plane && npm run check`
   - `cd services/control-plane && npm test`
@@ -591,7 +598,7 @@ This also means the following may land incrementally:
 | `MW-00` | Mission Workspace | Done | P0 | Define a unified `Mission Workspace` contract in the Control Plane and align Mobile and Studio to consume it. | Contract definition, Control Plane normalization, Mobile cleanup, Studio cleanup, and cross-stage verification have landed. |
 | `MW-01` | Mission Workspace | Done | P0 | Make the center workspace feel persistent rather than mainly card-derived. | Stable 8-module workspace skeleton now lands in Control Plane, Mobile, and Studio. |
 | `MW-02` | Mission Workspace | Done | P0 | Promote outputs, checkpoints, pipelines, and generated deliverables into stronger first-class surfaces in both Mobile and Studio. | Structured stage, relation, next-action, and output-history fields now drive Mobile and Studio displays. |
-| `MW-03` | Mission Workspace | Active | P0 | Keep raw plan/run/evidence cards secondary while making mission state the main product shell. | Conversation remains explanation / decision / audit context rather than the main work surface. |
+| `MW-03` | Mission Workspace | Done | P0 | Keep raw plan/run/evidence cards secondary while making mission state the main product shell. | Contract-level conversation rail, evidence summary, and raw-card policy now keep conversation/evidence secondary and auditable. |
 | `PLAN-01` | Planner / Orchestrator | Active | P1 | Broaden revise-plan understanding beyond the current deterministic structural mutations. | Current revise flow is intentionally narrow and rule-based. |
 | `PLAN-02` | Planner / Orchestrator | Planned | P1 | Improve agent and skill recommendation quality beyond the current basic registry-aware matching. | Follow-up after Mission shell tightening. |
 | `PLAN-03` | Planner / Orchestrator | Deferred | P2 | Add stronger DAG synthesis/orchestrator generation behavior beyond deterministic fallback planning. | Explicitly out of scope until Mission Workspace tightening exits. |
@@ -622,7 +629,7 @@ Close these items first:
 - [x] `MW-00`
 - [x] `MW-01`
 - [x] `MW-02`
-- [ ] `MW-03`
+- [x] `MW-03`
 
 Exit condition:
 
@@ -668,6 +675,23 @@ Exit condition:
       workspace modules.
 - [x] Control Plane, Mobile, and Studio verification now guard the MW-02
       relation/history fields.
+
+### MW-03 Implementation Status
+
+- [x] `mission_snapshot.conversationRail` now defines the conversation rail as
+      intent record, orchestrator explanation, decision record, and audit
+      trail.
+- [x] `mission_snapshot.evidenceSummary` now defines raw technical evidence as
+      collapsed drilldown context rather than the main narrative surface.
+- [x] `mission_snapshot.rawCardPolicy` now records secondary-audit role,
+      collapsed default state, folded planning revisions, and preserved raw
+      card kinds.
+- [x] Mobile consumes those fields in the conversation rail, Mission record,
+      and Evidence Summary surfaces.
+- [x] Studio consumes those fields in Mission Inspector, Workspace Feed, and
+      Workspace Support.
+- [x] Control Plane, Mobile, and Studio verification now guard MW-03 role and
+      collapsed raw-card policy semantics.
 
 ### Milestone B: Runtime Steering Maturity
 

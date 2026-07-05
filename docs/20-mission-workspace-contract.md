@@ -67,6 +67,9 @@ Required fields in `mission_snapshot`:
 - `activeRunId`
 - `conversationTurns`
 - `evidenceCount`
+- `conversationRail`
+- `evidenceSummary`
+- `rawCardPolicy`
 
 Allowed nullable fields:
 
@@ -206,6 +209,47 @@ Represents raw evidence and drilldown entry points for:
 
 It supports audit and debugging, but is not the primary mission-reading path.
 
+### Conversation Rail
+
+Represents human-readable collaboration context only.
+
+It should expose:
+
+- `title`
+- `summary`
+- `responsibilities`
+- latest user intent
+- latest orchestrator explanation
+- latest decision
+- audit-message count
+
+Allowed responsibilities are:
+
+- `intent_record`
+- `orchestrator_explanation`
+- `decision_record`
+- `audit_trail`
+
+It must not replace `Mission Workspace` sections as the source of primary
+mission state.
+
+### Raw Card Policy
+
+Represents the default handling of planner, route, runtime, patch, and artifact
+cards.
+
+It should expose:
+
+- `role = secondary_audit`
+- `defaultState = collapsed`
+- `drilldownOnly`
+- raw-card counts
+- folded planning revision count
+- preserved raw message kinds
+
+Raw cards are preserved for debugging and audit drilldown, but should not be
+the default user reading path.
+
 ## Frontend Rules
 
 Frontends may:
@@ -248,6 +292,10 @@ Current `MW-00` and `MW-01` implementation status:
   checkpoints, and outputs.
 - Mobile and Studio display those relation/history fields in the center
   workspace.
+- Control Plane emits `MW-03` conversation rail, evidence summary, and raw card
+  policy fields.
+- Mobile and Studio consume those fields so conversation and raw evidence remain
+  available as secondary audit/drilldown context.
 
 Current verification coverage:
 

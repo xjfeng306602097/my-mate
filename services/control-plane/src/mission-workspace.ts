@@ -7,6 +7,7 @@ import type {
   MissionSpecSummary,
   MissionStageSummary,
   MissionWorkspaceSection,
+  SessionMessageKind,
   SessionMessageRecord,
   SessionRecord,
   WorkspaceArtifactSurface,
@@ -116,6 +117,128 @@ function isConversationTextMessage(message: SessionMessageRecord): boolean {
     message.kind === "system" ||
     message.kind === "orchestrator_turn"
   );
+}
+
+function uniqueMessageKinds(values: SessionMessageKind[]): SessionMessageKind[] {
+  return [...new Set(values)];
+}
+
+function buildMissionConversationRailFromSession(input: {
+  messages: SessionMessageRecord[];
+  workspaceState: Record<string, unknown>;
+}): MissionSnapshot["conversationRail"] {
+  const { messages, workspaceState } = input;
+  const conversationMessages = messages.filter((message) => isConversationTextMessage(message));
+  const latestUserText =
+    [...messages]
+      .reverse()
+      .find((message) => message.role === "user" && message.kind === "text") || null;
+  const latestReply =
+    [...messages]
+      .reverse()
+      .find((message) => message.role === "orchestrator" && isConversationTextMessage(message)) || null;
+  const latestDecision =
+    [...messages]
+      .reverse()
+      .find((message) => message.kind === "decision_card") || null;
+  const latestDecisionText =
+    latestDecision && typeof latestDecision.content.pending_decision === "string" && latestDecision.content.pending_decision.trim()
+      ? latestDecision.content.pending_decision.trim()
+      : typeof workspaceState.pending_decision === "string" && workspaceState.pending_decision.trim()
+        ? workspaceState.pending_decision.trim()
+        : null;
+  const latestExplanation = getConversationMessageText(latestReply);
+
+  return {
+    title: "Mission coordination",
+    summary:
+      latestExplanation ||
+      "Conversation records user intent, orchestrator explanation, decisions, and audit context while the workspace owns mission state.",
+    responsibilities: [
+      "intent_record",
+      "orchestrator_explanation",
+      "decision_record",
+      "audit_trail",
+    ],
+    latestIntent: getConversationMessageText(latestUserText),
+    latestExplanation,
+    latestDecision: latestDecisionText,
+    auditMessageCount: conversationMessages.length,
+  };
+}
+
+function buildMissionEvidenceSummaryFromSession(
+  messages: SessionMessageRecord[],
+): MissionSnapshot["evidenceSummary"] {
+  const evidenceMessages = messages.filter((message) => !isConversationTextMessage(message));
+  const plannerKinds = new Set<SessionMessageKind>([
+    "goal_update_card",
+    "decision_card",
+    "workspace_snapshot_card",
+    "draft_card",
+    "plan_card",
+    "plan_options_card",
+  ]);
+  const runtimeKinds = new Set<SessionMessageKind>([
+    "run_card",
+    "summary_card",
+    "subtask_card",
+    "approval_card",
+    "human_input_card",
+  ]);
+  const patchKinds = new Set<SessionMessageKind>(["intervention_card", "dag_patch_card"]);
+  const plannerSignals = evidenceMessages.filter((message) => plannerKinds.has(message.kind)).length;
+  const runtimeSignals = evidenceMessages.filter((message) => runtimeKinds.has(message.kind)).length;
+  const artifactSignals = evidenceMessages.filter((message) => message.kind === "artifact_card").length;
+  const patchSignals = evidenceMessages.filter((message) => patchKinds.has(message.kind)).length;
+  const drilldownLabels = [
+    plannerSignals > 0 ? "planner details" : null,
+    runtimeSignals > 0 ? "runtime updates" : null,
+    artifactSignals > 0 ? "artifact trace" : null,
+    patchSignals > 0 ? "patch history" : null,
+  ].filter((item): item is string => !!item);
+
+  return {
+    title:
+      evidenceMessages.length > 0
+        ? `${evidenceMessages.length} evidence signal${evidenceMessages.length === 1 ? "" : "s"} preserved`
+        : "Evidence not attached yet",
+    summary:
+      evidenceMessages.length > 0
+        ? "Raw planner, route, runtime, patch, and artifact records are preserved for drilldown and audit."
+        : "Raw technical evidence will remain available here after planning or execution emits signals.",
+    role: "technical_evidence",
+    defaultState: "collapsed",
+    totalSignals: evidenceMessages.length,
+    plannerSignals,
+    runtimeSignals,
+    artifactSignals,
+    patchSignals,
+    drilldownLabels,
+  };
+}
+
+function buildMissionRawCardPolicyFromSession(
+  messages: SessionMessageRecord[],
+): MissionSnapshot["rawCardPolicy"] {
+  const rawMessages = messages.filter((message) => !isConversationTextMessage(message));
+  const planningMessages = rawMessages.filter(
+    (message) => message.kind === "plan_options_card" || message.kind === "plan_card",
+  );
+  const foldedPlanningRevisionCount = Math.max(0, planningMessages.length - 1);
+
+  return {
+    role: "secondary_audit",
+    defaultState: "collapsed",
+    drilldownOnly: true,
+    hiddenFromConversationCount: rawMessages.length,
+    foldedPlanningRevisionCount,
+    preservedKinds: uniqueMessageKinds(rawMessages.map((message) => message.kind)),
+    summary:
+      rawMessages.length > 0
+        ? "Raw cards are preserved as collapsed audit drilldowns and do not define the primary mission workspace."
+        : "No raw cards are attached yet; future planner, route, run, patch, and artifact records stay secondary.",
+  };
 }
 
 function getThreadTaskBriefFromMessages(
@@ -1555,6 +1678,12 @@ export function buildMissionWorkspaceProjection(input: {
       .find((message) => message.kind === "draft_card") || null;
   const activeRouteRevision = missionSpec.route.activeRevision;
   const activeRouteOption = missionSpec.route.activeOption;
+  const conversationRail = buildMissionConversationRailFromSession({
+    messages,
+    workspaceState,
+  });
+  const evidenceSummary = buildMissionEvidenceSummaryFromSession(messages);
+  const rawCardPolicy = buildMissionRawCardPolicyFromSession(messages);
 
   const activeStageKey: MissionStageSummary["key"] =
     session.status === "running" || session.status === "waiting_human" || session.latest_run_id
@@ -1751,6 +1880,9 @@ export function buildMissionWorkspaceProjection(input: {
           : session.latest_run_id,
       conversationTurns: messages.filter((message) => isConversationTextMessage(message)).length,
       evidenceCount: messages.filter((message) => !isConversationTextMessage(message)).length,
+      conversationRail,
+      evidenceSummary,
+      rawCardPolicy,
     },
   };
 }

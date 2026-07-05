@@ -348,6 +348,14 @@ test("mission workspace contract remains stable across core mission stages", () 
     );
     assert.equal(activeStages.length, 1, scenario.name);
     assert.equal(activeStages[0]?.key, scenario.activeStage, scenario.name);
+    assert.deepEqual(
+      missionSnapshot.conversationRail.responsibilities,
+      ["intent_record", "orchestrator_explanation", "decision_record", "audit_trail"],
+      scenario.name,
+    );
+    assert.equal(missionSnapshot.evidenceSummary.defaultState, "collapsed", scenario.name);
+    assert.equal(missionSnapshot.rawCardPolicy.defaultState, "collapsed", scenario.name);
+    assert.equal(missionSnapshot.rawCardPolicy.role, "secondary_audit", scenario.name);
     for (const section of missionSnapshot.workspaceSections) {
       assert.ok(section.title.trim(), `${scenario.name}:${section.key}:title`);
       assert.ok(section.summary.trim(), `${scenario.name}:${section.key}:summary`);
@@ -616,6 +624,12 @@ test("mission workspace projection promotes outputs checkpoints and pipelines in
   assert.equal(projection.missionSnapshot.outputs[0]?.latestArtifactMessageId, "artifact-1");
   assert.equal(projection.missionSnapshot.outputs[0]?.currentActionLabel, "Review returned output");
   assert.ok((projection.missionSnapshot.outputs[0]?.history.length || 0) >= 2);
+  assert.equal(projection.missionSnapshot.conversationRail.latestIntent, null);
+  assert.equal(projection.missionSnapshot.conversationRail.auditMessageCount, 0);
+  assert.equal(projection.missionSnapshot.evidenceSummary.artifactSignals, 1);
+  assert.equal(projection.missionSnapshot.evidenceSummary.runtimeSignals, 1);
+  assert.ok(projection.missionSnapshot.rawCardPolicy.hiddenFromConversationCount >= 3);
+  assert.ok(projection.missionSnapshot.rawCardPolicy.preservedKinds.includes("artifact_card"));
   assert.ok(
     projection.missionSnapshot.workspaceSections
       .find((section) => section.key === "outputs")

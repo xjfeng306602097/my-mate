@@ -356,6 +356,45 @@ export type MissionWorkspaceSection = {
   detailLines: string[];
 };
 
+export type MissionConversationResponsibility =
+  | "intent_record"
+  | "orchestrator_explanation"
+  | "decision_record"
+  | "audit_trail";
+
+export type MissionConversationRail = {
+  title: string;
+  summary: string;
+  responsibilities: MissionConversationResponsibility[];
+  latestIntent: string | null;
+  latestExplanation: string | null;
+  latestDecision: string | null;
+  auditMessageCount: number;
+};
+
+export type MissionEvidenceSummary = {
+  title: string;
+  summary: string;
+  role: "technical_evidence";
+  defaultState: "collapsed";
+  totalSignals: number;
+  plannerSignals: number;
+  runtimeSignals: number;
+  artifactSignals: number;
+  patchSignals: number;
+  drilldownLabels: string[];
+};
+
+export type MissionRawCardPolicy = {
+  role: "secondary_audit";
+  defaultState: "collapsed";
+  drilldownOnly: boolean;
+  hiddenFromConversationCount: number;
+  foldedPlanningRevisionCount: number;
+  preservedKinds: SessionMessageKind[];
+  summary: string;
+};
+
 export type MissionSnapshot = {
   workspace_contract_version: number;
   missionTitle: string;
@@ -380,6 +419,9 @@ export type MissionSnapshot = {
   activeRunId: string | null;
   conversationTurns: number;
   evidenceCount: number;
+  conversationRail: MissionConversationRail;
+  evidenceSummary: MissionEvidenceSummary;
+  rawCardPolicy: MissionRawCardPolicy;
 };
 
 export type WorkspaceStagePhase = OrchestratorTurn["phase"];
@@ -1123,6 +1165,117 @@ export function getConversationMessageText(message: SessionMessageRecord): strin
   }
 
   return text;
+}
+
+function uniqueMessageKinds(values: SessionMessageKind[]): SessionMessageKind[] {
+  return [...new Set(values)];
+}
+
+function buildMissionConversationRail(
+  visibleMessages: SessionMessageRecord[],
+  workspace: StructuredWorkspaceState,
+): MissionConversationRail {
+  const conversationMessages = visibleMessages.filter(isConversationTextMessage);
+  const latestUserText =
+    [...visibleMessages]
+      .reverse()
+      .find((message) => message.role === "user" && message.kind === "text") || null;
+  const latestReply = getLatestConversationReply(visibleMessages);
+  const latestDecision =
+    [...visibleMessages]
+      .reverse()
+      .find((message) => message.kind === "decision_card") || null;
+  const latestDecisionText =
+    asString(latestDecision?.content.pending_decision) || workspace.pendingDecision;
+  const latestExplanation = latestReply ? getConversationMessageText(latestReply) : null;
+
+  return {
+    title: "Mission coordination",
+    summary:
+      latestExplanation ||
+      "Conversation records user intent, orchestrator explanation, decisions, and audit context while the workspace owns mission state.",
+    responsibilities: [
+      "intent_record",
+      "orchestrator_explanation",
+      "decision_record",
+      "audit_trail",
+    ],
+    latestIntent: latestUserText ? getConversationMessageText(latestUserText) : null,
+    latestExplanation,
+    latestDecision: latestDecisionText,
+    auditMessageCount: conversationMessages.length,
+  };
+}
+
+function buildMissionEvidenceSummary(
+  visibleMessages: SessionMessageRecord[],
+): MissionEvidenceSummary {
+  const evidenceMessages = visibleMessages.filter((message) => !isConversationTextMessage(message));
+  const plannerKinds = new Set<SessionMessageKind>([
+    "goal_update_card",
+    "decision_card",
+    "workspace_snapshot_card",
+    "draft_card",
+    "plan_card",
+    "plan_options_card",
+  ]);
+  const runtimeKinds = new Set<SessionMessageKind>([
+    "run_card",
+    "summary_card",
+    "subtask_card",
+    "approval_card",
+    "human_input_card",
+  ]);
+  const patchKinds = new Set<SessionMessageKind>(["intervention_card", "dag_patch_card"]);
+  const plannerSignals = evidenceMessages.filter((message) => plannerKinds.has(message.kind)).length;
+  const runtimeSignals = evidenceMessages.filter((message) => runtimeKinds.has(message.kind)).length;
+  const artifactSignals = evidenceMessages.filter((message) => message.kind === "artifact_card").length;
+  const patchSignals = evidenceMessages.filter((message) => patchKinds.has(message.kind)).length;
+  const drilldownLabels = [
+    plannerSignals > 0 ? "planner details" : null,
+    runtimeSignals > 0 ? "runtime updates" : null,
+    artifactSignals > 0 ? "artifact trace" : null,
+    patchSignals > 0 ? "patch history" : null,
+  ].filter((item): item is string => !!item);
+
+  return {
+    title:
+      evidenceMessages.length > 0
+        ? `${evidenceMessages.length} evidence signal${evidenceMessages.length === 1 ? "" : "s"} preserved`
+        : "Evidence not attached yet",
+    summary:
+      evidenceMessages.length > 0
+        ? "Raw planner, route, runtime, patch, and artifact records are preserved for drilldown and audit."
+        : "Raw technical evidence will remain available here after planning or execution emits signals.",
+    role: "technical_evidence",
+    defaultState: "collapsed",
+    totalSignals: evidenceMessages.length,
+    plannerSignals,
+    runtimeSignals,
+    artifactSignals,
+    patchSignals,
+    drilldownLabels,
+  };
+}
+
+function buildMissionRawCardPolicy(visibleMessages: SessionMessageRecord[]): MissionRawCardPolicy {
+  const rawMessages = visibleMessages.filter((message) => !isConversationTextMessage(message));
+  const planningMessages = rawMessages.filter(
+    (message) => message.kind === "plan_options_card" || message.kind === "plan_card",
+  );
+
+  return {
+    role: "secondary_audit",
+    defaultState: "collapsed",
+    drilldownOnly: true,
+    hiddenFromConversationCount: rawMessages.length,
+    foldedPlanningRevisionCount: Math.max(0, planningMessages.length - 1),
+    preservedKinds: uniqueMessageKinds(rawMessages.map((message) => message.kind)),
+    summary:
+      rawMessages.length > 0
+        ? "Raw cards are preserved as collapsed audit drilldowns and do not define the primary mission workspace."
+        : "No raw cards are attached yet; future planner, route, run, patch, and artifact records stay secondary.",
+  };
 }
 
 export function projectConversationMessages(input: {
@@ -3991,6 +4144,9 @@ export function buildMissionSnapshot(
     workspace.stage !== "execute" &&
     workspace.stage !== "waiting" &&
     workspace.stage !== "deliver";
+  const conversationRail = buildMissionConversationRail(visibleMessages, workspace);
+  const evidenceSummary = buildMissionEvidenceSummary(visibleMessages);
+  const rawCardPolicy = buildMissionRawCardPolicy(visibleMessages);
   let activeStageKey: MissionWorkspaceStageKey = "briefing";
   if (workspace.stage === "draft" || workspace.stage === "compare" || workspace.stage === "confirm") {
     activeStageKey = "plan";
@@ -4137,6 +4293,9 @@ export function buildMissionSnapshot(
     activeRunId: workspace.latestRunId || detail.session.latest_run_id || null,
     conversationTurns: visibleMessages.filter((message) => isConversationTextMessage(message)).length,
     evidenceCount: visibleMessages.filter((message) => !isConversationTextMessage(message)).length,
+    conversationRail,
+    evidenceSummary,
+    rawCardPolicy,
   };
 }
 

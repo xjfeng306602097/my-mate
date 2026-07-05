@@ -1778,12 +1778,22 @@ function buildWorkspaceFeedRailModel(detail) {
   const artifacts = detail?.artifacts || [];
   const dagPatches = detail?.dag_patches || [];
   const messages = detail?.messages || [];
+  const snapshot = detail?.mission_snapshot || null;
+  const evidenceSummary = snapshot?.evidenceSummary || null;
+  const rawCardPolicy = snapshot?.rawCardPolicy || null;
   const evidenceItems = buildWorkspaceEvidenceFeedItems(messages).slice(0, 8);
   const filter = state.ui.workspaceFeedFilter || "all";
   const expanded = state.ui.workspaceFeedExpanded === true;
   const itemLimit = expanded ? 8 : 3;
 
   return {
+    title: evidenceSummary?.title || "Workspace Feed",
+    summary:
+      evidenceSummary?.summary ||
+      rawCardPolicy?.summary ||
+      "Recent evidence, context, returned outputs, and runtime patches.",
+    evidenceSummary,
+    rawCardPolicy,
     attachments,
     artifacts,
     dagPatches,
@@ -1919,6 +1929,7 @@ function buildMissionInspectorRailModel(detail) {
   const routeLabel = route ? formatMissionRouteLabel(route) : view?.routeLabel || "Unrouted";
   const approvals = detail?.pending_approvals || [];
   const humanInputs = detail?.pending_human_inputs || [];
+  const conversationRail = snapshot?.conversationRail || null;
   const missionTitle = snapshot?.missionTitle || view?.title || spec?.objective || session?.title || "Untitled mission";
   const summary =
     snapshot?.missionSummary ||
@@ -1949,11 +1960,13 @@ function buildMissionInspectorRailModel(detail) {
       ["Run", detail?.latest_run?.status || "idle"],
       ["Approvals", approvals.length],
       ["Human Input", humanInputs.length],
+      ["Conversation", conversationRail?.auditMessageCount ?? snapshot?.conversationTurns ?? 0],
     ],
     next: {
       label: nextLabel,
       detail: nextDetail || detail?.workspace_state?.latest_run_summary || "No live run summary.",
     },
+    conversation: conversationRail,
   };
 }
 
@@ -2088,6 +2101,9 @@ function buildMissionWorkspaceViewModel(detail) {
       routeLabel,
       stages,
       pipelines,
+      conversationRail: snapshot?.conversationRail || null,
+      evidenceSummary: snapshot?.evidenceSummary || null,
+      rawCardPolicy: snapshot?.rawCardPolicy || null,
     },
   };
 }
@@ -2512,13 +2528,19 @@ function renderMissionWorkspaceSupport(input) {
     routeLabel,
     stages,
     pipelines,
+    conversationRail,
+    evidenceSummary,
+    rawCardPolicy,
   } = input;
   const proposalTrace = getActiveProposalTrace(detail);
   const hasSupport =
     !!spec ||
     !!proposalTrace ||
     (Array.isArray(stages) && stages.length > 0) ||
-    (Array.isArray(pipelines) && pipelines.length > 0);
+    (Array.isArray(pipelines) && pipelines.length > 0) ||
+    !!conversationRail ||
+    !!evidenceSummary ||
+    !!rawCardPolicy;
 
   if (!hasSupport) {
     return "";
@@ -2593,6 +2615,39 @@ function renderMissionWorkspaceSupport(input) {
               )
               .join("")}
             ${!(stages || []).length ? '<p class="muted">No mission timeline evidence yet.</p>' : ""}
+          </div>
+        </section>
+        <section class="mission-support-card">
+          <div class="mission-support-card-head">
+            <strong>Conversation And Evidence</strong>
+            <span class="badge neutral">Audit</span>
+          </div>
+          <p>${escapeHtml(conversationRail?.summary || "Conversation stays available for intent, explanation, decision, and audit context.")}</p>
+          <div class="mission-support-list">
+            ${
+              conversationRail?.responsibilities?.length
+                ? `<div class="mission-support-row">
+                    <span class="badge neutral">Conversation</span>
+                    <div><strong>${escapeHtml(conversationRail.title || "Mission coordination")}</strong><p>${escapeHtml(conversationRail.responsibilities.map(formatWorkspaceLabel).join(", "))}</p></div>
+                  </div>`
+                : ""
+            }
+            ${
+              evidenceSummary
+                ? `<div class="mission-support-row">
+                    <span class="badge neutral">Evidence</span>
+                    <div><strong>${escapeHtml(evidenceSummary.title || "Evidence Summary")}</strong><p>${escapeHtml(evidenceSummary.summary || "Technical evidence remains drilldown context.")}</p></div>
+                  </div>`
+                : ""
+            }
+            ${
+              rawCardPolicy
+                ? `<div class="mission-support-row">
+                    <span class="badge neutral">${escapeHtml(formatWorkspaceLabel(rawCardPolicy.defaultState || "collapsed"))}</span>
+                    <div><strong>Raw cards are secondary</strong><p>${escapeHtml(rawCardPolicy.summary || "Raw cards stay collapsed unless audit drilldown is needed.")}</p></div>
+                  </div>`
+                : ""
+            }
           </div>
         </section>
       </div>
@@ -6064,6 +6119,28 @@ function renderDesktopRail() {
           <strong>${escapeHtml(inspector.next.label)}</strong>
           <small>${escapeHtml(inspector.next.detail)}</small>
         </div>
+        ${
+          inspector.conversation
+            ? `
+              <div class="rail-contract-card">
+                <strong>${escapeHtml(inspector.conversation.title || "Mission coordination")}</strong>
+                <small>${escapeHtml(inspector.conversation.summary || "Conversation records intent, explanation, decisions, and audit context.")}</small>
+                ${
+                  Array.isArray(inspector.conversation.responsibilities) && inspector.conversation.responsibilities.length
+                    ? `<div class="rail-contract-chip-list">${inspector.conversation.responsibilities
+                        .map((item) => `<span class="badge neutral">${escapeHtml(formatWorkspaceLabel(item))}</span>`)
+                        .join("")}</div>`
+                    : ""
+                }
+                ${
+                  inspector.conversation.latestDecision
+                    ? `<small>${escapeHtml(`Decision: ${inspector.conversation.latestDecision}`)}</small>`
+                    : ""
+                }
+              </div>
+            `
+            : ""
+        }
         ${renderMissionInspectorSelectionHint(detail, selectedCheckpoint, selectedOutput)}
         ${
           selectedCheckpoint.checkpoint
@@ -6205,9 +6282,24 @@ function renderDesktopRail() {
       }
       <section class="panel rail-panel" data-workspace-focus="workspace-feed">
         <div class="panel-header">
-          <div><h3>Workspace Feed</h3><p>Recent evidence, context, returned outputs, and runtime patches.</p></div>
+          <div><h3>${escapeHtml(feed.title)}</h3><p>${escapeHtml(feed.summary)}</p></div>
           <span class="badge neutral">${escapeHtml(String(feed.totalCount))}</span>
         </div>
+        ${
+          feed.rawCardPolicy
+            ? `
+              <div class="rail-contract-card compact">
+                <strong>${escapeHtml(feed.rawCardPolicy.defaultState === "collapsed" ? "Collapsed audit cards" : "Audit cards")}</strong>
+                <small>${escapeHtml(feed.rawCardPolicy.summary || "Raw cards stay secondary to the mission workspace.")}</small>
+                <div class="rail-contract-chip-list">
+                  <span class="badge neutral">${escapeHtml(formatWorkspaceLabel(feed.rawCardPolicy.role || "secondary_audit"))}</span>
+                  <span class="badge neutral">${escapeHtml(`${feed.rawCardPolicy.hiddenFromConversationCount || 0} raw`)}</span>
+                  <span class="badge neutral">${escapeHtml(`${feed.rawCardPolicy.foldedPlanningRevisionCount || 0} folded`)}</span>
+                </div>
+              </div>
+            `
+            : ""
+        }
         <div class="rail-feed-toolbar">
           <div class="rail-feed-filter" role="tablist" aria-label="Workspace feed filter">
           ${feed.filters

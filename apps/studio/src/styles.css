@@ -1671,6 +1671,42 @@ button.mission-history-item {
   line-height: 1.45;
 }
 
+.rail-contract-card {
+  margin-top: 10px;
+  border: 1px solid #dbeafe;
+  background: #f8fbff;
+  border-radius: 8px;
+  padding: 9px;
+  display: grid;
+  gap: 6px;
+}
+
+.rail-contract-card.compact {
+  margin-bottom: 10px;
+}
+
+.rail-contract-card strong,
+.rail-contract-card small {
+  display: block;
+}
+
+.rail-contract-card strong {
+  color: #1e3a8a;
+  font-size: 12px;
+}
+
+.rail-contract-card small {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.rail-contract-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .rail-empty-callout {
   margin-top: 10px;
   border: 1px dashed #cbd5e1;
