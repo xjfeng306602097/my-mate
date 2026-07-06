@@ -16,6 +16,8 @@ Current MVP scope:
 - start a new draft template
 - edit template basics
 - edit input schema / policy / agent bindings / metadata as JSON
+- inspect a form-backed graph canvas skeleton for template DAG structure
+- select graph nodes and edges to focus the matching authoring form rows
 - add / remove / edit DAG nodes
 - add / remove / edit DAG edges
 - plan from an intent through the API gateway planner endpoints
@@ -75,7 +77,8 @@ navigation unstable.
 ## Limits
 
 - Published templates are read-only in this MVP.
-- Graph editing is form-based, not a drag-and-drop canvas yet.
+- Graph editing now has a form-backed canvas skeleton, but drag-and-drop canvas
+  editing is not implemented yet.
 - The orchestrator workbench still depends on the existing mission/session
   projection and does not yet have a separate evented materializer.
 - Planner previews and DAG drafts are deterministic rule-based suggestions; the copied draft still needs human review before saving or publishing.

@@ -123,7 +123,8 @@ it:
 
 - `RT-01` runtime steering usability expansion for already-supported live patch
   operations has landed; broader runtime steering remains in `RT-02` / `RT-03`
-- `STU-01` graph-canvas information model and minimum skeleton planning
+- `STU-01` graph-canvas information model and minimum skeleton has landed;
+  broader graph workbench depth remains in `STU-02` / `STU-03`
 
 ### Exit Criteria For Mission Workspace Tightening
 
@@ -606,7 +607,7 @@ This also means the following may land incrementally:
 | `RT-01` | Runtime Steering | Done | P1 | Expand natural-language runtime steering beyond the current pause/resume/skip/add/change/parallelism mappings. | Multi-operation parsing, natural current/final targets, word-number parallelism, and parse audit metadata now land on existing live operations only. |
 | `RT-02` | Runtime Steering | Done | P1 | Improve mobile and Studio patch review ergonomics, including clearer patch history and topology review. | Mobile and Studio now summarize operations, graph impact, topology snapshots, outcomes, and confirmation state for patch review/history. |
 | `RT-03` | Runtime Steering | Done | P1 | Add richer monitoring surfaces for runtime progress, checkpoints, and cost-aware intervention. | Runtime graph summaries now expose progress, checkpoint, and capacity/budget posture; Mobile and Studio render those monitoring surfaces. |
-| `STU-01` | Studio Authoring | Support Track | P1 | Define the interactive graph-canvas information model, interaction boundaries, and minimum viable skeleton. | Do not require this iteration to fully replace the form-based authoring path. |
+| `STU-01` | Studio Authoring | Done | P1 | Define the interactive graph-canvas information model, interaction boundaries, and minimum viable skeleton. | Studio now has a form-backed graph canvas model, deterministic skeleton layout, node/edge selection, invalid-edge visibility, and smoke checks; drag-and-drop replacement remains out of scope. |
 | `STU-02` | Studio Authoring | Planned | P1 | Add richer route compare/history selectors and a stronger graph diff browser. | Compare read model exists today. |
 | `STU-03` | Studio Authoring | Planned | P1 | Add more desktop-native file/context workflows such as drag-and-drop attach and workspace browsing. | Attachment model exists, native ergonomics do not. |
 | `MOB-01` | Mobile Productization | Deferred | P2 | Add push notification flow for approvals, human input, and mission events. | Productization gap; not part of current mainline. |
@@ -756,7 +757,7 @@ Exit condition:
 
 Then close:
 
-- [ ] `STU-01`
+- [x] `STU-01`
 - [ ] `STU-02`
 - [ ] `STU-03`
 
@@ -764,6 +765,23 @@ Exit condition:
 
 - Studio is no longer primarily a form editor for DAG work
 - graph authoring and comparison are first-class desktop workflows
+
+### STU-01 Implementation Status
+
+- [x] Studio DAG authoring now builds a graph-canvas information model from
+      `state.editor.nodes` and `state.editor.edges`.
+- [x] The canvas skeleton uses deterministic DAG-depth columns and stable card
+      dimensions so the graph can be scanned before editing the forms.
+- [x] Node cards expose ID, name, type, agent, skill count, approval, output,
+      parallelism, and timeout markers from the existing editor state.
+- [x] Edge rendering exposes valid links, invalid endpoints, labels, and
+      source/target summaries without changing the persisted template payload.
+- [x] Selecting a graph node or edge highlights and scrolls to the existing
+      form-backed editor row, keeping the current forms as the write path.
+- [x] Studio smoke checks guard the graph model, canvas renderer, selection
+      actions, and canvas styles.
+- [x] Drag-and-drop node placement, direct canvas editing, and replacing the
+      form editor remain out of scope for `STU-01`.
 
 ### Milestone D: Production Foundations
 

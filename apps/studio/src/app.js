@@ -119,6 +119,10 @@ const state = {
     orchestratorSetupExpanded: false,
     workspaceFeedFilter: "all",
     workspaceFeedExpanded: false,
+    authoringGraphSelection: {
+      type: "none",
+      index: null,
+    },
   },
   attachmentEditor: {
     name: "",
@@ -155,6 +159,7 @@ let pendingCommandPaletteFocus = null;
 let pendingWorkspaceFocus = null;
 let pendingSessionInventoryScroll = false;
 let pendingWorkspaceFeedEntryKey = null;
+let pendingAuthoringGraphFocus = null;
 let restoreWorkspaceFocusFromLocation = false;
 let workspaceLoadSeq = 0;
 let missionSearchTimer = null;
@@ -4557,6 +4562,7 @@ async function selectTemplate(templateId, shouldRender = true) {
   try {
     state.error = null;
     state.selectedId = templateId;
+    resetAuthoringGraphSelection();
     const template = await request(`/api/templates/${encodeURIComponent(templateId)}`);
     state.editor = editorFromTemplate(template);
     await loadLineage(templateId);
@@ -5269,6 +5275,20 @@ function applyPendingWorkspaceFeedEntryHighlight() {
   }, 0);
 }
 
+function applyPendingAuthoringGraphFocus() {
+  if (!pendingAuthoringGraphFocus) return;
+  const focus = pendingAuthoringGraphFocus;
+  pendingAuthoringGraphFocus = null;
+  const attribute = focus.type === "edge" ? "data-authoring-edge-index" : "data-authoring-node-index";
+  window.setTimeout(() => {
+    const target = document.querySelector(`[${attribute}="${focus.index}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.add("workspace-focus-highlight");
+    window.setTimeout(() => target.classList.remove("workspace-focus-highlight"), 1200);
+  }, 0);
+}
+
 function applyPendingSessionInventoryScroll() {
   if (!pendingSessionInventoryScroll) return;
   pendingSessionInventoryScroll = false;
@@ -5292,6 +5312,7 @@ function afterRender() {
   applyPendingCommandPaletteFocus();
   applyPendingWorkspaceFocus();
   applyPendingWorkspaceFeedEntryHighlight();
+  applyPendingAuthoringGraphFocus();
   applyPendingSessionInventoryScroll();
 }
 
@@ -5815,6 +5836,7 @@ async function applyCandidatePlanToDraft() {
       sourceTemplate = await request(`/api/templates/${encodeURIComponent(templateId)}`);
     }
     state.selectedId = null;
+    resetAuthoringGraphSelection();
     state.editor = applyProposalOverridesToEditor(
       editorFromCandidatePlan(state.planner.candidatePlan, sourceTemplate),
     );
@@ -5850,6 +5872,7 @@ async function applyDagDraftToEditor() {
   render();
   try {
     state.selectedId = null;
+    resetAuthoringGraphSelection();
     state.editor = applyProposalOverridesToEditor(editorFromDagDraft(state.planner.dagDraft));
     state.notice = "Planner DAG draft copied into the editor for confirmation.";
   } catch (error) {
@@ -5976,6 +5999,7 @@ function removeNode(index) {
   const node = state.editor.nodes[index];
   state.editor.nodes = state.editor.nodes.filter((_, nodeIndex) => nodeIndex !== index);
   state.editor.edges = state.editor.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id);
+  state.ui.authoringGraphSelection = { type: "none", index: null };
   render();
 }
 
@@ -6006,7 +6030,28 @@ function updateEdge(index, patch) {
 
 function removeEdge(index) {
   state.editor.edges = state.editor.edges.filter((_, edgeIndex) => edgeIndex !== index);
+  const selection = state.ui.authoringGraphSelection;
+  if (selection?.type === "edge") {
+    state.ui.authoringGraphSelection =
+      selection.index === index
+        ? { type: "none", index: null }
+        : { type: "edge", index: selection.index > index ? selection.index - 1 : selection.index };
+  }
   render();
+}
+
+function selectAuthoringGraphItem(type, index) {
+  const normalizedIndex = Number(index);
+  const collection = type === "edge" ? state.editor.edges : state.editor.nodes;
+  if (!Number.isInteger(normalizedIndex) || !collection[normalizedIndex]) return;
+  state.ui.authoringGraphSelection = { type, index: normalizedIndex };
+  pendingAuthoringGraphFocus = { type, index: normalizedIndex };
+  render();
+}
+
+function resetAuthoringGraphSelection() {
+  state.ui.authoringGraphSelection = { type: "none", index: null };
+  pendingAuthoringGraphFocus = null;
 }
 
 function renderTemplateList() {
@@ -6965,12 +7010,228 @@ function renderPlannerPanel() {
   `;
 }
 
+// Form-backed graph canvas model: the node and edge forms remain the source of truth.
+function buildAuthoringGraphModel(editor = state.editor) {
+  const sourceNodes = Array.isArray(editor.nodes) ? editor.nodes : [];
+  const sourceEdges = Array.isArray(editor.edges) ? editor.edges : [];
+  const firstIndexById = new Map();
+  sourceNodes.forEach((node, index) => {
+    const id = String(node?.id || "").trim();
+    if (id && !firstIndexById.has(id)) firstIndexById.set(id, index);
+  });
+
+  const adjacency = new Map(sourceNodes.map((_, index) => [index, []]));
+  const indegree = new Map(sourceNodes.map((_, index) => [index, 0]));
+  const normalizedEdges = sourceEdges.map((edge, index) => {
+    const from = String(edge?.from || "").trim();
+    const to = String(edge?.to || "").trim();
+    const fromIndex = firstIndexById.has(from) ? firstIndexById.get(from) : -1;
+    const toIndex = firstIndexById.has(to) ? firstIndexById.get(to) : -1;
+    const valid = fromIndex >= 0 && toIndex >= 0;
+    if (valid) {
+      adjacency.get(fromIndex).push(toIndex);
+      indegree.set(toIndex, (indegree.get(toIndex) || 0) + 1);
+    }
+    return {
+      index,
+      from,
+      to,
+      fromIndex,
+      toIndex,
+      label: edge?.label || (typeof edge?.condition === "string" ? edge.condition : edge?.condition ? "conditional" : ""),
+      valid,
+      reason: !from || !to ? "missing endpoint" : fromIndex < 0 ? "source missing" : toIndex < 0 ? "target missing" : "",
+    };
+  });
+
+  const depth = new Map(sourceNodes.map((_, index) => [index, 0]));
+  const remainingIndegree = new Map(indegree);
+  const queue = [...remainingIndegree.entries()]
+    .filter(([, count]) => count === 0)
+    .map(([index]) => index);
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor];
+    for (const target of adjacency.get(current) || []) {
+      depth.set(target, Math.max(depth.get(target) || 0, (depth.get(current) || 0) + 1));
+      const nextIndegree = (remainingIndegree.get(target) || 0) - 1;
+      remainingIndegree.set(target, nextIndegree);
+      if (nextIndegree === 0) queue.push(target);
+    }
+  }
+
+  const inboundCount = new Map(sourceNodes.map((_, index) => [index, 0]));
+  const outboundCount = new Map(sourceNodes.map((_, index) => [index, 0]));
+  for (const edge of normalizedEdges) {
+    if (!edge.valid) continue;
+    outboundCount.set(edge.fromIndex, (outboundCount.get(edge.fromIndex) || 0) + 1);
+    inboundCount.set(edge.toIndex, (inboundCount.get(edge.toIndex) || 0) + 1);
+  }
+
+  const rowsByColumn = new Map();
+  const nodes = sourceNodes.map((node, index) => {
+    const column = Math.max(0, depth.get(index) || 0);
+    const row = rowsByColumn.get(column) || 0;
+    rowsByColumn.set(column, row + 1);
+    const outputContract =
+      node?.config?.output_contract && typeof node.config.output_contract === "object"
+        ? node.config.output_contract
+        : {};
+    const expectedArtifacts = Array.isArray(outputContract.expected_artifacts)
+      ? outputContract.expected_artifacts
+      : [];
+    const skills = Array.isArray(node?.allowed_skills) ? node.allowed_skills : [];
+    return {
+      index,
+      id: String(node?.id || `node_${index + 1}`),
+      label: node?.name || node?.id || `Node ${index + 1}`,
+      type: node?.type || "agent_task",
+      tone: node?.type === "end" ? "success" : node?.approval_kind ? "warn" : "neutral",
+      agent: node?.agent_profile || "",
+      skillCount: skills.length,
+      skillsPreview: skills.slice(0, 2).join(", "),
+      approvalKind: node?.approval_kind || "",
+      parallelism: Number(node?.parallelism || 1),
+      timeout: Number(node?.timeout_seconds || 0),
+      outputCount: expectedArtifacts.length,
+      inboundCount: inboundCount.get(index) || 0,
+      outboundCount: outboundCount.get(index) || 0,
+      column,
+      row,
+      x: 24 + column * 224,
+      y: 24 + row * 122,
+    };
+  });
+
+  const edges = normalizedEdges.map((edge) => {
+    const fromNode = nodes[edge.fromIndex];
+    const toNode = nodes[edge.toIndex];
+    return {
+      ...edge,
+      fromLabel: fromNode?.label || edge.from || "missing source",
+      toLabel: toNode?.label || edge.to || "missing target",
+      fromX: fromNode ? fromNode.x + 188 : 0,
+      fromY: fromNode ? fromNode.y + 49 : 0,
+      toX: toNode ? toNode.x : 0,
+      toY: toNode ? toNode.y + 49 : 0,
+    };
+  });
+
+  const maxColumn = Math.max(0, ...nodes.map((node) => node.column));
+  const maxRows = Math.max(1, ...rowsByColumn.values());
+  return {
+    nodes,
+    edges,
+    width: Math.max(720, (maxColumn + 1) * 224 + 96),
+    height: Math.max(260, maxRows * 122 + 64),
+    stats: {
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      invalidEdgeCount: edges.filter((edge) => !edge.valid).length,
+      startCount: nodes.filter((node) => node.inboundCount === 0).length,
+      endCount: nodes.filter((node) => node.outboundCount === 0).length,
+    },
+  };
+}
+
+function renderAuthoringGraphNode(node, selection) {
+  const selected = selection?.type === "node" && selection.index === node.index;
+  const markers = [
+    node.approvalKind ? `approval: ${node.approvalKind}` : null,
+    node.outputCount ? `${node.outputCount} output${node.outputCount === 1 ? "" : "s"}` : null,
+    node.parallelism > 1 ? `parallel ${node.parallelism}` : null,
+    node.timeout ? `${node.timeout}s` : null,
+  ].filter(Boolean);
+  return `
+    <button class="authoring-graph-node tone-${node.tone} ${selected ? "selected" : ""}" style="left: ${node.x}px; top: ${node.y}px;" data-action="select-authoring-node" data-index="${node.index}">
+      <span class="authoring-graph-node-head">
+        <span class="authoring-graph-node-index">${node.index + 1}</span>
+        <span class="authoring-graph-node-title">
+          <strong>${escapeHtml(node.label)}</strong>
+          <small>${escapeHtml(node.id)}</small>
+        </span>
+      </span>
+      <span class="authoring-graph-node-meta">
+        <span>${escapeHtml(node.type)}</span>
+        <span>${escapeHtml(node.agent || "no-agent")}</span>
+        <span>${escapeHtml(node.skillsPreview || `${node.skillCount} skills`)}</span>
+      </span>
+      ${
+        markers.length
+          ? `<span class="authoring-graph-node-markers">${markers
+              .map((marker) => `<span>${escapeHtml(marker)}</span>`)
+              .join("")}</span>`
+          : ""
+      }
+    </button>
+  `;
+}
+
+function renderAuthoringGraphEdgePath(edge, selection) {
+  if (!edge.valid) return "";
+  const selected = selection?.type === "edge" && selection.index === edge.index;
+  const bend = Math.max(edge.fromX + 36, edge.toX - 36);
+  const path = `M ${edge.fromX} ${edge.fromY} C ${bend} ${edge.fromY}, ${bend} ${edge.toY}, ${edge.toX} ${edge.toY}`;
+  return `<path class="authoring-graph-line ${selected ? "selected" : ""}" data-action="select-authoring-edge" data-index="${edge.index}" d="${path}"></path>`;
+}
+
+function renderAuthoringGraphEdge(edge, selection) {
+  const selected = selection?.type === "edge" && selection.index === edge.index;
+  const label = edge.label || (edge.valid ? "transition" : edge.reason);
+  return `
+    <button class="authoring-graph-edge ${edge.valid ? "" : "invalid"} ${selected ? "selected" : ""}" data-action="select-authoring-edge" data-index="${edge.index}">
+      <strong>${escapeHtml(`${edge.fromLabel} -> ${edge.toLabel}`)}</strong>
+      <small>${escapeHtml(label)}</small>
+    </button>
+  `;
+}
+
+function renderAuthoringGraphCanvas(readOnly) {
+  const model = buildAuthoringGraphModel();
+  const selection = state.ui.authoringGraphSelection;
+  const invalidBadge = model.stats.invalidEdgeCount
+    ? `<span class="badge danger">${model.stats.invalidEdgeCount} invalid</span>`
+    : '<span class="badge success">valid links</span>';
+  return `
+    <section class="panel graph-panel authoring-graph-canvas-panel">
+      <div class="panel-header">
+        <div>
+          <h3>Graph Canvas</h3>
+          <p>${model.stats.nodeCount} nodes, ${model.stats.edgeCount} edges, ${model.stats.startCount} starts, ${model.stats.endCount} exits.</p>
+        </div>
+        <div class="actions">
+          ${invalidBadge}
+          <button class="secondary" data-action="add-node" ${readOnly ? "disabled" : ""}>Add node</button>
+          <button class="secondary" data-action="add-edge" ${readOnly ? "disabled" : ""}>Add edge</button>
+        </div>
+      </div>
+      <div class="authoring-graph-workbench">
+        <div class="authoring-graph-canvas">
+          <div class="authoring-graph-surface" style="width: ${model.width}px; height: ${model.height}px;">
+            <svg class="authoring-graph-lines" viewBox="0 0 ${model.width} ${model.height}" aria-hidden="true">
+              ${model.edges.map((edge) => renderAuthoringGraphEdgePath(edge, selection)).join("")}
+            </svg>
+            ${model.nodes.map((node) => renderAuthoringGraphNode(node, selection)).join("")}
+          </div>
+        </div>
+        <div class="authoring-graph-edge-list">
+          ${
+            model.edges.length
+              ? model.edges.map((edge) => renderAuthoringGraphEdge(edge, selection)).join("")
+              : '<p class="muted">No edges configured.</p>'
+          }
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderNode(node, index, readOnly) {
   const skills = node.allowed_skills.join(", ");
   const config = prettyJson(node.config);
   const humanInput = node.human_input_schema ? prettyJson(node.human_input_schema) : "";
+  const selected = state.ui.authoringGraphSelection?.type === "node" && state.ui.authoringGraphSelection.index === index;
   return `
-    <article class="node-card">
+    <article class="node-card ${selected ? "authoring-form-selected" : ""}" data-authoring-node-index="${index}">
       <div class="node-card-header">
         <strong>${escapeHtml(node.id || `node_${index + 1}`)}</strong>
         <button class="icon-button danger" data-action="remove-node" data-index="${index}" ${readOnly ? "disabled" : ""}>Del</button>
@@ -7009,8 +7270,9 @@ function renderEdge(edge, index, readOnly) {
   const toOptions = state.editor.nodes
     .map((node) => `<option value="${escapeHtml(node.id)}" ${edge.to === node.id ? "selected" : ""}>${escapeHtml(node.id)}</option>`)
     .join("");
+  const selected = state.ui.authoringGraphSelection?.type === "edge" && state.ui.authoringGraphSelection.index === index;
   return `
-    <article class="edge-card">
+    <article class="edge-card ${selected ? "authoring-form-selected" : ""}" data-authoring-edge-index="${index}">
       <select data-field="edge.from" data-index="${index}" ${readOnly ? "disabled" : ""}>${options}</select>
       <span>to</span>
       <select data-field="edge.to" data-index="${index}" ${readOnly ? "disabled" : ""}>${toOptions}</select>
@@ -7071,6 +7333,8 @@ function renderTemplateBasicsPanel(readOnly) {
 
 function renderDagEditorPanel(readOnly) {
   return `
+    ${renderAuthoringGraphCanvas(readOnly)}
+
     <section class="panel graph-panel">
       <div class="panel-header">
         <div><h3>Nodes</h3><p>${state.editor.nodes.length} configured task or control nodes.</p></div>
@@ -8466,6 +8730,7 @@ document.addEventListener("click", (event) => {
     state.activeNav = "templates";
     state.selectedId = null;
     state.lineage = null;
+    resetAuthoringGraphSelection();
     state.editor = emptyEditor();
     state.notice = "Started a new draft.";
     state.error = null;
@@ -8496,6 +8761,8 @@ document.addEventListener("click", (event) => {
   if (action === "derive-template") void deriveSelectedTemplate();
   if (action === "new-template-version") void createSelectedTemplateVersion();
   if (action === "archive-template") void archiveSelectedTemplate();
+  if (action === "select-authoring-node") selectAuthoringGraphItem("node", button.dataset.index);
+  if (action === "select-authoring-edge") selectAuthoringGraphItem("edge", button.dataset.index);
   if (action === "add-node") addNode();
   if (action === "remove-node") removeNode(Number(button.dataset.index));
   if (action === "add-edge") addEdge();
