@@ -18,6 +18,8 @@ Current MVP scope:
 - edit input schema / policy / agent bindings / metadata as JSON
 - inspect a form-backed graph canvas skeleton for template DAG structure
 - select graph nodes and edges to focus the matching authoring form rows
+- compare explicit route revisions and options from a richer history selector
+- inspect side-by-side route graph diffs before confirming or revising
 - add / remove / edit DAG nodes
 - add / remove / edit DAG edges
 - plan from an intent through the API gateway planner endpoints

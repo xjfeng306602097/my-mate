@@ -63,6 +63,7 @@ const state = {
   sessionsLoading: false,
   sessionVisibilitySaving: false,
   runtimeLoading: false,
+  routeCompareLoading: false,
   saving: false,
   publishing: false,
   deriving: false,
@@ -122,6 +123,10 @@ const state = {
     authoringGraphSelection: {
       type: "none",
       index: null,
+    },
+    routeCompareSelection: {
+      leftKey: "",
+      rightKey: "",
     },
   },
   attachmentEditor: {
@@ -702,6 +707,10 @@ function slugify(value) {
     .replace(/^-+|-+$/g, "");
 }
 
+function isRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 function statusTone(status) {
   if (
     status === "published" ||
@@ -731,6 +740,297 @@ function statusTone(status) {
 
 function normalizeTone(value) {
   return ["neutral", "warn", "success", "danger"].includes(value) ? value : statusTone(value);
+}
+
+function compareLabelForKind(kind) {
+  if (kind === "option") return "Option";
+  if (kind === "revision") return "Revision";
+  if (kind === "confirmed_vs_latest") return "Confirmed vs latest";
+  if (kind === "same_route") return "Same route";
+  return "Compare";
+}
+
+function buildRouteCompareSelectionKey(revision, option) {
+  return `${typeof revision === "number" ? revision : "none"}:${option === "alternative" ? "alternative" : "primary"}`;
+}
+
+function parseRouteCompareSelectionKey(key) {
+  const [revisionPart, optionPart] = String(key || "").split(":");
+  const revision = Number(revisionPart);
+  return {
+    revision: Number.isInteger(revision) && revision > 0 ? revision : null,
+    option: optionPart === "alternative" ? "alternative" : "primary",
+  };
+}
+
+function routeCompareSideSubtitle(side) {
+  if (!side) return "No route";
+  const parts = [];
+  if (typeof side.nodeCount === "number") parts.push(`${side.nodeCount} nodes`);
+  if (typeof side.edgeCount === "number") parts.push(`${side.edgeCount} edges`);
+  if (typeof side.outputCount === "number") parts.push(`${side.outputCount} outputs`);
+  if (typeof side.warningCount === "number" && side.warningCount > 0) {
+    parts.push(`${side.warningCount} warnings`);
+  }
+  return parts.join(" / ") || "No route stats";
+}
+
+function listWorkspacePlanningRoutes(detail = state.workspaceDetail) {
+  const messages = Array.isArray(detail?.messages) ? detail.messages : [];
+  const entries = [];
+  const seen = new Set();
+  for (const message of messages) {
+    if (message?.kind !== "plan_options_card" && message?.kind !== "plan_card") continue;
+    const revision = typeof message?.content?.revision === "number" ? message.content.revision : null;
+    if (revision === null) continue;
+    const includeAlternative =
+      message.kind === "plan_options_card" && isRecord(message.content.alternative);
+    const options = includeAlternative ? ["primary", "alternative"] : ["primary"];
+    for (const option of options) {
+      const payload =
+        message.kind === "plan_options_card"
+          ? message.content[option]
+          : option === "primary"
+            ? message.content
+            : null;
+      if (!isRecord(payload)) continue;
+      const key = buildRouteCompareSelectionKey(revision, option);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const candidatePlan = isRecord(payload.candidate_plan) ? payload.candidate_plan : null;
+      const confirmationChecklist = isRecord(payload.confirmation_checklist) ? payload.confirmation_checklist : null;
+      const validation = isRecord(payload.validation) ? payload.validation : null;
+      const templateName =
+        typeof payload.template_name === "string" && payload.template_name.trim()
+          ? payload.template_name.trim()
+          : typeof payload.template_id === "string" && payload.template_id.trim()
+            ? payload.template_id.trim()
+            : `v${revision}`;
+      const nodeCount =
+        Array.isArray(candidatePlan?.compiled_nodes) ? candidatePlan.compiled_nodes.length : null;
+      const edgeCount = Array.isArray(candidatePlan?.edges) ? candidatePlan.edges.length : null;
+      const warningCount =
+        Array.isArray(validation?.warnings)
+          ? validation.warnings.length
+          : typeof confirmationChecklist?.warning_count === "number"
+            ? confirmationChecklist.warning_count
+            : 0;
+      entries.push({
+        key,
+        revision,
+        option,
+        label: `v${revision} / ${option}`,
+        templateName,
+        nodeCount,
+        edgeCount,
+        warningCount,
+        payload,
+        createdAt: message.created_at || "",
+        confirmed:
+          detail?.session?.confirmed_plan_revision === revision &&
+          (detail?.session?.confirmed_plan_option || "primary") === option,
+        selected:
+          detail?.mission_spec?.route?.activeRevision === revision &&
+          (detail?.mission_spec?.route?.activeOption || "primary") === option,
+      });
+    }
+  }
+  return entries.sort((left, right) => {
+    if (right.revision !== left.revision) return right.revision - left.revision;
+    if (left.option === right.option) return 0;
+    return left.option === "primary" ? -1 : 1;
+  });
+}
+
+function buildRouteCompareQuery(selection) {
+  const params = new URLSearchParams();
+  if (typeof selection?.leftRevision === "number") {
+    params.set("left_revision", String(selection.leftRevision));
+  }
+  if (selection?.leftOption) {
+    params.set("left_option", selection.leftOption);
+  }
+  if (typeof selection?.rightRevision === "number") {
+    params.set("right_revision", String(selection.rightRevision));
+  }
+  if (selection?.rightOption) {
+    params.set("right_option", selection.rightOption);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+function getActiveRouteCompareSelection(detail = state.workspaceDetail) {
+  const compare = detail?.route_compare || null;
+  if (compare?.left || compare?.right) {
+    return {
+      leftKey: buildRouteCompareSelectionKey(compare.left?.revision, compare.left?.option),
+      rightKey: buildRouteCompareSelectionKey(compare.right?.revision, compare.right?.option),
+    };
+  }
+  const history = listWorkspacePlanningRoutes(detail);
+  return {
+    leftKey: history[1]?.key || history[0]?.key || "",
+    rightKey: history[0]?.key || "",
+  };
+}
+
+function synchronizeRouteCompareSelection(detail = state.workspaceDetail) {
+  const history = listWorkspacePlanningRoutes(detail);
+  if (!history.length) {
+    state.ui.routeCompareSelection = { leftKey: "", rightKey: "" };
+    return;
+  }
+  const next = { ...state.ui.routeCompareSelection };
+  if (!history.some((entry) => entry.key === next.leftKey)) {
+    next.leftKey = history[1]?.key || history[0].key;
+  }
+  if (!history.some((entry) => entry.key === next.rightKey)) {
+    next.rightKey = history[0].key;
+  }
+  if (!next.leftKey) next.leftKey = history[1]?.key || history[0].key;
+  if (!next.rightKey) next.rightKey = history[0].key;
+  state.ui.routeCompareSelection = next;
+}
+
+function getRouteCompareNodeIdentity(node, index) {
+  return String(node?.node_id || node?.id || node?.node_run_id || node?.name || `node-${index + 1}`);
+}
+
+function getRouteCompareNodeName(node, fallback) {
+  return String(node?.name || fallback || "").trim() || fallback;
+}
+
+function buildRouteCompareGraphSide(side) {
+  if (!isRecord(side)) return { nodes: [], edges: [] };
+  const payload = isRecord(side.payload) ? side.payload : {};
+  const candidatePlan = isRecord(payload.candidate_plan) ? payload.candidate_plan : null;
+  const compiledNodes = Array.isArray(candidatePlan?.compiled_nodes) ? candidatePlan.compiled_nodes : [];
+  const rawEdges = Array.isArray(candidatePlan?.edges) ? candidatePlan.edges : [];
+  const nodeIndexById = new Map();
+  const adjacency = new Map();
+  const indegree = new Map();
+  compiledNodes.forEach((node, index) => {
+    const nodeId = getRouteCompareNodeIdentity(node, index);
+    nodeIndexById.set(nodeId, index);
+    adjacency.set(index, []);
+    indegree.set(index, 0);
+  });
+  const edges = rawEdges.map((edge, index) => {
+    const from = String(edge?.from || "");
+    const to = String(edge?.to || "");
+    const fromIndex = nodeIndexById.has(from) ? nodeIndexById.get(from) : -1;
+    const toIndex = nodeIndexById.has(to) ? nodeIndexById.get(to) : -1;
+    const valid = fromIndex >= 0 && toIndex >= 0;
+    if (valid) {
+      adjacency.get(fromIndex).push(toIndex);
+      indegree.set(toIndex, (indegree.get(toIndex) || 0) + 1);
+    }
+    return {
+      key: `${from}->${to}:${index}`,
+      from,
+      to,
+      fromIndex,
+      toIndex,
+      label:
+        typeof edge?.label === "string" && edge.label.trim()
+          ? edge.label.trim()
+          : isRecord(edge?.condition)
+            ? "conditional"
+            : "",
+      valid,
+    };
+  });
+  const depth = new Map(compiledNodes.map((_, index) => [index, 0]));
+  const remaining = new Map(indegree);
+  const queue = [...remaining.entries()].filter(([, count]) => count === 0).map(([index]) => index);
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor];
+    for (const target of adjacency.get(current) || []) {
+      depth.set(target, Math.max(depth.get(target) || 0, (depth.get(current) || 0) + 1));
+      const nextIndegree = (remaining.get(target) || 0) - 1;
+      remaining.set(target, nextIndegree);
+      if (nextIndegree === 0) queue.push(target);
+    }
+  }
+  const rowsByColumn = new Map();
+  const nodes = compiledNodes.map((node, index) => {
+    const id = getRouteCompareNodeIdentity(node, index);
+    const column = Math.max(0, depth.get(index) || 0);
+    const row = rowsByColumn.get(column) || 0;
+    rowsByColumn.set(column, row + 1);
+    return {
+      key: id,
+      id,
+      label: getRouteCompareNodeName(node, id),
+      type: String(node?.type || "agent_task"),
+      agent: String(node?.agent_profile || ""),
+      column,
+      row,
+      x: 20 + column * 200,
+      y: 20 + row * 96,
+    };
+  });
+  return {
+    nodes,
+    edges: edges.map((edge) => {
+      const fromNode = nodes[edge.fromIndex];
+      const toNode = nodes[edge.toIndex];
+      return {
+        ...edge,
+        fromX: fromNode ? fromNode.x + 164 : 0,
+        fromY: fromNode ? fromNode.y + 35 : 0,
+        toX: toNode ? toNode.x : 0,
+        toY: toNode ? toNode.y + 35 : 0,
+      };
+    }),
+    width: Math.max(420, (Math.max(0, ...nodes.map((node) => node.column)) + 1) * 200 + 48),
+    height: Math.max(180, (Math.max(0, ...nodes.map((node) => node.row)) + 1) * 96 + 40),
+  };
+}
+
+function buildRouteCompareDiffBrowser(detail = state.workspaceDetail) {
+  const compare = detail?.route_compare || null;
+  const history = listWorkspacePlanningRoutes(detail);
+  const activeSelection = getActiveRouteCompareSelection(detail);
+  if (!compare) {
+    return {
+      history,
+      selection: activeSelection,
+      compare: null,
+      leftGraph: { nodes: [], edges: [], width: 420, height: 180 },
+      rightGraph: { nodes: [], edges: [], width: 420, height: 180 },
+      nodeDiffSet: new Map(),
+      edgeDiffSet: new Map(),
+      summary: "",
+    };
+  }
+  const leftRoute = history.find((entry) => entry.key === buildRouteCompareSelectionKey(compare.left?.revision, compare.left?.option)) || null;
+  const rightRoute = history.find((entry) => entry.key === buildRouteCompareSelectionKey(compare.right?.revision, compare.right?.option)) || null;
+  const leftGraph = buildRouteCompareGraphSide(leftRoute);
+  const rightGraph = buildRouteCompareGraphSide(rightRoute);
+  const nodeDiffSet = new Map();
+  for (const label of compare.changedNodes?.added || []) nodeDiffSet.set(label, "added");
+  for (const label of compare.changedNodes?.removed || []) nodeDiffSet.set(label, "removed");
+  for (const label of compare.changedNodes?.changed || []) nodeDiffSet.set(label, "changed");
+  const edgeDiffSet = new Map();
+  for (const label of compare.changedEdges?.added || []) edgeDiffSet.set(label, "added");
+  for (const label of compare.changedEdges?.removed || []) edgeDiffSet.set(label, "removed");
+  for (const label of compare.changedEdges?.changed || []) edgeDiffSet.set(label, "changed");
+  const summary =
+    (compare.summaryLines || []).filter((line) => !/^Comparing /i.test(line)).slice(0, 2).join(" ") ||
+    compare.recommendation?.detail ||
+    "No material route changes detected.";
+  return {
+    history,
+    selection: activeSelection,
+    compare,
+    leftGraph,
+    rightGraph,
+    nodeDiffSet,
+    edgeDiffSet,
+    summary,
+  };
 }
 
 function getPatchOperationOutcomes(patch) {
@@ -1119,45 +1419,167 @@ function renderRouteCompareGroup(title, changeSet, tone = "neutral") {
   `;
 }
 
+function renderRouteCompareHistoryPicker(browser) {
+  if (!browser.history.length) return "";
+  return `
+    <div class="route-compare-history">
+      ${browser.history
+        .map((entry) => `
+          <button class="route-compare-history-item ${browser.selection.leftKey === entry.key || browser.selection.rightKey === entry.key ? "selected" : ""}" data-action="pick-route-compare-history" data-key="${escapeHtml(entry.key)}">
+            <strong>${escapeHtml(entry.label)}</strong>
+            <small>${escapeHtml(entry.templateName)}</small>
+            <small>${escapeHtml(`${entry.nodeCount ?? 0} nodes / ${entry.edgeCount ?? 0} edges${entry.warningCount ? ` / ${entry.warningCount} warnings` : ""}`)}</small>
+            <span class="route-compare-history-flags">
+              ${entry.confirmed ? '<span class="badge success">confirmed</span>' : ""}
+              ${entry.selected ? '<span class="badge warn">active</span>' : ""}
+            </span>
+          </button>
+        `)
+        .join("")}
+    </div>
+  `;
+}
+
+function renderRouteCompareSideSelector(side, browser) {
+  const currentKey = side === "left" ? browser.selection.leftKey : browser.selection.rightKey;
+  const current = browser.history.find((entry) => entry.key === currentKey) || null;
+  return `
+    <label class="route-compare-selector">
+      <span>${escapeHtml(side === "left" ? "Left route" : "Right route")}</span>
+      <select data-field="${escapeHtml(`route-compare.${side}`)}">
+        ${browser.history
+          .map(
+            (entry) => `
+              <option value="${escapeHtml(entry.key)}" ${entry.key === currentKey ? "selected" : ""}>
+                ${escapeHtml(`${entry.label} - ${entry.templateName}`)}
+              </option>
+            `,
+          )
+          .join("")}
+      </select>
+      <small>${escapeHtml(current ? `${current.templateName} / ${current.nodeCount ?? 0} nodes / ${current.edgeCount ?? 0} edges` : "No route selected")}</small>
+    </label>
+  `;
+}
+
+function renderRouteCompareGraphNode(node, diffSet, side) {
+  const tone = diffSet.get(`${node.label} (${node.id})`) || diffSet.get(node.label) || "";
+  return `
+    <div class="route-compare-node ${tone ? `diff-${tone}` : ""}" style="left: ${node.x}px; top: ${node.y}px;" data-side="${escapeHtml(side)}">
+      <strong>${escapeHtml(node.label)}</strong>
+      <small>${escapeHtml(node.id)}</small>
+      <span>${escapeHtml(node.type)}</span>
+      ${node.agent ? `<span>${escapeHtml(node.agent)}</span>` : ""}
+    </div>
+  `;
+}
+
+function renderRouteCompareGraphEdge(edge, diffSet) {
+  if (!edge.valid) return "";
+  const label = `${edge.from} -> ${edge.to}${edge.label ? ` (${edge.label})` : ""}`;
+  const tone = diffSet.get(label) || "";
+  const bend = Math.max(edge.fromX + 28, edge.toX - 28);
+  const path = `M ${edge.fromX} ${edge.fromY} C ${bend} ${edge.fromY}, ${bend} ${edge.toY}, ${edge.toX} ${edge.toY}`;
+  return `<path class="route-compare-line ${tone ? `diff-${tone}` : ""}" d="${path}"></path>`;
+}
+
+function renderRouteCompareGraphSurface(title, route, graph, nodeDiffSet, edgeDiffSet, side) {
+  if (!route) {
+    return `
+      <section class="route-compare-graph-card">
+        <div class="subpanel-header">
+          <strong>${escapeHtml(title)}</strong>
+          <span class="badge neutral">No route</span>
+        </div>
+        <p class="muted">No comparable graph is available for this endpoint.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="route-compare-graph-card">
+      <div class="subpanel-header">
+        <strong>${escapeHtml(title)}</strong>
+        <span class="badge ${route.confirmed ? "success" : route.selected ? "warn" : "neutral"}">${escapeHtml(route.label)}</span>
+      </div>
+      <p class="muted">${escapeHtml(route.templateName)}</p>
+      <small>${escapeHtml(routeCompareSideSubtitle(route))}</small>
+      <div class="route-compare-graph-surface">
+        <div class="route-compare-graph-canvas" style="width: ${graph.width}px; height: ${graph.height}px;">
+          <svg class="route-compare-graph-lines" viewBox="0 0 ${graph.width} ${graph.height}" aria-hidden="true">
+            ${graph.edges.map((edge) => renderRouteCompareGraphEdge(edge, edgeDiffSet)).join("")}
+          </svg>
+          ${graph.nodes.map((node) => renderRouteCompareGraphNode(node, nodeDiffSet, side)).join("")}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderRouteCompareDetailList(compare) {
+  const sections = [
+    ["Nodes", compare.changedNodes, "neutral"],
+    ["Edges", compare.changedEdges, "neutral"],
+    ["Gates", compare.changedApprovals, "warn"],
+    ["Outputs", compare.changedOutputs, "success"],
+    ["Risks", compare.changedRisks, "warn"],
+  ]
+    .map(([title, changeSet, tone]) => renderRouteCompareGroup(title, changeSet, tone))
+    .filter(Boolean);
+  return sections.length
+    ? `<div class="route-compare-grid">${sections.join("")}</div>`
+    : '<p class="muted">No changed nodes, gates, outputs, or risks.</p>';
+}
+
 function renderRouteComparePanel(compare) {
-  if (!compare) {
+  const browser = buildRouteCompareDiffBrowser();
+  if (!compare && !browser.history.length) {
     return "";
   }
-  const groups = [
-    renderRouteCompareGroup("Nodes", compare.changedNodes),
-    renderRouteCompareGroup("Edges", compare.changedEdges),
-    renderRouteCompareGroup("Gates", compare.changedApprovals, "warn"),
-    renderRouteCompareGroup("Outputs", compare.changedOutputs, "success"),
-    renderRouteCompareGroup("Risks", compare.changedRisks, "warn"),
-  ].filter(Boolean);
-  const summary =
-    (compare.summaryLines || []).find((line) => !/^Comparing /i.test(line)) ||
-    compare.recommendation?.detail ||
-    "No material route changes detected.";
+  const leftRoute = browser.history.find((entry) => entry.key === browser.selection.leftKey) || null;
+  const rightRoute = browser.history.find((entry) => entry.key === browser.selection.rightKey) || null;
+  const compareKind = compare ? compareLabelForKind(compare.comparisonKind) : "Route";
 
   return `
     <section class="subpanel route-compare-panel" data-workspace-focus="compare">
       <div class="subpanel-header">
         <strong>Route Compare</strong>
-        <span class="badge ${escapeHtml(compare.recommendation?.tone || "neutral")}">${escapeHtml(compare.recommendation?.label || "Compare")}</span>
+        <span class="badge ${escapeHtml(compare?.recommendation?.tone || "neutral")}">${escapeHtml(compare?.recommendation?.label || compareKind)}</span>
       </div>
-      <div class="route-compare-endpoints">
-        <div>
-          <span>Left</span>
-          <strong>${escapeHtml(compare.left?.label || "left")}</strong>
-          <small>${escapeHtml(compare.left?.templateName || compare.left?.templateId || "No template")}</small>
+      <div class="route-compare-toolbar">
+        <div class="route-compare-selectors">
+          ${renderRouteCompareSideSelector("left", browser)}
+          ${renderRouteCompareSideSelector("right", browser)}
         </div>
-        <div>
-          <span>Right</span>
-          <strong>${escapeHtml(compare.right?.label || "right")}</strong>
-          <small>${escapeHtml(compare.right?.templateName || compare.right?.templateId || "No template")}</small>
-        </div>
+        <button class="secondary" data-action="refresh-route-compare" ${state.routeCompareLoading ? "disabled" : ""}>
+          ${state.routeCompareLoading ? "Refreshing..." : "Refresh compare"}
+        </button>
       </div>
-      <p class="muted">${escapeHtml(summary)}</p>
+      ${renderRouteCompareHistoryPicker(browser)}
       ${
-        groups.length
-          ? `<div class="route-compare-grid">${groups.join("")}</div>`
-          : '<p class="muted">No changed nodes, gates, outputs, or risks.</p>'
+        compare
+          ? `
+            <div class="route-compare-endpoints">
+              <div>
+                <span>Left</span>
+                <strong>${escapeHtml(compare.left?.label || "left")}</strong>
+                <small>${escapeHtml(compare.left?.templateName || compare.left?.templateId || "No template")}</small>
+                <small>${escapeHtml(routeCompareSideSubtitle(compare.left))}</small>
+              </div>
+              <div>
+                <span>Right</span>
+                <strong>${escapeHtml(compare.right?.label || "right")}</strong>
+                <small>${escapeHtml(compare.right?.templateName || compare.right?.templateId || "No template")}</small>
+                <small>${escapeHtml(routeCompareSideSubtitle(compare.right))}</small>
+              </div>
+            </div>
+            <p class="muted">${escapeHtml(browser.summary)}</p>
+            <div class="route-compare-browser-grid">
+              ${renderRouteCompareGraphSurface("Left Graph", leftRoute, browser.leftGraph, browser.nodeDiffSet, browser.edgeDiffSet, "left")}
+              ${renderRouteCompareGraphSurface("Right Graph", rightRoute, browser.rightGraph, browser.nodeDiffSet, browser.edgeDiffSet, "right")}
+            </div>
+            ${renderRouteCompareDetailList(compare)}
+          `
+          : '<p class="muted">No route compare is available for the current route selection.</p>'
       }
     </section>
   `;
@@ -1616,6 +2038,7 @@ function resetWorkspaceDrilldownState({ resetFeed = true } = {}) {
     state.ui.workspaceFeedFilter = "all";
     state.ui.workspaceFeedExpanded = false;
   }
+  state.ui.routeCompareSelection = { leftKey: "", rightKey: "" };
 }
 
 function prepareWorkspaceSessionChange(nextSessionId) {
@@ -1644,6 +2067,7 @@ function reconcileWorkspaceSelection(detail = state.workspaceDetail) {
   if (selection.type !== "none" || selection.key !== null) {
     clearWorkspaceSelection();
   }
+  synchronizeRouteCompareSelection(detail);
 }
 
 function formatWorkspaceTimestamp(value) {
@@ -3635,6 +4059,35 @@ async function request(path, options = {}) {
   return body;
 }
 
+function setRouteCompareSelection(side, key) {
+  const history = listWorkspacePlanningRoutes(state.workspaceDetail);
+  if (!history.some((entry) => entry.key === key)) return;
+  const next = { ...state.ui.routeCompareSelection, [`${side}Key`]: key };
+  if (next.leftKey === next.rightKey) {
+    const fallback =
+      history.find((entry) => entry.key !== key)?.key || key;
+    if (side === "left") {
+      next.rightKey = fallback;
+    } else {
+      next.leftKey = fallback;
+    }
+  }
+  state.ui.routeCompareSelection = next;
+}
+
+async function refreshSelectedRouteCompare() {
+  const selection = state.ui.routeCompareSelection;
+  if (!selection.leftKey || !selection.rightKey) {
+    state.notice = "No compare route selection is available for this workspace.";
+    state.error = null;
+    render();
+    return;
+  }
+  state.error = null;
+  state.notice = null;
+  await loadRouteCompareForWorkspace(selection, true);
+}
+
 function actionKey(action, id) {
   return `${action}:${id}`;
 }
@@ -3892,6 +4345,55 @@ async function loadRuntimeGraphForWorkspace(shouldRender = true) {
     }
     if (shouldRender) render();
     return null;
+  }
+}
+
+async function loadRouteCompareForWorkspace(selection = null, shouldRender = true) {
+  const sessionId = getWorkspaceSessionId(state.workspaceDetail);
+  if (!sessionId || !state.workspaceDetail) {
+    return null;
+  }
+  const activeSelection = selection || getActiveRouteCompareSelection(state.workspaceDetail);
+  const left = parseRouteCompareSelectionKey(activeSelection.leftKey);
+  const right = parseRouteCompareSelectionKey(activeSelection.rightKey);
+  const explicitSelection =
+    typeof left.revision === "number" &&
+    typeof right.revision === "number" &&
+    !!left.option &&
+    !!right.option;
+  if (shouldRender) {
+    state.routeCompareLoading = true;
+    render();
+  }
+  try {
+    const query = explicitSelection
+      ? buildRouteCompareQuery({
+          leftRevision: left.revision,
+          leftOption: left.option,
+          rightRevision: right.revision,
+          rightOption: right.option,
+        })
+      : "";
+    const compare = await request(`/api/sessions/${encodeURIComponent(sessionId)}/compare${query}`).catch(() => null);
+    if (!state.workspaceDetail || getWorkspaceSessionId(state.workspaceDetail) !== sessionId) {
+      return null;
+    }
+    state.workspaceDetail = {
+      ...state.workspaceDetail,
+      route_compare: compare,
+    };
+    if (compare?.left || compare?.right) {
+      state.ui.routeCompareSelection = {
+        leftKey: buildRouteCompareSelectionKey(compare.left?.revision, compare.left?.option),
+        rightKey: buildRouteCompareSelectionKey(compare.right?.revision, compare.right?.option),
+      };
+    } else {
+      synchronizeRouteCompareSelection(state.workspaceDetail);
+    }
+    return compare;
+  } finally {
+    state.routeCompareLoading = false;
+    if (shouldRender) render();
   }
 }
 
@@ -4321,6 +4823,13 @@ async function loadSessionWorkspace(sessionId, shouldRender = true) {
       interventions: detail.interventions || [],
       dag_patches: detail.dag_patches || [],
     });
+    synchronizeRouteCompareSelection(state.workspaceDetail);
+    if (routeCompare?.left || routeCompare?.right) {
+      state.ui.routeCompareSelection = {
+        leftKey: buildRouteCompareSelectionKey(routeCompare.left?.revision, routeCompare.left?.option),
+        rightKey: buildRouteCompareSelectionKey(routeCompare.right?.revision, routeCompare.right?.option),
+      };
+    }
     state.selectedSessionId = sessionId;
     buildStudioLocationState();
     await loadSessionDagProposals(sessionId, false, loadSeq);
@@ -8297,6 +8806,16 @@ function handleChange(target) {
     state.attachmentEditor.summary = value;
     return;
   }
+  if (field === "route-compare.left") {
+    setRouteCompareSelection("left", value);
+    void refreshSelectedRouteCompare();
+    return;
+  }
+  if (field === "route-compare.right") {
+    setRouteCompareSelection("right", value);
+    void refreshSelectedRouteCompare();
+    return;
+  }
   if (field === "execution.interventionKind") {
     state.executionControl.interventionKind = value;
     render();
@@ -8593,6 +9112,7 @@ document.addEventListener("click", (event) => {
     buildStudioLocationState();
     render();
   }
+  if (action === "refresh-route-compare") void refreshSelectedRouteCompare();
   if (action === "set-workspace-feed-filter") {
     state.ui.workspaceFeedFilter = button.dataset.filter || "all";
     buildStudioLocationState();
@@ -8637,6 +9157,16 @@ document.addEventListener("click", (event) => {
     }
     buildStudioLocationState();
     render();
+  }
+  if (action === "pick-route-compare-history") {
+    const key = button.dataset.key || "";
+    const selection = state.ui.routeCompareSelection || { leftKey: "", rightKey: "" };
+    if (!selection.leftKey || selection.leftKey === key) {
+      setRouteCompareSelection("left", key);
+    } else {
+      setRouteCompareSelection("right", key);
+    }
+    void refreshSelectedRouteCompare();
   }
   if (action === "select-checkpoint") {
     const key = button.dataset.checkpointKey || "";

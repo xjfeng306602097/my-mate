@@ -608,7 +608,7 @@ This also means the following may land incrementally:
 | `RT-02` | Runtime Steering | Done | P1 | Improve mobile and Studio patch review ergonomics, including clearer patch history and topology review. | Mobile and Studio now summarize operations, graph impact, topology snapshots, outcomes, and confirmation state for patch review/history. |
 | `RT-03` | Runtime Steering | Done | P1 | Add richer monitoring surfaces for runtime progress, checkpoints, and cost-aware intervention. | Runtime graph summaries now expose progress, checkpoint, and capacity/budget posture; Mobile and Studio render those monitoring surfaces. |
 | `STU-01` | Studio Authoring | Done | P1 | Define the interactive graph-canvas information model, interaction boundaries, and minimum viable skeleton. | Studio now has a form-backed graph canvas model, deterministic skeleton layout, node/edge selection, invalid-edge visibility, and smoke checks; drag-and-drop replacement remains out of scope. |
-| `STU-02` | Studio Authoring | Planned | P1 | Add richer route compare/history selectors and a stronger graph diff browser. | Compare read model exists today. |
+| `STU-02` | Studio Authoring | Done | P1 | Add richer route compare/history selectors and a stronger graph diff browser. | Studio now supports explicit revision/option compare selectors, route-history quick picks, side-by-side route graph browsing, and richer diff detail lists on top of the existing compare read model. |
 | `STU-03` | Studio Authoring | Planned | P1 | Add more desktop-native file/context workflows such as drag-and-drop attach and workspace browsing. | Attachment model exists, native ergonomics do not. |
 | `MOB-01` | Mobile Productization | Deferred | P2 | Add push notification flow for approvals, human input, and mission events. | Productization gap; not part of current mainline. |
 | `MOB-02` | Mobile Productization | Deferred | P2 | Add account, auth, and permission-layer behavior for real users and workspaces. | Productization gap; not part of current mainline. |
@@ -758,7 +758,7 @@ Exit condition:
 Then close:
 
 - [x] `STU-01`
-- [ ] `STU-02`
+- [x] `STU-02`
 - [ ] `STU-03`
 
 Exit condition:
@@ -782,6 +782,23 @@ Exit condition:
       actions, and canvas styles.
 - [x] Drag-and-drop node placement, direct canvas editing, and replacing the
       form editor remain out of scope for `STU-01`.
+
+### STU-02 Implementation Status
+
+- [x] Studio route compare now supports explicit left/right revision and option
+      selectors instead of only the default compare snapshot.
+- [x] Recent route history is available as quick-pick chips so operators can
+      swap compare endpoints without message archaeology.
+- [x] Route compare renders side-by-side graph browsers for the selected left
+      and right route endpoints using the existing plan-option candidate plans.
+- [x] Node and edge diff states are surfaced visually in the graph browser and
+      structurally in the detailed changed nodes/edges/gates/outputs/risks
+      lists.
+- [x] Refreshing compare selections reuses the existing
+      `/api/sessions/:sessionId/compare` selectors rather than introducing a
+      new backend contract.
+- [x] Studio smoke checks now guard the richer compare diff browser, compare
+      refresh action, history picker, and compare browser styles.
 
 ### Milestone D: Production Foundations
 
