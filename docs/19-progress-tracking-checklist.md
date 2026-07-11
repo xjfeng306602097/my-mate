@@ -1036,6 +1036,15 @@ This also means the following may land incrementally:
 | `OC-01B` | OpenClaw Production Hardening | Done | P1 | Reconcile Docker Worker resources across crashes and make cleanup durable, observable, and idempotent. | Focused recovery coverage and real Docker restart smoke remove matched/orphan containers, retain failed cleanup capacity, and gate redispatch until compensation succeeds. |
 | `OC-02` | OpenClaw Production Hardening | Done | P2 | Add timeout compensation, failure replay, and more complete recovery audit trails. | Persistent deadline compensation, cleanup-gated capacity, restart continuation, frozen failed-Job Replay, evidence/Trace lineage, OpenAPI/Gateway/CLI/Studio operations, and focused plus Docker recovery acceptance are implemented. |
 | `SDK-01` | Shared Types / SDK | Done | P1 | Generate shared client types/SDK from schemas and OpenAPI instead of relying on handwritten types. | Committed OpenAPI-generated DTOs, drift checks, typed client factory/tests, strengthened supervision schemas, and CLI consumers have landed. |
+| `REL-01` | Release Engineering | Todo | P1 | Replace mutable Runtime Worker image defaults with immutable version/tag/digest resolution and build provenance. | Next mainline task; must preserve explicit local-development overrides. |
+| `REL-02` | Release Engineering | Todo | P1 | Add CI release gates for generated-contract drift, checks, tests, Runtime Worker image build, and deterministic Docker smoke. | CI should separate fast pull-request checks from Docker-enabled release acceptance. |
+| `REL-03` | Release Engineering | Todo | P2 | Add SBOM, image signing and vulnerability policy, plus documented upgrade and rollback procedures. | Starts after immutable image identity and CI gates are stable. |
+| `RT-04` | Runtime Semantics | Todo | P1 | Evaluate structured edge conditions and route matching failure ports to recovery nodes without premature terminal Run failure. | Follow-up to the completed handoff/port-routing baseline. |
+| `RT-05` | Runtime Semantics | Todo | P1 | Add Worker-native human-gate suspend/resume with persisted gate and control protocol state. | Manager-side approval and node requeue remain the compatibility behavior. |
+| `RT-06` | Runtime Semantics | Todo | P2 | Add dynamic fanout cardinality and complete harness/control-during-provisioning guarantees. | Keep bounded capacity and recovery invariants intact. |
+| `STU-04` | Studio Authoring | Todo | P2 | Add direct-manipulation DAG editing with node drag, edge/port editing, validation, undo/redo, and patch preview. | Retain the form-backed editor as the deterministic and accessible fallback. |
+| `MW-04` | Mission Workspace | Todo | P2 | Add an independently rebuildable evented Mission/Session materializer with checkpoints and consistency verification. | Preserve the existing Mission Workspace API contract. |
+| `LIVE-01` | Provider Acceptance | Todo | P2 | Add credential-aware opt-in live provider and real model-judge release acceptance lanes. | Nondeterministic live checks must remain separate from default unit-test gates. |
 
 ## Suggested Near-Term Milestones
 
@@ -1443,6 +1452,28 @@ Track in parallel when product shell risk is lower:
 Exit condition:
 
 - the system is no longer limited to local/demo-style persistence and operations
+
+### Milestone E: Production Release Engineering
+
+Execute in order:
+
+1. `REL-01`
+2. `REL-02`
+3. `REL-03`
+
+Then continue the runtime semantics track:
+
+1. `RT-04`
+2. `RT-05`
+3. `RT-06`
+
+Exit condition:
+
+- every production Runtime Worker execution identifies an immutable image and
+  build provenance
+- pull-request and release checks have explicit, reproducible gates
+- release artifacts have a documented supply-chain, upgrade, and rollback
+  policy
 
 ## Review Rhythm
 
