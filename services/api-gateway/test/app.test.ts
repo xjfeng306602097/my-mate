@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import express from "express";
 import type { Request, Response } from "express";
@@ -83,6 +84,10 @@ async function startUpstreamServer() {
     path: string;
     body: unknown;
     gatewayHeader: string | undefined;
+    authContext?: string | undefined;
+    authSignature?: string | undefined;
+    workspaceId?: string | undefined;
+    idempotencyKey?: string | undefined;
   }> = [];
 
   app.get("/api/mobile/home", (req, res) => {
@@ -91,6 +96,9 @@ async function startUpstreamServer() {
       path: req.path,
       body: null,
       gatewayHeader: req.header("x-my-mate-gateway"),
+      authContext: req.header("x-my-mate-auth-context"),
+      authSignature: req.header("x-my-mate-auth-signature"),
+      workspaceId: req.header("x-my-mate-workspace-id"),
     });
     res.json({ overview: { total_runs: 0 }, recent_runs: [] });
   });
@@ -103,6 +111,123 @@ async function startUpstreamServer() {
       gatewayHeader: req.header("x-my-mate-gateway"),
     });
     res.status(201).json({ run_id: "run_gateway_test", status: "queued" });
+  });
+
+  app.post("/api/diagnostics/doctor", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      schema_version: 1,
+      runtime_ready: true,
+      deterministic_ready: true,
+      model_ready: false,
+      model_verified: null,
+    });
+  });
+
+  app.get("/api/runs/run_gateway_test/route", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ run_id: "run_gateway_test", route_id: "template:gateway-template@1" });
+  });
+
+  app.get("/api/runs/run_gateway_test/supervise", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ run_id: "run_gateway_test", cursor: String(req.query.cursor || "next") });
+  });
+
+  app.post("/api/runs/run_gateway_test/scorecards", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.status(201).json({ scorecard_id: "scorecard_gateway_test", ...req.body });
+  });
+
+  app.get("/api/runs/run_gateway_test/scorecards", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ items: [{ scorecard_id: "scorecard_gateway_test" }] });
+  });
+
+  app.get("/api/runs/run_gateway_test/scorecards/scorecard_gateway_test", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ scorecard_id: "scorecard_gateway_test", run_id: "run_gateway_test" });
+  });
+
+  app.post("/api/runs/run_gateway_test/evaluations", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.status(201).json({ evaluation_id: "evaluation_gateway_test", run_id: "run_gateway_test", ...req.body });
+  });
+
+  app.get("/api/runs/run_gateway_test/evaluations", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ items: [{ evaluation_id: "evaluation_gateway_test" }] });
+  });
+
+  app.get("/api/runs/run_gateway_test/evaluations/evaluation_gateway_test", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ evaluation_id: "evaluation_gateway_test", run_id: "run_gateway_test", status: "completed" });
+  });
+
+  app.get("/api/runs/run_gateway_test/trace", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ run_id: "run_gateway_test", trace_id: "trace:run_gateway_test", spans: [] });
+  });
+
+  app.post("/api/runs/run_gateway_test/replays", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.status(201).json({ replay_id: "replay_gateway_test", run_id: "run_gateway_test", verification: "pass" });
+  });
+
+  app.get("/api/runs/run_gateway_test/replays/replay_gateway_test", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ replay_id: "replay_gateway_test", run_id: "run_gateway_test", verification: "pass" });
+  });
+
+  app.post("/api/runs/run_gateway_test/replay-plans", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.status(201).json({ replay_plan_id: "replay_plan_gateway_test", run_id: "run_gateway_test" });
+  });
+
+  app.get("/api/runs/run_gateway_test/replay-plans/replay_plan_gateway_test", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ replay_plan_id: "replay_plan_gateway_test", run_id: "run_gateway_test" });
+  });
+
+  app.post("/api/runs/run_gateway_test/reruns", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+      idempotencyKey: req.header("idempotency-key"),
+    });
+    res.status(201).json({ run_id: "run_gateway_rerun", source_run_id: "run_gateway_test" });
   });
 
   app.get("/api/runs/run_gateway_test/graph", (req, res) => {
@@ -347,10 +472,12 @@ async function startUpstreamServer() {
   app.get("/api/sessions/sess_gateway_test", (req, res) => {
     requests.push({
       method: req.method,
-      path: req.path,
+      path: req.originalUrl,
       body: null,
       gatewayHeader: req.header("x-my-mate-gateway"),
     });
+    const selectedRunId =
+      typeof req.query.run_id === "string" && req.query.run_id.trim() ? req.query.run_id.trim() : null;
     res.json({
       session: {
         session_id: "sess_gateway_test",
@@ -413,7 +540,14 @@ async function startUpstreamServer() {
         },
       },
       messages: [],
-      latest_run: null,
+      latest_run: selectedRunId
+        ? {
+            run_id: selectedRunId,
+            status: "failed",
+            current_summary: "Selected dashboard hotspot run",
+          }
+        : null,
+      selected_run_id: selectedRunId,
       workspace_state: {
         stage: "compare",
       },
@@ -441,6 +575,24 @@ async function startUpstreamServer() {
         conversationTurns: 2,
         evidenceCount: 1,
       },
+      artifacts: selectedRunId ? [{ artifact_id: "art_gateway_selected_001", run_id: selectedRunId }] : [],
+      pending_approvals: selectedRunId
+        ? [
+            {
+              approval_id: "apr_gateway_selected_001",
+              run_id: selectedRunId,
+              node_run_id: "node_gateway_selected_001",
+              kind: "review",
+              status: "pending",
+              summary: "Review the selected run",
+              requested_at: "2026-07-07T09:36:00.000Z",
+              resolved_at: null,
+            },
+          ]
+        : [],
+      pending_human_inputs: [],
+      interventions: [],
+      dag_patches: [],
     });
   });
 
@@ -655,6 +807,129 @@ async function startUpstreamServer() {
     });
   });
 
+  app.get("/api/dashboard/summary", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.originalUrl,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      generated_at: "2026-07-07T10:00:00.000Z",
+      runtime_health: {
+        storage_backend_kind: "file-json",
+        execution_adapter_kind: "openclaw",
+        attention_tone: "warn",
+        summary_lines: [
+          "3 active run(s)",
+          "1 pending approval(s)",
+          "1 pending human input request(s)",
+        ],
+      },
+      workload: {
+        sessions: {
+          total: 12,
+          active: 9,
+          archived: 3,
+          by_status: [
+            { status: "draft", count: 1 },
+            { status: "planning", count: 2 },
+            { status: "ready_to_run", count: 1 },
+            { status: "running", count: 3 },
+            { status: "waiting_human", count: 1 },
+            { status: "completed", count: 3 },
+            { status: "failed", count: 1 },
+            { status: "cancelled", count: 0 },
+          ],
+        },
+        runs: {
+          total: 7,
+          active: 3,
+          terminal: 4,
+          by_status: [
+            { status: "draft", count: 0 },
+            { status: "queued", count: 1 },
+            { status: "running", count: 1 },
+            { status: "waiting_human", count: 1 },
+            { status: "paused", count: 0 },
+            { status: "blocked", count: 1 },
+            { status: "completed", count: 2 },
+            { status: "failed", count: 1 },
+            { status: "cancelled", count: 0 },
+          ],
+          stuck: 2,
+          recently_failed: 1,
+          completed_today: 2,
+        },
+      },
+      backlog: {
+        pending_approvals: 1,
+        pending_human_inputs: 1,
+        pending_patch_confirmations: 2,
+        unsupported_patch_proposals: 1,
+        stale_sessions: 1,
+      },
+      hotspots: {
+        waiting_runs: [
+          {
+            run_id: "run_waiting_b",
+            session_id: "session_waiting_b",
+            status: "blocked",
+            summary: "Awaiting approval",
+            updated_at: "2026-07-07T09:35:00.000Z",
+          },
+          {
+            run_id: "run_waiting_a",
+            session_id: "session_waiting_a",
+            status: "waiting_human",
+            summary: "Need clarification",
+            updated_at: "2026-07-07T09:30:00.000Z",
+          },
+        ],
+        recently_failed_runs: [
+          {
+            run_id: "run_failed_latest",
+            session_id: "session_failed_latest",
+            summary: "Latest failed run",
+            updated_at: "2026-07-07T09:40:00.000Z",
+            latest_failure_event_type: "run.failed",
+          },
+        ],
+        approval_backlog: [
+          {
+            approval_id: "apr_gateway_001",
+            run_id: "run_waiting_b",
+            node_run_id: "node_run_waiting_b",
+            kind: "review",
+            status: "pending",
+            summary: "Review the blocked step",
+            requested_at: "2026-07-07T09:36:00.000Z",
+            resolved_at: null,
+            session_id: "session_waiting_b",
+          },
+        ],
+        human_input_backlog: [
+          {
+            input_request_id: "hir_gateway_001",
+            run_id: "run_waiting_a",
+            node_run_id: "node_run_waiting_a",
+            status: "pending",
+            summary: "Provide corrected input",
+            input_schema: {
+              type: "object",
+              properties: {
+                answer: { type: "string" },
+              },
+            },
+            requested_at: "2026-07-07T09:32:00.000Z",
+            submitted_at: null,
+            session_id: "session_waiting_a",
+          },
+        ],
+      },
+    });
+  });
+
   app.get("/api/agents/hosting", (req, res) => {
     requests.push({
       method: req.method,
@@ -712,10 +987,12 @@ async function startUpstreamServer() {
   app.get("/api/sessions/sess_gateway_test/stream", (req, res) => {
     requests.push({
       method: req.method,
-      path: req.path,
+      path: req.originalUrl,
       body: null,
       gatewayHeader: req.header("x-my-mate-gateway"),
     });
+    const selectedRunId =
+      typeof req.query.run_id === "string" && req.query.run_id.trim() ? req.query.run_id.trim() : null;
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",
@@ -736,7 +1013,14 @@ async function startUpstreamServer() {
             status: "planning",
           },
           messages: [],
-          latest_run: null,
+          latest_run: selectedRunId
+            ? {
+                run_id: selectedRunId,
+                status: "failed",
+                current_summary: "Selected streamed hotspot run",
+              }
+            : null,
+          selected_run_id: selectedRunId,
           workspace_state: {
             stage: "compare",
           },
@@ -1420,6 +1704,115 @@ test("proxies runtime graph GET requests", async () => {
   }
 });
 
+test("proxies every P0 operator route through the explicit allowlist", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+
+  try {
+    const doctor = await postJson(`${server.baseUrl}/api/diagnostics/doctor`, {
+      mode: "docker",
+    });
+    const route = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/route`);
+    const supervise = await getJson(
+      `${server.baseUrl}/api/runs/run_gateway_test/supervise?cursor=opaque-cursor`,
+    );
+    const createdScorecard = await postJson(
+      `${server.baseUrl}/api/runs/run_gateway_test/scorecards`,
+      { profile: "pipeline-v1" },
+    );
+    const scorecards = await getJson(
+      `${server.baseUrl}/api/runs/run_gateway_test/scorecards`,
+    );
+    const scorecard = await getJson(
+      `${server.baseUrl}/api/runs/run_gateway_test/scorecards/scorecard_gateway_test`,
+    );
+
+    assert.equal(doctor.status, 200);
+    assert.equal(route.body.route_id, "template:gateway-template@1");
+    assert.equal(supervise.body.cursor, "opaque-cursor");
+    assert.equal(createdScorecard.status, 201);
+    assert.equal(scorecards.body.items.length, 1);
+    assert.equal(scorecard.body.run_id, "run_gateway_test");
+    assert.deepEqual(
+      upstream.requests.slice(-6).map((request) => `${request.method} ${request.path}`),
+      [
+        "POST /api/diagnostics/doctor",
+        "GET /api/runs/run_gateway_test/route",
+        "GET /api/runs/run_gateway_test/supervise",
+        "POST /api/runs/run_gateway_test/scorecards",
+        "GET /api/runs/run_gateway_test/scorecards",
+        "GET /api/runs/run_gateway_test/scorecards/scorecard_gateway_test",
+      ],
+    );
+    assert.ok(upstream.requests.slice(-6).every((request) => request.gatewayHeader === "api-gateway"));
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies evaluation create list and detail routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const created = await postJson(`${server.baseUrl}/api/runs/run_gateway_test/evaluations`, { evaluator: "none" });
+    const listed = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/evaluations`);
+    const detail = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/evaluations/evaluation_gateway_test`);
+    assert.equal(created.status, 201);
+    assert.equal(listed.body.items.length, 1);
+    assert.equal(detail.body.status, "completed");
+    assert.deepEqual(
+      upstream.requests.slice(-3).map((request) => `${request.method} ${request.path}`),
+      [
+        "POST /api/runs/run_gateway_test/evaluations",
+        "GET /api/runs/run_gateway_test/evaluations",
+        "GET /api/runs/run_gateway_test/evaluations/evaluation_gateway_test",
+      ],
+    );
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies trace replay replay-plan and idempotent rerun routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const trace = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/trace?limit=50`);
+    const replay = await postJson(`${server.baseUrl}/api/runs/run_gateway_test/replays`, {});
+    const replayDetail = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/replays/replay_gateway_test`);
+    const plan = await postJson(`${server.baseUrl}/api/runs/run_gateway_test/replay-plans`, {});
+    const planDetail = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/replay-plans/replay_plan_gateway_test`);
+    const rerun = await postJson(
+      `${server.baseUrl}/api/runs/run_gateway_test/reruns`,
+      { reason: "gateway retry" },
+      { "idempotency-key": "gateway-rerun-key" },
+    );
+    assert.equal(trace.body.trace_id, "trace:run_gateway_test");
+    assert.equal(replay.status, 201);
+    assert.equal(replayDetail.body.verification, "pass");
+    assert.equal(plan.status, 201);
+    assert.equal(planDetail.body.run_id, "run_gateway_test");
+    assert.equal(rerun.body.source_run_id, "run_gateway_test");
+    assert.deepEqual(
+      upstream.requests.slice(-6).map((request) => `${request.method} ${request.path}`),
+      [
+        "GET /api/runs/run_gateway_test/trace",
+        "POST /api/runs/run_gateway_test/replays",
+        "GET /api/runs/run_gateway_test/replays/replay_gateway_test",
+        "POST /api/runs/run_gateway_test/replay-plans",
+        "GET /api/runs/run_gateway_test/replay-plans/replay_plan_gateway_test",
+        "POST /api/runs/run_gateway_test/reruns",
+      ],
+    );
+    assert.equal(upstream.requests.at(-1)?.idempotencyKey, "gateway-rerun-key");
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
 test("proxies planner candidate plan requests", async () => {
   const upstream = await startUpstreamServer();
   const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
@@ -1783,6 +2176,15 @@ test("proxies session detail with stable MissionSpec contract metadata", async (
       1,
     );
     assert.equal(upstream.requests[0].path, "/api/sessions/sess_gateway_test");
+
+    const targetedDetail = await getJson(
+      `${server.baseUrl}/api/sessions/sess_gateway_test?run_id=run_gateway_selected_001`,
+    );
+    assert.equal(targetedDetail.status, 200);
+    assert.equal(targetedDetail.body.latest_run.run_id, "run_gateway_selected_001");
+    assert.equal(targetedDetail.body.selected_run_id, "run_gateway_selected_001");
+    assert.equal(targetedDetail.body.pending_approvals[0].approval_id, "apr_gateway_selected_001");
+    assert.equal(upstream.requests[1].path, "/api/sessions/sess_gateway_test?run_id=run_gateway_selected_001");
   } finally {
     await server.close();
     await upstream.close();
@@ -2085,12 +2487,15 @@ test("proxies runtime summary and session stream requests", async () => {
     assert.equal(update.status, 200);
     assert.equal(update.body.profile.openclaw_agent_id, "openclaw-backend-v2");
 
-    const response = await fetch(`${server.baseUrl}/api/sessions/sess_gateway_test/stream`);
+    const response = await fetch(
+      `${server.baseUrl}/api/sessions/sess_gateway_test/stream?run_id=run_gateway_stream_selected_001`,
+    );
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") || "", /text\/event-stream/);
     const text = await response.text();
     assert.match(text, /event: snapshot/);
     assert.match(text, /"session_id":"sess_gateway_test"/);
+    assert.match(text, /"selected_run_id":"run_gateway_stream_selected_001"/);
 
     assert.equal(upstream.requests.some((item) => item.path === "/api/runtime/summary"), true);
     assert.equal(upstream.requests.some((item) => item.path === "/api/agents/hosting"), true);
@@ -2104,7 +2509,39 @@ test("proxies runtime summary and session stream requests", async () => {
       },
     );
     assert.equal(
-      upstream.requests.some((item) => item.path === "/api/sessions/sess_gateway_test/stream"),
+      upstream.requests.some(
+        (item) => item.path === "/api/sessions/sess_gateway_test/stream?run_id=run_gateway_stream_selected_001",
+      ),
+      true,
+    );
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies dashboard summary requests", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+
+  try {
+    const dashboard = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(dashboard.status, 200);
+    assert.equal(dashboard.body.runtime_health.execution_adapter_kind, "openclaw");
+    assert.equal(dashboard.body.backlog.pending_patch_confirmations, 2);
+    assert.equal(dashboard.body.hotspots.waiting_runs[0].run_id, "run_waiting_b");
+    assert.equal(dashboard.body.hotspots.waiting_runs[0].session_id, "session_waiting_b");
+    assert.equal(dashboard.body.hotspots.recently_failed_runs[0].session_id, "session_failed_latest");
+    assert.equal(upstream.requests.some((item) => item.path === "/api/dashboard/summary"), true);
+
+    const filtered = await getJson(
+      `${server.baseUrl}/api/dashboard/summary?window_hours=168&status=failed&correlation_limit=10&compare=previous`,
+    );
+    assert.equal(filtered.status, 200);
+    assert.equal(
+      upstream.requests.some(
+        (item) => item.path === "/api/dashboard/summary?window_hours=168&status=failed&correlation_limit=10&compare=previous",
+      ),
       true,
     );
   } finally {
@@ -2141,6 +2578,54 @@ test("enforces optional bearer token auth", async () => {
     });
     assert.equal(authorized.status, 200);
     assert.equal(upstream.requests.length, 1);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("resolves configured identities, rejects foreign workspaces, and signs upstream context", async () => {
+  const upstream = await startUpstreamServer();
+  const internalAuthSecret = "gateway-internal-secret";
+  const server = await startTestServer({
+    controlPlaneBaseUrl: upstream.baseUrl,
+    internalAuthSecret,
+    identities: [{
+      token: "alpha-token",
+      principal: {
+        principal_id: "alpha-user",
+        display_name: "Alpha User",
+        principal_type: "user",
+      },
+      memberships: [{ workspace_id: "alpha", workspace_name: "Alpha", role: "operator" }],
+    }],
+  });
+  try {
+    const unauthorized = await getJson(`${server.baseUrl}/api/mobile/home`);
+    assert.equal(unauthorized.status, 401);
+
+    const forbiddenWorkspace = await getJson(`${server.baseUrl}/api/mobile/home`, {
+      authorization: "Bearer alpha-token",
+      "x-my-mate-workspace-id": "beta",
+    });
+    assert.equal(forbiddenWorkspace.status, 403);
+    assert.equal(forbiddenWorkspace.body.code, "workspace_forbidden");
+
+    const allowed = await getJson(`${server.baseUrl}/api/mobile/home`, {
+      authorization: "Bearer alpha-token",
+      "x-my-mate-workspace-id": "alpha",
+    });
+    assert.equal(allowed.status, 200);
+    const observed = upstream.requests[0];
+    assert.equal(observed.workspaceId, "alpha");
+    assert.ok(observed.authContext);
+    assert.equal(
+      observed.authSignature,
+      createHmac("sha256", internalAuthSecret).update(observed.authContext!).digest("base64url"),
+    );
+    const context = JSON.parse(Buffer.from(observed.authContext!, "base64url").toString("utf-8"));
+    assert.equal(context.principal.principal_id, "alpha-user");
+    assert.equal(context.selected_workspace.role, "operator");
   } finally {
     await server.close();
     await upstream.close();

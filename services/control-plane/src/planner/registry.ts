@@ -44,6 +44,18 @@ function annotatePlannerContext(
   if (options?.orchestratorSystemPrompt) {
     base.orchestrator_system_prompt = options.orchestratorSystemPrompt;
   }
+  if (Array.isArray(options?.preferredSubagentProfileIds) && options.preferredSubagentProfileIds.length > 0) {
+    base.preferred_subagent_profile_ids = [...options.preferredSubagentProfileIds];
+  }
+  if (typeof options?.preferDomainMatch === "boolean") {
+    base.prefer_domain_match = options.preferDomainMatch;
+  }
+  if (typeof options?.defaultMaxAgentNodes === "number" && Number.isFinite(options.defaultMaxAgentNodes)) {
+    base.default_max_agent_nodes = options.defaultMaxAgentNodes;
+  }
+  if (typeof options?.requireReview === "boolean") {
+    base.require_review = options.requireReview;
+  }
   if (fallback.used) {
     base.fallback_used = true;
     if (fallback.reason) {

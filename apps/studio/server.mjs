@@ -42,6 +42,11 @@ async function proxyApi(req, res) {
       headers: {
         "content-type": req.headers["content-type"] || "application/json",
         accept: req.headers.accept || "application/json",
+        ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}),
+        ...(req.headers["x-my-mate-workspace-id"]
+          ? { "x-my-mate-workspace-id": req.headers["x-my-mate-workspace-id"] }
+          : {}),
+        ...(req.headers["x-request-id"] ? { "x-request-id": req.headers["x-request-id"] } : {}),
       },
       body,
     });

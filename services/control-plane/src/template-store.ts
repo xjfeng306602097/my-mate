@@ -1,6 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { TEMPLATES_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getActiveWorkspaceId } from "./request-security.js";
 import type {
   CreateTemplateRequest,
   DeriveTemplateRequest,
@@ -17,7 +18,7 @@ function templatePath(templateId: string): string {
 }
 
 function loadTemplate(filePath: string): WorkflowTemplateRecord {
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as WorkflowTemplateRecord;
+  return getJsonStorageBackend().readJson<WorkflowTemplateRecord>(filePath);
 }
 
 function assertValidTemplate(template: WorkflowTemplateRecord): void {
@@ -90,17 +91,22 @@ function assertValidTemplate(template: WorkflowTemplateRecord): void {
 
 function saveTemplate(template: WorkflowTemplateRecord): WorkflowTemplateRecord {
   ensureDir(TEMPLATES_DIR);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  if (activeWorkspaceId && template.workspace_scope !== activeWorkspaceId) {
+    throw new Error("WORKSPACE_SCOPE_MISMATCH");
+  }
   assertValidTemplate(template);
   writeJsonAtomic(templatePath(template.template_id), template);
   return template;
 }
 
 function resolveTemplateId(preferredId: string): string {
+  const storage = getJsonStorageBackend();
   const baseId = slugify(preferredId) || "template";
   let candidate = baseId;
   let suffix = 2;
 
-  while (fs.existsSync(templatePath(candidate))) {
+  while (storage.exists(templatePath(candidate))) {
     candidate = `${baseId}-${suffix}`;
     suffix += 1;
   }
@@ -181,12 +187,13 @@ function resolveTemplateIdForClone(input: {
   preferredId?: string;
   fallbackName: string;
 }): string {
+  const storage = getJsonStorageBackend();
   const preferred =
     typeof input.preferredId === "string" && input.preferredId.trim()
       ? slugify(input.preferredId)
       : "";
   if (preferred) {
-    if (fs.existsSync(templatePath(preferred))) {
+    if (storage.exists(templatePath(preferred))) {
       throw new Error("TEMPLATE_EXISTS");
     }
     return preferred;
@@ -195,27 +202,30 @@ function resolveTemplateIdForClone(input: {
 }
 
 export function listTemplates(): WorkflowTemplateRecord[] {
-  ensureDir(TEMPLATES_DIR);
-  const files = fs
-    .readdirSync(TEMPLATES_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(TEMPLATES_DIR, entry.name));
-
-  const templates = files.map(loadTemplate);
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(TEMPLATES_DIR);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  const templates = files
+    .map(loadTemplate)
+    .filter((template) => !activeWorkspaceId || template.workspace_scope === activeWorkspaceId);
   templates.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   return templates;
 }
 
 export function getTemplate(templateId: string): WorkflowTemplateRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = templatePath(templateId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return loadTemplate(filePath);
+  const template = loadTemplate(filePath);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  return activeWorkspaceId && template.workspace_scope !== activeWorkspaceId ? null : template;
 }
 
 export function createTemplate(input: CreateTemplateRequest): WorkflowTemplateRecord {
   ensureDir(TEMPLATES_DIR);
+  const storage = getJsonStorageBackend();
 
   const explicitTemplateId =
     typeof input.template_id === "string" && input.template_id.trim()
@@ -223,7 +233,7 @@ export function createTemplate(input: CreateTemplateRequest): WorkflowTemplateRe
       : "";
   const templateId = explicitTemplateId || resolveTemplateId(input.name);
 
-  if (explicitTemplateId && fs.existsSync(templatePath(templateId))) {
+  if (explicitTemplateId && storage.exists(templatePath(templateId))) {
     throw new Error("TEMPLATE_EXISTS");
   }
 
@@ -234,7 +244,7 @@ export function createTemplate(input: CreateTemplateRequest): WorkflowTemplateRe
     name: input.name,
     status: "draft",
     description: input.description,
-    workspace_scope: input.workspace_scope || "default",
+    workspace_scope: getActiveWorkspaceId() || input.workspace_scope || "default",
     input_schema: input.input_schema,
     policy: input.policy,
     agent_profile_bindings: input.agent_profile_bindings || {},

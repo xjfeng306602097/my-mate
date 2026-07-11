@@ -11,8 +11,10 @@ const pidsPath = path.join(runtimeRoot, "pids.json");
 
 const bridgePort = 4020;
 const controlPlanePort = 4010;
+const gatewayPort = 4030;
 const bridgeBaseUrl = `http://127.0.0.1:${bridgePort}`;
 const controlPlaneBaseUrl = `http://127.0.0.1:${controlPlanePort}`;
+const gatewayBaseUrl = `http://127.0.0.1:${gatewayPort}`;
 const bridgeApiKey = "local-dev-openclaw";
 const callbackToken = "local-dev-openclaw-callback";
 
@@ -228,12 +230,55 @@ async function startControlPlane({ restart = false } = {}) {
   return nextPids.control_plane;
 }
 
+async function startApiGateway({ restart = false } = {}) {
+  const pids = readPids();
+  if (restart) {
+    await stopListeningService({
+      label: "api-gateway",
+      port: gatewayPort,
+      recordedPid: pids.api_gateway?.pid,
+    });
+  }
+  if (await isHealthy(`${gatewayBaseUrl}/health`)) {
+    const listeningPid = findListeningPids(gatewayPort)[0] || null;
+    return {
+      already_running: true,
+      pid: listeningPid || pids.api_gateway?.pid || null,
+      base_url: gatewayBaseUrl,
+    };
+  }
+
+  const service = startPersistentNodeService({
+    name: "api-gateway",
+    workdir: path.join(repoRoot, "services", "api-gateway"),
+    logDir: logsDir,
+    logPrefix: "api-gateway-4030",
+    env: {
+      PORT: String(gatewayPort),
+      MY_MATE_CONTROL_PLANE_BASE_URL: controlPlaneBaseUrl,
+    },
+  });
+  await waitForHealth(`${gatewayBaseUrl}/health`, "api-gateway");
+  const listeningPid = findListeningPids(gatewayPort)[0] || service.pid;
+  const nextPids = readPids();
+  nextPids.api_gateway = {
+    pid: listeningPid,
+    base_url: gatewayBaseUrl,
+    out_log: service.outPath,
+    err_log: service.errPath,
+    started_at: new Date().toISOString(),
+  };
+  writePids(nextPids);
+  return nextPids.api_gateway;
+}
+
 async function main() {
   const args = process.argv.slice(2);
-  const mode = args.find((arg) => ["--all", "--bridge", "--control-plane"].includes(arg)) || "--all";
+  const mode =
+    args.find((arg) => ["--all", "--bridge", "--control-plane", "--api-gateway"].includes(arg)) || "--all";
   const restart = args.includes("--restart");
-  if (!["--all", "--bridge", "--control-plane"].includes(mode)) {
-    throw new Error(`Unknown mode ${mode}. Use --all, --bridge, or --control-plane.`);
+  if (!["--all", "--bridge", "--control-plane", "--api-gateway"].includes(mode)) {
+    throw new Error(`Unknown mode ${mode}. Use --all, --bridge, --control-plane, or --api-gateway.`);
   }
 
   const summary = {};
@@ -242,6 +287,9 @@ async function main() {
   }
   if (mode === "--all" || mode === "--control-plane") {
     summary.control_plane = await startControlPlane({ restart });
+  }
+  if (mode === "--all" || mode === "--api-gateway") {
+    summary.api_gateway = await startApiGateway({ restart });
   }
   console.log(JSON.stringify(summary, null, 2));
 }

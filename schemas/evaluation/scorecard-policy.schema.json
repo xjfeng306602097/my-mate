@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/evaluation/scorecard-policy.schema.json",
+  "title": "Scorecard Policy",
+  "type": "object",
+  "$defs": {
+    "selector": {
+      "type": "object",
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "node_run_id": { "type": "string", "minLength": 1 },
+        "work_package": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "common": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "severity": { "type": "string", "enum": ["error", "warning"] },
+        "selector": { "$ref": "#/$defs/selector" }
+      },
+      "required": ["id"]
+    },
+    "requiredEvidence": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "required_evidence" },
+            "kinds": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "min_count": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["type", "kinds"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "requiredTool": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "required_tool" },
+            "names": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "min_calls": { "type": "integer", "minimum": 0 },
+            "max_calls": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["type", "names"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "artifactContract": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "artifact_contract" },
+            "artifact_type": { "type": "string", "minLength": 1 },
+            "mime_type": { "type": "string", "minLength": 1 },
+            "name_pattern": { "type": "string", "minLength": 1 },
+            "metadata_schema": { "type": "object" },
+            "min_count": { "type": "integer", "minimum": 1 },
+            "require_resolvable_uri": { "type": "boolean" }
+          },
+          "required": ["type"],
+          "anyOf": [
+            { "required": ["artifact_type"] },
+            { "required": ["mime_type"] },
+            { "required": ["name_pattern"] },
+            { "required": ["metadata_schema"] }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "handoffSchema": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "handoff_schema" },
+            "schema": { "type": "object" },
+            "min_count": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["type", "schema"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "testCategory": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "test_category" },
+            "categories": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["lint", "unit", "integration", "security", "rollback"] }
+            }
+          },
+          "required": ["type", "categories"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "deterministicAssertion": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "deterministic_assertion" },
+            "subject": { "type": "string", "enum": ["run", "route", "evidence", "artifact", "handoff"] },
+            "path": { "type": "string" },
+            "operator": { "type": "string", "enum": ["equals", "contains", "regex", "numeric_range"] },
+            "expected": {},
+            "min": { "type": "number" },
+            "max": { "type": "number" },
+            "match": { "type": "string", "enum": ["any", "all"] },
+            "quality": { "type": "boolean" }
+          },
+          "required": ["type", "subject", "path", "operator"],
+          "allOf": [
+            {
+              "if": { "properties": { "operator": { "const": "numeric_range" } }, "required": ["operator"] },
+              "then": { "anyOf": [{ "required": ["min"] }, { "required": ["max"] }] },
+              "else": { "required": ["expected"] }
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "check": {
+      "oneOf": [
+        { "$ref": "#/$defs/requiredEvidence" },
+        { "$ref": "#/$defs/requiredTool" },
+        { "$ref": "#/$defs/artifactContract" },
+        { "$ref": "#/$defs/handoffSchema" },
+        { "$ref": "#/$defs/testCategory" },
+        { "$ref": "#/$defs/deterministicAssertion" }
+      ]
+    }
+  },
+  "properties": {
+    "profile": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "enforcement": { "type": "string", "enum": ["off", "advisory", "strict"] },
+    "settle_timeout_seconds": { "type": "integer", "minimum": 1 },
+    "checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check" }
+    }
+  },
+  "required": ["profile", "version", "enforcement", "settle_timeout_seconds", "checks"],
+  "additionalProperties": false
+}

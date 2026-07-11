@@ -32,7 +32,7 @@ function parseProcessId(output, name) {
   return pid;
 }
 
-function launchDetachedWindowsNodeProcess({ name, workdir, serverPath, outPath, errPath, env }) {
+function launchDetachedWindowsNodeProcess({ name, workdir, serverPath, outPath, errPath, env = {} }) {
   const childCommand = [
     '$ErrorActionPreference = "Stop"',
     'Set-Variable -Name PSNativeCommandUseErrorActionPreference -Value $false -Scope Script -ErrorAction SilentlyContinue',
@@ -67,7 +67,7 @@ export function startPersistentNodeService({
   workdir,
   logDir,
   logPrefix,
-  env,
+  env = {},
   serverPath,
 }) {
   const resolvedServerPath = resolveServerPath(workdir, serverPath);
@@ -118,7 +118,7 @@ export function startManagedNodeService({
   workdir,
   logDir,
   logPrefix,
-  env,
+  env = {},
   serverPath,
 }) {
   const resolvedServerPath = resolveServerPath(workdir, serverPath);

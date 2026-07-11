@@ -1,14 +1,24 @@
 ﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { listApprovals } from "../src/approval-store.js";
+import { listApprovals, saveApproval } from "../src/approval-store.js";
 import { listArtifacts } from "../src/artifact-store.js";
-import { listRunEvents } from "../src/event-store.js";
+import { createDagPatch } from "../src/dag-patch-store.js";
+import { appendRunEvent, listRunEvents } from "../src/event-store.js";
 import { listHumanInputs } from "../src/human-input-store.js";
 import { listNodeRuns } from "../src/node-run-store.js";
 import { getRunPlan } from "../src/run-plan-store.js";
-import { getRun } from "../src/run-store.js";
+import { getRun, saveRun } from "../src/run-store.js";
 import { getSession } from "../src/session-store.js";
+import { createHumanInputRecord, saveHumanInput } from "../src/human-input-store.js";
+import { saveEvaluation } from "../src/evaluation/evaluation-store.js";
+import { saveScorecard } from "../src/evaluation/scorecard-store.js";
+import { saveRuntimeJobRecord } from "../src/runtime/runtime-job-store.js";
+import { saveWorkerEvidence } from "../src/runtime/worker-evidence-store.js";
 import { buildDispatchEnvelope } from "../src/adapter-contracts.js";
+import { buildLocalRuntimeWorkerDispatcher } from "../src/local-runtime-worker-dispatcher.js";
+import { InProcessRuntimeWorkerClient } from "../src/in-process-runtime-worker-client.js";
+import type { RuntimeDispatcher } from "../src/runtime-dispatcher.js";
+import type { RuntimeWorkerJob } from "../src/runtime-protocol.js";
 import {
   cleanupTestArtifacts,
   createStubExecutionAdapter,
@@ -28,6 +38,7 @@ function configureEnv(overrides: Record<string, string> = {}) {
   process.env.MY_MATE_EXECUTION_ADAPTER = "local";
   process.env.MY_MATE_AUTO_APPROVE_HUMAN_GATES = "false";
   process.env.MY_MATE_OPENCLAW_CALLBACK_TOKEN = "test-callback-token";
+  delete process.env.MY_MATE_OBSERVABILITY_RETENTION_HOURS;
   for (const [key, value] of Object.entries(overrides)) {
     process.env[key] = value;
   }
@@ -137,6 +148,7 @@ function runtimeGraphNode(input: {
   approvalKind?: string | null;
   humanInputSchema?: Record<string, unknown> | null;
   expectedArtifacts?: string[];
+  workPackage?: { key: string; label: string; order: number };
 }) {
   return {
     id: input.id,
@@ -158,6 +170,7 @@ function runtimeGraphNode(input: {
     parallelism: 1,
     approval_kind: input.approvalKind ?? null,
     human_input_schema: input.humanInputSchema ?? null,
+    work_package: input.workPackage,
   };
 }
 
@@ -186,11 +199,13 @@ function seedRuntimeGraphTemplate(input?: {
             id: "collect_context",
             name: "Collect Context",
             expectedArtifacts: ["research-notes"],
+            workPackage: { key: "research", label: "Research", order: 10 },
           }),
           runtimeGraphNode({
             id: "deliver_summary",
             name: "Final Delivery",
             expectedArtifacts: ["final-report"],
+            workPackage: { key: "deliver", label: "Delivery", order: 20 },
           }),
         ],
       edges:
@@ -205,6 +220,669 @@ function seedRuntimeGraphTemplate(input?: {
     }),
   );
 }
+
+test("health exposes runtime storage and execution adapter kinds", async () => {
+  resetTestRoot();
+  configureEnv();
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+
+  try {
+    const health = await getJson(`${server.baseUrl}/health`);
+    assert.equal(health.status, 200);
+    assert.equal(health.body.status, "ok");
+    assert.equal(health.body.storage.backend_kind, "file-json");
+    assert.equal(health.body.execution.adapter_kind, "stub");
+  } finally {
+    await server.close();
+  }
+});
+
+test("dashboard summary exposes workload health and intervention backlogs", async () => {
+  resetTestRoot();
+  configureEnv();
+  seedTemplate();
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+  let runId = "";
+  let sessionId = "";
+
+  try {
+    const createdSession = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Prepare dashboard summary regression",
+    });
+    assert.equal(createdSession.status, 201);
+    sessionId = createdSession.body.session.session_id;
+
+    const createdRun = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
+      template_id: "mobile-test-template",
+      inputs: {
+        goal: "Exercise dashboard summary",
+      },
+      validation_mode: "warn",
+    });
+    assert.equal(createdRun.status, 201);
+    runId = createdRun.body.run_id;
+
+    const run = getRun(runId);
+    assert.ok(run);
+    run.status = "failed";
+    run.current_summary = "OpenClaw callback reported failure";
+    run.updated_at = "2026-07-07T09:30:00.000Z";
+    run.waiting_reason = null;
+    run.blocked_reason = null;
+    run.finished_at = "2026-07-07T09:30:00.000Z";
+    saveRun(run);
+
+    appendRunEvent({
+      run_id: runId,
+      type: "run.failed",
+      actor_type: "system",
+      actor_id: "scheduler",
+      payload: {
+        reason: "synthetic failure",
+      },
+      created_at: "2026-07-07T09:30:00.000Z",
+    });
+
+    saveApproval({
+      approval_id: "apr_dashboard_001",
+      run_id: runId,
+      node_run_id: "node-dashboard-001",
+      kind: "review",
+      status: "pending",
+      summary: "Review the failed step",
+      requested_at: "2026-07-07T09:31:00.000Z",
+      resolved_at: null,
+    });
+
+    saveHumanInput(
+      createHumanInputRecord({
+        runId,
+        nodeRunId: "node-dashboard-002",
+        summary: "Provide corrected input",
+        inputSchema: {
+          type: "object",
+          properties: {
+            answer: { type: "string" },
+          },
+        },
+        requestedAt: "2026-07-07T09:32:00.000Z",
+      }),
+    );
+
+    createDagPatch({
+      sessionId,
+      runId,
+      interventionId: null,
+      requestedBy: "demo-user",
+      status: "needs_confirmation",
+      reason: "Pause and retry after review",
+      summary: "Pause the run and retry after inspection",
+      operations: [
+        {
+          op: "pause_for_replan",
+          reason: "Pause before retry",
+          supported: true,
+        },
+      ],
+      requiresConfirmation: true,
+      applySupported: true,
+      unsupportedReason: null,
+      createdAt: "2026-07-07T09:33:00.000Z",
+    });
+
+    const summary = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(summary.status, 200);
+    assert.equal(summary.body.observability.query.index_schema_version, 1);
+    assert.equal(summary.body.observability.query.indexed_runs, 1);
+    assert.equal(summary.body.observability.query.rebuilt_runs, 1);
+    assert.equal(summary.body.runtime_health.storage_backend_kind, "file-json");
+    assert.equal(summary.body.runtime_health.execution_adapter_kind, "stub");
+    assert.equal(summary.body.runtime_health.attention_tone, "danger");
+    assert.equal(summary.body.workload.runs.total, 1);
+    assert.equal(summary.body.workload.runs.recently_failed, 1);
+    assert.equal(summary.body.backlog.pending_approvals, 1);
+    assert.equal(summary.body.backlog.pending_human_inputs, 1);
+    assert.equal(summary.body.backlog.pending_patch_confirmations, 1);
+    assert.equal(summary.body.hotspots.recently_failed_runs[0].run_id, runId);
+    assert.equal(summary.body.hotspots.recently_failed_runs[0].session_id, sessionId);
+    assert.equal(summary.body.hotspots.recently_failed_runs[0].latest_failure_event_type, "run.failed");
+    assert.equal(summary.body.hotspots.approval_backlog[0].approval_id, "apr_dashboard_001");
+    assert.equal(summary.body.hotspots.approval_backlog[0].session_id, sessionId);
+    assert.equal(summary.body.hotspots.human_input_backlog[0].session_id, sessionId);
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
+      runId,
+      sessionId,
+    });
+  }
+});
+
+test("dashboard summary sorts hotspots and uses warn tone without failures", async () => {
+  resetTestRoot();
+  configureEnv();
+  seedTemplate();
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+  let runIdA = "";
+  let runIdB = "";
+  let sessionId = "";
+  let sessionIdB = "";
+
+  try {
+    const createdSession = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Prepare dashboard hotspot ordering regression",
+    });
+    assert.equal(createdSession.status, 201);
+    sessionId = createdSession.body.session.session_id;
+
+    const createdRunA = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
+      template_id: "mobile-test-template",
+      inputs: {
+        goal: "Exercise waiting summary A",
+      },
+      validation_mode: "warn",
+    });
+    assert.equal(createdRunA.status, 201);
+    runIdA = createdRunA.body.run_id;
+
+    const createdSessionB = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Prepare dashboard hotspot ordering regression B",
+    });
+    assert.equal(createdSessionB.status, 201);
+    sessionIdB = createdSessionB.body.session.session_id;
+
+    const createdRunB = await postJson(`${server.baseUrl}/api/sessions/${sessionIdB}/runs`, {
+      template_id: "mobile-test-template",
+      inputs: {
+        goal: "Exercise waiting summary B",
+      },
+      validation_mode: "warn",
+    });
+    assert.equal(createdRunB.status, 201);
+    runIdB = createdRunB.body.run_id;
+
+    const runA = getRun(runIdA);
+    const runB = getRun(runIdB);
+    assert.ok(runA);
+    assert.ok(runB);
+
+    runA.status = "waiting_human";
+    runA.current_summary = "Awaiting user input";
+    runA.waiting_reason = "Need clarification";
+    runA.blocked_reason = null;
+    runA.updated_at = "2026-07-07T09:30:00.000Z";
+    saveRun(runA);
+
+    runB.status = "blocked";
+    runB.current_summary = "Blocked on review";
+    runB.waiting_reason = null;
+    runB.blocked_reason = "Awaiting approval";
+    runB.updated_at = "2026-07-07T09:35:00.000Z";
+    saveRun(runB);
+
+    saveApproval({
+      approval_id: "apr_dashboard_002",
+      run_id: runIdB,
+      node_run_id: "node-dashboard-010",
+      kind: "review",
+      status: "pending",
+      summary: "Review the blocked step",
+      requested_at: "2026-07-07T09:36:00.000Z",
+      resolved_at: null,
+    });
+
+    const summary = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(summary.status, 200);
+    assert.equal(summary.body.runtime_health.attention_tone, "warn");
+    assert.equal(summary.body.workload.runs.stuck, 2);
+    assert.equal(summary.body.workload.runs.recently_failed, 0);
+    assert.equal(summary.body.hotspots.waiting_runs.length, 2);
+    assert.equal(summary.body.hotspots.waiting_runs[0].run_id, runIdB);
+    assert.equal(summary.body.hotspots.waiting_runs[0].session_id, sessionIdB);
+    assert.equal(summary.body.hotspots.waiting_runs[0].summary, "Awaiting approval");
+    assert.equal(summary.body.hotspots.waiting_runs[1].run_id, runIdA);
+    assert.equal(summary.body.hotspots.waiting_runs[1].session_id, sessionId);
+    assert.equal(summary.body.hotspots.waiting_runs[1].summary, "Need clarification");
+    assert.equal(summary.body.hotspots.approval_backlog[0].session_id, sessionIdB);
+    assert.equal(summary.body.hotspots.recently_failed_runs.length, 0);
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
+      runId: runIdA,
+      sessionId,
+    });
+    cleanupTestArtifacts({
+      runId: runIdB,
+      sessionId: sessionIdB,
+    });
+  }
+});
+
+test("dashboard observability correlates latency retries usage trace and evaluation", async () => {
+  resetTestRoot();
+  configureEnv();
+  const server = await startTestServer({ executionAdapter: createStubExecutionAdapter() });
+  const runId = "run-dashboard-observability";
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const firstFinishedAt = new Date(Date.now() - 30_000).toISOString();
+  const finishedAt = new Date().toISOString();
+
+  try {
+    saveRun({
+      run_id: runId,
+      template_id: "observability-template",
+      template_version: 1,
+      workspace_id: "default",
+      requested_by: "test-user",
+      intent: "Correlate runtime observability",
+      status: "completed",
+      current_summary: "Observability fixture completed",
+      waiting_reason: null,
+      blocked_reason: null,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      last_event_id: null,
+      created_at: startedAt,
+      updated_at: finishedAt,
+      inputs: {},
+      proposal_id: null,
+      source_run_id: null,
+      rerun_reason: null,
+      rerun_idempotency_key: null,
+    });
+    saveRuntimeJobRecord({
+      job_id: "job-observability-1",
+      run_id: runId,
+      node_run_id: "node-observability",
+      attempt: 1,
+      dispatch_sequence: 1,
+      status: "failed",
+      worker_id: "worker-observability",
+      lease_id: "lease-observability-1",
+      target_kind: "docker-worker",
+      agent_runtime: "codex",
+      runtime_agent_ref: "codex:test",
+      created_at: startedAt,
+      accepted_at: startedAt,
+      finished_at: firstFinishedAt,
+      last_event_id: null,
+      last_error: "Synthetic first-attempt failure",
+      compatibility: { adapter_kind: null, dispatch_id: null, openclaw_task_id: null, openclaw_session_id: null },
+      job: {} as never,
+    });
+    saveRuntimeJobRecord({
+      job_id: "job-observability-2",
+      run_id: runId,
+      node_run_id: "node-observability",
+      attempt: 2,
+      dispatch_sequence: 2,
+      status: "completed",
+      worker_id: "worker-observability",
+      lease_id: "lease-observability-2",
+      target_kind: "docker-worker",
+      agent_runtime: "codex",
+      runtime_agent_ref: "codex:test",
+      created_at: firstFinishedAt,
+      accepted_at: firstFinishedAt,
+      finished_at: finishedAt,
+      last_event_id: null,
+      last_error: null,
+      compatibility: { adapter_kind: null, dispatch_id: null, openclaw_task_id: null, openclaw_session_id: null },
+      job: {} as never,
+    });
+    saveWorkerEvidence({
+      evidence_schema_version: 2,
+      evidence_id: "usage-observability",
+      run_id: runId,
+      node_run_id: "node-observability",
+      job_id: "job-observability-2",
+      worker_id: "worker-observability",
+      sequence: 1,
+      kind: "usage",
+      source: { provider: "openai", model: "fixture-model", native_event_id: "usage-native", synthetic: false },
+      trace: { trace_id: `trace:${runId}`, span_id: "span-observability", parent_span_id: null, tool_call_id: null },
+      summary: "Provider usage",
+      input_ref: null,
+      output_ref: null,
+      storage_uri: null,
+      inline_payload: null,
+      usage: {
+        availability: "available",
+        input_tokens: 100,
+        output_tokens: 40,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 10,
+        total_tokens: 150,
+        duration_ms: 30_000,
+        turn_count: 1,
+        provider_reported_cost: { currency: "USD", amount_decimal: "0.12" },
+        estimated_cost: { currency: "USD", amount_decimal: "0.10", catalog_id: "test", catalog_version: "1" },
+      },
+      redaction_status: "not_required",
+      created_at: finishedAt,
+    });
+    appendRunEvent({
+      run_id: runId,
+      type: "evaluation.completed",
+      actor_type: "system",
+      actor_id: "evaluation-engine",
+      payload: { evaluation_id: "evaluation-observability" },
+      created_at: finishedAt,
+    });
+    saveScorecard({
+      schema_version: 1,
+      scorecard_id: "scorecard-observability",
+      run_id: runId,
+      snapshot_id: "snapshot-observability",
+      evidence_digest: `sha256:${"a".repeat(64)}`,
+      profile: "pipeline-v1",
+      policy_version: 1,
+      enforcement: "advisory",
+      pipeline_verdict: "pass",
+      contract_verdict: "pass",
+      gate_verdict: "pass",
+      passed_checks: 1,
+      total_checks: 1,
+      hard_error_count: 0,
+      warning_count: 0,
+      blind_spot_count: 0,
+      findings: [],
+      created_at: finishedAt,
+    });
+    saveEvaluation({
+      schema_version: 1,
+      evaluation_id: "evaluation-observability",
+      run_id: runId,
+      snapshot_id: "snapshot-observability",
+      evidence_digest: `sha256:${"a".repeat(64)}`,
+      scorecard_id: "scorecard-observability",
+      evaluator: { id: "deterministic-v1", kind: "deterministic", version: "1", provider: null, model: null, prompt_version: null },
+      pipeline_verdict: "pass",
+      contract_verdict: "pass",
+      evidence_verdict: "complete",
+      usage_verdict: "partial",
+      quality_verdict: "pass",
+      gate_verdict: "pass",
+      findings: [],
+      evaluator_usage: null,
+      status: "completed",
+      attempt: 1,
+      created_at: finishedAt,
+      started_at: finishedAt,
+      completed_at: finishedAt,
+      error: null,
+    });
+
+    const summary = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(summary.status, 200);
+    assert.equal(summary.body.observability.reliability.runs_observed, 1);
+    assert.equal(summary.body.observability.reliability.run_success_rate, 1);
+    assert.equal(summary.body.observability.reliability.jobs_observed, 2);
+    assert.equal(summary.body.observability.reliability.retry_attempts, 1);
+    assert.equal(summary.body.observability.reliability.retry_rate, 0.5);
+    assert.equal(summary.body.observability.latency.run_duration.p95_ms, 60_000);
+    assert.equal(summary.body.observability.latency.job_duration.p95_ms, 30_000);
+    assert.equal(summary.body.observability.usage.model_jobs, 2);
+    assert.equal(summary.body.observability.usage.token_completeness, "partial");
+    assert.equal(summary.body.observability.usage.total_tokens, 150);
+    assert.equal(summary.body.observability.usage.provider_reported_costs.USD, "0.12");
+    assert.equal(summary.body.observability.activity.at(-1).total_tokens, 150);
+    assert.equal(summary.body.observability.correlations[0].trace_id, `trace:${runId}`);
+    assert.equal(summary.body.observability.correlations[0].retry_count, 1);
+    assert.equal(summary.body.observability.correlations[0].evaluation_id, "evaluation-observability");
+    assert.equal(summary.body.observability.correlations[0].quality_verdict, "pass");
+
+    const cached = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(cached.status, 200);
+    assert.equal(cached.body.observability.query.rebuilt_runs, 0);
+
+    appendRunEvent({
+      run_id: runId,
+      type: "run.completed",
+      actor_type: "system",
+      actor_id: "runtime-engine",
+      created_at: finishedAt,
+    });
+    const refreshed = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(refreshed.status, 200);
+    assert.equal(refreshed.body.observability.query.rebuilt_runs, 1);
+    assert.equal(refreshed.body.observability.correlations[0].event_count, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test("dashboard observability filters indexed runs by window and status", async () => {
+  resetTestRoot();
+  configureEnv();
+  const server = await startTestServer({ executionAdapter: createStubExecutionAdapter() });
+  const now = Date.now();
+  const recentStarted = new Date(now - 60_000).toISOString();
+  const recentFinished = new Date(now - 30_000).toISOString();
+  const oldStarted = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const oldFinished = new Date(now - 10 * 24 * 60 * 60 * 1000 + 30_000).toISOString();
+  const saveFixtureRun = (input: {
+    runId: string;
+    status: "completed" | "failed";
+    startedAt: string;
+    finishedAt: string;
+  }) => saveRun({
+    run_id: input.runId,
+    template_id: "observability-filter-template",
+    template_version: 1,
+    workspace_id: "default",
+    requested_by: "test-user",
+    intent: `Filter ${input.status} ${input.runId}`,
+    status: input.status,
+    current_summary: `Filter fixture ${input.status}`,
+    waiting_reason: null,
+    blocked_reason: null,
+    started_at: input.startedAt,
+    finished_at: input.finishedAt,
+    last_event_id: null,
+    created_at: input.startedAt,
+    updated_at: input.finishedAt,
+    inputs: {},
+    proposal_id: null,
+    source_run_id: null,
+    rerun_reason: null,
+    rerun_idempotency_key: null,
+  });
+
+  try {
+    saveFixtureRun({ runId: "run-filter-completed", status: "completed", startedAt: recentStarted, finishedAt: recentFinished });
+    saveFixtureRun({ runId: "run-filter-failed", status: "failed", startedAt: recentStarted, finishedAt: recentFinished });
+    saveFixtureRun({ runId: "run-filter-old", status: "completed", startedAt: oldStarted, finishedAt: oldFinished });
+
+    const failed = await getJson(
+      `${server.baseUrl}/api/dashboard/summary?window_hours=24&status=failed&correlation_limit=1`,
+    );
+    assert.equal(failed.status, 200);
+    assert.equal(failed.body.observability.query.window_hours, 24);
+    assert.equal(failed.body.observability.query.status, "failed");
+    assert.equal(failed.body.observability.query.correlation_limit, 1);
+    assert.equal(failed.body.observability.query.indexed_runs, 3);
+    assert.equal(failed.body.observability.reliability.runs_observed, 1);
+    assert.equal(failed.body.observability.reliability.failed_runs, 1);
+    assert.equal(failed.body.observability.correlations.length, 1);
+    assert.equal(failed.body.observability.correlations[0].run_id, "run-filter-failed");
+
+    const completed = await getJson(
+      `${server.baseUrl}/api/dashboard/summary?window_hours=168&status=completed`,
+    );
+    assert.equal(completed.status, 200);
+    assert.equal(completed.body.observability.window.bucket_minutes, 360);
+    assert.equal(completed.body.observability.reliability.runs_observed, 1);
+    assert.equal(completed.body.observability.correlations[0].run_id, "run-filter-completed");
+
+    for (const query of [
+      "window_hours=0",
+      "window_hours=721",
+      "status=unknown",
+      "correlation_limit=101",
+      "compare=unknown",
+      "compare=previous",
+    ]) {
+      const invalid = await getJson(`${server.baseUrl}/api/dashboard/summary?${query}`);
+      assert.equal(invalid.status, 400);
+      assert.equal(invalid.body.code, "invalid_request");
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test("dashboard observability compares the current window with the previous period", async () => {
+  resetTestRoot();
+  configureEnv();
+  const server = await startTestServer({ executionAdapter: createStubExecutionAdapter() });
+  const now = Date.now();
+  const saveComparisonRun = (input: {
+    runId: string;
+    status: "completed" | "failed";
+    startedOffsetHours: number;
+    durationMinutes: number;
+  }) => {
+    const startedAt = new Date(now - input.startedOffsetHours * 60 * 60 * 1000).toISOString();
+    const finishedAt = new Date(
+      Date.parse(startedAt) + input.durationMinutes * 60 * 1000,
+    ).toISOString();
+    saveRun({
+      run_id: input.runId,
+      template_id: "observability-comparison-template",
+      template_version: 1,
+      workspace_id: "default",
+      requested_by: "test-user",
+      intent: `Comparison ${input.status}`,
+      status: input.status,
+      current_summary: `Comparison fixture ${input.status}`,
+      waiting_reason: null,
+      blocked_reason: null,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      last_event_id: null,
+      created_at: startedAt,
+      updated_at: finishedAt,
+      inputs: {},
+      proposal_id: null,
+      source_run_id: null,
+      rerun_reason: null,
+      rerun_idempotency_key: null,
+    });
+  };
+
+  try {
+    saveComparisonRun({
+      runId: "run-comparison-current",
+      status: "failed",
+      startedOffsetHours: 2,
+      durationMinutes: 20,
+    });
+    saveComparisonRun({
+      runId: "run-comparison-previous",
+      status: "completed",
+      startedOffsetHours: 26,
+      durationMinutes: 10,
+    });
+
+    const response = await getJson(
+      `${server.baseUrl}/api/dashboard/summary?window_hours=24&compare=previous`,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.body.observability.query.compare, "previous");
+    assert.equal(response.body.observability.comparison.mode, "previous_period");
+    assert.equal(response.body.observability.comparison.coverage, "complete");
+    assert.equal(response.body.observability.reliability.runs_observed, 1);
+    assert.equal(response.body.observability.reliability.run_success_rate, 0);
+    assert.equal(
+      response.body.observability.comparison.metrics.run_success_rate.previous,
+      1,
+    );
+    assert.equal(response.body.observability.comparison.metrics.run_success_rate.delta, -1);
+    assert.equal(response.body.observability.comparison.metrics.run_success_rate.direction, "down");
+    assert.equal(response.body.observability.comparison.metrics.run_success_rate.outcome, "regressed");
+    assert.equal(response.body.observability.comparison.metrics.runs_observed.current, 1);
+    assert.equal(response.body.observability.comparison.metrics.runs_observed.previous, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test("dashboard retention prunes derived indexes without deleting canonical runs", async () => {
+  resetTestRoot();
+  configureEnv({ MY_MATE_OBSERVABILITY_RETENTION_HOURS: "24" });
+  const server = await startTestServer({ executionAdapter: createStubExecutionAdapter() });
+  const now = Date.now();
+  const saveRetentionRun = (runId: string, offsetHours: number) => {
+    const startedAt = new Date(now - offsetHours * 60 * 60 * 1000).toISOString();
+    const finishedAt = new Date(Date.parse(startedAt) + 60_000).toISOString();
+    saveRun({
+      run_id: runId,
+      template_id: "observability-retention-template",
+      template_version: 1,
+      workspace_id: "default",
+      requested_by: "test-user",
+      intent: `Retention ${runId}`,
+      status: "completed",
+      current_summary: "Retention fixture",
+      waiting_reason: null,
+      blocked_reason: null,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      last_event_id: null,
+      created_at: startedAt,
+      updated_at: finishedAt,
+      inputs: {},
+      proposal_id: null,
+      source_run_id: null,
+      rerun_reason: null,
+      rerun_idempotency_key: null,
+    });
+  };
+
+  try {
+    saveRetentionRun("run-retention-recent", 2);
+    saveRetentionRun("run-retention-old", 72);
+
+    const legacy = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(legacy.status, 200);
+    assert.equal(legacy.body.observability.retention.applied, false);
+    assert.equal(legacy.body.observability.query.indexed_runs, 2);
+    assert.equal(legacy.body.observability.query.rebuilt_runs, 2);
+
+    const bounded = await getJson(
+      `${server.baseUrl}/api/dashboard/summary?window_hours=24&compare=previous`,
+    );
+    assert.equal(bounded.status, 200);
+    assert.equal(bounded.body.observability.retention.enabled, true);
+    assert.equal(bounded.body.observability.retention.applied, true);
+    assert.equal(bounded.body.observability.retention.retention_hours, 24);
+    assert.equal(bounded.body.observability.retention.retained_runs, 1);
+    assert.equal(bounded.body.observability.retention.excluded_runs, 1);
+    assert.equal(bounded.body.observability.retention.pruned_indexes, 1);
+    assert.equal(bounded.body.observability.retention.canonical_data_retained, true);
+    assert.equal(bounded.body.observability.comparison.coverage, "partial");
+    assert.equal(getRun("run-retention-old")?.run_id, "run-retention-old");
+
+    const rebuiltLegacy = await getJson(`${server.baseUrl}/api/dashboard/summary`);
+    assert.equal(rebuiltLegacy.status, 200);
+    assert.equal(rebuiltLegacy.body.observability.query.indexed_runs, 2);
+    assert.equal(rebuiltLegacy.body.observability.query.rebuilt_runs, 1);
+    assert.equal(rebuiltLegacy.body.observability.reliability.runs_observed, 2);
+  } finally {
+    delete process.env.MY_MATE_OBSERVABILITY_RETENTION_HOURS;
+    await server.close();
+  }
+});
 
 test("create run seeds scheduler state and mobile summary endpoint", async () => {
   resetTestRoot();
@@ -380,6 +1058,7 @@ test("run graph marks approval and human-input waiting gates", async () => {
         id: "approval_gate",
         name: "Approval Gate",
         approvalKind: "human_review",
+        workPackage: { key: "review", label: "Review and approval", order: 10 },
       }),
       runtimeGraphNode({
         id: "human_input_gate",
@@ -392,6 +1071,7 @@ test("run graph marks approval and human-input waiting gates", async () => {
           },
           required: ["note"],
         },
+        workPackage: { key: "human-input", label: "Human input", order: 20 },
       }),
     ],
     edges: [],
@@ -1061,6 +1741,8 @@ test("session compare summarizes primary versus alternative route options", asyn
     );
     assert.ok(compare.body.changedOutputs.added.includes("review-notes"));
     assert.match(compare.body.summaryLines.join(" "), /Approval and human gates/i);
+    assert.equal(compare.body.recommendation.label, "Planner recommendation");
+    assert.match(compare.body.recommendation.detail, /warning|approval|gate|review/i);
   } finally {
     await server.close();
     cleanupTestArtifacts({
@@ -2138,6 +2820,156 @@ test("session revise can build a parallel then review shape", async () => {
     const compiledNodes = revised.body.messages[2].content.candidate_plan.compiled_nodes;
     assert.equal(compiledNodes.length, 3);
     assert.match(revised.body.messages[1].content.text, /fan-out stage/i);
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
+      sessionId,
+    });
+  }
+});
+
+test("session revise can prepend a preparation step before execution", async () => {
+  resetTestRoot();
+  configureEnv();
+  seedTemplate();
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+  let sessionId = "";
+
+  try {
+    const created = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Prepare implementation plan",
+    });
+    sessionId = created.body.session.session_id;
+
+    const firstPlan = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/plan`, {
+      template_id: "mobile-test-template",
+      inputs: {
+        goal: "Prepare implementation plan",
+      },
+    });
+    assert.equal(firstPlan.status, 200);
+
+    const revised = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/plan/revise`, {
+      revision: 1,
+      instructions: "Add a research step before step 1",
+    });
+    assert.equal(revised.status, 200);
+    assert.match(revised.body.messages[1].content.text, /preparation step before step 1/i);
+    const planCard = revised.body.messages[2];
+    const candidatePlan = planCard.content.candidate_plan;
+    assert.equal(candidatePlan.compiled_nodes.length, 2);
+    assert.equal(candidatePlan.compiled_nodes[0].node_id, "node_revision_preparation");
+    assert.equal(candidatePlan.compiled_nodes[0].status, "ready");
+    assert.equal(candidatePlan.compiled_nodes[1].node_id, "node_backend");
+    assert.equal(candidatePlan.compiled_nodes[1].status, "pending");
+    assert.ok(
+      candidatePlan.edges.some(
+        (edge: { from: string; to: string }) =>
+          edge.from === "node_revision_preparation" && edge.to === "node_backend",
+      ),
+    );
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
+      sessionId,
+    });
+  }
+});
+
+test("session revise can set explicit parallelism on a target step", async () => {
+  resetTestRoot();
+  configureEnv();
+  seedTemplate(
+    buildPublishedTemplate({
+      nodes: [
+        {
+          id: "node_a",
+          name: "Step A",
+          type: "agent_task",
+          agent_profile: "backend",
+          allowed_skills: ["coding-agent"],
+          config: {
+            allowed_tools: ["read", "write", "shell"],
+            output_contract: {
+              expected_artifacts: ["a-note"],
+            },
+          },
+          retry_policy: {
+            max_attempts: 1,
+            backoff_seconds: 5,
+          },
+          timeout_seconds: 900,
+          parallelism: 1,
+          approval_kind: null,
+          human_input_schema: null,
+        },
+        {
+          id: "node_b",
+          name: "Step B",
+          type: "agent_task",
+          agent_profile: "backend",
+          allowed_skills: ["coding-agent"],
+          config: {
+            allowed_tools: ["read", "write"],
+            output_contract: {
+              expected_artifacts: ["b-note"],
+            },
+          },
+          retry_policy: {
+            max_attempts: 1,
+            backoff_seconds: 5,
+          },
+          timeout_seconds: 900,
+          parallelism: 1,
+          approval_kind: null,
+          human_input_schema: null,
+        },
+      ],
+      edges: [
+        {
+          from: "node_a",
+          to: "node_b",
+          condition: null,
+          label: null,
+        },
+      ],
+    }),
+  );
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+  let sessionId = "";
+
+  try {
+    const created = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Prepare explicit parallelism plan",
+    });
+    sessionId = created.body.session.session_id;
+
+    const firstPlan = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/plan`, {
+      template_id: "mobile-test-template",
+      inputs: {
+        goal: "Prepare explicit parallelism plan",
+      },
+    });
+    assert.equal(firstPlan.status, 200);
+
+    const revised = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/plan/revise`, {
+      revision: 1,
+      instructions: "Use three workers for step 2",
+    });
+    assert.equal(revised.status, 200);
+    assert.match(revised.body.messages[1].content.text, /3 parallel worker\(s\) on step 2/i);
+    const candidatePlan = revised.body.messages[2].content.candidate_plan;
+    const stepA = candidatePlan.compiled_nodes.find((node: { node_id: string }) => node.node_id === "node_a");
+    const stepB = candidatePlan.compiled_nodes.find((node: { node_id: string }) => node.node_id === "node_b");
+    assert.equal(stepA.parallelism_budget, 1);
+    assert.equal(stepB.parallelism_budget, 3);
+    assert.equal(candidatePlan.policy_snapshot.max_parallel_nodes, 3);
   } finally {
     await server.close();
     cleanupTestArtifacts({
@@ -3685,6 +4517,23 @@ test("orchestrator profiles persist and drive planner invocation context", async
   configureEnv({
     MY_MATE_PLANNER_PROVIDER: "rule_based_v1",
   });
+  seedSkill({
+    skill_id: "coding-agent",
+    name: "Coding Agent",
+    description: "Fix backend services and run tests",
+    category: "coding",
+    allowed_tools: ["read", "write", "shell"],
+    tags: ["coding", "test"],
+  });
+  seedAgentProfile({
+    profile_id: "backend",
+    name: "Backend Agent",
+    description: "Backend coding and validation",
+    openclaw_agent_id: "backend-openclaw",
+    default_skills: ["coding-agent"],
+    allowed_tools: ["read", "write", "shell"],
+    policy_tags: ["coding"],
+  });
   seedTemplate(
     buildPublishedTemplate({
       template_id: "orchestrator-profile-planner-template",
@@ -3734,6 +4583,9 @@ test("orchestrator profiles persist and drive planner invocation context", async
     assert.equal(draft.body.planner_context.requested_provider_id, "local_semantic_v1");
     assert.equal(draft.body.planner_context.requested_model, "semantic-planner-test");
     assert.equal(draft.body.planner_context.orchestrator_profile_id, "studio-coding-orchestrator");
+    assert.deepEqual(draft.body.planner_context.preferred_subagent_profile_ids, ["backend"]);
+    assert.equal(draft.body.planner_context.prefer_domain_match, true);
+    assert.equal(draft.body.planner_context.require_review, true);
     assert.equal(
       draft.body.planner_context.orchestrator_system_prompt,
       "Prefer coding-domain templates and review assignments before execution.",
@@ -3742,6 +4594,100 @@ test("orchestrator profiles persist and drive planner invocation context", async
     await server.close();
     cleanupTestArtifacts({
       templateId: "orchestrator-profile-planner-template",
+      agentProfileId: "backend",
+      skillId: "coding-agent",
+    });
+  }
+});
+
+test("orchestrator planning policy drives registry synthesis defaults", async () => {
+  resetTestRoot();
+  configureEnv({
+    MY_MATE_PLANNER_PROVIDER: "rule_based_v1",
+  });
+  seedSkill({
+    skill_id: "research-skill",
+    name: "Research Skill",
+    description: "Research and analyze topics",
+    category: "research",
+    allowed_tools: ["read", "search"],
+    tags: ["research"],
+  });
+  seedSkill({
+    skill_id: "writing-skill",
+    name: "Writing Skill",
+    description: "Draft and edit content",
+    category: "content",
+    allowed_tools: ["read", "write"],
+    tags: ["content"],
+  });
+  seedAgentProfile({
+    profile_id: "research-agent",
+    name: "Research Agent",
+    description: "Research investigations and analysis",
+    openclaw_agent_id: "research-openclaw",
+    default_skills: ["research-skill"],
+    allowed_tools: ["read", "search"],
+    policy_tags: ["research"],
+  });
+  seedAgentProfile({
+    profile_id: "writer-agent",
+    name: "Writer Agent",
+    description: "Drafts customer-facing content",
+    openclaw_agent_id: "writer-openclaw",
+    default_skills: ["writing-skill"],
+    allowed_tools: ["read", "write"],
+    policy_tags: ["content"],
+  });
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+
+  try {
+    const saved = await postJson(`${server.baseUrl}/api/orchestrator-profiles`, {
+      orchestrator_id: "registry-policy-orchestrator",
+      name: "Registry Policy Orchestrator",
+      provider: "rule_based_v1",
+      model: "rule-based-test",
+      system_prompt: "Use the default roster and require review.",
+      default_tools: ["read", "write"],
+      default_subagent_profile_ids: ["writer-agent"],
+      planning_policy: {
+        max_agent_nodes: 2,
+      },
+      handoff_policy: {
+        require_review: true,
+      },
+    });
+    assert.equal(saved.status, 201);
+
+    const response = await postJson(`${server.baseUrl}/api/planner/dag-draft`, {
+      intent: "Do something abstract without published templates",
+      inputs: {
+        goal: "Abstract goal",
+      },
+      orchestrator_profile_id: "registry-policy-orchestrator",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.planner_context.provider_id, "rule_based_v1");
+    assert.equal(response.body.planner_context.default_max_agent_nodes, 2);
+    assert.equal(response.body.planner_context.require_review, true);
+    assert.deepEqual(response.body.planner_context.preferred_subagent_profile_ids, ["writer-agent"]);
+    assert.equal(response.body.planner_context.draft_strategy, "registry_synthesis");
+    assert.equal(response.body.registry_recommendations.length, 2);
+    assert.equal(response.body.registry_recommendations[0].agent_profile_id, "writer-agent");
+    assert.equal(response.body.draft_template.nodes.length, 3);
+    assert.equal(response.body.draft_template.metadata.planner_require_review, true);
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      agentProfileId: "writer-agent",
+      skillId: "writing-skill",
+    });
+    cleanupTestArtifacts({
+      agentProfileId: "research-agent",
+      skillId: "research-skill",
     });
   }
 });
@@ -5285,6 +6231,11 @@ test("session detail and runtime summary expose desktop workspace projections", 
     const runtime = await getJson(`${server.baseUrl}/api/runtime/summary`);
     assert.equal(runtime.status, 200);
     assert.equal(runtime.body.execution_runtime.adapter_kind, "stub");
+    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("local"));
+    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("openclaw"));
+    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("codex"));
+    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("claude-sdk"));
+    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("kimi"));
     const hosted = runtime.body.agent_hosting.profiles.find(
       (item: { profile_id: string }) => item.profile_id === "hosted-backend",
     );
@@ -5301,6 +6252,187 @@ test("session detail and runtime summary expose desktop workspace projections", 
       templateId: "mobile-test-template",
       agentProfileId: "hosted-backend",
       sessionId,
+    });
+  }
+});
+
+test("session detail can target a linked run for workspace drilldown", async () => {
+  resetTestRoot();
+  configureEnv();
+  seedTemplate();
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+  let sessionId = "";
+  let olderRunId = "";
+  let newerRunId = "";
+
+  try {
+    const created = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Open a specific linked run from dashboard drilldown",
+    });
+    assert.equal(created.status, 201);
+    sessionId = created.body.session.session_id;
+
+    const olderRun = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
+      validation_mode: "warn",
+      inputs: { goal: "Older run for drilldown" },
+      template_id: "mobile-test-template",
+    });
+    assert.equal(olderRun.status, 201);
+    olderRunId = olderRun.body.run_id;
+
+    const newerRun = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
+      validation_mode: "warn",
+      inputs: { goal: "Newer run for drilldown" },
+      template_id: "mobile-test-template",
+    });
+    assert.equal(newerRun.status, 201);
+    newerRunId = newerRun.body.run_id;
+
+    const olderRunRecord = getRun(olderRunId);
+    const newerRunRecord = getRun(newerRunId);
+    assert.ok(olderRunRecord);
+    assert.ok(newerRunRecord);
+
+    olderRunRecord.status = "waiting_human";
+    olderRunRecord.current_summary = "Older run needs approval";
+    olderRunRecord.waiting_reason = "Older run blocked for review";
+    olderRunRecord.updated_at = "2026-07-07T10:01:00.000Z";
+    saveRun(olderRunRecord);
+
+    newerRunRecord.status = "running";
+    newerRunRecord.current_summary = "Newer run still active";
+    newerRunRecord.updated_at = "2026-07-07T10:02:00.000Z";
+    saveRun(newerRunRecord);
+
+    saveApproval({
+      approval_id: "apr_session_run_selector_001",
+      run_id: olderRunId,
+      node_run_id: "node-session-run-selector-001",
+      kind: "review",
+      status: "pending",
+      summary: "Review the older run",
+      requested_at: "2026-07-07T10:03:00.000Z",
+      resolved_at: null,
+    });
+
+    const defaultDetail = await getJson(`${server.baseUrl}/api/sessions/${sessionId}`);
+    assert.equal(defaultDetail.status, 200);
+    assert.equal(defaultDetail.body.latest_run.run_id, newerRunId);
+    assert.equal(defaultDetail.body.selected_run_id, newerRunId);
+    assert.equal(defaultDetail.body.pending_approvals.length, 0);
+
+    const targetedDetail = await getJson(
+      `${server.baseUrl}/api/sessions/${sessionId}?run_id=${encodeURIComponent(olderRunId)}`,
+    );
+    assert.equal(targetedDetail.status, 200);
+    assert.equal(targetedDetail.body.latest_run.run_id, olderRunId);
+    assert.equal(targetedDetail.body.selected_run_id, olderRunId);
+    assert.equal(targetedDetail.body.pending_approvals[0].approval_id, "apr_session_run_selector_001");
+
+    const unrelatedRun = await getJson(`${server.baseUrl}/api/runs/${newerRunId}`);
+    assert.equal(unrelatedRun.status, 200);
+
+    const missingLinkedRun = await getJson(
+      `${server.baseUrl}/api/sessions/${sessionId}?run_id=${encodeURIComponent("run_missing_link")}`,
+    );
+    assert.equal(missingLinkedRun.status, 404);
+    assert.equal(missingLinkedRun.body.code, "run_not_found");
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
+      sessionId,
+      runId: olderRunId,
+    });
+    cleanupTestArtifacts({
+      runId: newerRunId,
+    });
+  }
+});
+
+test("session stream can target a linked run for workspace drilldown", async () => {
+  resetTestRoot();
+  configureEnv();
+  seedTemplate();
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+  let sessionId = "";
+  let olderRunId = "";
+  let newerRunId = "";
+
+  try {
+    const created = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Stream a specific linked run from workspace drilldown",
+    });
+    assert.equal(created.status, 201);
+    sessionId = created.body.session.session_id;
+
+    const olderRun = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
+      validation_mode: "warn",
+      inputs: { goal: "Older streamed run" },
+      template_id: "mobile-test-template",
+    });
+    assert.equal(olderRun.status, 201);
+    olderRunId = olderRun.body.run_id;
+
+    const newerRun = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
+      validation_mode: "warn",
+      inputs: { goal: "Newer streamed run" },
+      template_id: "mobile-test-template",
+    });
+    assert.equal(newerRun.status, 201);
+    newerRunId = newerRun.body.run_id;
+
+    const olderRunRecord = getRun(olderRunId);
+    const newerRunRecord = getRun(newerRunId);
+    assert.ok(olderRunRecord);
+    assert.ok(newerRunRecord);
+
+    olderRunRecord.status = "failed";
+    olderRunRecord.current_summary = "Older streamed run failed";
+    olderRunRecord.updated_at = "2026-07-07T10:11:00.000Z";
+    olderRunRecord.finished_at = "2026-07-07T10:11:00.000Z";
+    saveRun(olderRunRecord);
+
+    newerRunRecord.status = "running";
+    newerRunRecord.current_summary = "Newer streamed run active";
+    newerRunRecord.updated_at = "2026-07-07T10:12:00.000Z";
+    saveRun(newerRunRecord);
+
+    const streamResponse = await fetch(
+      `${server.baseUrl}/api/sessions/${sessionId}/stream?run_id=${encodeURIComponent(olderRunId)}`,
+    );
+    assert.equal(streamResponse.status, 200);
+    assert.match(streamResponse.headers.get("content-type") || "", /text\/event-stream/);
+    assert.ok(streamResponse.body);
+    const reader = streamResponse.body.getReader();
+    let text = "";
+    for (let index = 0; index < 12; index += 1) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        break;
+      }
+      text += new TextDecoder().decode(chunk.value || new Uint8Array());
+      if (text.includes(`"selected_run_id":"${olderRunId}"`)) {
+        break;
+      }
+    }
+    await reader.cancel();
+    assert.match(text, new RegExp(`"selected_run_id":"${olderRunId}"`));
+    assert.match(text, new RegExp(`"run_id":"${olderRunId}"`));
+    assert.ok(!text.includes(`"selected_run_id":"${newerRunId}"`));
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
+      sessionId,
+      runId: olderRunId,
+    });
+    cleanupTestArtifacts({
+      runId: newerRunId,
     });
   }
 });
@@ -5789,6 +6921,124 @@ test("end nodes complete in scheduler without dispatching to execution adapter",
     await server.close();
     cleanupTestArtifacts({
       templateId: "end-node-template",
+      runId,
+    });
+  }
+});
+
+test("explicit runtime dispatcher owns new run dispatch even with a local compatibility adapter", async () => {
+  resetTestRoot();
+  configureEnv();
+  const template = buildPublishedTemplate();
+  (template.nodes[0]!.config as Record<string, unknown>).worker_target_kind =
+    "docker-worker";
+  seedTemplate(template);
+  const jobs: RuntimeWorkerJob[] = [];
+  const dispatcher: RuntimeDispatcher = {
+    kind: "test-docker-worker",
+    getRuntimeStatus() {
+      return {
+        node_provisioner_kind: "docker",
+        node_provisioner_status: "ready",
+        worker_hub_kind: "test-worker-hub",
+        connected_workers: 0,
+        busy_workers: 0,
+        stale_workers: 0,
+        worker_capacity_limit: 4,
+        worker_capacity_active: 1,
+        worker_queue_depth: 2,
+        worker_queue_limit: 100,
+        worker_queue_timeout_ms: 120000,
+        worker_cleanup_pending: 1,
+        worker_cleanup_failed: 0,
+        worker_reconciliation_at: "2026-07-10T00:00:00.000Z",
+        worker_reconciliation_status: "healthy",
+        worker_reconciliation_discovered: 2,
+        worker_reconciliation_orphans: 1,
+        worker_reconciliation_removed: 2,
+        worker_reconciliation_failures: 0,
+      };
+    },
+    enqueueRun() {},
+    notifyRunAction() {},
+    notifyNodeAction() {},
+    async dispatchJob(job) {
+      jobs.push(job);
+      return {
+        status: "accepted",
+        dispatch_id: `dispatch-${job.job_id}`,
+        job,
+        target_kind: "docker-worker",
+        worker_id: "worker-test",
+        lease_id: "lease-test",
+        accepted_at: "2026-07-10T00:00:00.000Z",
+        worker_events: [],
+        compatibility: {
+          adapter_kind: "local",
+          raw_ref: {
+            dispatch_id: `dispatch-${job.job_id}`,
+            openclaw_task_id: null,
+            openclaw_session_id: null,
+          },
+        },
+      };
+    },
+    async handleWorkerEvent() {},
+    async handleReport() {},
+  };
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+    dispatcher,
+  });
+  let runId = "";
+
+  try {
+    const runtime = await getJson(`${server.baseUrl}/api/runtime/summary`);
+    assert.equal(runtime.status, 200);
+    assert.equal(runtime.body.execution_runtime.runtime_health.status, "ok");
+    assert.equal(
+      runtime.body.execution_runtime.runtime_health.detail,
+      "Docker worker runtime is active.",
+    );
+    assert.deepEqual(runtime.body.execution_runtime.node_provisioner.capacity, {
+      max_concurrent_workers: 4,
+      active_workers: 1,
+      queue_depth: 2,
+      queue_limit: 100,
+      queue_timeout_ms: 120000,
+    });
+    assert.deepEqual(runtime.body.execution_runtime.node_provisioner.recovery, {
+      cleanup_pending: 1,
+      cleanup_failed: 0,
+      last_reconciliation_at: "2026-07-10T00:00:00.000Z",
+      last_reconciliation_status: "healthy",
+      discovered_containers: 2,
+      orphan_containers: 1,
+      removed_containers: 2,
+      cleanup_failures: 0,
+    });
+
+    const created = await createRunForTest(server.baseUrl, {
+      intent: "Dispatch through the configured runtime worker",
+    });
+    assert.equal(created.status, 201);
+    runId = created.body.run_id;
+
+    const deadline = Date.now() + 1000;
+    while (jobs.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.run_id, runId);
+    assert.equal(jobs[0]?.provision.target_kind, "docker-worker");
+    const plan = getRunPlan(runId);
+    assert.equal(plan?.compiled_nodes[0]?.execution_ref.target_kind, "docker-worker");
+    assert.equal(plan?.compiled_nodes[0]?.execution_ref.worker_id, "worker-test");
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
       runId,
     });
   }
@@ -6833,5 +8083,111 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
       });
     }
     await server.close();
+  }
+});
+
+test("local runtime worker dispatcher executes a local RuntimeWorkerJob end to end", async () => {
+  resetTestRoot();
+  configureEnv({
+    MY_MATE_ENABLE_LOCAL_EXECUTION: "false",
+    MY_MATE_EXECUTION_ADAPTER: "openclaw",
+  });
+  seedSkill({
+    skill_id: "coding-agent",
+    name: "Coding Agent",
+    description: "Coding helper",
+    status: "active",
+  });
+  seedAgentProfile({
+    profile_id: "backend-local",
+    name: "Backend Local",
+    description: "Local runtime worker agent",
+    runtime_agent_ref: "backend-local-runtime",
+    agent_runtime: "local",
+    harness_profile: null,
+    openclaw_agent_id: "backend-local-runtime",
+    default_skills: ["coding-agent"],
+    allowed_tools: ["read", "write", "shell"],
+    disallowed_skills: [],
+    policy_tags: [],
+    status: "active",
+  });
+  seedTemplate(
+    buildPublishedTemplate({
+      template_id: "runtime-worker-local-template-001",
+      nodes: [
+        {
+          id: "node_local_worker",
+          name: "Local Worker Node",
+          type: "agent_task",
+          agent_profile: "backend-local",
+          allowed_skills: ["coding-agent"],
+          config: {
+            allowed_tools: ["read", "write", "shell"],
+            output_contract: { expected_artifacts: ["agent-report"] },
+          },
+          retry_policy: { max_attempts: 1, backoff_seconds: 5 },
+          timeout_seconds: 900,
+          parallelism: 1,
+          approval_kind: null,
+          human_input_schema: null,
+        },
+      ],
+    }),
+  );
+
+  const adapter = {
+    ...createStubExecutionAdapter(),
+    kind: "openclaw" as const,
+  };
+  const dispatcher = buildLocalRuntimeWorkerDispatcher({
+    workerClient: new InProcessRuntimeWorkerClient(),
+    executionAdapter: adapter,
+  });
+  const server = await startTestServer({
+    executionAdapter: adapter,
+    dispatcher,
+  });
+  let runId = "";
+
+  try {
+    const createRun = await postJson(`${server.baseUrl}/api/runs`, {
+      intent: "Runtime worker local path",
+      template_id: "runtime-worker-local-template-001",
+      inputs: {
+        goal: "Run through runtime worker local path",
+      },
+      validation_mode: "warn",
+    });
+    assert.equal(createRun.status, 201);
+    runId = createRun.body.run_id;
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const run = getRun(runId);
+    assert.equal(run?.status, "completed");
+
+    const artifacts = listArtifacts(runId);
+    assert.equal(artifacts.length, 1);
+
+    const events = listRunEvents(runId).map((event) => event.type);
+    assert.ok(events.includes("node.progress"));
+    assert.ok(events.includes("node.completed"));
+    assert.ok(events.includes("run.completed"));
+
+    const detail = await getJson(`${server.baseUrl}/api/mobile/runs/${runId}`);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.run.status, "completed");
+    assert.equal(detail.body.artifacts.length, 1);
+
+    assert.equal(adapter.dispatchEnvelopes.length, 0);
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "runtime-worker-local-template-001",
+      agentProfileId: "backend-local",
+      skillId: "coding-agent",
+      runId,
+    });
   }
 });

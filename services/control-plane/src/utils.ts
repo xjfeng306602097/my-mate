@@ -1,11 +1,10 @@
-import fs from "node:fs";
-import path from "node:path";
+import { getJsonStorageBackend } from "./storage-backend.js";
 
 let lastGeneratedAtMs = 0;
 let lastGeneratedSequence = 0;
 
 export function ensureDir(dirPath: string): void {
-  fs.mkdirSync(dirPath, { recursive: true });
+  getJsonStorageBackend().ensureDir(dirPath);
 }
 
 export function nowIso(): string {
@@ -118,8 +117,5 @@ export function slugify(value: string): string {
 }
 
 export function writeJsonAtomic(filePath: string, data: unknown): void {
-  ensureDir(path.dirname(filePath));
-  const tempPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
-  fs.renameSync(tempPath, filePath);
+  getJsonStorageBackend().writeJson(filePath, data);
 }

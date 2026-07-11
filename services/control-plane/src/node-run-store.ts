@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { NODE_RUNS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
 import type { NodeRunRecord } from "./types.js";
 import { ensureDir, writeJsonAtomic } from "./utils.js";
 import { validateNodeRun } from "./validators.js";
@@ -34,29 +34,20 @@ export function saveNodeRuns(runId: string, nodeRuns: NodeRunRecord[]): NodeRunR
 }
 
 export function listNodeRuns(runId: string): NodeRunRecord[] {
-  const dir = runNodeRunsDir(runId);
-  if (!fs.existsSync(dir)) {
-    return [];
-  }
-
-  const files = fs
-    .readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dir, entry.name));
-
-  const nodeRuns = files.map((file) =>
-    JSON.parse(fs.readFileSync(file, "utf-8")) as NodeRunRecord,
-  );
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(runNodeRunsDir(runId));
+  const nodeRuns = files.map((file) => storage.readJson<NodeRunRecord>(file));
 
   nodeRuns.sort((a, b) => a.node_run_id.localeCompare(b.node_run_id));
   return nodeRuns;
 }
 
 export function getNodeRun(runId: string, nodeRunId: string): NodeRunRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = nodeRunPath(runId, nodeRunId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
 
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as NodeRunRecord;
+  return storage.readJson<NodeRunRecord>(filePath);
 }

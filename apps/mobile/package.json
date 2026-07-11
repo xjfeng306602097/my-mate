@@ -4,14 +4,17 @@
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
+    "precheck": "npm --prefix ../../packages/shared-types run build",
     "dev": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --require ./test/register-paths.cjs --test ./test/planner.test.ts ./test/schema-form.test.ts ./test/task-thread.test.ts ./test/mission-workspace-contract.test.ts"
+    "pretest": "npm --prefix ../../packages/shared-types run build",
+    "test": "node --import tsx --require ./test/register-paths.cjs --test ./test/planner.test.ts ./test/schema-form.test.ts ./test/task-thread.test.ts ./test/mission-workspace-contract.test.ts ./test/runtime-evaluation.test.ts ./test/identity-workspace.test.ts"
   },
   "dependencies": {
+    "@my-mate/shared-types": "file:../../packages/shared-types",
     "@expo/vector-icons": "^14.1.0",
     "@react-navigation/native": "^7.1.17",
     "expo": "53.0.27",

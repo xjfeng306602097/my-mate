@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/evaluation/replay-result.schema.json",
+  "title": "Replay Result",
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "replay_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "route_id": { "type": "string", "minLength": 1 },
+    "event_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "event_completeness": { "type": "string", "enum": ["complete", "legacy_partial"] },
+    "verification": { "type": "string", "enum": ["pass", "fail", "partial"] },
+    "processed_events": { "type": "integer", "minimum": 0 },
+    "first_sequence": { "type": ["integer", "null"], "minimum": 1 },
+    "last_sequence": { "type": ["integer", "null"], "minimum": 1 },
+    "projection_differences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "enum": ["run", "plan", "node", "job", "worker", "lease", "handoff", "artifact", "evidence", "gate", "runtime_patch"] },
+          "record_id": { "type": "string" },
+          "field": { "type": "string" },
+          "replayed": {},
+          "persisted": {},
+          "severity": { "type": "string", "enum": ["error", "warning"] },
+          "summary": { "type": "string" }
+        },
+        "required": ["category", "record_id", "field", "replayed", "persisted", "severity", "summary"],
+        "additionalProperties": false
+      }
+    },
+    "missing_references": { "type": "array", "items": { "type": "string" } },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }
+  },
+  "required": ["schema_version", "replay_id", "run_id", "route_id", "event_digest", "event_completeness", "verification", "processed_events", "first_sequence", "last_sequence", "projection_differences", "missing_references", "created_at"],
+  "additionalProperties": false
+}

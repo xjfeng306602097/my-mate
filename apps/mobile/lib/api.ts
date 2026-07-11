@@ -13,7 +13,12 @@ import type {
   PlannerValidationResult,
   PlannerTemplateSelectionResponse,
   RouteCompareSummary,
+  EvaluationResult,
+  ReplayResult,
   RuntimeGraphSummary,
+  RuntimeRunProjection,
+  ScorecardResult,
+  TraceProjection,
   RunValidationMode,
   RunSummary,
   SessionDetailResponse,
@@ -24,8 +29,23 @@ import type {
   SessionSummary,
   TemplateSummary,
 } from "./types";
+import type {
+  AuthMeResponse,
+  SecurityAuditEvent,
+  WorkspaceMemberRecord,
+  WorkspaceRole,
+} from "@my-mate/shared-types/identity";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:4030";
+let activeWorkspaceId = process.env.EXPO_PUBLIC_MY_MATE_WORKSPACE_ID || "";
+
+export function getActiveWorkspaceId(): string | null {
+  return activeWorkspaceId || null;
+}
+
+export function setActiveWorkspaceId(workspaceId: string): void {
+  activeWorkspaceId = workspaceId.trim();
+}
 
 export class ApiError extends Error {
   status: number;
@@ -67,9 +87,12 @@ function getBaseUrl(): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const apiKey = process.env.EXPO_PUBLIC_MY_MATE_API_KEY || "";
   const response = await fetch(`${getBaseUrl()}${path}`, {
     headers: {
       "content-type": "application/json",
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      ...(activeWorkspaceId ? { "x-my-mate-workspace-id": activeWorkspaceId } : {}),
       ...(init?.headers || {}),
     },
     ...init,
@@ -91,6 +114,45 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return body as T;
+}
+
+export async function getCurrentIdentity(): Promise<AuthMeResponse> {
+  const identity = await request<AuthMeResponse>("/api/auth/me");
+  if (!activeWorkspaceId) activeWorkspaceId = identity.selected_workspace.workspace_id;
+  return identity;
+}
+
+export async function getSecurityAuditEvents(limit = 50): Promise<{
+  items: SecurityAuditEvent[];
+  chain_verified: boolean;
+}> {
+  return await request(`/api/audit-events?limit=${Math.min(100, Math.max(1, limit))}`);
+}
+
+export async function getWorkspaceMembers(workspaceId: string): Promise<{
+  items: WorkspaceMemberRecord[];
+}> {
+  return await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`);
+}
+
+export async function updateWorkspaceMember(input: {
+  workspaceId: string;
+  member: WorkspaceMemberRecord;
+  role?: WorkspaceRole;
+  status?: WorkspaceMemberRecord["status"];
+}): Promise<WorkspaceMemberRecord> {
+  return await request(
+    `/api/workspaces/${encodeURIComponent(input.workspaceId)}/members/${encodeURIComponent(input.member.principal_id)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        display_name: input.member.display_name,
+        principal_type: input.member.principal_type,
+        role: input.role || input.member.role,
+        status: input.status || input.member.status,
+      }),
+    },
+  );
 }
 
 export async function getMobileHome(): Promise<MobileHomeResponse> {
@@ -451,6 +513,55 @@ export async function getRunFollowUp(runId: string): Promise<MobileRunFollowUp> 
 
 export async function getRunGraph(runId: string): Promise<RuntimeGraphSummary> {
   return await request<RuntimeGraphSummary>(`/api/runs/${runId}/graph`);
+}
+
+export async function getRunRuntime(runId: string): Promise<RuntimeRunProjection> {
+  return await request<RuntimeRunProjection>(`/api/runs/${runId}/runtime`);
+}
+
+export async function getRunScorecards(runId: string): Promise<ScorecardResult[]> {
+  const response = await request<{ items: ScorecardResult[] }>(`/api/runs/${runId}/scorecards`);
+  return response.items || [];
+}
+
+export async function createRunScorecard(runId: string): Promise<ScorecardResult> {
+  return await request<ScorecardResult>(`/api/runs/${runId}/scorecards`, {
+    method: "POST",
+    body: JSON.stringify({ profile: "pipeline-v1", allow_incomplete: false }),
+  });
+}
+
+export async function getRunEvaluations(runId: string): Promise<EvaluationResult[]> {
+  const response = await request<{ items: EvaluationResult[] }>(`/api/runs/${runId}/evaluations`);
+  return response.items || [];
+}
+
+export async function createRunEvaluation(
+  runId: string,
+  evaluator = "deterministic-v1",
+): Promise<EvaluationResult> {
+  return await request<EvaluationResult>(`/api/runs/${runId}/evaluations`, {
+    method: "POST",
+    body: JSON.stringify({ evaluator, allow_incomplete: false }),
+  });
+}
+
+export async function getRunEvaluation(
+  runId: string,
+  evaluationId: string,
+): Promise<EvaluationResult> {
+  return await request<EvaluationResult>(`/api/runs/${runId}/evaluations/${evaluationId}`);
+}
+
+export async function getRunTrace(runId: string): Promise<TraceProjection> {
+  return await request<TraceProjection>(`/api/runs/${runId}/trace?limit=500`);
+}
+
+export async function createRunReplay(runId: string): Promise<ReplayResult> {
+  return await request<ReplayResult>(`/api/runs/${runId}/replays`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export async function approve(approvalId: string, comment = "Approved from mobile") {

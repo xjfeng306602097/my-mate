@@ -8,6 +8,10 @@ import {
   buildFailedReport,
   buildProgressReport,
 } from "./adapter-contracts.js";
+import {
+  createExecutionRef,
+  createExecutionRefFromRawRef,
+} from "./execution-ref.js";
 import { appendRunEvent } from "./event-store.js";
 import {
   applyNodeStatus,
@@ -36,10 +40,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 function buildLocalExecutionRef(nodeRunId: string) {
-  return {
+  return createExecutionRef({
+    target_kind: "local",
+    dispatch_id: `disp_local_${nodeRunId}`,
+    provider_refs: {
+      openclaw_task_id: `local-task-${nodeRunId}`,
+      openclaw_session_id: `local-session-${nodeRunId}`,
+    },
     openclaw_task_id: `local-task-${nodeRunId}`,
     openclaw_session_id: `local-session-${nodeRunId}`,
-  };
+  });
 }
 
 function buildLocalDispatchResult(nodeRunId: string): AdapterDispatchResult {
@@ -158,10 +168,7 @@ async function applyNormalizedReport(report: NormalizedExecutionReport): Promise
   }
 
   if (report.status === "accepted") {
-    node.execution_ref = {
-      openclaw_task_id: report.raw_ref.openclaw_task_id,
-      openclaw_session_id: report.raw_ref.openclaw_session_id,
-    };
+    node.execution_ref = createExecutionRefFromRawRef(report.raw_ref, node.execution_ref);
     saveRunPlan(plan);
     return;
   }

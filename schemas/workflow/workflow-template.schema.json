@@ -45,6 +45,9 @@
         },
         "approval_policy": {
           "type": "object"
+        },
+        "scorecard": {
+          "$ref": "../evaluation/scorecard-policy.schema.json"
         }
       },
       "required": [

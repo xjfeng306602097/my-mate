@@ -4,6 +4,10 @@
   "title": "Agent Profile",
   "type": "object",
   "properties": {
+    "workspace_id": {
+      "type": "string",
+      "minLength": 1
+    },
     "profile_id": {
       "type": "string",
       "minLength": 1
@@ -14,6 +18,15 @@
     },
     "description": {
       "type": "string"
+    },
+    "runtime_agent_ref": {
+      "type": "string"
+    },
+    "agent_runtime": {
+      "type": "string"
+    },
+    "harness_profile": {
+      "type": ["string", "null"]
     },
     "openclaw_agent_id": {
       "type": "string"

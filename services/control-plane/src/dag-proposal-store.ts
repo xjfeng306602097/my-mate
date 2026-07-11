@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { DAG_PROPOSALS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
 import type {
   DagProposalRecord,
   DagProposalStatus,
@@ -122,13 +122,12 @@ export function createDagProposal(input: {
 }
 
 export function getDagProposal(sessionId: string, proposalId: string): DagProposalRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = dagProposalPath(sessionId, proposalId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return normalizeDagProposalRecord(
-    JSON.parse(fs.readFileSync(filePath, "utf-8")) as DagProposalRecord,
-  );
+  return normalizeDagProposalRecord(storage.readJson<DagProposalRecord>(filePath));
 }
 
 export function updateDagProposal(
@@ -147,16 +146,11 @@ export function updateDagProposal(
 
 export function listSessionDagProposals(sessionId: string): DagProposalRecord[] {
   const dirPath = sessionDagProposalDir(sessionId);
-  ensureDir(dirPath);
-  const files = fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dirPath, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(dirPath);
 
   const proposals = files.map((filePath) =>
-    normalizeDagProposalRecord(
-      JSON.parse(fs.readFileSync(filePath, "utf-8")) as DagProposalRecord,
-    ),
+    normalizeDagProposalRecord(storage.readJson<DagProposalRecord>(filePath)),
   );
 
   proposals.sort((a, b) => {

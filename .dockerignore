@@ -1,0 +1,15 @@
+.git
+.codex-logs
+.claude
+**/node_modules
+**/dist
+tmp
+*.log
+*.png
+apps
+docs
+openapi
+schemas
+services/api-gateway
+services/control-plane
+services/execution-adapter

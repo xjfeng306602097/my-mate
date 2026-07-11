@@ -22,6 +22,7 @@ type ComparableRoute = {
   approvals: ComparableItem[];
   outputs: ComparableItem[];
   risks: ComparableItem[];
+  comparisonRationale: string | null;
 };
 
 type RouteCompareBuildError = {
@@ -214,6 +215,7 @@ function buildComparableNodes(compiledNodes: unknown): ComparableItem[] {
       const signature = stableSerialize({
         type: asString(node.type),
         agent_profile: asString(node.agent_profile),
+        runtime_agent_ref: asString(node.runtime_agent_ref) || asString(node.openclaw_agent_id),
         openclaw_agent_id: asString(node.openclaw_agent_id),
         allowed_skills: uniqueSorted(extractStringArray(node.allowed_skills)),
         allowed_tools: uniqueSorted(extractStringArray(node.allowed_tools)),
@@ -386,6 +388,7 @@ function buildRouteFromMessage(input: {
     asString(candidatePlan?.template_name) ||
     templateId;
   const label = `v${revision ?? "?"} / ${input.option}`;
+  const comparisonRationale = asString(optionPayload.comparison_rationale);
 
   return {
     side: {
@@ -406,6 +409,7 @@ function buildRouteFromMessage(input: {
     approvals,
     outputs,
     risks,
+    comparisonRationale,
   };
 }
 
@@ -520,11 +524,19 @@ function inferCompareKind(input: {
 }
 
 function buildRecommendation(input: {
+  comparisonKind: RouteCompareKind;
   changedNodes: RouteCompareChangeSet;
   changedApprovals: RouteCompareChangeSet;
   changedRisks: RouteCompareChangeSet;
-  right: RouteCompareSide;
+  target: ComparableRoute;
 }): RouteCompareSummary["recommendation"] {
+  if (input.comparisonKind === "option" && input.target.comparisonRationale) {
+    return {
+      label: "Planner recommendation",
+      detail: input.target.comparisonRationale,
+      tone: input.target.side.warningCount > 0 ? "warn" : "success",
+    };
+  }
   if (countChanges(input.changedApprovals) > 0) {
     return {
       label: "Review gate changes",
@@ -532,7 +544,7 @@ function buildRecommendation(input: {
       tone: "warn",
     };
   }
-  if (input.changedRisks.added.length > 0 || input.right.warningCount > 0) {
+  if (input.changedRisks.added.length > 0 || input.target.side.warningCount > 0) {
     return {
       label: "Review new risk signals",
       detail: "The target route carries validation warnings or changed risk messages.",
@@ -554,6 +566,7 @@ function buildRecommendation(input: {
 }
 
 function buildSummaryLines(input: {
+  comparisonKind: RouteCompareKind;
   left: ComparableRoute;
   right: ComparableRoute;
   changedNodes: RouteCompareChangeSet;
@@ -563,6 +576,9 @@ function buildSummaryLines(input: {
   changedRisks: RouteCompareChangeSet;
 }): string[] {
   const lines = [`Comparing ${input.left.side.label} against ${input.right.side.label}.`];
+  if (input.comparisonKind === "option" && input.right.comparisonRationale) {
+    lines.push(input.right.comparisonRationale);
+  }
   if (input.left.side.templateId !== input.right.side.templateId) {
     lines.push(
       `Template changed from ${input.left.side.templateName || input.left.side.templateId || "none"} to ${input.right.side.templateName || input.right.side.templateId || "none"}.`,
@@ -660,12 +676,13 @@ export function buildRouteCompareSummary(input: RouteCompareSelectorInput): Rout
   const changedApprovals = compareItemSets(left.approvals, right.approvals);
   const changedOutputs = compareItemSets(left.outputs, right.outputs);
   const changedRisks = compareItemSets(left.risks, right.risks);
+  const comparisonKind = inferCompareKind({ session: input.session, left, right });
 
   return {
     ok: true,
     summary: {
       sessionId: input.session.session_id,
-      comparisonKind: inferCompareKind({ session: input.session, left, right }),
+      comparisonKind,
       left: left.side,
       right: right.side,
       changedNodes,
@@ -674,6 +691,7 @@ export function buildRouteCompareSummary(input: RouteCompareSelectorInput): Rout
       changedOutputs,
       changedRisks,
       summaryLines: buildSummaryLines({
+        comparisonKind,
         left,
         right,
         changedNodes,
@@ -683,10 +701,11 @@ export function buildRouteCompareSummary(input: RouteCompareSelectorInput): Rout
         changedRisks,
       }),
       recommendation: buildRecommendation({
+        comparisonKind,
         changedNodes,
         changedApprovals,
         changedRisks,
-        right: right.side,
+        target: right,
       }),
     },
   };

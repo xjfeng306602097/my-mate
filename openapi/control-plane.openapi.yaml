@@ -17,6 +17,12 @@ tags:
   - name: Planner
   - name: Agents
   - name: Sessions
+  - name: Diagnostics
+  - name: Evaluation
+  - name: Observability
+  - name: Identity
+  - name: Workspaces
+  - name: Governance
   - name: InternalOps
 
 components:
@@ -34,6 +40,314 @@ components:
         message:
           type: string
       required: [code, message]
+    WorkspaceRole:
+      type: string
+      enum: [owner, admin, operator, viewer]
+    WorkspacePermission:
+      type: string
+      enum: [workspace.read, workspace.manage_members, registry.manage, mission.create, mission.edit, run.create, run.control, run.evaluate, gate.resolve, audit.read]
+    AuthenticatedPrincipal:
+      type: object
+      properties:
+        principal_id: { type: string }
+        display_name: { type: string }
+        principal_type:
+          type: string
+          enum: [user, service, development]
+      required: [principal_id, display_name, principal_type]
+    WorkspaceMembership:
+      type: object
+      properties:
+        workspace_id: { type: string }
+        workspace_name: { type: string }
+        role:
+          $ref: "#/components/schemas/WorkspaceRole"
+      required: [workspace_id, workspace_name, role]
+    AuthMeResponse:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        principal:
+          $ref: "#/components/schemas/AuthenticatedPrincipal"
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceMembership"
+        selected_workspace:
+          $ref: "#/components/schemas/WorkspaceMembership"
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspacePermission"
+        auth_method:
+          type: string
+          enum: [bearer, development]
+        issued_at: { type: string, format: date-time }
+        request_id: { type: string }
+        available_workspaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceMembership"
+      required: [schema_version, principal, memberships, selected_workspace, permissions, auth_method, issued_at, request_id, available_workspaces]
+    WorkspaceRecord:
+      type: object
+      properties:
+        workspace_id: { type: string }
+        name: { type: string }
+        status:
+          type: string
+          enum: [active, archived]
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [workspace_id, name, status, created_by, created_at, updated_at]
+    WorkspaceMemberRecord:
+      type: object
+      properties:
+        workspace_id: { type: string }
+        principal_id: { type: string }
+        display_name: { type: string }
+        principal_type:
+          type: string
+          enum: [user, service, development]
+        role:
+          $ref: "#/components/schemas/WorkspaceRole"
+        status:
+          type: string
+          enum: [active, revoked]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [workspace_id, principal_id, display_name, principal_type, role, status, created_at, updated_at]
+    CreateWorkspaceRequest:
+      type: object
+      properties:
+        workspace_id: { type: string }
+        name: { type: string }
+      required: [workspace_id, name]
+    UpdateWorkspaceMemberRequest:
+      type: object
+      properties:
+        display_name: { type: string }
+        principal_type:
+          type: string
+          enum: [user, service, development]
+        role:
+          $ref: "#/components/schemas/WorkspaceRole"
+        status:
+          type: string
+          enum: [active, revoked]
+      required: [role]
+    SecurityAuditEvent:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        audit_id: { type: string }
+        workspace_id: { type: string }
+        principal_id: { type: string }
+        principal_type:
+          type: string
+          enum: [user, service, development, unknown]
+        action: { type: string }
+        permission:
+          oneOf:
+            - $ref: "#/components/schemas/WorkspacePermission"
+            - type: "null"
+        method: { type: string }
+        path: { type: string }
+        resource_type: { type: [string, "null"] }
+        resource_id: { type: [string, "null"] }
+        outcome:
+          type: string
+          enum: [allowed, denied, error]
+        status_code: { type: integer }
+        request_id: { type: string }
+        metadata:
+          type: object
+          additionalProperties:
+            type: [string, number, boolean, "null"]
+        previous_hash: { type: [string, "null"] }
+        hash: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, audit_id, workspace_id, principal_id, principal_type, action, permission, method, path, resource_type, resource_id, outcome, status_code, request_id, metadata, previous_hash, hash, created_at]
+    DashboardObservabilityQuery:
+      type: object
+      properties:
+        window_hours:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          maximum: 720
+          description: Null preserves the legacy all-run reliability scope; supplied values filter indexed runs by overlapping runtime window.
+        status:
+          type: string
+          enum: [all, active, terminal, completed, failed, cancelled]
+        correlation_limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        index_schema_version:
+          type: integer
+          const: 1
+        indexed_runs:
+          type: integer
+          minimum: 0
+        rebuilt_runs:
+          type: integer
+          minimum: 0
+        compare:
+          type: string
+          enum: [none, previous]
+      required:
+        - window_hours
+        - status
+        - correlation_limit
+        - index_schema_version
+        - indexed_runs
+        - rebuilt_runs
+        - compare
+    DashboardObservabilityRetention:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        applied:
+          type: boolean
+        retention_hours:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        cutoff_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        retained_runs:
+          type: integer
+          minimum: 0
+        excluded_runs:
+          type: integer
+          minimum: 0
+        pruned_indexes:
+          type: integer
+          minimum: 0
+        pruned_dirty_markers:
+          type: integer
+          minimum: 0
+        canonical_data_retained:
+          type: boolean
+          const: true
+      required: [enabled, applied, retention_hours, cutoff_at, retained_runs, excluded_runs, pruned_indexes, pruned_dirty_markers, canonical_data_retained]
+    DashboardComparisonMetric:
+      type: object
+      properties:
+        current:
+          type: [number, "null"]
+        previous:
+          type: [number, "null"]
+        delta:
+          type: [number, "null"]
+        change_rate:
+          type: [number, "null"]
+        direction:
+          type: string
+          enum: [up, down, flat, unavailable]
+        outcome:
+          type: string
+          enum: [improved, regressed, neutral, unavailable]
+      required: [current, previous, delta, change_rate, direction, outcome]
+    DashboardObservabilityComparison:
+      type:
+        - object
+        - "null"
+      properties:
+        mode:
+          type: string
+          const: previous_period
+        coverage:
+          type: string
+          enum: [complete, partial]
+        previous_window:
+          type: object
+          properties:
+            started_at:
+              type: string
+              format: date-time
+            ended_at:
+              type: string
+              format: date-time
+          required: [started_at, ended_at]
+        metrics:
+          type: object
+          properties:
+            runs_observed:
+              $ref: "#/components/schemas/DashboardComparisonMetric"
+            run_success_rate:
+              $ref: "#/components/schemas/DashboardComparisonMetric"
+            job_success_rate:
+              $ref: "#/components/schemas/DashboardComparisonMetric"
+            retry_rate:
+              $ref: "#/components/schemas/DashboardComparisonMetric"
+            run_p95_ms:
+              $ref: "#/components/schemas/DashboardComparisonMetric"
+            job_p95_ms:
+              $ref: "#/components/schemas/DashboardComparisonMetric"
+            total_tokens:
+              $ref: "#/components/schemas/DashboardComparisonMetric"
+          required: [runs_observed, run_success_rate, job_success_rate, retry_rate, run_p95_ms, job_p95_ms, total_tokens]
+      required: [mode, coverage, previous_window, metrics]
+    DashboardSummaryResponse:
+      type: object
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        runtime_health:
+          type: object
+          additionalProperties: true
+        workload:
+          type: object
+          additionalProperties: true
+        backlog:
+          type: object
+          additionalProperties: true
+        hotspots:
+          type: object
+          additionalProperties: true
+        observability:
+          type: object
+          properties:
+            query:
+              $ref: "#/components/schemas/DashboardObservabilityQuery"
+            retention:
+              $ref: "#/components/schemas/DashboardObservabilityRetention"
+            window:
+              type: object
+              additionalProperties: true
+            reliability:
+              type: object
+              additionalProperties: true
+            latency:
+              type: object
+              additionalProperties: true
+            usage:
+              type: object
+              additionalProperties: true
+            activity:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            comparison:
+              $ref: "#/components/schemas/DashboardObservabilityComparison"
+            correlations:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+          required: [query, retention, window, reliability, latency, usage, activity, comparison, correlations]
+      required: [generated_at, runtime_health, workload, backlog, hotspots, observability]
     PlannerValidationResult:
       type: object
       properties:
@@ -311,10 +625,7 @@ components:
             blocks run creation when validation fails. bypass skips the gate.
         proposal_id:
           type: string
-          description: Optional durable DAG proposal source for lineage.
-        proposal_id:
-          type: string
-          description: Optional durable DAG proposal id that sourced the run.
+          description: Optional durable DAG proposal id that sourced the run for lineage.
       required: [intent, template_id, inputs]
     CreateRunResponse:
       type: object
@@ -325,7 +636,829 @@ components:
           type: string
         validation:
           $ref: "#/components/schemas/PlannerValidationResult"
-      required: [run_id, status, validation]
+        route:
+          $ref: "#/components/schemas/RunRoute"
+      required: [run_id, status, route, validation]
+    RunRoute:
+      type: object
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+        run_id:
+          type: string
+        route_id:
+          type: string
+        source_kind:
+          type: string
+          enum: [session_plan, proposal, direct_template, rerun, legacy]
+        session_id:
+          type: [string, "null"]
+        proposal_id:
+          type: [string, "null"]
+        plan_revision:
+          type: [integer, "null"]
+        plan_option:
+          type: [string, "null"]
+          enum: [primary, alternative, null]
+        source_run_id:
+          type: [string, "null"]
+        template_id:
+          type: string
+        template_version:
+          type: integer
+        template_name:
+          type: string
+        node_count:
+          type: integer
+        edge_count:
+          type: integer
+        work_packages:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              label:
+                type: string
+              order:
+                type: integer
+              node_run_ids:
+                type: array
+                items:
+                  type: string
+              identity_source:
+                type: string
+                enum: [declared, compiler_default, legacy_inferred]
+            required: [key, label, order, node_run_ids, identity_source]
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - schema_version
+        - run_id
+        - route_id
+        - source_kind
+        - session_id
+        - proposal_id
+        - plan_revision
+        - plan_option
+        - source_run_id
+        - template_id
+        - template_version
+        - template_name
+        - node_count
+        - edge_count
+        - work_packages
+        - created_at
+    DoctorRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [quick, docker, model]
+          default: quick
+        runtime:
+          type: string
+          enum: [local, docker-worker, openclaw, codex, claude-sdk, kimi]
+        model_probe:
+          type: boolean
+          default: false
+    DoctorCheck:
+      type: object
+      properties:
+        id:
+          type: string
+        category:
+          type: string
+          enum: [control_plane, storage, runtime, docker, worker, workspace, harness, provider]
+        status:
+          type: string
+          enum: [pass, warn, fail, skipped]
+        required_for:
+          type: array
+          items:
+            type: string
+            enum: [runtime, deterministic, model]
+        summary:
+          type: string
+        detail:
+          type: [string, "null"]
+        remediation:
+          type: [string, "null"]
+        duration_ms:
+          type: integer
+          minimum: 0
+      required: [id, category, status, required_for, summary, detail, remediation, duration_ms]
+    DoctorReport:
+      type: object
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+        report_id:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+        runtime_ready:
+          type: boolean
+        deterministic_ready:
+          type: boolean
+        model_ready:
+          type: boolean
+        model_verified:
+          type: [boolean, "null"]
+        storage_backend:
+          type: string
+        runtime_dispatcher:
+          type: string
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorCheck"
+      required:
+        - schema_version
+        - report_id
+        - generated_at
+        - runtime_ready
+        - deterministic_ready
+        - model_ready
+        - model_verified
+        - storage_backend
+        - runtime_dispatcher
+        - checks
+    RuntimeGraphNode:
+      type: object
+      properties:
+        nodeRunId: { type: string }
+        nodeId: { type: string }
+        name: { type: string }
+        type: { type: string }
+        status:
+          type: string
+          enum: [pending, ready, running, waiting_human, completed, failed, skipped, cancelled]
+        progress:
+          type: object
+          properties:
+            percent: { type: number }
+            message: { type: string }
+            updated_at: { type: string, format: date-time }
+          required: [percent, message, updated_at]
+        attempt: { type: integer }
+        startedAt: { type: [string, "null"], format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+        agentProfile: { type: [string, "null"] }
+        runtimeAgentRef: { type: [string, "null"] }
+        openclawAgentId: { type: [string, "null"] }
+        approvalKind: { type: [string, "null"] }
+        humanInputRequired: { type: boolean }
+        expectedArtifacts:
+          type: array
+          items: { type: string }
+        workPackageKey: { type: string }
+        workPackageLabel: { type: string }
+        workPackageOrder: { type: integer }
+        workPackageIdentitySource:
+          type: string
+          enum: [declared, compiler_default, legacy_inferred]
+        markers:
+          type: array
+          items:
+            type: string
+            enum: [active_frontier, waiting_human, approval_gate, human_input_gate, blocked, skipped, terminal, ready]
+      required: [nodeRunId, nodeId, name, type, status, progress, attempt, startedAt, finishedAt, agentProfile, runtimeAgentRef, openclawAgentId, approvalKind, humanInputRequired, expectedArtifacts, workPackageKey, workPackageLabel, workPackageOrder, workPackageIdentitySource, markers]
+    ApprovalRecord:
+      type: object
+      properties:
+        approval_id: { type: string }
+        run_id: { type: string }
+        node_run_id: { type: [string, "null"] }
+        kind: { type: string }
+        status:
+          type: string
+          enum: [pending, approved, rejected, cancelled]
+        summary: { type: string }
+        requested_at: { type: string, format: date-time }
+        resolved_at: { type: [string, "null"], format: date-time }
+      required: [approval_id, run_id, node_run_id, kind, status, summary, requested_at, resolved_at]
+    HumanInputRecord:
+      type: object
+      properties:
+        input_request_id: { type: string }
+        run_id: { type: string }
+        node_run_id: { type: [string, "null"] }
+        status:
+          type: string
+          enum: [pending, submitted, expired, cancelled]
+        summary: { type: string }
+        input_schema:
+          type: object
+          additionalProperties: true
+        requested_at: { type: string, format: date-time }
+        submitted_at: { type: [string, "null"], format: date-time }
+      required: [input_request_id, run_id, node_run_id, status, summary, input_schema, requested_at, submitted_at]
+    NodeHandoffRecord:
+      type: object
+      properties:
+        type:
+          type: string
+          const: node_handoff
+        handoff_id: { type: string }
+        job_id: { type: string }
+        run_id: { type: string }
+        node_run_id: { type: string }
+        node_id: { type: string }
+        port: { type: string }
+        content: {}
+        content_ref: { type: [string, "null"] }
+        summary: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        routed_node_run_ids:
+          type: array
+          items: { type: string }
+        skipped_node_run_ids:
+          type: array
+          items: { type: string }
+      required: [type, handoff_id, job_id, run_id, node_run_id, node_id, port, content, summary, created_at, routed_node_run_ids, skipped_node_run_ids]
+    SuperviseRunResponse:
+      type: object
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+        run_id:
+          type: string
+        route:
+          $ref: "#/components/schemas/RunRoute"
+        status:
+          type: string
+        settled:
+          type: boolean
+        graph_revision:
+          type: integer
+        frontier:
+          type: array
+          items:
+            type: string
+        changed_nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeGraphNode"
+        resources:
+          type: object
+          properties:
+            active_jobs:
+              type: integer
+            connected_ephemeral_workers:
+              type: integer
+            active_leases:
+              type: integer
+          required: [active_jobs, connected_ephemeral_workers, active_leases]
+        gates:
+          type: object
+          properties:
+            approvals:
+              type: array
+              items:
+                $ref: "#/components/schemas/ApprovalRecord"
+            human_inputs:
+              type: array
+              items:
+                $ref: "#/components/schemas/HumanInputRecord"
+          required: [approvals, human_inputs]
+        deltas:
+          type: object
+          properties:
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/Event"
+            evidence:
+              type: array
+              items:
+                $ref: "#/components/schemas/SuperviseEvidenceDelta"
+            handoffs:
+              type: array
+              items:
+                $ref: "#/components/schemas/NodeHandoffRecord"
+            artifacts:
+              type: array
+              items:
+                $ref: "#/components/schemas/Artifact"
+          required: [events, evidence, handoffs, artifacts]
+        cursor:
+          type: string
+        has_more:
+          type: boolean
+        next_poll_after_ms:
+          type: integer
+      required:
+        - schema_version
+        - run_id
+        - route
+        - status
+        - settled
+        - graph_revision
+        - frontier
+        - changed_nodes
+        - resources
+        - gates
+        - deltas
+        - cursor
+        - has_more
+        - next_poll_after_ms
+    WorkerEvidenceSource:
+      type: object
+      properties:
+        provider:
+          type: [string, "null"]
+        model:
+          type: [string, "null"]
+        native_event_id:
+          type: [string, "null"]
+        synthetic:
+          type: boolean
+      required: [provider, model, native_event_id, synthetic]
+    WorkerEvidenceTrace:
+      type: object
+      properties:
+        trace_id:
+          type: string
+        span_id:
+          type: string
+        parent_span_id:
+          type: [string, "null"]
+        tool_call_id:
+          type: [string, "null"]
+      required: [trace_id, span_id, parent_span_id, tool_call_id]
+    UsageSummary:
+      type: object
+      properties:
+        availability:
+          type: string
+          enum: [available, partial, unavailable]
+        input_tokens:
+          type: [integer, "null"]
+          minimum: 0
+        output_tokens:
+          type: [integer, "null"]
+          minimum: 0
+        cache_read_tokens:
+          type: [integer, "null"]
+          minimum: 0
+        cache_write_tokens:
+          type: [integer, "null"]
+          minimum: 0
+        reasoning_tokens:
+          type: [integer, "null"]
+          minimum: 0
+        total_tokens:
+          type: [integer, "null"]
+          minimum: 0
+        duration_ms:
+          type: [integer, "null"]
+          minimum: 0
+        turn_count:
+          type: [integer, "null"]
+          minimum: 0
+        provider_reported_cost:
+          type: [object, "null"]
+        estimated_cost:
+          type: [object, "null"]
+      required:
+        - availability
+        - input_tokens
+        - output_tokens
+        - cache_read_tokens
+        - cache_write_tokens
+        - reasoning_tokens
+        - total_tokens
+        - duration_ms
+        - turn_count
+        - provider_reported_cost
+        - estimated_cost
+    SuperviseEvidenceDelta:
+      type: object
+      properties:
+        evidence_id:
+          type: string
+        run_id:
+          type: string
+        node_run_id:
+          type: string
+        job_id:
+          type: string
+        worker_id:
+          type: string
+        evidence_schema_version:
+          type: integer
+          enum: [1, 2]
+        sequence:
+          type: [integer, "null"]
+        kind:
+          type: string
+          enum: [prompt, model_turn, model_text, thinking, tool_call, tool_result, handoff, artifact_ref, error, usage, log]
+        source:
+          $ref: "#/components/schemas/WorkerEvidenceSource"
+        trace:
+          $ref: "#/components/schemas/WorkerEvidenceTrace"
+        summary:
+          type: string
+        input_ref:
+          type: [string, "null"]
+        output_ref:
+          type: [string, "null"]
+        storage_uri:
+          type: [string, "null"]
+        usage:
+          oneOf:
+            - $ref: "#/components/schemas/UsageSummary"
+            - type: "null"
+        redaction_status:
+          type: string
+          enum: [not_required, redacted, blocked]
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - evidence_id
+        - run_id
+        - node_run_id
+        - job_id
+        - worker_id
+        - evidence_schema_version
+        - sequence
+        - kind
+        - source
+        - trace
+        - summary
+        - input_ref
+        - output_ref
+        - storage_uri
+        - usage
+        - redaction_status
+        - created_at
+    CreateScorecardRequest:
+      type: object
+      properties:
+        profile:
+          type: string
+          default: pipeline-v1
+        allow_incomplete:
+          type: boolean
+          default: false
+    ScorecardFinding:
+      type: object
+      properties:
+        check_id:
+          type: string
+        severity:
+          type: string
+          enum: [error, warning, blind_spot, info]
+        passed:
+          type: boolean
+        summary:
+          type: string
+        detail:
+          type: string
+        evidence_refs:
+          type: array
+          items:
+            type: string
+      required: [check_id, severity, passed, summary, detail, evidence_refs]
+    ScorecardResult:
+      type: object
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+        scorecard_id:
+          type: string
+        run_id:
+          type: string
+        snapshot_id:
+          type: string
+        evidence_digest:
+          type: string
+        profile:
+          type: string
+        policy_version:
+          type: integer
+        enforcement:
+          type: string
+          enum: [off, advisory, strict]
+        pipeline_verdict:
+          type: string
+          enum: [pass, fail, incomplete]
+        contract_verdict:
+          type: string
+          enum: [pass, fail, not_applicable, incomplete]
+        gate_verdict:
+          type: string
+          enum: [pass, reject, not_enforced]
+        passed_checks:
+          type: integer
+        total_checks:
+          type: integer
+        hard_error_count:
+          type: integer
+        warning_count:
+          type: integer
+        blind_spot_count:
+          type: integer
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScorecardFinding"
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - schema_version
+        - scorecard_id
+        - run_id
+        - snapshot_id
+        - evidence_digest
+        - profile
+        - policy_version
+        - enforcement
+        - pipeline_verdict
+        - contract_verdict
+        - gate_verdict
+        - passed_checks
+        - total_checks
+        - hard_error_count
+        - warning_count
+        - blind_spot_count
+        - findings
+        - created_at
+    CreateEvaluationRequest:
+      type: object
+      properties:
+        evaluator:
+          type: string
+          default: none
+          description: none, deterministic-v1, model-v1, or another registered evaluator id
+        allow_incomplete:
+          type: boolean
+          default: false
+    EvaluationFinding:
+      allOf:
+        - $ref: "#/components/schemas/ScorecardFinding"
+        - type: object
+          properties:
+            dimension:
+              type: string
+              enum: [pipeline, contract, evidence, usage, quality]
+          required: [dimension]
+    EvaluatorDescriptor:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [none, deterministic, model]
+        version:
+          type: string
+        provider:
+          type: [string, "null"]
+        model:
+          type: [string, "null"]
+        prompt_version:
+          type: [string, "null"]
+      required: [id, kind, version, provider, model, prompt_version]
+    EvaluationResult:
+      type: object
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+        evaluation_id:
+          type: string
+        run_id:
+          type: string
+        snapshot_id:
+          type: string
+        evidence_digest:
+          type: string
+        scorecard_id:
+          type: string
+        evaluator:
+          $ref: "#/components/schemas/EvaluatorDescriptor"
+        pipeline_verdict:
+          type: string
+          enum: [pass, fail, incomplete]
+        contract_verdict:
+          type: string
+          enum: [pass, fail, not_applicable, incomplete]
+        evidence_verdict:
+          type: string
+          enum: [complete, partial, unavailable]
+        usage_verdict:
+          type: string
+          enum: [complete, partial, unavailable]
+        quality_verdict:
+          type: string
+          enum: [pass, fail, not_evaluated, error]
+        gate_verdict:
+          type: string
+          enum: [pass, reject, not_enforced]
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationFinding"
+        evaluator_usage:
+          oneOf:
+            - $ref: "#/components/schemas/UsageSummary"
+            - type: "null"
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        attempt:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        error:
+          type: [string, "null"]
+      required:
+        - schema_version
+        - evaluation_id
+        - run_id
+        - snapshot_id
+        - evidence_digest
+        - scorecard_id
+        - evaluator
+        - pipeline_verdict
+        - contract_verdict
+        - evidence_verdict
+        - usage_verdict
+        - quality_verdict
+        - gate_verdict
+        - findings
+        - evaluator_usage
+        - status
+        - attempt
+        - created_at
+        - started_at
+        - completed_at
+        - error
+    TraceSpan:
+      type: object
+      properties:
+        span_id: { type: string }
+        parent_span_id: { type: [string, "null"] }
+        trace_id: { type: string }
+        run_id: { type: string }
+        node_run_id: { type: [string, "null"] }
+        job_id: { type: [string, "null"] }
+        kind:
+          type: string
+          enum: [run, node, job, model, tool, handoff, artifact, control]
+        name: { type: string }
+        status:
+          type: string
+          enum: [ok, error, unknown]
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        input_ref: { type: [string, "null"] }
+        output_ref: { type: [string, "null"] }
+        tool_call_id: { type: [string, "null"] }
+        provider: { type: [string, "null"] }
+        model: { type: [string, "null"] }
+        usage:
+          oneOf:
+            - $ref: "#/components/schemas/UsageSummary"
+            - type: "null"
+        attributes:
+          type: object
+          additionalProperties:
+            type: [string, number, boolean, "null"]
+      required: [span_id, parent_span_id, trace_id, run_id, node_run_id, job_id, kind, name, status, started_at, finished_at, input_ref, output_ref, tool_call_id, provider, model, usage, attributes]
+    TraceProjection:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        run_id: { type: string }
+        trace_id: { type: string }
+        completeness:
+          type: string
+          enum: [complete, legacy_partial]
+        spans:
+          type: array
+          items:
+            $ref: "#/components/schemas/TraceSpan"
+        cursor: { type: [string, "null"] }
+        has_more: { type: boolean }
+      required: [schema_version, run_id, trace_id, completeness, spans, cursor, has_more]
+    ReplayDifference:
+      type: object
+      properties:
+        category:
+          type: string
+          enum: [run, plan, node, job, worker, lease, handoff, artifact, evidence, gate, runtime_patch]
+        record_id: { type: string }
+        field: { type: string }
+        replayed: {}
+        persisted: {}
+        severity:
+          type: string
+          enum: [error, warning]
+        summary: { type: string }
+      required: [category, record_id, field, replayed, persisted, severity, summary]
+    ReplayResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        replay_id: { type: string }
+        run_id: { type: string }
+        route_id: { type: string }
+        event_digest: { type: string }
+        event_completeness:
+          type: string
+          enum: [complete, legacy_partial]
+        verification:
+          type: string
+          enum: [pass, fail, partial]
+        processed_events: { type: integer }
+        first_sequence: { type: [integer, "null"] }
+        last_sequence: { type: [integer, "null"] }
+        projection_differences:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayDifference"
+        missing_references:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, replay_id, run_id, route_id, event_digest, event_completeness, verification, processed_events, first_sequence, last_sequence, projection_differences, missing_references, created_at]
+    CreateReplayPlanRequest:
+      type: object
+      properties:
+        scorecard_id: { type: string }
+        evaluation_id: { type: string }
+    ReplayPlanRecommendation:
+      type: object
+      properties:
+        recommendation_id: { type: string }
+        category:
+          type: string
+          enum: [runtime_environment, scheduler_dispatch, provider_harness, prompt_agent_assignment, handoff_contract, artifact_contract, evidence_completeness, policy_evaluator, human_gate, budget_usage]
+        priority:
+          type: string
+          enum: [high, medium, low]
+        summary: { type: string }
+        rationale: { type: string }
+        change_target: { type: string }
+        references:
+          type: array
+          items: { type: string }
+      required: [recommendation_id, category, priority, summary, rationale, change_target, references]
+    ReplayPlanResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        replay_plan_id: { type: string }
+        run_id: { type: string }
+        replay_id: { type: string }
+        scorecard_id: { type: [string, "null"] }
+        evaluation_id: { type: [string, "null"] }
+        trace_completeness:
+          type: string
+          enum: [complete, legacy_partial]
+        recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayPlanRecommendation"
+        summary: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, replay_plan_id, run_id, replay_id, scorecard_id, evaluation_id, trace_completeness, recommendations, summary, created_at]
+    CreateRerunRequest:
+      type: object
+      properties:
+        reason: { type: string }
+        input_overrides: { type: object }
+      required: [reason]
+    CreateRerunResponse:
+      type: object
+      properties:
+        run_id: { type: string }
+        status: { type: string }
+        source_run_id: { type: string }
+        rerun_reason: { type: string }
+        rerun_idempotency_key: { type: [string, "null"] }
+        route:
+          $ref: "#/components/schemas/RunRoute"
+      required: [run_id, status, source_run_id, rerun_reason, rerun_idempotency_key, route]
     RunSummary:
       type: object
       properties:
@@ -341,6 +1474,16 @@ components:
           type:
             - string
             - "null"
+        source_run_id:
+          type: [string, "null"]
+        rerun_reason:
+          type: [string, "null"]
+        rerun_idempotency_key:
+          type: [string, "null"]
+        route:
+          oneOf:
+            - $ref: "#/components/schemas/RunRoute"
+            - type: "null"
       required: [run_id, template_id, status, current_summary]
     RunDetail:
       type: object
@@ -373,6 +1516,16 @@ components:
           type:
             - string
             - "null"
+        source_run_id:
+          type: [string, "null"]
+        rerun_reason:
+          type: [string, "null"]
+        rerun_idempotency_key:
+          type: [string, "null"]
+        route:
+          oneOf:
+            - $ref: "#/components/schemas/RunRoute"
+            - type: "null"
       required:
         - run_id
         - template_id
@@ -385,7 +1538,7 @@ components:
         - waiting_reason
         - blocked_reason
         - proposal_id
-    DagProposalPlannerContext:
+    LegacyDagProposalPlannerContext:
       type: object
       properties:
         provider_id:
@@ -417,7 +1570,7 @@ components:
         - system_prompt_summary
         - fallback_used
         - fallback_reason
-    DagProposalAssignment:
+    LegacyDagProposalAssignment:
       type: object
       properties:
         node_id:
@@ -467,7 +1620,7 @@ components:
         - input_context
         - output_contract
         - metadata
-    DagProposalRecord:
+    LegacyDagProposalRecord:
       type: object
       properties:
         proposal_id:
@@ -539,7 +1692,7 @@ components:
         - warnings
         - checklist
         - metadata
-    DagProposalSummary:
+    LegacyDagProposalSummary:
       type: object
       properties:
         proposal_id:
@@ -577,7 +1730,7 @@ components:
         - summary
         - created_at
         - updated_at
-    CreateDagProposalRequest:
+    LegacyCreateDagProposalRequest:
       type: object
       properties:
         source_message_id:
@@ -591,7 +1744,7 @@ components:
           type: string
         inputs:
           type: object
-    UpdateDagProposalAssignmentsRequest:
+    LegacyUpdateDagProposalAssignmentsRequest:
       type: object
       properties:
         assignments:
@@ -599,19 +1752,19 @@ components:
           items:
             $ref: "#/components/schemas/DagProposalAssignment"
       required: [assignments]
-    ConfirmDagProposalRequest:
+    LegacyConfirmDagProposalRequest:
       type: object
       properties:
         confirmed_by:
           type: string
-    RejectDagProposalRequest:
+    LegacyRejectDagProposalRequest:
       type: object
       properties:
         rejected_by:
           type: string
         reason:
           type: string
-    SupersedeDagProposalRequest:
+    LegacySupersedeDagProposalRequest:
       type: object
       properties:
         source_message_id:
@@ -627,6 +1780,18 @@ components:
       properties:
         event_id:
           type: string
+        schema_version:
+          type: integer
+          enum: [2]
+        run_sequence:
+          type: integer
+          minimum: 1
+        correlation_id:
+          type: [string, "null"]
+        causation_id:
+          type: [string, "null"]
+        idempotency_key:
+          type: [string, "null"]
         run_id:
           type: string
         node_run_id:
@@ -1498,6 +2663,56 @@ security:
   - bearerAuth: []
 
 paths:
+  /api/dashboard/summary:
+    get:
+      tags: [Observability]
+      summary: Query the indexed runtime dashboard summary
+      parameters:
+        - in: query
+          name: window_hours
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 720
+          description: Optional 1-720 hour runtime overlap window. Omit to preserve legacy all-run reliability aggregation.
+        - in: query
+          name: status
+          required: false
+          schema:
+            type: string
+            enum: [all, active, terminal, completed, failed, cancelled]
+            default: all
+        - in: query
+          name: correlation_limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: compare
+          required: false
+          schema:
+            type: string
+            enum: [none, previous]
+            default: none
+          description: Compare the selected window with the immediately preceding equal-length period. Requires window_hours when set to previous.
+      responses:
+        "200":
+          description: Indexed dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummaryResponse"
+        "400":
+          description: Invalid observability filter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/templates:
     get:
       tags: [Templates]
@@ -2067,6 +3282,184 @@ paths:
                     $ref: "#/components/schemas/DagProposalRecord"
                 required: [proposal, superseded_proposal]
 
+  /api/auth/me:
+    get:
+      operationId: getCurrentIdentity
+      tags: [Identity]
+      summary: Return the authenticated principal, selected workspace, and permissions
+      responses:
+        "200":
+          description: Trusted request identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthMeResponse"
+        "401":
+          description: Missing or invalid trusted identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/workspaces:
+    get:
+      operationId: listWorkspaces
+      tags: [Workspaces]
+      summary: List workspaces available to the authenticated principal
+      responses:
+        "200":
+          description: Workspace list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkspaceRecord"
+                required: [items]
+    post:
+      operationId: createWorkspace
+      tags: [Workspaces]
+      summary: Create a workspace and owner membership
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkspaceRequest"
+      responses:
+        "201":
+          description: Workspace created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspace:
+                    $ref: "#/components/schemas/WorkspaceRecord"
+                  membership:
+                    $ref: "#/components/schemas/WorkspaceMemberRecord"
+                required: [workspace, membership]
+
+  /api/workspaces/{workspaceId}/members:
+    get:
+      operationId: listWorkspaceMembers
+      tags: [Workspaces]
+      parameters:
+        - in: path
+          name: workspaceId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Workspace member list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkspaceMemberRecord"
+                required: [items]
+
+  /api/workspaces/{workspaceId}/members/{principalId}:
+    put:
+      operationId: updateWorkspaceMember
+      tags: [Workspaces]
+      parameters:
+        - in: path
+          name: workspaceId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: principalId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWorkspaceMemberRequest"
+      responses:
+        "200":
+          description: Membership updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceMemberRecord"
+
+  /api/audit-events:
+    get:
+      operationId: listSecurityAuditEvents
+      tags: [Governance]
+      summary: List append-only workspace security audit events
+      parameters:
+        - in: query
+          name: principal_id
+          schema: { type: string }
+        - in: query
+          name: action
+          schema: { type: string }
+        - in: query
+          name: resource_type
+          schema: { type: string }
+        - in: query
+          name: outcome
+          schema:
+            type: string
+            enum: [allowed, denied, error]
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Audit event list and chain verification state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SecurityAuditEvent"
+                  chain_verified: { type: boolean }
+                  filters: { type: object }
+                required: [items, chain_verified, filters]
+
+  /api/diagnostics/doctor:
+    post:
+      operationId: createDoctorReport
+      tags: [Diagnostics]
+      summary: Probe Control Plane, runtime, Docker Worker, and model readiness
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DoctorRequest"
+      responses:
+        "200":
+          description: Readiness report; failed checks are represented in the body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "400":
+          description: Invalid diagnostic mode or runtime
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/runs:
     get:
       tags: [Runs]
@@ -2219,6 +3612,451 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunDetail"
+
+  /api/runs/{runId}/route:
+    get:
+      tags: [Runs]
+      summary: Get the immutable canonical route snapshot for a run
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Canonical route snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunRoute"
+        "404":
+          description: Run route not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/runs/{runId}/supervise:
+    get:
+      operationId: superviseRun
+      tags: [Runs]
+      summary: Get bounded runtime deltas after an opaque cursor
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: cursor
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Current state and bounded deltas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuperviseRunResponse"
+        "400":
+          description: Malformed cursor or cursor for another run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/runs/{runId}/scorecards:
+    post:
+      operationId: createRunScorecard
+      tags: [Evaluation]
+      summary: Create or deduplicate a pipeline scorecard for a frozen evidence snapshot
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScorecardRequest"
+      responses:
+        "200":
+          description: Existing scorecard returned for the same evidence digest and policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScorecardResult"
+        "201":
+          description: Scorecard created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScorecardResult"
+        "409":
+          description: Run is not terminal or runtime resources are not settled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: listRunScorecards
+      tags: [Evaluation]
+      summary: List persisted scorecards for a run
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Scorecard list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScorecardResult"
+                required: [items]
+
+  /api/runs/{runId}/scorecards/{scorecardId}:
+    get:
+      operationId: getRunScorecard
+      tags: [Evaluation]
+      summary: Get one persisted scorecard
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: scorecardId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Scorecard detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScorecardResult"
+        "404":
+          description: Run or scorecard not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/runs/{runId}/evaluations:
+    post:
+      operationId: createRunEvaluation
+      tags: [Evaluation]
+      summary: Create or deduplicate an independent run evaluation
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEvaluationRequest"
+      responses:
+        "200":
+          description: Existing terminal evaluation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationResult"
+        "201":
+          description: Synchronous evaluation completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationResult"
+        "202":
+          description: Model evaluation queued or running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationResult"
+        "409":
+          description: Run is not terminal or settled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: listRunEvaluations
+      tags: [Evaluation]
+      summary: List persisted evaluations for a run
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Evaluation list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/EvaluationResult"
+                required: [items]
+
+  /api/runs/{runId}/evaluations/{evaluationId}:
+    get:
+      operationId: getRunEvaluation
+      tags: [Evaluation]
+      summary: Get one persisted evaluation
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: evaluationId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Evaluation detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationResult"
+        "404":
+          description: Run or evaluation not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/runs/{runId}/trace:
+    get:
+      operationId: getRunTrace
+      tags: [Evaluation]
+      summary: Project a bounded first-class span tree from events and evidence
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: node_run_id
+          schema: { type: string }
+        - in: query
+          name: kind
+          schema:
+            type: string
+            enum: [run, node, job, model, tool, handoff, artifact, control]
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+      responses:
+        "200":
+          description: Trace span projection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraceProjection"
+        "400":
+          description: Invalid filter or cursor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/runs/{runId}/replays:
+    post:
+      operationId: createRunReplay
+      tags: [Evaluation]
+      summary: Rebuild runtime state without invoking a provider or Worker
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Existing replay for the same immutable event digest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayResult"
+        "201":
+          description: Replay result persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayResult"
+
+  /api/runs/{runId}/replays/{replayId}:
+    get:
+      operationId: getRunReplay
+      tags: [Evaluation]
+      summary: Get one persisted replay result
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: replayId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Replay result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayResult"
+        "404":
+          description: Replay not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/runs/{runId}/replay-plans:
+    post:
+      operationId: createRunReplayPlan
+      tags: [Evaluation]
+      summary: Generate categorized recommendations without changing runtime configuration
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReplayPlanRequest"
+      responses:
+        "200":
+          description: Existing replay plan for the same evidence inputs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlanResult"
+        "201":
+          description: Replay plan persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlanResult"
+
+  /api/runs/{runId}/replay-plans/{replayPlanId}:
+    get:
+      operationId: getRunReplayPlan
+      tags: [Evaluation]
+      summary: Get one persisted replay plan
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: replayPlanId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Replay plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlanResult"
+        "404":
+          description: Replay plan not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/runs/{runId}/reruns:
+    post:
+      tags: [Runs]
+      summary: Create a linked run from the frozen effective plan
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string }
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRerunRequest"
+      responses:
+        "200":
+          description: Existing linked rerun returned for the Idempotency-Key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRerunResponse"
+        "201":
+          description: Linked rerun created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRerunResponse"
+        "409":
+          description: Source run is not terminal or the Idempotency-Key conflicts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/runs/{runId}/events:
     get:

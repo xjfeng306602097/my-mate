@@ -26,6 +26,8 @@ Current scope:
   - approve / reject
   - submit human input
   - pause / resume / cancel
+- Account tab with identity, workspace switcher, members, role controls, and
+  audit chain state
 
 ## Gateway endpoints used
 
@@ -47,6 +49,14 @@ Current scope:
 Set:
 
 `EXPO_PUBLIC_MY_MATE_API_BASE_URL=http://127.0.0.1:4030`
+
+Authenticated workspace configuration:
+
+- `EXPO_PUBLIC_MY_MATE_API_KEY=<bearer-token>`
+- `EXPO_PUBLIC_MY_MATE_WORKSPACE_ID=<workspace-id>`
+
+The Account tab can switch among memberships returned by `/api/auth/me`; the
+selected workspace header is applied to subsequent API requests.
 
 For Android emulator you will usually want:
 

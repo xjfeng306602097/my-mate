@@ -26,6 +26,7 @@ export type PlannerValidationCategory = "required_input" | "registry" | "graph" 
 export type PlannerValidationCode =
   | "missing_required_input"
   | "missing_agent_profile"
+  | "missing_runtime_agent_ref"
   | "missing_openclaw_agent"
   | "unknown_agent_profile"
   | "disabled_agent_profile"
@@ -65,9 +66,35 @@ export type EventType =
   | "approval.rejected"
   | "human_input.requested"
   | "human_input.submitted"
-  | "artifact.created";
+  | "artifact.created"
+  | "job.created"
+  | "job.dispatching"
+  | "job.accepted"
+  | "job.running"
+  | "job.waiting_human"
+  | "job.completed"
+  | "job.failed"
+  | "job.cancelled"
+  | "worker.expected"
+  | "worker.registered"
+  | "worker.status_changed"
+  | "worker.released"
+  | "lease.acquired"
+  | "lease.activated"
+  | "lease.cleanup_started"
+  | "lease.cleanup_completed"
+  | "lease.cleanup_failed"
+  | "lease.released"
+  | "lease.failed"
+  | "handoff.recorded"
+  | "evidence.recorded"
+  | "runtime.patch_applied"
+  | "runtime.quiescent"
+  | "scorecard.completed"
+  | "evaluation.completed";
 
 export type ActorType = "user" | "agent" | "system" | "operator";
+export type RuntimeAgentRefSource = "registry" | "template_binding" | "fallback" | "none";
 export type SessionMessageRole = "user" | "orchestrator" | "system";
 export type SessionMessageKind =
   | "text"
@@ -444,12 +471,14 @@ export interface MissionDetailResponse {
   mission_spec_contract?: MissionSpecContract | null;
   mission_snapshot?: MissionSnapshot | null;
   mission_view?: MissionView;
+  runtime_projection?: Record<string, unknown> | null;
 }
 
 export interface SessionWorkspaceDetailResponse {
   session: SessionRecord;
   messages: SessionMessageRecord[];
   latest_run: RunRecord | null;
+  selected_run_id?: string | null;
   attachments: SessionAttachmentRecord[];
   workspace_state: Record<string, unknown>;
   next_actions: string[];
@@ -457,17 +486,22 @@ export interface SessionWorkspaceDetailResponse {
   mission_spec: MissionSpecSummary | null;
   mission_spec_contract: MissionSpecContract | null;
   mission_snapshot: MissionSnapshot | null;
+  runtime_projection?: Record<string, unknown> | null;
 }
 
 export interface AgentHostingSummary {
   ownership: {
-    execution_runtime: "openclaw";
+    execution_runtime: string;
+    runtime_protocol: "my_mate";
     orchestration_binding: "my_mate";
   };
   profiles: Array<{
     profile_id: string;
     name: string;
     status: RegistryStatus;
+    runtime_agent_ref: string;
+    agent_runtime: string;
+    harness_profile: string | null;
     openclaw_agent_id: string;
     default_skills: string[];
     provider: string | null;
@@ -482,6 +516,9 @@ export interface AgentHostingSummary {
 }
 
 export interface UpdateAgentHostingRequest {
+  runtime_agent_ref?: string;
+  agent_runtime?: string;
+  harness_profile?: string | null;
   openclaw_agent_id?: string;
   provider?: string | null;
   model?: string | null;
@@ -491,6 +528,7 @@ export interface UpdateAgentHostingRequest {
 export interface RuntimeSummary {
   execution_runtime: {
     adapter_kind: string;
+    registered_adapter_kinds: string[];
     local_execution_enabled: boolean;
     auto_approve_human_gates: boolean;
     bridge_base_url: string | null;
@@ -511,6 +549,38 @@ export interface RuntimeSummary {
     };
     maintenance: {
       supported_actions: Array<"dispatch_sweep">;
+    };
+    runtime_dispatcher: {
+      kind: string;
+      dispatch_mainline: "runtime-worker-job";
+      legacy_execution_adapter_bridge: boolean;
+    };
+    node_provisioner: {
+      kind: string;
+      status: "not_wired" | "ready" | "deferred";
+      capacity: {
+        max_concurrent_workers: number;
+        active_workers: number;
+        queue_depth: number;
+        queue_limit: number;
+        queue_timeout_ms: number;
+      };
+      recovery: {
+        cleanup_pending: number;
+        cleanup_failed: number;
+        last_reconciliation_at: string | null;
+        last_reconciliation_status: "not_run" | "healthy" | "degraded" | "failed";
+        discovered_containers: number;
+        orphan_containers: number;
+        removed_containers: number;
+        cleanup_failures: number;
+      };
+    };
+    worker_hub: {
+      kind: string | null;
+      connected_workers: number;
+      busy_workers: number;
+      stale_workers: number;
     };
   };
   agent_hosting: AgentHostingSummary;
@@ -590,11 +660,29 @@ export interface WorkflowNode {
   parallelism: number;
   approval_kind: string | null;
   human_input_schema: Record<string, unknown> | null;
+  work_package?: WorkPackageBinding;
+}
+
+export interface WorkPackageBinding {
+  key: string;
+  label: string;
+  order: number;
+}
+
+export type WorkPackageIdentitySource =
+  | "declared"
+  | "compiler_default"
+  | "legacy_inferred";
+
+export interface CompiledWorkPackageBinding extends WorkPackageBinding {
+  identity_source: WorkPackageIdentitySource;
 }
 
 export interface WorkflowEdge {
   from: string;
   to: string;
+  from_port?: string | null;
+  to_port?: string | null;
   condition: Record<string, unknown> | null;
   label: string | null;
 }
@@ -604,7 +692,68 @@ export interface TemplatePolicy {
   default_timeout_seconds: number;
   budget_policy: Record<string, unknown>;
   approval_policy: Record<string, unknown>;
+  scorecard?: {
+    profile: string;
+    version: number;
+    enforcement: "off" | "advisory" | "strict";
+    settle_timeout_seconds: number;
+    checks: ScorecardCheckDefinition[];
+  };
 }
+
+export interface ScorecardCheckSelector {
+  node_id?: string;
+  node_run_id?: string;
+  work_package?: string;
+}
+
+interface ScorecardCheckBase {
+  id: string;
+  severity?: "error" | "warning";
+  selector?: ScorecardCheckSelector;
+}
+
+export type ScorecardCheckDefinition =
+  | (ScorecardCheckBase & {
+      type: "required_evidence";
+      kinds: string[];
+      min_count?: number;
+    })
+  | (ScorecardCheckBase & {
+      type: "required_tool";
+      names: string[];
+      min_calls?: number;
+      max_calls?: number;
+    })
+  | (ScorecardCheckBase & {
+      type: "artifact_contract";
+      artifact_type?: string;
+      mime_type?: string;
+      name_pattern?: string;
+      metadata_schema?: Record<string, unknown>;
+      min_count?: number;
+      require_resolvable_uri?: boolean;
+    })
+  | (ScorecardCheckBase & {
+      type: "handoff_schema";
+      schema: Record<string, unknown>;
+      min_count?: number;
+    })
+  | (ScorecardCheckBase & {
+      type: "test_category";
+      categories: Array<"lint" | "unit" | "integration" | "security" | "rollback">;
+    })
+  | (ScorecardCheckBase & {
+      type: "deterministic_assertion";
+      subject: "run" | "route" | "evidence" | "artifact" | "handoff";
+      path: string;
+      operator: "equals" | "contains" | "regex" | "numeric_range";
+      expected?: unknown;
+      min?: number;
+      max?: number;
+      match?: "any" | "all";
+      quality?: boolean;
+    });
 
 export interface WorkflowTemplateRecord {
   template_id: string;
@@ -644,6 +793,7 @@ export interface DeriveTemplateRequest {
 
 export interface SessionRecord {
   session_id: string;
+  workspace_id?: string;
   title: string;
   status: SessionStatus;
   created_by: string;
@@ -885,8 +1035,12 @@ export interface TemplateLineageResponse {
 
 export interface AgentProfileRecord {
   profile_id: string;
+  workspace_id?: string;
   name: string;
   description: string;
+  runtime_agent_ref?: string;
+  agent_runtime?: string;
+  harness_profile?: string | null;
   openclaw_agent_id: string;
   default_skills: string[];
   allowed_tools: string[];
@@ -900,6 +1054,7 @@ export interface AgentProfileRecord {
 
 export interface OrchestratorProfileRecord {
   orchestrator_id: string;
+  workspace_id?: string;
   name: string;
   provider: string;
   model: string;
@@ -930,7 +1085,10 @@ export interface UpsertAgentProfileRequest {
   profile_id?: string;
   name: string;
   description?: string;
-  openclaw_agent_id: string;
+  runtime_agent_ref?: string;
+  agent_runtime?: string;
+  harness_profile?: string | null;
+  openclaw_agent_id?: string;
   default_skills?: string[];
   allowed_tools?: string[];
   disallowed_skills?: string[];
@@ -941,6 +1099,7 @@ export interface UpsertAgentProfileRequest {
 
 export interface SkillRecord {
   skill_id: string;
+  workspace_id?: string;
   name: string;
   description: string;
   category: string;
@@ -967,7 +1126,19 @@ export interface UpsertSkillRequest {
   metadata?: Record<string, unknown>;
 }
 
+export type ExecutionTargetKind =
+  | "local"
+  | "external-bridge"
+  | "docker-worker"
+  | "node-worker";
+
 export interface ExecutionRef {
+  job_id: string | null;
+  worker_id: string | null;
+  lease_id: string | null;
+  target_kind: ExecutionTargetKind | null;
+  dispatch_id: string | null;
+  provider_refs: Record<string, string | null>;
   openclaw_task_id: string | null;
   openclaw_session_id: string | null;
 }
@@ -1040,6 +1211,9 @@ export interface CompiledNodeRecord {
   name: string;
   type: string;
   agent_profile: string | null;
+  runtime_agent_ref: string | null;
+  agent_runtime?: string | null;
+  harness_profile?: string | null;
   openclaw_agent_id: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
@@ -1056,6 +1230,59 @@ export interface CompiledNodeRecord {
   output_contract: Record<string, unknown>;
   execution_ref: ExecutionRef;
   registry_provenance: RegistryProvenance;
+  work_package?: CompiledWorkPackageBinding;
+}
+
+export type RunRouteSourceKind =
+  | "session_plan"
+  | "proposal"
+  | "direct_template"
+  | "rerun"
+  | "legacy";
+
+export interface RunWorkPackageSnapshot extends WorkPackageBinding {
+  node_run_ids: string[];
+  identity_source: WorkPackageIdentitySource;
+}
+
+export interface RunRouteSnapshot {
+  schema_version: 1;
+  run_id: string;
+  route_id: string;
+  source_kind: RunRouteSourceKind;
+  session_id: string | null;
+  proposal_id: string | null;
+  plan_revision: number | null;
+  plan_option: "primary" | "alternative" | null;
+  source_run_id?: string | null;
+  template_id: string;
+  template_version: number;
+  template_name: string;
+  node_count: number;
+  edge_count: number;
+  work_packages: RunWorkPackageSnapshot[];
+  created_at: string;
+}
+
+export interface RunRouteSource {
+  kind: Exclude<RunRouteSourceKind, "legacy">;
+  session_id?: string | null;
+  proposal_id?: string | null;
+  plan_revision?: number | null;
+  plan_option?: "primary" | "alternative" | null;
+  source_run_id?: string | null;
+  route_id?: string | null;
+}
+
+export interface RunInitializationRecord {
+  schema_version: 1;
+  run_id: string;
+  state: "preparing" | "ready" | "failed";
+  required_records: string[];
+  completed_records: string[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface RegistrySkillProvenance {
@@ -1076,7 +1303,8 @@ export interface RegistryProvenance {
   agent_profile_resolved: string | null;
   agent_profile_status: RegistryStatus | "missing" | null;
   agent_profile_source: "registry" | "template_binding" | "fallback" | "none";
-  openclaw_agent_id_source: "registry" | "template_binding" | "fallback" | "none";
+  runtime_agent_ref_source: RuntimeAgentRefSource;
+  openclaw_agent_id_source: RuntimeAgentRefSource;
   skill_bindings: RegistrySkillProvenance[];
   tool_bindings: RegistryToolProvenance[];
 }
@@ -1119,12 +1347,15 @@ export interface RuntimeGraphNode {
   startedAt: string | null;
   finishedAt: string | null;
   agentProfile: string | null;
+  runtimeAgentRef: string | null;
   openclawAgentId: string | null;
   approvalKind: string | null;
   humanInputRequired: boolean;
   expectedArtifacts: string[];
   workPackageKey: string;
   workPackageLabel: string;
+  workPackageOrder: number;
+  workPackageIdentitySource: WorkPackageIdentitySource;
   markers: RuntimeGraphMarker[];
 }
 
@@ -1141,6 +1372,8 @@ export interface RuntimeGraphEdge {
 export interface RuntimeGraphWorkPackage {
   key: string;
   label: string;
+  order: number;
+  identitySource: WorkPackageIdentitySource;
   nodeRunIds: string[];
   status: "done" | "active" | "blocked" | "pending";
   readyCount: number;
@@ -1229,7 +1462,12 @@ export interface NodeRunRecord {
 }
 
 export interface EventRecord {
+  schema_version?: 2;
   event_id: string;
+  run_sequence?: number;
+  correlation_id?: string | null;
+  causation_id?: string | null;
+  idempotency_key?: string | null;
   run_id: string;
   node_run_id: string | null;
   type: EventType;
@@ -1253,6 +1491,15 @@ export interface PlannerTemplateSelectionRequest {
   planner_provider_id?: string;
 }
 
+export interface PlannerTemplateCandidateEvidence {
+  coverage_score?: number;
+  density_score?: number;
+  registry_readiness_score?: number;
+  domain_overlap_score?: number;
+  matched_domains?: string[];
+  metadata_domain_match?: boolean;
+}
+
 export interface PlannerTemplateCandidate {
   template_id: string;
   version: number;
@@ -1262,6 +1509,7 @@ export interface PlannerTemplateCandidate {
   score: number;
   matched_terms: string[];
   reason: string;
+  evidence?: PlannerTemplateCandidateEvidence;
 }
 
 export interface PlannerTemplateSelectionResponse {
@@ -1271,9 +1519,30 @@ export interface PlannerTemplateSelectionResponse {
     planner_model: string;
     intent_tokens: string[];
     provider_id?: string;
+    requested_provider_id?: string;
+    requested_model?: string;
+    orchestrator_profile_id?: string;
+    orchestrator_system_prompt?: string;
+    preferred_subagent_profile_ids?: string[];
+    prefer_domain_match?: boolean;
+    default_max_agent_nodes?: number;
+    require_review?: boolean;
     fallback_used?: boolean;
     fallback_reason?: string;
   };
+}
+
+export interface PlannerPlanOptionContent {
+  source: "primary" | "alternative";
+  template_id: string;
+  execution_template_id: string;
+  template_name: string;
+  recommendation_reason: string;
+  recommendation_evidence?: PlannerTemplateCandidateEvidence;
+  comparison_rationale?: string;
+  candidate_plan: RunPlanRecord;
+  validation: PlannerValidationResult;
+  confirmation_checklist: Record<string, unknown>;
 }
 
 export interface PlannerCandidatePlanRequest {
@@ -1324,11 +1593,24 @@ export interface PlannerRegistryRecommendation {
   node_name: string;
   agent_profile_id: string | null;
   agent_profile_name: string | null;
+  runtime_agent_ref: string | null;
   openclaw_agent_id: string | null;
   skill_ids: string[];
+  allowed_tools: string[];
   score: number;
   reason: string;
   warnings: string[];
+  evidence?: {
+    preferred_rank?: number | null;
+    policy_score?: number;
+    profile_token_score?: number;
+    skill_score?: number;
+    readiness_score?: number;
+    disallowed_penalty?: number;
+    domain_overlap_score?: number;
+    matched_domains?: string[];
+    coverage_domains?: string[];
+  };
 }
 
 export interface PlannerDagDraftResponse {
@@ -1343,6 +1625,14 @@ export interface PlannerDagDraftResponse {
     draft_strategy: "template_variant" | "registry_synthesis";
     human_confirmation_required: boolean;
     provider_id?: string;
+    requested_provider_id?: string;
+    requested_model?: string;
+    orchestrator_profile_id?: string;
+    orchestrator_system_prompt?: string;
+    preferred_subagent_profile_ids?: string[];
+    prefer_domain_match?: boolean;
+    default_max_agent_nodes?: number;
+    require_review?: boolean;
     fallback_used?: boolean;
     fallback_reason?: string;
   };
@@ -1501,6 +1791,9 @@ export interface RunRecord {
   updated_at: string;
   inputs: Record<string, unknown>;
   proposal_id: string | null;
+  source_run_id?: string | null;
+  rerun_reason?: string | null;
+  rerun_idempotency_key?: string | null;
 }
 
 export interface DispatchEnvelope {
@@ -1515,7 +1808,10 @@ export interface DispatchEnvelope {
   node_name: string;
   node_type: string;
   agent_profile: string | null;
-  openclaw_agent_id: string | null;
+  runtime_agent_ref: string | null;
+  agent_runtime: string | null;
+  harness_profile: string | null;
+  openclaw_agent_id?: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
   registry_provenance: RegistryProvenance;
@@ -1621,7 +1917,12 @@ export interface NormalizedExecutionReport {
     message: string;
   } | null;
   raw_ref: {
+    job_id?: string | null;
+    worker_id?: string | null;
+    lease_id?: string | null;
+    target_kind?: ExecutionTargetKind | null;
     dispatch_id: string | null;
+    provider_refs?: Record<string, string | null>;
     openclaw_task_id: string | null;
     openclaw_session_id: string | null;
   };
@@ -1642,7 +1943,12 @@ export interface OpenClawReportCallbackRequest {
     message: string;
   } | null;
   raw_ref?: {
+    job_id?: string | null;
+    worker_id?: string | null;
+    lease_id?: string | null;
+    target_kind?: ExecutionTargetKind | null;
     dispatch_id: string | null;
+    provider_refs?: Record<string, string | null>;
     openclaw_task_id: string | null;
     openclaw_session_id: string | null;
   } | null;
@@ -1670,6 +1976,7 @@ export interface MobileRunTaskItem {
   attempt: number;
   started_at: string | null;
   finished_at: string | null;
+  runtime_agent_ref: string | null;
   openclaw_agent_id: string | null;
   execution_ref: ExecutionRef;
 }

@@ -1,6 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { ORCHESTRATOR_PROFILES_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getActiveWorkspaceId } from "./request-security.js";
 import type {
   OrchestratorProfileRecord,
   UpsertOrchestratorProfileRequest,
@@ -12,15 +13,11 @@ function profilePath(orchestratorId: string): string {
 }
 
 function readJsonFile<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+  return getJsonStorageBackend().readJson<T>(filePath);
 }
 
 function listJsonFiles(dirPath: string): string[] {
-  ensureDir(dirPath);
-  return fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dirPath, entry.name));
+  return getJsonStorageBackend().listJsonFiles(dirPath);
 }
 
 function uniqueStrings(value: unknown): string[] {
@@ -45,19 +42,25 @@ function resolveId(input: { explicitId?: string; name: string; fallback: string 
 }
 
 export function listOrchestratorProfiles(): OrchestratorProfileRecord[] {
-  const profiles = listJsonFiles(ORCHESTRATOR_PROFILES_DIR).map((file) =>
-    readJsonFile<OrchestratorProfileRecord>(file),
-  );
+  const activeWorkspaceId = getActiveWorkspaceId();
+  const profiles = listJsonFiles(ORCHESTRATOR_PROFILES_DIR)
+    .map((file) => readJsonFile<OrchestratorProfileRecord>(file))
+    .map((profile) => ({ ...profile, workspace_id: profile.workspace_id || "default" }))
+    .filter((profile) => !activeWorkspaceId || profile.workspace_id === activeWorkspaceId);
   profiles.sort((a, b) => a.orchestrator_id.localeCompare(b.orchestrator_id));
   return profiles;
 }
 
 export function getOrchestratorProfile(orchestratorId: string): OrchestratorProfileRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = profilePath(orchestratorId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return readJsonFile<OrchestratorProfileRecord>(filePath);
+  const profile = readJsonFile<OrchestratorProfileRecord>(filePath);
+  const normalized = { ...profile, workspace_id: profile.workspace_id || "default" };
+  const activeWorkspaceId = getActiveWorkspaceId();
+  return activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId ? null : normalized;
 }
 
 export function upsertOrchestratorProfile(
@@ -69,10 +72,19 @@ export function upsertOrchestratorProfile(
     name: input.name,
     fallback: "orchestrator",
   });
+  const existingProfilePath = profilePath(orchestratorId);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  if (getJsonStorageBackend().exists(existingProfilePath)) {
+    const existing = readJsonFile<OrchestratorProfileRecord>(existingProfilePath);
+    if (activeWorkspaceId && (existing.workspace_id || "default") !== activeWorkspaceId) {
+      throw new Error("ORCHESTRATOR_PROFILE_ID_CONFLICT");
+    }
+  }
   const current = getOrchestratorProfile(orchestratorId);
   const timestamp = nowIso();
   const profile: OrchestratorProfileRecord = {
     orchestrator_id: orchestratorId,
+    workspace_id: getActiveWorkspaceId() || current?.workspace_id || "default",
     name: input.name.trim(),
     provider: input.provider?.trim() || current?.provider || "",
     model: input.model?.trim() || current?.model || "",

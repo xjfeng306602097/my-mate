@@ -21,8 +21,11 @@ import {
   deriveThreadOverview,
   extractPlanOptionContent,
   getConversationMessageText,
+  getPlanRecommendationEvidence,
+  getPlanReason,
   projectThreadMessages,
   projectConversationMessages,
+  getRegistryRecommendationEvidence,
   summarizeValidationState,
 } from "@/lib/task-thread";
 import type {
@@ -464,6 +467,8 @@ test("buildPlanOptionsNarrative summarizes primary and alternative plans", () =>
         template_id: "template-primary",
         template_name: "Primary route",
         recommendation_reason: "Best fit for the main objective.",
+        comparison_rationale:
+          "Primary route is the current recommended route because it carries fewer warnings than Alternative route.",
         candidate_plan: {
           compiled_nodes: [{ id: "a" }, { id: "b" }, { id: "c" }],
           frontier: ["a"],
@@ -519,7 +524,7 @@ test("buildPlanOptionsNarrative summarizes primary and alternative plans", () =>
   });
 
   assert.equal(narrative?.revision, 5);
-  assert.match(narrative?.comparisonSummary || "", /Primary route/i);
+  assert.match(narrative?.comparisonSummary || "", /fewer warnings than Alternative route/i);
   assert.equal(narrative?.summaries.length, 2);
   assert.equal(narrative?.summaries[0].nodeCount, 3);
 });
@@ -2029,4 +2034,90 @@ test("buildOrchestratorTurns and briefing avoid leaking planner-style current pl
   assert.match(briefing.items[0]?.detail || "", /Validate a cleaner orchestrator narrative/);
   assert.doesNotMatch(briefing.items[0]?.detail || "", /Matched intent terms/i);
   assert.doesNotMatch(briefing.items[0]?.detail || "", /planner-final-demo/);
+});
+
+test("getPlanReason appends structured recommendation evidence when available", () => {
+  const text = getPlanReason({
+    source: "primary",
+    template_id: "template-a",
+    template_name: "Acceptance Route",
+    recommendation_reason: "Best fit for the acceptance flow.",
+    recommendation_evidence: {
+      coverage_score: 0.75,
+      registry_readiness_score: 1,
+      domain_overlap_score: 0.5,
+      matched_domains: ["review", "coding"],
+    },
+    validation: buildValidation({
+      passed: true,
+      warnings: [],
+    }),
+  });
+
+  assert.match(text || "", /Best fit for the acceptance flow\./);
+  assert.match(text || "", /Domain fit: Approval and review, Software engineering\./);
+  assert.match(text || "", /coverage 75%/i);
+  assert.match(text || "", /registry readiness 100%/i);
+  assert.match(text || "", /domain overlap 50%/i);
+});
+
+test("getPlanRecommendationEvidence returns chips and metrics for route cards", () => {
+  const evidence = getPlanRecommendationEvidence({
+    source: "primary",
+    template_id: "template-a",
+    template_name: "Acceptance Route",
+    recommendation_reason: "Best fit for the acceptance flow.",
+    recommendation_evidence: {
+      coverage_score: 0.75,
+      density_score: 0.5,
+      registry_readiness_score: 1,
+      domain_overlap_score: 0.5,
+      matched_domains: ["review", "coding"],
+      metadata_domain_match: true,
+    },
+  });
+
+  assert.ok(evidence);
+  assert.deepEqual(
+    evidence?.chips.map((chip) => chip.label),
+    ["Domain: Approval and review, Software engineering", "Metadata domain"],
+  );
+  assert.deepEqual(
+    evidence?.metrics.map((metric) => `${metric.label}:${metric.value}`),
+    ["Coverage:75%", "Density:50%", "Readiness:100%", "Overlap:50%"],
+  );
+});
+
+test("getRegistryRecommendationEvidence returns coverage fill evidence for draft recommendations", () => {
+  const evidence = getRegistryRecommendationEvidence({
+    node_id: "node_task_2",
+    node_name: "Review Gate",
+    agent_profile_id: "review-approver",
+    agent_profile_name: "Review Approver",
+    allowed_tools: ["read"],
+    evidence: {
+      coverage_domains: ["review"],
+      matched_domains: ["review", "research"],
+      profile_token_score: 0.42,
+      skill_score: 0.67,
+      readiness_score: 1,
+      domain_overlap_score: 0.5,
+      preferred_rank: null,
+    },
+  });
+
+  assert.ok(evidence);
+  assert.deepEqual(
+    evidence?.chips.map((chip) => chip.label),
+    ["Coverage: Approval and review", "Domain: Approval and review, Research and analysis"],
+  );
+  assert.deepEqual(
+    evidence?.metrics.map((metric) => `${metric.label}:${metric.value}`),
+    ["Token:0.42", "Skill:0.67", "Readiness:1.00", "Overlap:0.50"],
+  );
+  assert.deepEqual(evidence?.detailLines, [
+    "Coverage fill: Approval and review.",
+    "Matched planner domains: Approval and review, Research and analysis.",
+    "Tools: read.",
+  ]);
 });

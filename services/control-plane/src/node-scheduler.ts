@@ -101,6 +101,9 @@ export function unlockReadyNodeRuns(
   plan: RunPlanRecord,
   nodeRuns: NodeRunRecord[],
   timestamp: string,
+  options?: {
+    isInboundEdgeSatisfied?: (edge: RunPlanRecord["edges"][number]) => boolean;
+  },
 ): CompiledNodeRecord[] {
   const compiledByNodeId = new Map(plan.compiled_nodes.map((node) => [node.node_id, node]));
   const nodeRunById = new Map(nodeRuns.map((nodeRun) => [nodeRun.node_run_id, nodeRun]));
@@ -119,7 +122,10 @@ export function unlockReadyNodeRuns(
         return false;
       }
       const dependencyRun = nodeRunById.get(dependency.node_run_id);
-      return ["completed", "skipped"].includes(dependencyRun?.status ?? "");
+      return (
+        ["completed", "skipped"].includes(dependencyRun?.status ?? "") &&
+        (options?.isInboundEdgeSatisfied?.(edge) ?? true)
+      );
     });
 
     if (!allDependenciesCompleted) {

@@ -20,10 +20,18 @@ import {
   confirmDagPatch,
   confirmSessionPlan,
   createRunFromSession,
+  createRunEvaluation,
+  createRunReplay,
+  createRunScorecard,
   createSessionIntervention,
   createSessionDraft,
   getMission,
   getRunGraph,
+  getRunEvaluation,
+  getRunEvaluations,
+  getRunRuntime,
+  getRunScorecards,
+  getRunTrace,
   planSession,
   rejectDagPatch,
   reviseSessionPlan,
@@ -38,7 +46,12 @@ import type {
   MissionRouteSummary,
   MissionSpecSummary,
   MissionView,
+  EvaluationResult,
+  ReplayResult,
   RuntimeGraphSummary,
+  RuntimeRunProjection,
+  ScorecardResult,
+  TraceProjection,
   SessionMessageRecord,
 } from "@/lib/types";
 import {
@@ -48,7 +61,9 @@ import {
   type SchemaValue,
 } from "@/components/schema-form";
 import { EmptyState } from "@/components/empty-state";
+import { RuntimeTopology } from "@/components/runtime-topology";
 import { Badge, Panel, PrimaryButton, Screen, Section } from "@/components/ui";
+import { upsertRuntimeRecord } from "@/lib/runtime-evaluation";
 import {
   buildComposerDirectiveChipsV2,
   buildExecutionNarrativeV2,
@@ -65,8 +80,10 @@ import {
   getConversationMessageText,
   getLatestMessage,
   getMessageKindLabel,
+  getPlanRecommendationEvidence,
   getPlanReason,
   getPlanRevision,
+  getRegistryRecommendationEvidence,
   isConversationTextMessage,
   projectConversationMessages,
   projectThreadMessages,
@@ -107,9 +124,6 @@ type WorkspaceSection = {
 type InterventionMessage = SessionMessageRecord & {
   kind: "approval_card" | "human_input_card" | "intervention_card" | "dag_patch_card";
 };
-
-type RuntimeGraphNodeView = RuntimeGraphSummary["nodes"][number];
-type RuntimeGraphWorkPackageView = RuntimeGraphSummary["workPackages"][number];
 
 function getMissionSpecFromDetail(
   detail: MissionDetailResponse | null,
@@ -236,57 +250,6 @@ function runtimeStatusTone(status: string): WorkspaceSectionTone {
     return "warn";
   }
   if (status === "running" || status === "ready") {
-    return "success";
-  }
-  return "neutral";
-}
-
-function runtimePackageTone(status: RuntimeGraphWorkPackageView["status"]): WorkspaceSectionTone {
-  if (status === "done") {
-    return "success";
-  }
-  if (status === "blocked") {
-    return "warn";
-  }
-  if (status === "active") {
-    return "success";
-  }
-  return "neutral";
-}
-
-function runtimeMarkerLabel(marker: RuntimeGraphNodeView["markers"][number]): string {
-  if (marker === "active_frontier") {
-    return "Frontier";
-  }
-  if (marker === "waiting_human") {
-    return "Human wait";
-  }
-  if (marker === "approval_gate") {
-    return "Approval";
-  }
-  if (marker === "human_input_gate") {
-    return "Input";
-  }
-  if (marker === "blocked") {
-    return "Blocked";
-  }
-  if (marker === "skipped") {
-    return "Skipped";
-  }
-  if (marker === "terminal") {
-    return "Terminal";
-  }
-  return "Ready";
-}
-
-function runtimeMarkerTone(marker: RuntimeGraphNodeView["markers"][number]): WorkspaceSectionTone {
-  if (marker === "blocked") {
-    return "danger";
-  }
-  if (marker === "waiting_human" || marker === "approval_gate" || marker === "human_input_gate") {
-    return "warn";
-  }
-  if (marker === "active_frontier" || marker === "ready" || marker === "terminal") {
     return "success";
   }
   return "neutral";
@@ -540,6 +503,12 @@ export default function TaskThreadScreen() {
   const scrollViewRef = useRef<ScrollView | null>(null);
   const [data, setData] = useState<MissionDetailResponse | null>(null);
   const [runtimeGraph, setRuntimeGraph] = useState<RuntimeGraphSummary | null>(null);
+  const [runtimeProjection, setRuntimeProjection] = useState<RuntimeRunProjection | null>(null);
+  const [runtimeTrace, setRuntimeTrace] = useState<TraceProjection | null>(null);
+  const [runtimeScorecards, setRuntimeScorecards] = useState<ScorecardResult[]>([]);
+  const [runtimeEvaluations, setRuntimeEvaluations] = useState<EvaluationResult[]>([]);
+  const [runtimeReplay, setRuntimeReplay] = useState<ReplayResult | null>(null);
+  const [runtimeActionLoading, setRuntimeActionLoading] = useState<"scorecard" | "evaluation" | "replay" | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<SessionMessageRecord[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -576,15 +545,39 @@ export default function TaskThreadScreen() {
   const load = useCallback(async (): Promise<MissionDetailResponse | null> => {
     if (!sessionId) {
       setRuntimeGraph(null);
+      setRuntimeProjection(null);
+      setRuntimeTrace(null);
+      setRuntimeScorecards([]);
+      setRuntimeEvaluations([]);
+      setRuntimeReplay(null);
       return null;
     }
     try {
       setError(null);
       const next = await getMission(sessionId);
       const latestRunId = getLatestRunIdFromMissionDetail(next);
-      const graph = latestRunId ? await getRunGraph(latestRunId).catch(() => null) : null;
+      let projection: RuntimeRunProjection | null = null;
+      let graphFallback: RuntimeGraphSummary | null = null;
+      let trace: TraceProjection | null = null;
+      let scorecards: ScorecardResult[] = [];
+      let evaluations: EvaluationResult[] = [];
+      if (latestRunId) {
+        [projection, graphFallback, trace, scorecards, evaluations] = await Promise.all([
+            getRunRuntime(latestRunId).catch(() => null),
+            getRunGraph(latestRunId).catch(() => null),
+            getRunTrace(latestRunId).catch(() => null),
+            getRunScorecards(latestRunId).catch(() => []),
+            getRunEvaluations(latestRunId).catch(() => []),
+          ]);
+      }
+      const graph = projection?.graph || graphFallback;
       setData(next);
+      setRuntimeProjection(projection);
       setRuntimeGraph(graph);
+      setRuntimeTrace(trace);
+      setRuntimeScorecards(scorecards);
+      setRuntimeEvaluations(evaluations);
+      setRuntimeReplay(null);
       setOptimisticMessages((current) => {
         const persistedIds = new Set(next.messages.map((message) => message.message_id));
         return current.filter((message) => !persistedIds.has(message.message_id));
@@ -593,12 +586,66 @@ export default function TaskThreadScreen() {
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Load failed");
       setRuntimeGraph(null);
+      setRuntimeProjection(null);
+      setRuntimeTrace(null);
+      setRuntimeScorecards([]);
+      setRuntimeEvaluations([]);
+      setRuntimeReplay(null);
       return null;
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [sessionId]);
+
+  const handleCreateRuntimeScorecard = useCallback(async () => {
+    const runId = getLatestRunIdFromMissionDetail(data);
+    if (!runId || runtimeActionLoading) return;
+    setRuntimeActionLoading("scorecard");
+    setError(null);
+    try {
+      const result = await createRunScorecard(runId);
+      setRuntimeScorecards((current) => upsertRuntimeRecord(current, result, "scorecard_id"));
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Scorecard creation failed");
+    } finally {
+      setRuntimeActionLoading(null);
+    }
+  }, [data, runtimeActionLoading]);
+
+  const handleRunRuntimeEvaluation = useCallback(async (evaluator: "deterministic-v1" | "none") => {
+    const runId = getLatestRunIdFromMissionDetail(data);
+    if (!runId || runtimeActionLoading) return;
+    setRuntimeActionLoading("evaluation");
+    setError(null);
+    try {
+      let result = await createRunEvaluation(runId, evaluator);
+      setRuntimeEvaluations((current) => upsertRuntimeRecord(current, result, "evaluation_id"));
+      for (let attempt = 0; attempt < 60 && ["queued", "running"].includes(result.status); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        result = await getRunEvaluation(runId, result.evaluation_id);
+        setRuntimeEvaluations((current) => upsertRuntimeRecord(current, result, "evaluation_id"));
+      }
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Runtime evaluation failed");
+    } finally {
+      setRuntimeActionLoading(null);
+    }
+  }, [data, runtimeActionLoading]);
+
+  const handleVerifyRuntimeReplay = useCallback(async () => {
+    const runId = getLatestRunIdFromMissionDetail(data);
+    if (!runId || runtimeActionLoading) return;
+    setRuntimeActionLoading("replay");
+    setError(null);
+    try {
+      setRuntimeReplay(await createRunReplay(runId));
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Replay verification failed");
+    } finally {
+      setRuntimeActionLoading(null);
+    }
+  }, [data, runtimeActionLoading]);
 
   useEffect(() => {
     scrollThreadToTop();
@@ -3311,188 +3358,25 @@ export default function TaskThreadScreen() {
       );
     }
 
-    const nodeNameById = new Map(runtimeGraph.nodes.map((node) => [node.nodeId, node.name]));
-    const visibleNodes =
-      mode === "compact" ? runtimeGraph.nodes.slice(0, 5) : runtimeGraph.nodes;
-    const visibleEdges =
-      mode === "compact" ? runtimeGraph.edges.slice(0, 4) : runtimeGraph.edges;
-    const visiblePackages =
-      mode === "compact" ? runtimeGraph.workPackages.slice(0, 4) : runtimeGraph.workPackages;
-    const monitoring = runtimeGraph.runtimeMonitoring;
-
     return (
-      <View style={styles.runtimeGraphSurface}>
-        <View style={styles.runtimeGraphSummaryCard}>
-          <View style={styles.runtimeGraphSummaryHeader}>
-            <View style={styles.overviewCopy}>
-              <Text style={styles.runtimeGraphEyebrow}>Live execution map</Text>
-              <Text style={styles.runtimeGraphTitle}>
-                {runtimeGraphNarrative?.title || "Live execution map"}
-              </Text>
-              <Text style={styles.runtimeGraphDetail}>
-                {runtimeGraphNarrative?.detail ||
-                  `${runtimeGraph.nodes.length} node(s), ${runtimeGraph.edges.length} edge(s).`}
-              </Text>
-            </View>
-            <Badge label={formatStatus(runtimeGraph.runStatus)} tone={runtimeStatusTone(runtimeGraph.runStatus)} />
-          </View>
-          <View style={styles.metricRow}>
-            <View style={styles.metricChip}>
-              <Text style={styles.metricLabel}>Nodes</Text>
-              <Text style={styles.metricValue}>{runtimeGraph.nodes.length}</Text>
-            </View>
-            <View style={styles.metricChip}>
-              <Text style={styles.metricLabel}>Edges</Text>
-              <Text style={styles.metricValue}>{runtimeGraph.edges.length}</Text>
-            </View>
-            <View style={styles.metricChip}>
-              <Text style={styles.metricLabel}>Frontier</Text>
-              <Text style={styles.metricValue}>{runtimeGraph.frontier.length}</Text>
-            </View>
-            <View style={styles.metricChip}>
-              <Text style={styles.metricLabel}>Packages</Text>
-              <Text style={styles.metricValue}>{runtimeGraph.workPackages.length}</Text>
-            </View>
-          </View>
-          {monitoring ? (
-            <View style={styles.runtimeMonitoringGrid}>
-              <View style={styles.runtimeMonitoringCard}>
-                <View style={styles.optionTopline}>
-                  <Badge label={monitoring.progress.label} tone={monitoring.progress.tone} />
-                  <Text style={styles.optionSummaryText}>
-                    {monitoring.progress.percentComplete}% complete
-                  </Text>
-                </View>
-                <Text style={styles.runtimeGraphNodeDetail}>{monitoring.progress.detail}</Text>
-                <Text style={styles.runtimeGraphNodeMeta}>
-                  Avg node progress {monitoring.progress.averageNodeProgress}% / frontier{" "}
-                  {monitoring.progress.frontierCount}
-                </Text>
-              </View>
-              <View style={styles.runtimeMonitoringCard}>
-                <View style={styles.optionTopline}>
-                  <Badge label="Checkpoints" tone={monitoring.checkpoints.tone} />
-                  <Text style={styles.optionSummaryText}>{monitoring.checkpoints.nextActionLabel}</Text>
-                </View>
-                <Text style={styles.runtimeGraphNodeDetail}>{monitoring.checkpoints.detail}</Text>
-                {monitoring.checkpoints.nextCheckpointLabel ? (
-                  <Text style={styles.runtimeGraphNodeMeta}>
-                    Next: {monitoring.checkpoints.nextCheckpointLabel}
-                  </Text>
-                ) : null}
-              </View>
-              <View style={styles.runtimeMonitoringCard}>
-                <View style={styles.optionTopline}>
-                  <Badge label={monitoring.cost.label} tone={monitoring.cost.tone} />
-                  <Text style={styles.optionSummaryText}>
-                    {monitoring.cost.capacityUtilization !== null
-                      ? `${Math.round(monitoring.cost.capacityUtilization * 100)}% capacity`
-                      : "Capacity open"}
-                  </Text>
-                </View>
-                <Text style={styles.runtimeGraphNodeDetail}>{monitoring.cost.detail}</Text>
-                <Text style={styles.runtimeGraphNodeMeta}>
-                  {monitoring.cost.budgetPolicyPresent ? "Budget policy present" : "No explicit budget policy"}
-                </Text>
-              </View>
-            </View>
-          ) : null}
-        </View>
-
-        {visiblePackages.length > 0 ? (
-          <View style={styles.runtimeGraphPackageList}>
-            {visiblePackages.map((pkg) => (
-              <View key={`runtime-package-${pkg.key}`} style={styles.runtimeGraphPackageCard}>
-                <View style={styles.runtimeGraphPackageHeader}>
-                  <Text style={styles.runtimeGraphPackageTitle}>{pkg.label}</Text>
-                  <Badge
-                    label={
-                      pkg.status === "done"
-                        ? "Done"
-                        : pkg.status === "active"
-                          ? "Live"
-                          : pkg.status === "blocked"
-                            ? "Blocked"
-                            : "Queued"
-                    }
-                    tone={runtimePackageTone(pkg.status)}
-                  />
-                </View>
-                <Text style={styles.runtimeGraphPackageMeta}>
-                  {pkg.nodeRunIds.length} node(s), {pkg.readyCount} ready, {pkg.activeCount} active,
-                  {` ${pkg.blockedCount} blocked`}
-                </Text>
-              </View>
-            ))}
-          </View>
-        ) : null}
-
-        <View style={styles.runtimeGraphNodeList}>
-          {visibleNodes.map((node, index) => (
-            <View key={node.nodeRunId} style={styles.runtimeGraphNodeRow}>
-              <View
-                style={[
-                  styles.runtimeGraphNodeIndex,
-                  runtimeStatusTone(node.status) === "danger"
-                    ? styles.runtimeGraphNodeIndexDanger
-                    : runtimeStatusTone(node.status) === "warn"
-                      ? styles.runtimeGraphNodeIndexWarn
-                      : runtimeStatusTone(node.status) === "success"
-                        ? styles.runtimeGraphNodeIndexSuccess
-                        : null,
-                ]}
-              >
-                <Text style={styles.runtimeGraphNodeIndexText}>{index + 1}</Text>
-              </View>
-              <View style={styles.runtimeGraphNodeCard}>
-                <View style={styles.runtimeGraphNodeHeader}>
-                  <Text style={styles.runtimeGraphNodeTitle}>{node.name}</Text>
-                  <Badge label={formatStatus(node.status)} tone={runtimeStatusTone(node.status)} />
-                </View>
-                <Text style={styles.runtimeGraphNodeMeta}>
-                  {node.workPackageLabel} / {node.type}
-                  {node.agentProfile ? ` / ${node.agentProfile}` : ""}
-                </Text>
-                {node.progress.message ? (
-                  <Text style={styles.runtimeGraphNodeDetail}>{node.progress.message}</Text>
-                ) : null}
-                {node.markers.length > 0 ? (
-                  <View style={styles.runtimeGraphMarkerRow}>
-                    {node.markers.slice(0, 4).map((marker) => (
-                      <Badge
-                        key={`${node.nodeRunId}-${marker}`}
-                        label={runtimeMarkerLabel(marker)}
-                        tone={runtimeMarkerTone(marker)}
-                      />
-                    ))}
-                  </View>
-                ) : null}
-              </View>
-            </View>
-          ))}
-        </View>
-
-        {visibleEdges.length > 0 ? (
-          <View style={styles.runtimeGraphEdgeList}>
-            {visibleEdges.map((edge, index) => (
-              <View key={`runtime-edge-${edge.fromNodeId}-${edge.toNodeId}-${index}`} style={styles.runtimeGraphEdgeRow}>
-                <Text style={styles.runtimeGraphEdgeText}>
-                  {nodeNameById.get(edge.fromNodeId) || edge.fromNodeId} {"->"}{" "}
-                  {nodeNameById.get(edge.toNodeId) || edge.toNodeId}
-                </Text>
-                <Badge label={formatStatus(edge.status)} tone={runtimeStatusTone(edge.status)} />
-              </View>
-            ))}
-          </View>
-        ) : null}
-
-        {mode === "compact" && runtimeGraph.nodes.length > visibleNodes.length ? (
-          <Pressable onPress={() => focusWorkspaceStage("execution")}>
-            <Text style={styles.linkText}>Open full topology</Text>
-          </Pressable>
-        ) : null}
-      </View>
+      <RuntimeTopology
+        graph={runtimeGraph}
+        projection={runtimeProjection}
+        trace={runtimeTrace}
+        scorecards={runtimeScorecards}
+        evaluations={runtimeEvaluations}
+        replay={runtimeReplay}
+        mode={mode}
+        title={runtimeGraphNarrative?.title}
+        detail={runtimeGraphNarrative?.detail}
+        actionLoading={runtimeActionLoading}
+        onOpenFull={mode === "compact" ? () => focusWorkspaceStage("execution") : undefined}
+        onCreateScorecard={handleCreateRuntimeScorecard}
+        onRunEvaluation={handleRunRuntimeEvaluation}
+        onVerifyReplay={handleVerifyRuntimeReplay}
+      />
     );
+
   }
 
   function renderExecutionStage() {
@@ -4427,6 +4311,26 @@ function MessageBody(props: {
     const registryRecommendations = Array.isArray(message.content.registry_recommendations)
       ? message.content.registry_recommendations
       : [];
+    const registryEvidence = registryRecommendations
+      .slice(0, 2)
+      .map((recommendation) =>
+        isObject(recommendation)
+          ? {
+              key:
+                asString(recommendation.node_id) ||
+                asString(recommendation.agent_profile_id) ||
+                asString(recommendation.node_name) ||
+                "recommendation",
+              name:
+                asString(recommendation.agent_profile_name) ||
+                asString(recommendation.agent_profile_id) ||
+                asString(recommendation.node_name) ||
+                "Registry recommendation",
+              summary: getRegistryRecommendationEvidence(recommendation),
+            }
+          : null,
+      )
+      .filter((item): item is { key: string; name: string; summary: NonNullable<ReturnType<typeof getRegistryRecommendationEvidence>> } => !!item?.summary);
     const validationSummary = summarizeValidationState(validation as never);
     return (
       <View style={styles.cardContent}>
@@ -4450,6 +4354,37 @@ function MessageBody(props: {
         <Text style={styles.messageText}>
           Registry recommendations: {registryRecommendations.length}
         </Text>
+        {registryEvidence.length > 0 ? (
+          <View style={styles.recommendationEvidenceBlock}>
+            {registryEvidence.map((item) => (
+              <View key={`${message.message_id}-${item.key}`} style={styles.registryEvidenceCard}>
+                <Text style={styles.registryEvidenceTitle}>{item.name}</Text>
+                {item.summary.chips.length > 0 ? (
+                  <View style={styles.optionBadges}>
+                    {item.summary.chips.map((chip) => (
+                      <Badge key={`${item.key}-${chip.label}`} label={chip.label} tone={chip.tone} />
+                    ))}
+                  </View>
+                ) : null}
+                {item.summary.metrics.length > 0 ? (
+                  <View style={styles.metricRow}>
+                    {item.summary.metrics.map((metric) => (
+                      <View key={`${item.key}-${metric.label}`} style={styles.metricChip}>
+                        <Text style={styles.metricLabel}>{metric.label}</Text>
+                        <Text style={styles.metricValue}>{metric.value}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+                {item.summary.detailLines.map((line) => (
+                  <Text key={`${item.key}-${line}`} style={styles.optionEvidenceText}>
+                    {line}
+                  </Text>
+                ))}
+              </View>
+            ))}
+          </View>
+        ) : null}
         <Text style={styles.messageText}>Warnings: {warnings.length}</Text>
         {warnings.slice(0, 3).map((warning) => (
           <Text key={warning} style={styles.warningText}>
@@ -4577,6 +4512,17 @@ function MessageBody(props: {
             </Text>
             {alternateSummary.recommendationReason ? (
               <Text style={styles.planCompactText}>{alternateSummary.recommendationReason}</Text>
+            ) : null}
+            {alternateSummary.recommendationEvidence?.chips?.length ? (
+              <View style={styles.optionBadges}>
+                {alternateSummary.recommendationEvidence.chips.map((chip) => (
+                  <Badge
+                    key={`${alternateSummary.templateName}-${chip.label}`}
+                    label={chip.label}
+                    tone={chip.tone}
+                  />
+                ))}
+              </View>
             ) : null}
             <View style={styles.inlineActions}>
               <PrimaryButton
@@ -5024,6 +4970,7 @@ function PlanOptionCard(props: {
     asString(optionContent.template_id) ||
     `${optionKey} option`;
   const recommendationReason = getPlanReason(optionContent);
+  const recommendationEvidence = getPlanRecommendationEvidence(optionContent);
   const candidatePlan = isObject(optionContent.candidate_plan)
     ? optionContent.candidate_plan
     : null;
@@ -5063,6 +5010,32 @@ function PlanOptionCard(props: {
       </View>
       <Text style={styles.messageText}>Template: {templateName}</Text>
       {recommendationReason ? <Text style={styles.messageText}>{recommendationReason}</Text> : null}
+      {recommendationEvidence ? (
+        <View style={styles.recommendationEvidenceBlock}>
+          {recommendationEvidence.chips.length > 0 ? (
+            <View style={styles.optionBadges}>
+              {recommendationEvidence.chips.map((chip) => (
+                <Badge key={`${templateName}-${chip.label}`} label={chip.label} tone={chip.tone} />
+              ))}
+            </View>
+          ) : null}
+          {recommendationEvidence.metrics.length > 0 ? (
+            <View style={styles.metricRow}>
+              {recommendationEvidence.metrics.map((metric) => (
+                <View key={`${templateName}-${metric.label}`} style={styles.metricChip}>
+                  <Text style={styles.metricLabel}>{metric.label}</Text>
+                  <Text style={styles.metricValue}>{metric.value}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {recommendationEvidence.detailLines.map((line) => (
+            <Text key={`${templateName}-${line}`} style={styles.optionEvidenceText}>
+              {line}
+            </Text>
+          ))}
+        </View>
+      ) : null}
       <Text style={styles.optionHintText}>{validationSummary.runHint}</Text>
 
       {checklist ? (
@@ -6168,168 +6141,6 @@ const styles = StyleSheet.create({
   executionStageStack: {
     gap: 12,
   },
-  runtimeGraphSurface: {
-    gap: 10,
-  },
-  runtimeGraphSummaryCard: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#c7d2fe",
-    backgroundColor: "#f8fbff",
-    padding: 12,
-    gap: 10,
-  },
-  runtimeGraphSummaryHeader: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  runtimeGraphEyebrow: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#1d4ed8",
-    textTransform: "uppercase",
-  },
-  runtimeGraphTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#0f172a",
-  },
-  runtimeGraphDetail: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: "#334155",
-  },
-  runtimeGraphPackageList: {
-    gap: 8,
-  },
-  runtimeMonitoringGrid: {
-    gap: 8,
-  },
-  runtimeMonitoringCard: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#dbeafe",
-    backgroundColor: "#f8fbff",
-    padding: 10,
-    gap: 6,
-  },
-  runtimeGraphPackageCard: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#d7dfeb",
-    backgroundColor: "#ffffff",
-    padding: 10,
-    gap: 6,
-  },
-  runtimeGraphPackageHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  runtimeGraphPackageTitle: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#0f172a",
-  },
-  runtimeGraphPackageMeta: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: "#475569",
-  },
-  runtimeGraphNodeList: {
-    gap: 8,
-  },
-  runtimeGraphNodeRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  runtimeGraphNodeIndex: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#d7dfeb",
-    backgroundColor: "#f8fafc",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  runtimeGraphNodeIndexWarn: {
-    borderColor: "#fcd34d",
-    backgroundColor: "#fffbeb",
-  },
-  runtimeGraphNodeIndexSuccess: {
-    borderColor: "#bbf7d0",
-    backgroundColor: "#f0fdf4",
-  },
-  runtimeGraphNodeIndexDanger: {
-    borderColor: "#fecaca",
-    backgroundColor: "#fef2f2",
-  },
-  runtimeGraphNodeIndexText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#334155",
-  },
-  runtimeGraphNodeCard: {
-    flex: 1,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#ffffff",
-    padding: 10,
-    gap: 6,
-  },
-  runtimeGraphNodeHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  runtimeGraphNodeTitle: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#0f172a",
-  },
-  runtimeGraphNodeMeta: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: "#64748b",
-  },
-  runtimeGraphNodeDetail: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: "#334155",
-  },
-  runtimeGraphMarkerRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-  runtimeGraphEdgeList: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#ffffff",
-    padding: 10,
-    gap: 8,
-  },
-  runtimeGraphEdgeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  runtimeGraphEdgeText: {
-    flex: 1,
-    fontSize: 12,
-    lineHeight: 17,
-    color: "#334155",
-  },
   workPackageList: {
     gap: 10,
   },
@@ -6930,6 +6741,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: "#334155",
+  },
+  recommendationEvidenceBlock: {
+    gap: 8,
+  },
+  registryEvidenceCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#f8fafc",
+    padding: 10,
+    gap: 8,
+  },
+  registryEvidenceTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  optionEvidenceText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#475569",
   },
   checklistBlock: {
     borderRadius: 8,

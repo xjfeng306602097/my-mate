@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type Anthropic from "@anthropic-ai/sdk";
 import {
+  generateDagDraft,
   recommendTemplate,
   setAnthropicClientFactory,
   llmClaudePlannerProvider,
@@ -9,6 +10,8 @@ import {
 import {
   buildPublishedTemplate,
   resetTestRoot,
+  seedAgentProfile,
+  seedSkill,
   seedTemplate,
 } from "./helpers.js";
 
@@ -20,7 +23,10 @@ function setProviderEnv(value: string): void {
   process.env.MY_MATE_PLANNER_PROVIDER = value;
 }
 
-function buildMockToolMessage(toolInput: Record<string, unknown>): Anthropic.Message {
+function buildMockToolMessage(
+  toolInput: Record<string, unknown>,
+  toolName = "select_template",
+): Anthropic.Message {
   return {
     id: "msg_test",
     type: "message",
@@ -30,7 +36,7 @@ function buildMockToolMessage(toolInput: Record<string, unknown>): Anthropic.Mes
       {
         type: "tool_use",
         id: "toolu_test",
-        name: "select_template",
+        name: toolName,
         input: toolInput,
       } as Anthropic.ToolUseBlock,
     ],
@@ -74,6 +80,43 @@ function seedTwoTemplates(): void {
   );
 }
 
+function seedResearchContentRegistry(): void {
+  seedSkill({
+    skill_id: "research-analysis",
+    name: "Research Analysis",
+    description: "Research analysis report",
+    category: "research",
+    allowed_tools: ["read", "search"],
+    tags: ["research", "analysis"],
+  });
+  seedSkill({
+    skill_id: "article-writing",
+    name: "Article Writing",
+    description: "Write article content copy",
+    category: "content",
+    allowed_tools: ["read", "write"],
+    tags: ["content", "write"],
+  });
+  seedAgentProfile({
+    profile_id: "research-agent",
+    name: "Research Agent",
+    description: "Research analysis specialist",
+    openclaw_agent_id: "research-openclaw",
+    default_skills: ["research-analysis"],
+    allowed_tools: ["read", "search"],
+    policy_tags: ["research"],
+  });
+  seedAgentProfile({
+    profile_id: "writer-agent",
+    name: "Writer Agent",
+    description: "Article content writer",
+    openclaw_agent_id: "writer-openclaw",
+    default_skills: ["article-writing"],
+    allowed_tools: ["read", "write"],
+    policy_tags: ["content"],
+  });
+}
+
 test("llm_claude_v1 success path returns LLM-provided selection", async () => {
   resetTestRoot();
   setProviderEnv("llm_claude_v1");
@@ -97,6 +140,7 @@ test("llm_claude_v1 success path returns LLM-provided selection", async () => {
     assert.equal(result?.selected_template.template_id, "beta-template");
     assert.equal(result?.planner_context.provider_id, "llm_claude_v1");
     assert.equal(result?.planner_context.fallback_used, false);
+    assert.ok((result?.selected_template.evidence?.coverage_score || 0) >= 0);
   } finally {
     setAnthropicClientFactory(null);
     clearProviderEnv();
@@ -234,12 +278,87 @@ test("llm_claude_v1 missing tool call falls back to rule-based", async () => {
   }
 });
 
-test("llm_claude_v1 generateDagDraft is unsupported and falls back", async () => {
-  // The provider's own throw is what triggers the registry fallback. Verify
-  // the throw happens (the fallback wiring is exercised in the broader
-  // planner.test.ts; here we only cover the provider's contract).
-  await assert.rejects(
-    () => llmClaudePlannerProvider.generateDagDraft({ intent: "x" }),
-    /falling back/,
+test("llm_claude_v1 generateDagDraft safely applies LLM-provided DAG edges", async () => {
+  resetTestRoot();
+  setProviderEnv("llm_claude_v1");
+  seedResearchContentRegistry();
+  const capturedRequests: Array<Record<string, unknown>> = [];
+
+  setAnthropicClientFactory(() =>
+    buildMockClient(async (request) => {
+      capturedRequests.push(request as unknown as Record<string, unknown>);
+      return buildMockToolMessage(
+        {
+          edges: [
+            { from: "node_task_2", to: "node_task_1", label: "llm dependency" },
+            { from: "node_task_1", to: "node_end" },
+          ],
+          reasoning: "Use the second task as upstream context before the first task.",
+        },
+        "shape_dag",
+      );
+    }),
   );
+
+  try {
+    const result = await generateDagDraft({
+      intent: "Need research analysis and write article content",
+      inputs: { goal: "Need research analysis and write article content" },
+      max_agent_nodes: 2,
+    });
+    assert.equal(result.planner_context.provider_id, "llm_claude_v1");
+    assert.equal(result.planner_context.fallback_used, false);
+    assert.equal(result.draft_template.metadata?.planner_dag_shape, "llm_shaped");
+    assert.equal(result.draft_template.metadata?.planner_llm_dag_shape_applied, true);
+    assert.deepEqual(result.draft_template.edges.map((edge) => [edge.from, edge.to]), [
+      ["node_task_2", "node_task_1"],
+      ["node_task_1", "node_end"],
+    ]);
+    assert.equal(result.validation.passed, true);
+    const toolChoice = capturedRequests[0]?.tool_choice as { name?: unknown } | undefined;
+    assert.equal(toolChoice?.name, "shape_dag");
+  } finally {
+    setAnthropicClientFactory(null);
+    clearProviderEnv();
+  }
+});
+
+test("llm_claude_v1 generateDagDraft rejects unsafe DAG edges and keeps deterministic base", async () => {
+  resetTestRoot();
+  setProviderEnv("llm_claude_v1");
+  seedResearchContentRegistry();
+
+  setAnthropicClientFactory(() =>
+    buildMockClient(async () =>
+      buildMockToolMessage(
+        {
+          edges: [
+            { from: "ghost_node", to: "node_end" },
+          ],
+          reasoning: "Invalid hallucinated node.",
+        },
+        "shape_dag",
+      ),
+    ),
+  );
+
+  try {
+    const result = await generateDagDraft({
+      intent: "Need research analysis and write article content",
+      inputs: { goal: "Need research analysis and write article content" },
+      max_agent_nodes: 2,
+    });
+    assert.equal(result.planner_context.provider_id, "llm_claude_v1");
+    assert.equal(result.planner_context.fallback_used, false);
+    assert.equal(result.draft_template.metadata?.planner_llm_dag_shape_applied, false);
+    assert.match(
+      String(result.draft_template.metadata?.planner_llm_dag_shape_fallback_reason || ""),
+      /ghost_node/,
+    );
+    assert.equal(result.draft_template.metadata?.planner_dag_shape, "domain_ordered");
+    assert.equal(result.validation.passed, true);
+  } finally {
+    setAnthropicClientFactory(null);
+    clearProviderEnv();
+  }
 });

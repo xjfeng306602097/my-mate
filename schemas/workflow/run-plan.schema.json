@@ -54,6 +54,15 @@
           "agent_profile": {
             "type": ["string", "null"]
           },
+          "runtime_agent_ref": {
+            "type": ["string", "null"]
+          },
+          "agent_runtime": {
+            "type": ["string", "null"]
+          },
+          "harness_profile": {
+            "type": ["string", "null"]
+          },
           "openclaw_agent_id": {
             "type": ["string", "null"]
           },
@@ -111,6 +120,28 @@
           "execution_ref": {
             "type": "object",
             "properties": {
+              "job_id": {
+                "type": ["string", "null"]
+              },
+              "worker_id": {
+                "type": ["string", "null"]
+              },
+              "lease_id": {
+                "type": ["string", "null"]
+              },
+              "target_kind": {
+                "type": ["string", "null"],
+                "enum": ["local", "external-bridge", "docker-worker", "node-worker", null]
+              },
+              "dispatch_id": {
+                "type": ["string", "null"]
+              },
+              "provider_refs": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "null"]
+                }
+              },
               "openclaw_task_id": {
                 "type": ["string", "null"]
               },
@@ -118,7 +149,16 @@
                 "type": ["string", "null"]
               }
             },
-            "required": ["openclaw_task_id", "openclaw_session_id"],
+            "required": [
+              "job_id",
+              "worker_id",
+              "lease_id",
+              "target_kind",
+              "dispatch_id",
+              "provider_refs",
+              "openclaw_task_id",
+              "openclaw_session_id"
+            ],
             "additionalProperties": false
           },
           "registry_provenance": {
@@ -135,6 +175,10 @@
                 "enum": ["active", "disabled", "missing", null]
               },
               "agent_profile_source": {
+                "type": "string",
+                "enum": ["registry", "template_binding", "fallback", "none"]
+              },
+              "runtime_agent_ref_source": {
                 "type": "string",
                 "enum": ["registry", "template_binding", "fallback", "none"]
               },
@@ -214,6 +258,20 @@
               "tool_bindings"
             ],
             "additionalProperties": false
+          },
+          "work_package": {
+            "type": "object",
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "label": { "type": "string", "minLength": 1 },
+              "order": { "type": "integer", "minimum": 0 },
+              "identity_source": {
+                "type": "string",
+                "enum": ["declared", "compiler_default", "legacy_inferred"]
+              }
+            },
+            "required": ["key", "label", "order", "identity_source"],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -222,6 +280,9 @@
           "name",
           "type",
           "agent_profile",
+          "runtime_agent_ref",
+          "agent_runtime",
+          "harness_profile",
           "openclaw_agent_id",
           "allowed_skills",
           "allowed_tools",
@@ -235,6 +296,7 @@
           "output_contract",
           "execution_ref",
           "registry_provenance"
+          ,"work_package"
         ],
         "additionalProperties": false
       }

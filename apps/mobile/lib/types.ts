@@ -47,6 +47,7 @@ export type PlannerValidationCategory = "required_input" | "registry" | "graph" 
 export type PlannerValidationCode =
   | "missing_required_input"
   | "missing_agent_profile"
+  | "missing_runtime_agent_ref"
   | "missing_openclaw_agent"
   | "unknown_agent_profile"
   | "disabled_agent_profile"
@@ -82,6 +83,7 @@ export interface MobileTask {
   attempt: number;
   started_at: string | null;
   finished_at: string | null;
+  runtime_agent_ref?: string | null;
   openclaw_agent_id: string | null;
   execution_ref: {
     openclaw_task_id: string | null;
@@ -220,6 +222,15 @@ export interface PlannerTemplateCandidate {
   score: number;
   matched_terms: string[];
   reason: string;
+  evidence?: {
+    coverage_score?: number;
+    density_score?: number;
+    registry_readiness_score?: number;
+    domain_overlap_score?: number;
+    matched_domains?: string[];
+    coverage_domains?: string[];
+    metadata_domain_match?: boolean;
+  };
 }
 
 export interface PlannerTemplateSelectionResponse {
@@ -231,12 +242,26 @@ export interface PlannerTemplateSelectionResponse {
   };
 }
 
+export interface PlannerPlanOptionContent {
+  source: "primary" | "alternative";
+  template_id: string;
+  execution_template_id?: string;
+  template_name: string;
+  recommendation_reason: string;
+  recommendation_evidence?: PlannerTemplateCandidate["evidence"];
+  comparison_rationale?: string;
+  candidate_plan: Record<string, unknown>;
+  validation?: PlannerValidationResult;
+  confirmation_checklist?: Record<string, unknown>;
+}
+
 export interface CandidatePlanNode {
   node_run_id: string;
   node_id: string;
   name: string;
   type: string;
   agent_profile: string | null;
+  runtime_agent_ref?: string | null;
   openclaw_agent_id: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
@@ -245,6 +270,7 @@ export interface CandidatePlanNode {
     agent_profile_resolved: string | null;
     agent_profile_status: string | null;
     agent_profile_source: string;
+    runtime_agent_ref_source?: string;
     openclaw_agent_id_source: string;
     skill_bindings: Array<{
       skill_id: string;
@@ -383,6 +409,7 @@ export interface RuntimeGraphNode {
   startedAt: string | null;
   finishedAt: string | null;
   agentProfile: string | null;
+  runtimeAgentRef?: string | null;
   openclawAgentId: string | null;
   approvalKind: string | null;
   humanInputRequired: boolean;
@@ -474,6 +501,363 @@ export interface RuntimeGraphSummary {
   workPackages: RuntimeGraphWorkPackage[];
   runtimeMonitoring?: RuntimeMonitoringSummary;
   summaryLines: string[];
+}
+
+export type RuntimeJobStatus =
+  | "created"
+  | "queued"
+  | "dispatching"
+  | "accepted"
+  | "deferred"
+  | "rejected"
+  | "running"
+  | "waiting_human"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface RuntimeJobRecord {
+  job_id: string;
+  run_id: string;
+  node_run_id: string;
+  attempt: number;
+  dispatch_sequence: number;
+  status: RuntimeJobStatus;
+  worker_id: string | null;
+  lease_id: string | null;
+  target_kind: "local" | "external-bridge" | "docker-worker" | "node-worker";
+  agent_runtime: string;
+  runtime_agent_ref: string | null;
+  created_at: string;
+  accepted_at: string | null;
+  finished_at: string | null;
+  last_event_id: string | null;
+  last_error: string | null;
+  compatibility: {
+    adapter_kind: string | null;
+    dispatch_id: string | null;
+    openclaw_task_id: string | null;
+    openclaw_session_id: string | null;
+  };
+  job: Record<string, unknown>;
+}
+
+export interface RuntimeWorkerRecord {
+  worker_id: string;
+  status: "expected" | "connected" | "busy" | "stale" | "disconnected" | "released";
+  version: string;
+  capabilities: string[];
+  supported_harnesses: string[];
+  active_job_id: string | null;
+  expected_at: string | null;
+  registered_at: string | null;
+  last_heartbeat_at: string | null;
+  disconnected_at: string | null;
+  released_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface RuntimeWorkerLeaseRecord {
+  lease_id: string;
+  worker_id: string;
+  job_id: string;
+  target_kind: "local" | "external-bridge" | "docker-worker" | "node-worker";
+  run_id: string;
+  node_run_id: string;
+  container_id: string | null;
+  status: "provisioning" | "ready" | "active" | "stale" | "released" | "failed";
+  acquired_at: string;
+  last_heartbeat_at: string | null;
+  expires_at: string | null;
+  released_at: string | null;
+  release_reason: string | null;
+  last_error: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface RuntimeWorkerEvidence {
+  evidence_schema_version?: 1 | 2;
+  evidence_id: string;
+  run_id: string;
+  node_run_id: string;
+  job_id: string;
+  worker_id: string;
+  sequence?: number;
+  kind:
+    | "prompt"
+    | "model_text"
+    | "thinking"
+    | "tool_call"
+    | "tool_result"
+    | "handoff"
+    | "artifact_ref"
+    | "error"
+    | "usage"
+    | "log";
+  summary: string;
+  source?: WorkerEvidenceSource;
+  trace?: WorkerEvidenceTrace;
+  input_ref?: string | null;
+  output_ref?: string | null;
+  storage_uri: string | null;
+  inline_payload: unknown;
+  usage?: UsageSummary | null;
+  redaction_status: "not_required" | "redacted" | "blocked";
+  created_at: string;
+}
+
+export interface MoneyAmount {
+  currency: string;
+  amount_decimal: string;
+}
+
+export interface EstimatedMoneyAmount extends MoneyAmount {
+  catalog_id: string;
+  catalog_version: string;
+}
+
+export interface UsageSummary {
+  availability: "available" | "partial" | "unavailable";
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  reasoning_tokens: number | null;
+  total_tokens: number | null;
+  duration_ms: number | null;
+  turn_count: number | null;
+  provider_reported_cost: MoneyAmount | null;
+  estimated_cost: EstimatedMoneyAmount | null;
+}
+
+export interface WorkerEvidenceSource {
+  provider: string | null;
+  model: string | null;
+  native_event_id: string | null;
+  synthetic: boolean;
+}
+
+export interface WorkerEvidenceTrace {
+  trace_id: string;
+  span_id: string;
+  parent_span_id: string | null;
+  tool_call_id: string | null;
+}
+
+export interface RuntimeNodeHandoff {
+  type: "node_handoff";
+  handoff_id: string;
+  job_id: string;
+  run_id: string;
+  node_run_id: string;
+  node_id: string;
+  port: string;
+  content: unknown;
+  content_ref?: string | null;
+  summary: string | null;
+  routed_node_run_ids: string[];
+  skipped_node_run_ids: string[];
+  created_at: string;
+}
+
+export interface RuntimeEventCursorRecord {
+  job_id: string;
+  run_id: string;
+  node_run_id: string;
+  last_sequence: number;
+  terminal_event_id: string | null;
+  applied_idempotency_keys: string[];
+  ignored_event_count: number;
+  updated_at: string;
+}
+
+export type FindingSeverity = "error" | "warning" | "blind_spot" | "info";
+
+export interface ScorecardFinding {
+  check_id: string;
+  severity: FindingSeverity;
+  passed: boolean;
+  summary: string;
+  detail: string;
+  evidence_refs: string[];
+}
+
+export interface ScorecardResult {
+  schema_version: 1;
+  scorecard_id: string;
+  run_id: string;
+  snapshot_id: string;
+  evidence_digest: string;
+  profile: string;
+  policy_version: number;
+  enforcement: "off" | "advisory" | "strict";
+  pipeline_verdict: "pass" | "fail" | "incomplete";
+  contract_verdict: "pass" | "fail" | "not_applicable" | "incomplete";
+  gate_verdict: "pass" | "reject" | "not_enforced";
+  passed_checks: number;
+  total_checks: number;
+  hard_error_count: number;
+  warning_count: number;
+  blind_spot_count: number;
+  findings: ScorecardFinding[];
+  created_at: string;
+}
+
+export type EvaluationDimension = "pipeline" | "contract" | "evidence" | "usage" | "quality";
+
+export interface EvaluationFinding extends ScorecardFinding {
+  dimension: EvaluationDimension;
+}
+
+export interface EvaluationResult {
+  schema_version: 1;
+  evaluation_id: string;
+  run_id: string;
+  snapshot_id: string;
+  evidence_digest: string;
+  scorecard_id: string;
+  evaluator: {
+    id: string;
+    kind: "none" | "deterministic" | "model";
+    version: string;
+    provider: string | null;
+    model: string | null;
+    prompt_version: string | null;
+  };
+  pipeline_verdict: "pass" | "fail" | "incomplete";
+  contract_verdict: "pass" | "fail" | "not_applicable" | "incomplete";
+  evidence_verdict: "complete" | "partial" | "unavailable";
+  usage_verdict: "complete" | "partial" | "unavailable";
+  quality_verdict: "pass" | "fail" | "not_evaluated" | "error";
+  gate_verdict: "pass" | "reject" | "not_enforced";
+  findings: EvaluationFinding[];
+  evaluator_usage: UsageSummary | null;
+  status: "queued" | "running" | "completed" | "failed";
+  attempt: number;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+export type TraceSpanKind = "run" | "node" | "job" | "model" | "tool" | "handoff" | "artifact" | "control";
+
+export interface TraceSpan {
+  span_id: string;
+  parent_span_id: string | null;
+  trace_id: string;
+  run_id: string;
+  node_run_id: string | null;
+  job_id: string | null;
+  kind: TraceSpanKind;
+  name: string;
+  status: "ok" | "error" | "unknown";
+  started_at: string;
+  finished_at: string | null;
+  input_ref: string | null;
+  output_ref: string | null;
+  tool_call_id: string | null;
+  provider: string | null;
+  model: string | null;
+  usage: UsageSummary | null;
+  attributes: Record<string, string | number | boolean | null>;
+}
+
+export interface TraceProjection {
+  schema_version: 1;
+  run_id: string;
+  trace_id: string;
+  completeness: "complete" | "legacy_partial";
+  spans: TraceSpan[];
+  cursor: string | null;
+  has_more: boolean;
+}
+
+export interface ReplayDifference {
+  category: "run" | "plan" | "node" | "job" | "worker" | "lease" | "handoff" | "artifact" | "evidence" | "gate" | "runtime_patch";
+  record_id: string;
+  field: string;
+  replayed: unknown;
+  persisted: unknown;
+  severity: "error" | "warning";
+  summary: string;
+}
+
+export interface ReplayResult {
+  schema_version: 1;
+  replay_id: string;
+  run_id: string;
+  route_id: string;
+  event_digest: string;
+  event_completeness: "complete" | "legacy_partial";
+  verification: "pass" | "fail" | "partial";
+  processed_events: number;
+  first_sequence: number | null;
+  last_sequence: number | null;
+  projection_differences: ReplayDifference[];
+  missing_references: string[];
+  created_at: string;
+}
+
+export interface RuntimeProviderEvidenceProjection {
+  model_job_count: number;
+  native_evidence_count: number;
+  usage: {
+    latest_by_job: Array<{
+      job_id: string;
+      provider: string | null;
+      model: string | null;
+      evidence_id: string | null;
+      usage: UsageSummary | null;
+    }>;
+    token_completeness: "complete" | "partial" | "unavailable";
+    provider_reported_cost_completeness: "complete" | "partial" | "unavailable";
+    estimated_cost_completeness: "complete" | "partial" | "unavailable";
+    aggregate_tokens: {
+      input_tokens: number | null;
+      output_tokens: number | null;
+      cache_read_tokens: number | null;
+      cache_write_tokens: number | null;
+      reasoning_tokens: number | null;
+      total_tokens: number | null;
+    };
+    provider_reported_costs: Record<string, string>;
+    estimated_costs: Record<string, string>;
+  };
+  tools: {
+    calls: Array<{ evidence_id: string; job_id: string; tool_call_id: string | null; summary: string; created_at: string }>;
+    results: Array<{ evidence_id: string; job_id: string; tool_call_id: string | null; summary: string; created_at: string }>;
+    open_tool_call_ids: string[];
+  };
+}
+
+export interface RuntimeRunProjection {
+  projection_version: 1 | 2;
+  generated_at: string;
+  run_id: string;
+  graph: RuntimeGraphSummary;
+  jobs: RuntimeJobRecord[];
+  leases: RuntimeWorkerLeaseRecord[];
+  workers: RuntimeWorkerRecord[];
+  evidence: RuntimeWorkerEvidence[];
+  handoffs: RuntimeNodeHandoff[];
+  artifacts: ArtifactRecord[];
+  provider_evidence?: RuntimeProviderEvidenceProjection;
+  event_delivery: {
+    tracked_jobs: number;
+    ignored_events: number;
+    cursors: RuntimeEventCursorRecord[];
+  };
+  summary: {
+    active_jobs: number;
+    connected_workers: number;
+    active_leases: number;
+    evidence_items: number;
+    native_evidence_items?: number;
+    open_tool_calls?: number;
+    handoffs: number;
+    artifacts: number;
+  };
 }
 
 export interface SessionSummary {
@@ -966,11 +1350,24 @@ export interface SessionDagDraftResponse {
     node_name: string;
     agent_profile_id: string | null;
     agent_profile_name: string | null;
+    runtime_agent_ref?: string | null;
     openclaw_agent_id: string | null;
     skill_ids: string[];
+    allowed_tools: string[];
     score: number;
     reason: string;
     warnings: string[];
+    evidence?: {
+      preferred_rank?: number | null;
+      policy_score?: number;
+      profile_token_score?: number;
+      skill_score?: number;
+      readiness_score?: number;
+      disallowed_penalty?: number;
+      domain_overlap_score?: number;
+      matched_domains?: string[];
+      coverage_domains?: string[];
+    };
   }>;
   validation: PlannerValidationResult;
   planner_context: {

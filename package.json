@@ -1,0 +1,16 @@
+{
+  "name": "my-mate",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:protocol": "npm --prefix packages/shared-types run build",
+    "build:runtime": "npm run build:protocol && npm --prefix services/runtime-worker run build && npm --prefix services/control-plane run build && npm --prefix apps/cli run build",
+    "check": "npm --prefix packages/shared-types run check && npm --prefix services/runtime-worker run check && npm --prefix services/control-plane run check && npm --prefix services/api-gateway run check && npm --prefix apps/cli run check && npm --prefix apps/mobile run check && npm --prefix apps/studio run check",
+    "test": "npm --prefix packages/shared-types test && npm --prefix services/runtime-worker test && npm --prefix services/control-plane test && npm --prefix services/api-gateway test && npm --prefix services/execution-adapter test && npm --prefix apps/cli test && npm --prefix apps/mobile test",
+    "my-mate": "npm --prefix apps/cli run build --silent && node apps/cli/dist/src/index.js",
+    "runtime-worker:image": "docker build -t my-mate-runtime-worker:latest -f services/runtime-worker/Dockerfile .",
+    "runtime-worker:smoke": "node scripts/runtime-worker-docker-smoke.mjs",
+    "runtime-worker:recovery-smoke": "node scripts/runtime-worker-recovery-smoke.mjs",
+    "dev:docker-runtime": "node scripts/start-docker-runtime.mjs"
+  }
+}

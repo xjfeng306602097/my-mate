@@ -1,0 +1,7 @@
+{"type":"model_text","id":"openclaw-text-1","model":"openclaw-test","summary":"Hello from OpenClaw."}
+{"type":"thinking","id":"openclaw-thinking-1","summary":"Inspect the handoff."}
+{"type":"tool_call","id":"call-openclaw-1","name":"workspace_read","input":{"path":"artifact.txt"}}
+{"type":"tool_result","tool_call_id":"call-openclaw-1","content":"artifact contents"}
+{"type":"usage","id":"openclaw-usage-1","usage":{"input_tokens":50,"output_tokens":10,"total_tokens":60}}
+{"type":"done","id":"openclaw-done-1"}
+{"type":"error","id":"openclaw-error-1","message":"recorded OpenClaw error"}

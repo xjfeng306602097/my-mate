@@ -1,6 +1,8 @@
-import fs from "node:fs";
 import path from "node:path";
 import { SESSION_ATTACHMENTS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getActivePrincipalId } from "./request-security.js";
+import { getSession } from "./session-store.js";
 import type { CreateSessionAttachmentRequest, SessionAttachmentRecord } from "./types.js";
 import { ensureDir, generateSessionAttachmentId, nowIso, writeJsonAtomic } from "./utils.js";
 
@@ -38,7 +40,7 @@ export function createSessionAttachment(input: {
         : null,
     kind: normalizeNullableText(input.request.kind) || "context",
     summary: normalizeNullableText(input.request.summary),
-    created_by: normalizeNullableText(input.request.created_by) || "user",
+    created_by: getActivePrincipalId() || normalizeNullableText(input.request.created_by) || "user",
     created_at: input.createdAt || nowIso(),
     metadata: input.request.metadata || {},
   };
@@ -46,23 +48,20 @@ export function createSessionAttachment(input: {
 }
 
 export function saveSessionAttachment(record: SessionAttachmentRecord): SessionAttachmentRecord {
+  if (!getSession(record.session_id)) throw new Error("SESSION_NOT_FOUND");
   ensureDir(sessionAttachmentDir(record.session_id));
   writeJsonAtomic(sessionAttachmentPath(record.session_id, record.attachment_id), record);
   return record;
 }
 
 export function listSessionAttachments(sessionId: string): SessionAttachmentRecord[] {
+  if (!getSession(sessionId)) return [];
+  const storage = getJsonStorageBackend();
   const dirPath = sessionAttachmentDir(sessionId);
-  if (!fs.existsSync(dirPath)) {
-    return [];
-  }
-  const files = fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dirPath, entry.name));
+  const files = storage.listJsonFiles(dirPath);
 
   const items = files.map((filePath) =>
-    JSON.parse(fs.readFileSync(filePath, "utf-8")) as SessionAttachmentRecord,
+    storage.readJson<SessionAttachmentRecord>(filePath),
   );
   items.sort((a, b) => {
     if (a.created_at === b.created_at) {

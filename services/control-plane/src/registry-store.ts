@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AGENT_PROFILES_DIR, SKILLS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getActiveWorkspaceId } from "./request-security.js";
 import type {
   AgentProfileRecord,
   RegistryStatus,
@@ -36,16 +38,25 @@ function normalizeStatus(value: unknown): RegistryStatus {
   return value === "disabled" ? "disabled" : "active";
 }
 
+function normalizeAgentProfile(profile: AgentProfileRecord): AgentProfileRecord {
+  const runtimeAgentRef = (profile.runtime_agent_ref || profile.openclaw_agent_id || "").trim();
+  const agentRuntime = (profile.agent_runtime || "openclaw").trim() || "openclaw";
+  return {
+    ...profile,
+    workspace_id: profile.workspace_id || "default",
+    runtime_agent_ref: runtimeAgentRef,
+    agent_runtime: agentRuntime,
+    harness_profile: profile.harness_profile ?? null,
+    openclaw_agent_id: profile.openclaw_agent_id || runtimeAgentRef,
+  };
+}
+
 function readJsonFile<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+  return getJsonStorageBackend().readJson<T>(filePath);
 }
 
 function listJsonFiles(dirPath: string): string[] {
-  ensureDir(dirPath);
-  return fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dirPath, entry.name));
+  return getJsonStorageBackend().listJsonFiles(dirPath);
 }
 
 function assertValidProfile(profile: AgentProfileRecord): void {
@@ -77,19 +88,23 @@ function resolveId(input: { explicitId?: string; name: string; fallback: string 
 }
 
 export function listAgentProfiles(status?: RegistryStatus): AgentProfileRecord[] {
+  const activeWorkspaceId = getActiveWorkspaceId();
   const profiles = listJsonFiles(AGENT_PROFILES_DIR).map((file) =>
-    readJsonFile<AgentProfileRecord>(file),
-  );
+    normalizeAgentProfile(readJsonFile<AgentProfileRecord>(file)),
+  ).filter((profile) => !activeWorkspaceId || profile.workspace_id === activeWorkspaceId);
   profiles.sort((a, b) => a.profile_id.localeCompare(b.profile_id));
   return status ? profiles.filter((profile) => profile.status === status) : profiles;
 }
 
 export function getAgentProfile(profileId: string): AgentProfileRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = profilePath(profileId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return readJsonFile<AgentProfileRecord>(filePath);
+  const profile = normalizeAgentProfile(readJsonFile<AgentProfileRecord>(filePath));
+  const activeWorkspaceId = getActiveWorkspaceId();
+  return activeWorkspaceId && profile.workspace_id !== activeWorkspaceId ? null : profile;
 }
 
 export function upsertAgentProfile(input: UpsertAgentProfileRequest): AgentProfileRecord {
@@ -99,13 +114,40 @@ export function upsertAgentProfile(input: UpsertAgentProfileRequest): AgentProfi
     name: input.name,
     fallback: "agent-profile",
   });
+  const existingProfilePath = profilePath(profileId);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  if (getJsonStorageBackend().exists(existingProfilePath)) {
+    const existing = normalizeAgentProfile(readJsonFile<AgentProfileRecord>(existingProfilePath));
+    if (activeWorkspaceId && existing.workspace_id !== activeWorkspaceId) {
+      throw new Error("AGENT_PROFILE_ID_CONFLICT");
+    }
+  }
   const current = getAgentProfile(profileId);
   const timestamp = nowIso();
+  const runtimeAgentRef = (
+    input.runtime_agent_ref ??
+    input.openclaw_agent_id ??
+    current?.runtime_agent_ref ??
+    current?.openclaw_agent_id ??
+    ""
+  ).trim();
+  const agentRuntime = (
+    input.agent_runtime ??
+    current?.agent_runtime ??
+    "openclaw"
+  ).trim() || "openclaw";
   const profile: AgentProfileRecord = {
     profile_id: profileId,
+    workspace_id: getActiveWorkspaceId() || current?.workspace_id || "default",
     name: input.name,
     description: input.description || current?.description || "",
-    openclaw_agent_id: input.openclaw_agent_id.trim(),
+    runtime_agent_ref: runtimeAgentRef,
+    agent_runtime: agentRuntime,
+    harness_profile:
+      input.harness_profile === undefined
+        ? current?.harness_profile ?? null
+        : input.harness_profile?.trim() || null,
+    openclaw_agent_id: (input.openclaw_agent_id ?? runtimeAgentRef).trim(),
     default_skills: uniqueStrings(input.default_skills),
     allowed_tools: uniqueStrings(input.allowed_tools),
     disallowed_skills: uniqueStrings(input.disallowed_skills),
@@ -137,17 +179,25 @@ export function disableAgentProfile(profileId: string): AgentProfileRecord {
 }
 
 export function listSkills(status?: RegistryStatus): SkillRecord[] {
-  const skills = listJsonFiles(SKILLS_DIR).map((file) => readJsonFile<SkillRecord>(file));
+  const activeWorkspaceId = getActiveWorkspaceId();
+  const skills = listJsonFiles(SKILLS_DIR)
+    .map((file) => readJsonFile<SkillRecord>(file))
+    .map((skill) => ({ ...skill, workspace_id: skill.workspace_id || "default" }))
+    .filter((skill) => !activeWorkspaceId || skill.workspace_id === activeWorkspaceId);
   skills.sort((a, b) => a.skill_id.localeCompare(b.skill_id));
   return status ? skills.filter((skill) => skill.status === status) : skills;
 }
 
 export function getSkill(skillId: string): SkillRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = skillPath(skillId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return readJsonFile<SkillRecord>(filePath);
+  const skill = readJsonFile<SkillRecord>(filePath);
+  const normalized = { ...skill, workspace_id: skill.workspace_id || "default" };
+  const activeWorkspaceId = getActiveWorkspaceId();
+  return activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId ? null : normalized;
 }
 
 export function upsertSkill(input: UpsertSkillRequest): SkillRecord {
@@ -157,10 +207,19 @@ export function upsertSkill(input: UpsertSkillRequest): SkillRecord {
     name: input.name,
     fallback: "skill",
   });
+  const existingSkillPath = skillPath(skillId);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  if (getJsonStorageBackend().exists(existingSkillPath)) {
+    const existing = readJsonFile<SkillRecord>(existingSkillPath);
+    if (activeWorkspaceId && (existing.workspace_id || "default") !== activeWorkspaceId) {
+      throw new Error("SKILL_ID_CONFLICT");
+    }
+  }
   const current = getSkill(skillId);
   const timestamp = nowIso();
   const skill: SkillRecord = {
     skill_id: skillId,
+    workspace_id: getActiveWorkspaceId() || current?.workspace_id || "default",
     name: input.name,
     description: input.description || current?.description || "",
     category: input.category || current?.category || "general",

@@ -6,6 +6,14 @@ import type {
   NormalizedExecutionReport,
 } from "./types.js";
 
+/**
+ * Legacy bridge surface kept for cutover adapters.
+ *
+ * New runtime execution should enter through RuntimeDispatcher.dispatchJob()
+ * with a RuntimeWorkerJob. ExecutionAdapter implementations are compatibility
+ * backends behind ExecutionAdapterRuntimeDispatcher until HRR-6 removes
+ * provider-specific runtime semantics from the mainline.
+ */
 export interface ExecutionAdapter {
   readonly kind: string;
   enqueueRun(runId: string): void;

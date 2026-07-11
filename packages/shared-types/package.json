@@ -1,0 +1,45 @@
+{
+  "name": "@my-mate/shared-types",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./runtime-protocol": {
+      "types": "./dist/runtime-protocol.d.ts",
+      "import": "./dist/runtime-protocol.js"
+    },
+    "./identity": {
+      "types": "./dist/identity.d.ts",
+      "import": "./dist/identity.js"
+    },
+    "./control-plane": {
+      "types": "./dist/control-plane.d.ts",
+      "import": "./dist/control-plane.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "generate:control-plane": "node scripts/generate-control-plane.mjs",
+    "check:generated": "node scripts/generate-control-plane.mjs --check",
+    "prebuild": "npm run check:generated",
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run check:generated && tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run build",
+    "test": "node --test test/control-plane.test.mjs"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.10.1",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.14.0"
+  }
+}

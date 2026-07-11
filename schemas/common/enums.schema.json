@@ -82,7 +82,32 @@
         "approval.rejected",
         "human_input.requested",
         "human_input.submitted",
-        "artifact.created"
+        "artifact.created",
+        "job.created",
+        "job.dispatching",
+        "job.accepted",
+        "job.running",
+        "job.waiting_human",
+        "job.completed",
+        "job.failed",
+        "job.cancelled",
+        "worker.expected",
+        "worker.registered",
+        "worker.status_changed",
+        "worker.released",
+        "lease.acquired",
+        "lease.activated",
+        "lease.cleanup_started",
+        "lease.cleanup_completed",
+        "lease.cleanup_failed",
+        "lease.released",
+        "lease.failed",
+        "handoff.recorded",
+        "evidence.recorded",
+        "runtime.patch_applied",
+        "runtime.quiescent",
+        "scorecard.completed",
+        "evaluation.completed"
       ]
     },
     "actorType": {
@@ -91,7 +116,7 @@
     },
     "artifactType": {
       "type": "string",
-      "enum": ["document", "report", "patch", "summary", "attachment", "log", "other"]
+      "enum": ["document", "report", "patch", "summary", "harness_output", "attachment", "log", "other"]
     }
   }
 }

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/evaluation/scorecard-result.schema.json",
+  "title": "Pipeline Scorecard Result",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scorecard_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "snapshot_id": { "type": "string", "minLength": 1 },
+    "evidence_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "profile": { "type": "string", "minLength": 1 },
+    "policy_version": { "type": "integer", "minimum": 1 },
+    "enforcement": { "type": "string", "enum": ["off", "advisory", "strict"] },
+    "pipeline_verdict": { "type": "string", "enum": ["pass", "fail", "incomplete"] },
+    "contract_verdict": { "type": "string", "enum": ["pass", "fail", "not_applicable", "incomplete"] },
+    "gate_verdict": { "type": "string", "enum": ["pass", "reject", "not_enforced"] },
+    "passed_checks": { "type": "integer", "minimum": 0 },
+    "total_checks": { "type": "integer", "minimum": 0 },
+    "hard_error_count": { "type": "integer", "minimum": 0 },
+    "warning_count": { "type": "integer", "minimum": 0 },
+    "blind_spot_count": { "type": "integer", "minimum": 0 },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "check_id": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["error", "warning", "blind_spot", "info"] },
+          "passed": { "type": "boolean" },
+          "summary": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string" },
+          "evidence_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
+        },
+        "required": ["check_id", "severity", "passed", "summary", "detail", "evidence_refs"],
+        "additionalProperties": false
+      }
+    },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }
+  },
+  "required": [
+    "schema_version", "scorecard_id", "run_id", "snapshot_id", "evidence_digest",
+    "profile", "policy_version", "enforcement", "pipeline_verdict", "contract_verdict", "gate_verdict",
+    "passed_checks", "total_checks", "hard_error_count", "warning_count",
+    "blind_spot_count", "findings", "created_at"
+  ],
+  "additionalProperties": false
+}

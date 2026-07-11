@@ -4,10 +4,15 @@
   "title": "Event",
   "type": "object",
   "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
     "event_id": {
       "type": "string",
       "minLength": 1
     },
+    "run_sequence": { "type": "integer", "minimum": 1 },
+    "correlation_id": { "type": ["string", "null"] },
+    "causation_id": { "type": ["string", "null"] },
+    "idempotency_key": { "type": ["string", "null"] },
     "run_id": {
       "type": "string",
       "minLength": 1

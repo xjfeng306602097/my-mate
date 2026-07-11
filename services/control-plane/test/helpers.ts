@@ -3,16 +3,28 @@ import path from "node:path";
 import type { ExecutionAdapter } from "../src/execution-adapter.js";
 import type { NodeAction, RunAction } from "../src/control-actions.js";
 import { createApp } from "../src/app.js";
+import type { RuntimeDispatcher } from "../src/runtime-dispatcher.js";
+import type { SecurityOptions } from "../src/request-security.js";
 import {
   APPROVALS_DIR,
   ARTIFACTS_DIR,
   EVENTS_DIR,
+  EVALUATION_SNAPSHOTS_DIR,
+  EVALUATIONS_DIR,
   AGENT_PROFILES_DIR,
   HUMAN_INPUTS_DIR,
   NODE_RUNS_DIR,
+  OBSERVABILITY_DIRTY_DIR,
+  OBSERVABILITY_RUN_INDEX_DIR,
   overrideDataDir,
   RUN_PLANS_DIR,
+  RUN_PLAN_INITIAL_DIR,
+  RUN_ROUTES_DIR,
+  RUN_INITIALIZATION_DIR,
   RUNS_DIR,
+  REPLAYS_DIR,
+  REPLAY_PLANS_DIR,
+  SCORECARDS_DIR,
   SESSION_ATTACHMENTS_DIR,
   SESSION_INTERVENTIONS_DIR,
   SESSION_MESSAGES_DIR,
@@ -132,9 +144,38 @@ export function cleanupTestArtifacts(input: {
   if (input.runId) {
     fs.rmSync(path.join(RUNS_DIR, `${input.runId}.json`), { force: true });
     fs.rmSync(path.join(RUN_PLANS_DIR, `${input.runId}.json`), { force: true });
+    fs.rmSync(path.join(RUN_PLAN_INITIAL_DIR, `${input.runId}.json`), { force: true });
+    fs.rmSync(path.join(RUN_ROUTES_DIR, `${encodeURIComponent(input.runId)}.json`), { force: true });
+    fs.rmSync(path.join(RUN_INITIALIZATION_DIR, `${encodeURIComponent(input.runId)}.json`), { force: true });
+    fs.rmSync(path.join(EVALUATION_SNAPSHOTS_DIR, encodeURIComponent(input.runId)), {
+      recursive: true,
+      force: true,
+    });
+    fs.rmSync(path.join(SCORECARDS_DIR, encodeURIComponent(input.runId)), {
+      recursive: true,
+      force: true,
+    });
+    fs.rmSync(path.join(EVALUATIONS_DIR, encodeURIComponent(input.runId)), {
+      recursive: true,
+      force: true,
+    });
+    fs.rmSync(path.join(REPLAYS_DIR, encodeURIComponent(input.runId)), {
+      recursive: true,
+      force: true,
+    });
+    fs.rmSync(path.join(REPLAY_PLANS_DIR, encodeURIComponent(input.runId)), {
+      recursive: true,
+      force: true,
+    });
     fs.rmSync(path.join(NODE_RUNS_DIR, input.runId), { recursive: true, force: true });
     fs.rmSync(path.join(EVENTS_DIR, input.runId), { recursive: true, force: true });
     fs.rmSync(path.join(ARTIFACTS_DIR, input.runId), { recursive: true, force: true });
+    fs.rmSync(path.join(OBSERVABILITY_RUN_INDEX_DIR, `${encodeURIComponent(input.runId)}.json`), {
+      force: true,
+    });
+    fs.rmSync(path.join(OBSERVABILITY_DIRTY_DIR, `${encodeURIComponent(input.runId)}.json`), {
+      force: true,
+    });
 
     for (const approval of listApprovals()) {
       if (approval.run_id === input.runId) {
@@ -241,7 +282,11 @@ export function createStubExecutionAdapter(options?: {
   };
 }
 
-export async function startTestServer(input?: { executionAdapter?: ExecutionAdapter }) {
+export async function startTestServer(input?: {
+  executionAdapter?: ExecutionAdapter;
+  dispatcher?: RuntimeDispatcher;
+  security?: SecurityOptions;
+}) {
   const app = createApp(input);
   return await new Promise<{
     baseUrl: string;

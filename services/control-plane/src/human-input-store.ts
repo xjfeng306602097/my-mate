@@ -1,6 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { HUMAN_INPUTS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getRun } from "./run-store.js";
 import type { HumanInputRecord } from "./types.js";
 import { ensureDir, generateHumanInputId, nowIso, writeJsonAtomic } from "./utils.js";
 
@@ -34,26 +35,26 @@ export function saveHumanInput(record: HumanInputRecord): HumanInputRecord {
 }
 
 export function listHumanInputs(status?: HumanInputRecord["status"]): HumanInputRecord[] {
-  ensureDir(HUMAN_INPUTS_DIR);
-  const files = fs
-    .readdirSync(HUMAN_INPUTS_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(HUMAN_INPUTS_DIR, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(HUMAN_INPUTS_DIR);
 
   const items = files.map((filePath) =>
-    JSON.parse(fs.readFileSync(filePath, "utf-8")) as HumanInputRecord,
+    storage.readJson<HumanInputRecord>(filePath),
   );
-  const filtered = status ? items.filter((item) => item.status === status) : items;
+  const scoped = items.filter((item) => getRun(item.run_id) !== null);
+  const filtered = status ? scoped.filter((item) => item.status === status) : scoped;
   filtered.sort((a, b) => b.requested_at.localeCompare(a.requested_at));
   return filtered;
 }
 
 export function getHumanInput(inputRequestId: string): HumanInputRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = humanInputPath(inputRequestId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as HumanInputRecord;
+  const record = storage.readJson<HumanInputRecord>(filePath);
+  return getRun(record.run_id) ? record : null;
 }
 
 export function findPendingHumanInputForNode(

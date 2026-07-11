@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { DAG_PATCHES_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
 import type { DagPatchRecord } from "./types.js";
 import { ensureDir, generateDagPatchId, nowIso, writeJsonAtomic } from "./utils.js";
 
@@ -79,11 +79,12 @@ export function createDagPatch(input: {
 }
 
 export function getDagPatch(sessionId: string, patchId: string): DagPatchRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = dagPatchPath(sessionId, patchId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return normalizeDagPatchRecord(JSON.parse(fs.readFileSync(filePath, "utf-8")) as DagPatchRecord);
+  return normalizeDagPatchRecord(storage.readJson<DagPatchRecord>(filePath));
 }
 
 export function updateDagPatch(
@@ -102,14 +103,11 @@ export function updateDagPatch(
 
 export function listSessionDagPatches(sessionId: string): DagPatchRecord[] {
   const dirPath = sessionDagPatchDir(sessionId);
-  ensureDir(dirPath);
-  const files = fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dirPath, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(dirPath);
 
   const patches = files.map((filePath) =>
-    normalizeDagPatchRecord(JSON.parse(fs.readFileSync(filePath, "utf-8")) as DagPatchRecord),
+    normalizeDagPatchRecord(storage.readJson<DagPatchRecord>(filePath)),
   );
 
   patches.sort((a, b) => {
@@ -119,4 +117,21 @@ export function listSessionDagPatches(sessionId: string): DagPatchRecord[] {
     return a.created_at.localeCompare(b.created_at);
   });
   return patches;
+}
+
+export function listRunDagPatches(runId: string): DagPatchRecord[] {
+  const storage = getJsonStorageBackend();
+  return storage
+    .listDirs(DAG_PATCHES_DIR)
+    .flatMap((dir) =>
+      storage
+        .listJsonFiles(dir)
+        .map((file) => normalizeDagPatchRecord(storage.readJson<DagPatchRecord>(file))),
+    )
+    .filter((record) => record.run_id === runId)
+    .sort(
+      (left, right) =>
+        left.created_at.localeCompare(right.created_at) ||
+        left.patch_id.localeCompare(right.patch_id),
+    );
 }

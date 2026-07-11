@@ -9,8 +9,10 @@ import type {
   SkillRecord,
   WorkflowTemplateRecord,
 } from "./types.js";
+import { createEmptyExecutionRef } from "./execution-ref.js";
 import { getAgentProfile, getSkill } from "./registry-store.js";
 import { generateNodeRunId, isPlainObject, slugify } from "./utils.js";
+import { compileWorkPackage } from "./work-package.js";
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((item) => item.trim()).map((item) => item.trim()))];
@@ -60,7 +62,11 @@ function pushSource<T extends string>(sources: T[], source: T): void {
   }
 }
 
-function resolveOpenClawAgentId(input: {
+function getProfileRuntimeAgentRef(profile: AgentProfileRecord): string {
+  return (profile.runtime_agent_ref || profile.openclaw_agent_id || "").trim();
+}
+
+function resolveRuntimeAgentRef(input: {
   template: WorkflowTemplateRecord;
   agentProfile: string | null;
   registryProfile: AgentProfileRecord | null;
@@ -70,12 +76,15 @@ function resolveOpenClawAgentId(input: {
   }
 
   if (input.registryProfile) {
-    return input.registryProfile.openclaw_agent_id;
+    return getProfileRuntimeAgentRef(input.registryProfile);
   }
 
   const binding = input.template.agent_profile_bindings[input.agentProfile];
   if (typeof binding === "string" && binding.trim()) {
     return binding;
+  }
+  if (isPlainObject(binding) && typeof binding.runtime_agent_ref === "string") {
+    return binding.runtime_agent_ref;
   }
   if (isPlainObject(binding) && typeof binding.openclaw_agent_id === "string") {
     return binding.openclaw_agent_id;
@@ -84,11 +93,11 @@ function resolveOpenClawAgentId(input: {
   return input.agentProfile;
 }
 
-function resolveOpenClawAgentIdSource(input: {
+function resolveRuntimeAgentRefSource(input: {
   template: WorkflowTemplateRecord;
   agentProfile: string | null;
   registryProfile: AgentProfileRecord | null;
-}): RegistryProvenance["openclaw_agent_id_source"] {
+}): RegistryProvenance["runtime_agent_ref_source"] {
   if (!input.agentProfile) {
     return "none";
   }
@@ -98,6 +107,7 @@ function resolveOpenClawAgentIdSource(input: {
   const binding = input.template.agent_profile_bindings[input.agentProfile];
   if (
     (typeof binding === "string" && binding.trim()) ||
+    (isPlainObject(binding) && typeof binding.runtime_agent_ref === "string") ||
     (isPlainObject(binding) && typeof binding.openclaw_agent_id === "string")
   ) {
     return "template_binding";
@@ -230,6 +240,11 @@ function resolveRegistryProvenance(input: {
   const requested = input.agentProfile?.trim() || null;
   const hasTemplateBinding =
     !!requested && Object.prototype.hasOwnProperty.call(input.template.agent_profile_bindings, requested);
+  const runtimeAgentRefSource = resolveRuntimeAgentRefSource({
+    template: input.template,
+    agentProfile: input.agentProfile,
+    registryProfile: input.registryProfile,
+  });
 
   return {
     agent_profile_requested: requested,
@@ -242,11 +257,8 @@ function resolveRegistryProvenance(input: {
         : requested
           ? "fallback"
           : "none",
-    openclaw_agent_id_source: resolveOpenClawAgentIdSource({
-      template: input.template,
-      agentProfile: input.agentProfile,
-      registryProfile: input.registryProfile,
-    }),
+    runtime_agent_ref_source: runtimeAgentRefSource,
+    openclaw_agent_id_source: runtimeAgentRefSource,
     skill_bindings: resolveSkillProvenance({
       nodeSkills: input.nodeSkills,
       registryProfile: input.registryProfile,
@@ -278,7 +290,7 @@ export function compileRunPlan(
     incomingCount.set(edge.to, (incomingCount.get(edge.to) || 0) + 1);
   }
 
-  const compiledNodes: CompiledNodeRecord[] = template.nodes.map((node) => {
+  const compiledNodes: CompiledNodeRecord[] = template.nodes.map((node, index) => {
     const nodeRunId = generateNodeRunId(node.id);
     const initialStatus = (incomingCount.get(node.id) || 0) === 0 ? "ready" : "pending";
     const anyRegistryProfile = getAnyAgentProfile(node.agent_profile);
@@ -286,6 +298,11 @@ export function compileRunPlan(
       anyRegistryProfile?.status === "active"
         ? anyRegistryProfile
         : getActiveAgentProfile(node.agent_profile);
+    const runtimeAgentRef = resolveRuntimeAgentRef({
+      template,
+      agentProfile: node.agent_profile,
+      registryProfile,
+    });
 
     return {
       node_run_id: nodeRunId,
@@ -293,11 +310,10 @@ export function compileRunPlan(
       name: node.name,
       type: node.type,
       agent_profile: node.agent_profile,
-      openclaw_agent_id: resolveOpenClawAgentId({
-        template,
-        agentProfile: node.agent_profile,
-        registryProfile,
-      }),
+      runtime_agent_ref: runtimeAgentRef,
+      agent_runtime: registryProfile?.agent_runtime ?? null,
+      harness_profile: registryProfile?.harness_profile ?? null,
+      openclaw_agent_id: runtimeAgentRef,
       allowed_skills: resolveAllowedSkills({
         nodeSkills: node.allowed_skills,
         registryProfile,
@@ -320,10 +336,7 @@ export function compileRunPlan(
         node_config: node.config,
       },
       output_contract: resolveOutputContract(node.config),
-      execution_ref: {
-        openclaw_task_id: null,
-        openclaw_session_id: null,
-      },
+      execution_ref: createEmptyExecutionRef(),
       registry_provenance: resolveRegistryProvenance({
         template,
         agentProfile: node.agent_profile,
@@ -332,6 +345,7 @@ export function compileRunPlan(
         nodeSkills: node.allowed_skills,
         nodeConfig: node.config,
       }),
+      work_package: compileWorkPackage(node, index),
     };
   });
 

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/evaluation/replay-plan-result.schema.json",
+  "title": "Replay Plan Result",
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "replay_plan_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "replay_id": { "type": "string", "minLength": 1 },
+    "scorecard_id": { "type": ["string", "null"] },
+    "evaluation_id": { "type": ["string", "null"] },
+    "trace_completeness": { "type": "string", "enum": ["complete", "legacy_partial"] },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "recommendation_id": { "type": "string", "minLength": 1 },
+          "category": { "type": "string", "enum": ["runtime_environment", "scheduler_dispatch", "provider_harness", "prompt_agent_assignment", "handoff_contract", "artifact_contract", "evidence_completeness", "policy_evaluator", "human_gate", "budget_usage"] },
+          "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+          "summary": { "type": "string" },
+          "rationale": { "type": "string" },
+          "change_target": { "type": "string" },
+          "references": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["recommendation_id", "category", "priority", "summary", "rationale", "change_target", "references"],
+        "additionalProperties": false
+      }
+    },
+    "summary": { "type": "string" },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }
+  },
+  "required": ["schema_version", "replay_plan_id", "run_id", "replay_id", "scorecard_id", "evaluation_id", "trace_completeness", "recommendations", "summary", "created_at"],
+  "additionalProperties": false
+}

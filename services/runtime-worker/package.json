@@ -1,0 +1,26 @@
+{
+  "name": "@my-mate/runtime-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "npm --prefix ../../packages/shared-types run build",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/daemon.js",
+    "dev": "tsx src/daemon.ts",
+    "precheck": "npm --prefix ../../packages/shared-types run build",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm --prefix ../../packages/shared-types run build",
+    "test": "node --import tsx --test test/all.test.ts"
+  },
+  "dependencies": {
+    "@my-mate/shared-types": "file:../../packages/shared-types",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3"
+  }
+}

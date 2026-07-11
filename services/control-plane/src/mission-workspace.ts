@@ -10,6 +10,7 @@ import type {
   SessionMessageKind,
   SessionMessageRecord,
   SessionRecord,
+  RunRouteSnapshot,
   WorkspaceArtifactSurface,
 } from "./types.js";
 import { isPlainObject } from "./utils.js";
@@ -412,10 +413,43 @@ function buildMissionCheckpointSummary(checkpoints: MissionCheckpoint[]) {
 function buildMissionPipelinesFromSession(
   session: SessionRecord,
   messages: SessionMessageRecord[],
+  runRoute?: RunRouteSnapshot | null,
 ): MissionPipeline[] {
   const planContext = getMissionPlanContext(session, messages);
   if (!planContext.activePlanContent) {
-    return [];
+    if (!runRoute) {
+      return [];
+    }
+    const status: MissionPipeline["status"] =
+      session.status === "completed"
+        ? "done"
+        : session.status === "failed" || session.status === "cancelled"
+          ? "blocked"
+          : session.status === "running" || session.status === "waiting_human"
+            ? "active"
+            : "pending";
+    return runRoute.work_packages.map((workPackage) => ({
+      key: workPackage.key,
+      title: workPackage.label,
+      summary: `${workPackage.node_run_ids.length} compiled node(s) in the persisted run route.`,
+      status,
+      tone:
+        status === "blocked"
+          ? "danger"
+          : status === "active" || status === "done"
+            ? "success"
+            : "neutral",
+      stageKey: status === "pending" ? "work" : "execution",
+      nodeCount: workPackage.node_run_ids.length,
+      readyCount: 0,
+      primaryAgentLabel: null,
+      artifactExpectation: null,
+      outputKeys: [],
+      checkpointKeys: ["route-compiled", "runtime-state"],
+      blocker: status === "blocked" ? "This work package needs runtime intervention." : null,
+      activeNodeName: status === "active" || status === "blocked" ? workPackage.label : null,
+      nextActionLabel: status === "done" ? "Review outputs" : status === "blocked" ? "Inspect runtime" : "Monitor execution",
+    }));
   }
 
   const candidatePlan = isPlainObject(planContext.activePlanContent.candidate_plan)
@@ -1362,6 +1396,7 @@ function buildMissionSpecSummaryFromSession(
   workspaceState: Record<string, unknown>,
   pipelines: MissionPipeline[],
   checkpoints: MissionCheckpoint[],
+  runRoute?: RunRouteSnapshot | null,
 ): MissionSpecSummary {
   const latestGoalUpdate =
     [...messages].reverse().find((message) => message.kind === "goal_update_card") || null;
@@ -1414,27 +1449,27 @@ function buildMissionSpecSummaryFromSession(
       ? workspaceState.active_plan_revision
       : planContext.activePlanningMessage && typeof planContext.activePlanningMessage.content.revision === "number"
         ? planContext.activePlanningMessage.content.revision
-        : asNumber(persistedRouteState?.active_revision);
+        : asNumber(persistedRouteState?.active_revision) ?? runRoute?.plan_revision ?? null;
   const activeOption = isPlanOptionValue(workspaceState.active_plan_option)
     ? workspaceState.active_plan_option
-    : planContext.activePlanOption || asPlanOption(persistedRouteState?.active_option);
+    : planContext.activePlanOption || asPlanOption(persistedRouteState?.active_option) || runRoute?.plan_option || null;
   const latestRevision =
     typeof workspaceState.latest_plan_revision === "number"
       ? workspaceState.latest_plan_revision
       : planContext.latestPlanRevision ??
         asNumber(persistedRevisionLineage?.latest_revision) ??
-        asNumber(persistedRouteState?.latest_revision);
+        asNumber(persistedRouteState?.latest_revision) ?? runRoute?.plan_revision ?? null;
   const confirmedRevision =
     typeof workspaceState.confirmed_plan_revision === "number"
       ? workspaceState.confirmed_plan_revision
       : session.confirmed_plan_revision ??
         asNumber(persistedRevisionLineage?.confirmed_revision) ??
-        asNumber(persistedRouteState?.confirmed_revision);
+        asNumber(persistedRouteState?.confirmed_revision) ?? runRoute?.plan_revision ?? null;
   const confirmedOption = isPlanOptionValue(workspaceState.confirmed_plan_option)
     ? workspaceState.confirmed_plan_option
     : session.confirmed_plan_option ||
       asPlanOption(persistedRevisionLineage?.confirmed_option) ||
-      asPlanOption(persistedRouteState?.confirmed_option);
+      asPlanOption(persistedRouteState?.confirmed_option) || runRoute?.plan_option || null;
   const selectedTemplateId =
     (typeof workspaceState.active_plan_template_id === "string" &&
     workspaceState.active_plan_template_id.trim()
@@ -1450,7 +1485,9 @@ function buildMissionSpecSummaryFromSession(
     (typeof persistedRouteState?.selected_template_id === "string" &&
     persistedRouteState.selected_template_id.trim()
       ? persistedRouteState.selected_template_id.trim()
-      : null);
+      : null) ||
+    runRoute?.template_id ||
+    null;
   const selectedTemplateName =
     (typeof workspaceState.active_plan_template_name === "string" &&
     workspaceState.active_plan_template_name.trim()
@@ -1463,6 +1500,7 @@ function buildMissionSpecSummaryFromSession(
     persistedRouteState.selected_template_name.trim()
       ? persistedRouteState.selected_template_name.trim()
       : null) ||
+    runRoute?.template_name ||
     selectedTemplateId;
   const sourceRevision =
     planContext.sourceRevision ??
@@ -1626,9 +1664,10 @@ export function buildMissionWorkspaceProjection(input: {
   session: SessionRecord;
   messages: SessionMessageRecord[];
   workspaceState: Record<string, unknown>;
+  runRoute?: RunRouteSnapshot | null;
 }): MissionWorkspaceProjection {
-  const { session, messages, workspaceState } = input;
-  const pipelines = buildMissionPipelinesFromSession(session, messages);
+  const { session, messages, workspaceState, runRoute } = input;
+  const pipelines = buildMissionPipelinesFromSession(session, messages, runRoute);
   const checkpoints = buildMissionCheckpointsFromSession(session, messages, workspaceState);
   const missionSpec = buildMissionSpecSummaryFromSession(
     session,
@@ -1636,6 +1675,7 @@ export function buildMissionWorkspaceProjection(input: {
     workspaceState,
     pipelines,
     checkpoints,
+    runRoute,
   );
   const missionSpecContract = buildMissionSpecContract({
     session,

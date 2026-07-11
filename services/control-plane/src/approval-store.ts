@@ -1,6 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { APPROVALS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getRun } from "./run-store.js";
 import type { ApprovalRecord } from "./types.js";
 import { ensureDir, generateApprovalId, nowIso, writeJsonAtomic } from "./utils.js";
 
@@ -34,26 +35,26 @@ export function saveApproval(record: ApprovalRecord): ApprovalRecord {
 }
 
 export function listApprovals(status?: ApprovalRecord["status"]): ApprovalRecord[] {
-  ensureDir(APPROVALS_DIR);
-  const files = fs
-    .readdirSync(APPROVALS_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(APPROVALS_DIR, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(APPROVALS_DIR);
 
   const items = files.map((filePath) =>
-    JSON.parse(fs.readFileSync(filePath, "utf-8")) as ApprovalRecord,
+    storage.readJson<ApprovalRecord>(filePath),
   );
-  const filtered = status ? items.filter((item) => item.status === status) : items;
+  const scoped = items.filter((item) => getRun(item.run_id) !== null);
+  const filtered = status ? scoped.filter((item) => item.status === status) : scoped;
   filtered.sort((a, b) => b.requested_at.localeCompare(a.requested_at));
   return filtered;
 }
 
 export function getApproval(approvalId: string): ApprovalRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = approvalPath(approvalId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as ApprovalRecord;
+  const record = storage.readJson<ApprovalRecord>(filePath);
+  return getRun(record.run_id) ? record : null;
 }
 
 export function findPendingApprovalForNode(

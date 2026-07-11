@@ -4,6 +4,10 @@
   "title": "Skill",
   "type": "object",
   "properties": {
+    "workspace_id": {
+      "type": "string",
+      "minLength": 1
+    },
     "skill_id": {
       "type": "string",
       "minLength": 1

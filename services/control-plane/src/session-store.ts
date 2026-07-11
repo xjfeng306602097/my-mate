@@ -1,6 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { SESSIONS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getActivePrincipalId, getActiveWorkspaceId } from "./request-security.js";
 import type { CreateSessionRequest, SessionRecord } from "./types.js";
 import { ensureDir, generateSessionId, nowIso, writeJsonAtomic } from "./utils.js";
 
@@ -27,6 +28,10 @@ function deriveTitle(input: CreateSessionRequest): string {
 export function saveSession(session: SessionRecord): SessionRecord {
   ensureDir(SESSIONS_DIR);
   const normalized = normalizeSessionRecord(session);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  if (activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId) {
+    throw new Error("WORKSPACE_SCOPE_MISMATCH");
+  }
   writeJsonAtomic(sessionPath(normalized.session_id), normalized);
   return normalized;
 }
@@ -46,12 +51,13 @@ export function createSession(input: CreateSessionRequest): SessionRecord {
 
   const session: SessionRecord = {
     session_id: generateSessionId(),
+    workspace_id: getActiveWorkspaceId() || "default",
     title: deriveTitle(input),
     status: "draft",
-    created_by:
-      typeof input.created_by === "string" && input.created_by.trim()
+    created_by: getActivePrincipalId() ||
+      (typeof input.created_by === "string" && input.created_by.trim()
         ? input.created_by.trim()
-        : "demo-user",
+        : "demo-user"),
     created_at: timestamp,
     updated_at: timestamp,
     current_goal: currentGoal,
@@ -87,6 +93,10 @@ export function createSession(input: CreateSessionRequest): SessionRecord {
 function normalizeSessionRecord(record: SessionRecord): SessionRecord {
   return {
     ...record,
+    workspace_id:
+      typeof record.workspace_id === "string" && record.workspace_id.trim()
+        ? record.workspace_id.trim()
+        : "default",
     archived: record.archived === true,
     archived_at: typeof record.archived_at === "string" ? record.archived_at : null,
     archived_by: typeof record.archived_by === "string" ? record.archived_by : null,
@@ -106,25 +116,27 @@ function normalizeSessionRecord(record: SessionRecord): SessionRecord {
 
 export function listSessions(): SessionRecord[] {
   ensureDir(SESSIONS_DIR);
-  const files = fs
-    .readdirSync(SESSIONS_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(SESSIONS_DIR, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(SESSIONS_DIR);
 
+  const activeWorkspaceId = getActiveWorkspaceId();
   const sessions = files.map((filePath) =>
-    normalizeSessionRecord(JSON.parse(fs.readFileSync(filePath, "utf-8")) as SessionRecord),
-  );
+    normalizeSessionRecord(storage.readJson<SessionRecord>(filePath)),
+  ).filter((session) => !activeWorkspaceId || session.workspace_id === activeWorkspaceId);
 
   sessions.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   return sessions;
 }
 
 export function getSession(sessionId: string): SessionRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = sessionPath(sessionId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return normalizeSessionRecord(JSON.parse(fs.readFileSync(filePath, "utf-8")) as SessionRecord);
+  const session = normalizeSessionRecord(storage.readJson<SessionRecord>(filePath));
+  const activeWorkspaceId = getActiveWorkspaceId();
+  return activeWorkspaceId && session.workspace_id !== activeWorkspaceId ? null : session;
 }
 
 export function archiveSession(

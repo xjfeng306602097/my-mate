@@ -1,0 +1,8 @@
+{"type":"turn.started","id":"turn-1","model":"gpt-test-codex"}
+{"type":"item.agentMessage.delta","params":{"item_id":"message-1","delta":"Hello "}}
+{"type":"item.reasoning.textDelta","params":{"item_id":"reasoning-1","delta":"Check the workspace."}}
+{"type":"item.started","params":{"item":{"root":{"id":"call-1","type":"commandExecution","command":"npm test"}}}}
+{"type":"item.completed","params":{"item":{"root":{"id":"call-1","type":"commandExecution","aggregatedOutput":"tests passed","exitCode":0}}}}
+{"type":"item.agentMessage.delta","params":{"item_id":"message-1","delta":"from Codex."}}
+{"type":"turn.completed","id":"turn-1-complete","params":{"usage":{"input_tokens":120,"output_tokens":30,"cached_tokens":10,"total_tokens":150}}}
+{"type":"error","id":"codex-recorded-error","message":"recorded Codex error"}

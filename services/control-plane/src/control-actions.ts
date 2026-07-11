@@ -1,4 +1,5 @@
 import { appendRunEvent } from "./event-store.js";
+import { createEmptyExecutionRef } from "./execution-ref.js";
 import {
   applyNodeStatus,
   areAllNodesCompleted,
@@ -132,10 +133,7 @@ export function applyRunAction(
 
 function resetCompiledNodeForRetry(node: CompiledNodeRecord): void {
   node.status = "ready";
-  node.execution_ref = {
-    openclaw_task_id: null,
-    openclaw_session_id: null,
-  };
+  node.execution_ref = createEmptyExecutionRef();
 }
 
 export function applyNodeAction(

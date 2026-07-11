@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/evaluation/evaluation-result.schema.json",
+  "title": "Evaluation Result",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "evaluation_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "snapshot_id": { "type": "string", "minLength": 1 },
+    "evidence_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "scorecard_id": { "type": "string", "minLength": 1 },
+    "evaluator": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["none", "deterministic", "model"] },
+        "version": { "type": "string", "minLength": 1 },
+        "provider": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "prompt_version": { "type": ["string", "null"] }
+      },
+      "required": ["id", "kind", "version", "provider", "model", "prompt_version"],
+      "additionalProperties": false
+    },
+    "pipeline_verdict": { "type": "string", "enum": ["pass", "fail", "incomplete"] },
+    "contract_verdict": { "type": "string", "enum": ["pass", "fail", "not_applicable", "incomplete"] },
+    "evidence_verdict": { "type": "string", "enum": ["complete", "partial", "unavailable"] },
+    "usage_verdict": { "type": "string", "enum": ["complete", "partial", "unavailable"] },
+    "quality_verdict": { "type": "string", "enum": ["pass", "fail", "not_evaluated", "error"] },
+    "gate_verdict": { "type": "string", "enum": ["pass", "reject", "not_enforced"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "check_id": { "type": "string", "minLength": 1 },
+          "dimension": { "type": "string", "enum": ["pipeline", "contract", "evidence", "usage", "quality"] },
+          "severity": { "type": "string", "enum": ["error", "warning", "blind_spot", "info"] },
+          "passed": { "type": "boolean" },
+          "summary": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string" },
+          "evidence_refs": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+        },
+        "required": ["check_id", "dimension", "severity", "passed", "summary", "detail", "evidence_refs"],
+        "additionalProperties": false
+      }
+    },
+    "evaluator_usage": {
+      "anyOf": [{ "$ref": "../runtime/worker-evidence.schema.json#/$defs/usageSummary" }, { "type": "null" }]
+    },
+    "status": { "type": "string", "enum": ["queued", "running", "completed", "failed"] },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "started_at": { "anyOf": [{ "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }, { "type": "null" }] },
+    "completed_at": { "anyOf": [{ "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }, { "type": "null" }] },
+    "error": { "type": ["string", "null"] }
+  },
+  "required": [
+    "schema_version", "evaluation_id", "run_id", "snapshot_id", "evidence_digest",
+    "scorecard_id", "evaluator", "pipeline_verdict", "contract_verdict",
+    "evidence_verdict", "usage_verdict", "quality_verdict", "gate_verdict",
+    "findings", "evaluator_usage", "status", "attempt", "created_at",
+    "started_at", "completed_at", "error"
+  ],
+  "additionalProperties": false
+}

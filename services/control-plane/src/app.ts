@@ -1,10 +1,14 @@
 ﻿import express from "express";
 import type { Request, Response } from "express";
-import { createApprovalRecord, findPendingApprovalForNode, getApproval, listApprovals, saveApproval } from "./approval-store.js";
-import { createArtifactRecord, listArtifacts, upsertArtifacts } from "./artifact-store.js";
+import type {
+  AuthMeResponse,
+  WorkspaceRole,
+} from "@my-mate/shared-types/identity";
+import { getApproval, listApprovals, saveApproval } from "./approval-store.js";
+import { listArtifacts } from "./artifact-store.js";
 import { applyNodeAction, applyRunAction } from "./control-actions.js";
-import { buildAcceptedReport } from "./adapter-contracts.js";
 import { appendRunEvent, listRunEvents } from "./event-store.js";
+import { createEmptyExecutionRef } from "./execution-ref.js";
 import {
   createDagPatch,
   getDagPatch,
@@ -18,17 +22,17 @@ import {
   updateDagProposal,
 } from "./dag-proposal-store.js";
 import type { ExecutionAdapter } from "./execution-adapter.js";
-import { getExecutionAdapter } from "./execution-adapter-factory.js";
 import {
-  createHumanInputRecord,
-  findPendingHumanInputForNode,
+  getExecutionAdapter,
+  listAvailableExecutionAdapterKinds,
+} from "./execution-adapter-factory.js";
+import {
   getHumanInput,
   listHumanInputs,
   saveHumanInput,
 } from "./human-input-store.js";
 import {
   applyNodeStatus,
-  areAllNodesCompleted,
   getCompiledNode,
   getMutableNodeRun,
   getReadyNodeRuns,
@@ -51,6 +55,54 @@ import {
 import { createSessionMessage, listSessionMessages } from "./session-message-store.js";
 import { createSessionIntervention, listSessionInterventions } from "./session-intervention-store.js";
 import { createSessionAttachment, listSessionAttachments } from "./session-attachment-store.js";
+import { getJsonStorageBackendKind } from "./storage-backend.js";
+import { appendAuditEvent, listAuditEvents, verifyWorkspaceAuditChain } from "./audit-store.js";
+import { INTERNAL_AUTH_SECRET } from "./config.js";
+import {
+  getRequestAuthContext,
+  hasPermission,
+  requiredPermission,
+  resolveTrustedRequestContext,
+  runWithRequestContext,
+  type SecurityOptions,
+} from "./request-security.js";
+import {
+  ensureWorkspace,
+  getWorkspaceMember,
+  getWorkspace,
+  listWorkspaceMembers,
+  listWorkspaceRecords,
+  reconcileMembership,
+  upsertWorkspaceMember,
+} from "./workspace-store.js";
+import { migrateLegacyWorkspaceRecords } from "./workspace-migration.js";
+
+function requestActor(req: Request, fallback = "user"): string {
+  const context = getRequestAuthContext();
+  if (context && context.principal.principal_type !== "development") {
+    return context.principal.principal_id;
+  }
+  return typeof req.body?.requested_by === "string" && req.body.requested_by.trim()
+    ? req.body.requested_by.trim()
+    : fallback;
+}
+import {
+  buildDashboardSummary,
+  type DashboardObservabilityStatusFilter,
+} from "./dashboard-summary.js";
+import { runDoctor, type DoctorServiceOptions } from "./diagnostics/doctor-service.js";
+import type { DoctorMode, DoctorRequest, DoctorRuntime } from "./diagnostics/types.js";
+import { createOrGetPipelineScorecard } from "./evaluation/scorecard-engine.js";
+import { getScorecard, listScorecards } from "./evaluation/scorecard-store.js";
+import { createOrGetEvaluation } from "./evaluation/evaluation-engine.js";
+import { getEvaluation, listEvaluations } from "./evaluation/evaluation-store.js";
+import { buildTraceProjection } from "./evaluation/trace-projector.js";
+import { createOrGetReplay } from "./evaluation/replay-engine.js";
+import { getReplay } from "./evaluation/replay-store.js";
+import { createOrGetReplayPlan } from "./evaluation/replay-plan-engine.js";
+import { getReplayPlan } from "./evaluation/replay-plan-store.js";
+import { createOrGetRerun } from "./evaluation/rerun-service.js";
+import type { TraceSpanKind } from "./evaluation/types.js";
 import {
   archiveSession,
   createSession,
@@ -61,9 +113,12 @@ import {
   unarchiveSession,
   unhideSession,
 } from "./session-store.js";
-import { createRun, getRun, listRuns, saveRun } from "./run-store.js";
+import { buildRunRecord, getRun, listRuns, saveRun } from "./run-store.js";
 import { compileRunPlan } from "./run-plan-compiler.js";
 import { getRunPlan, saveRunPlan } from "./run-plan-store.js";
+import { buildRunRouteSnapshot } from "./run-route.js";
+import { getRunRouteOrLegacy } from "./run-route-store.js";
+import { persistRunBundle } from "./run-bundle-writer.js";
 import {
   assertTemplateDraftBody,
   archiveTemplate,
@@ -122,13 +177,17 @@ import type {
   OpenClawReportCallbackRequest,
   PlannerCandidatePlanRequest,
   PlannerDagDraftRequest,
+  PlannerPlanOptionContent,
   PlannerTemplateSelectionRequest,
+  PlannerValidationResult,
   PlanSessionRequest,
   RuntimeSummary,
   ReviseSessionPlanRequest,
   RejectDagProposalRequest,
+  RunRecord,
   RunValidationMode,
   RunPlanRecord,
+  RunRouteSource,
   RouteCompareOption,
   SessionDagDraftRequest,
   SessionInterventionKind,
@@ -156,6 +215,10 @@ import {
 } from "./mission-workspace.js";
 import { buildRouteCompareSummary } from "./route-compare.js";
 import { buildRuntimeGraphSummary } from "./runtime-graph.js";
+import { buildRuntimeRunProjection } from "./runtime/runtime-run-projection.js";
+import { buildSupervisionProjection } from "./runtime/supervision-projector.js";
+import { RuntimeEngine } from "./runtime/runtime-engine.js";
+import type { RuntimeDispatcher } from "./runtime-dispatcher.js";
 import {
   AUTO_APPROVE_HUMAN_GATES,
   ENABLE_LOCAL_EXECUTION,
@@ -174,7 +237,6 @@ import {
   PLANNER_LLM_MODEL,
   PLANNER_LLM_TIMEOUT_MS,
 } from "./config.js";
-import { buildDispatchEnvelope } from "./adapter-contracts.js";
 import {
   getCurrentPlannerProvider,
   getFallbackPlannerProvider,
@@ -236,8 +298,10 @@ type PlanCardRevisionDiff = {
 
 type ReviseDirective =
   | { kind: "add_review_node"; reason: string }
+  | { kind: "add_preparation_node"; reason: string; target_index: number | null }
   | { kind: "flatten_parallelism"; reason: string }
   | { kind: "increase_parallelism"; reason: string }
+  | { kind: "set_parallelism"; reason: string; target_index: number | null; parallelism: number }
   | { kind: "add_approval_gate"; reason: string; target_index: number | null }
   | { kind: "add_fanout_review_stage"; reason: string };
 
@@ -496,6 +560,163 @@ function getOptionalStringField(
   return { ok: true, value: trimmed || null };
 }
 
+function buildPlanOptionComparisonRationale(input: {
+  primaryTemplateName: string;
+  primaryValidation: PlannerValidationResult;
+  primaryPlan: RunPlanRecord;
+  primaryRecommendationReason: string | null;
+  primaryRecommendationEvidence?: {
+    coverage_score?: number;
+    density_score?: number;
+    registry_readiness_score?: number;
+    domain_overlap_score?: number;
+  } | null;
+  alternativeTemplateName: string | null;
+  alternativeValidation: PlannerValidationResult | null;
+  alternativePlan: RunPlanRecord | null;
+  alternativeRecommendationReason: string | null;
+  alternativeRecommendationEvidence?: {
+    coverage_score?: number;
+    density_score?: number;
+    registry_readiness_score?: number;
+    domain_overlap_score?: number;
+  } | null;
+}): string | null {
+  const {
+    primaryTemplateName,
+    primaryValidation,
+    primaryPlan,
+    primaryRecommendationReason,
+    primaryRecommendationEvidence,
+    alternativeTemplateName,
+    alternativeValidation,
+    alternativePlan,
+    alternativeRecommendationReason,
+    alternativeRecommendationEvidence,
+  } = input;
+
+  if (!alternativeTemplateName || !alternativeValidation || !alternativePlan) {
+    return null;
+  }
+
+  const primaryWarnings = primaryValidation.warnings.length;
+  const alternativeWarnings = alternativeValidation.warnings.length;
+  const primaryNodes = Array.isArray(primaryPlan.compiled_nodes) ? primaryPlan.compiled_nodes.length : 0;
+  const alternativeNodes = Array.isArray(alternativePlan.compiled_nodes) ? alternativePlan.compiled_nodes.length : 0;
+  const primaryReady = Array.isArray(primaryPlan.frontier) ? primaryPlan.frontier.length : 0;
+  const alternativeReady = Array.isArray(alternativePlan.frontier) ? alternativePlan.frontier.length : 0;
+
+  const reasons: string[] = [];
+  const tradeoffs: string[] = [];
+
+  if (primaryWarnings < alternativeWarnings) {
+    reasons.push(
+      `${primaryTemplateName} carries ${primaryWarnings} warning(s) versus ${alternativeWarnings} on ${alternativeTemplateName}`,
+    );
+  } else if (primaryWarnings > alternativeWarnings) {
+    tradeoffs.push(
+      `${primaryTemplateName} carries ${primaryWarnings} warning(s) versus ${alternativeWarnings} on ${alternativeTemplateName}`,
+    );
+  }
+
+  if (primaryReady > alternativeReady) {
+    reasons.push(
+      `${primaryTemplateName} exposes ${primaryReady} ready frontier node(s) versus ${alternativeReady}`,
+    );
+  } else if (primaryReady < alternativeReady) {
+    tradeoffs.push(
+      `${primaryTemplateName} exposes ${primaryReady} ready frontier node(s) versus ${alternativeReady}`,
+    );
+  }
+
+  if (primaryNodes < alternativeNodes) {
+    reasons.push(
+      `${primaryTemplateName} uses ${alternativeNodes - primaryNodes} fewer node(s) than ${alternativeTemplateName}`,
+    );
+  } else if (primaryNodes > alternativeNodes) {
+    tradeoffs.push(
+      `${primaryTemplateName} uses ${primaryNodes - alternativeNodes} more node(s) than ${alternativeTemplateName}`,
+    );
+  }
+
+  const primaryCoverage = primaryRecommendationEvidence?.coverage_score ?? null;
+  const alternativeCoverage = alternativeRecommendationEvidence?.coverage_score ?? null;
+  if (
+    typeof primaryCoverage === "number" &&
+    typeof alternativeCoverage === "number" &&
+    primaryCoverage > alternativeCoverage
+  ) {
+    reasons.push(
+      `planner coverage is stronger (${Math.round(primaryCoverage * 100)}% versus ${Math.round(alternativeCoverage * 100)}%)`,
+    );
+  }
+
+  const primaryReadiness = primaryRecommendationEvidence?.registry_readiness_score ?? null;
+  const alternativeReadiness = alternativeRecommendationEvidence?.registry_readiness_score ?? null;
+  if (
+    typeof primaryReadiness === "number" &&
+    typeof alternativeReadiness === "number" &&
+    primaryReadiness > alternativeReadiness
+  ) {
+    reasons.push(
+      `registry readiness is stronger (${Math.round(primaryReadiness * 100)}% versus ${Math.round(alternativeReadiness * 100)}%)`,
+    );
+  }
+
+  const primaryDomain = primaryRecommendationEvidence?.domain_overlap_score ?? null;
+  const alternativeDomain = alternativeRecommendationEvidence?.domain_overlap_score ?? null;
+  if (
+    typeof primaryDomain === "number" &&
+    typeof alternativeDomain === "number" &&
+    primaryDomain > alternativeDomain
+  ) {
+    reasons.push(
+      `domain fit is stronger (${Math.round(primaryDomain * 100)}% versus ${Math.round(alternativeDomain * 100)}%)`,
+    );
+  }
+
+  const lines = [
+    `${primaryTemplateName} is the current recommended route because ${reasons[0] || (primaryRecommendationReason || `it is the better fit right now`).toLowerCase()}.`,
+    reasons.length > 1 ? `It also helps because ${reasons.slice(1).join("; ")}.` : null,
+    tradeoffs.length > 0
+      ? `${alternativeTemplateName} remains the backup route, but ${tradeoffs.join("; ")}.`
+      : `${alternativeTemplateName} remains the backup route. ${alternativeRecommendationReason || "Keep it available if the main route becomes too heavy."}`,
+  ].filter((item): item is string => !!item);
+
+  return lines.join(" ");
+}
+
+function uniqueTrimmedStrings(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return [
+    ...new Set(
+      values
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .map((item) => item.trim()),
+    ),
+  ];
+}
+
+function getBooleanPolicyField(value: unknown, key: string): boolean | undefined {
+  if (!isPlainObject(value) || !(key in value) || value[key] === undefined) {
+    return undefined;
+  }
+  return typeof value[key] === "boolean" ? value[key] : undefined;
+}
+
+function getNumericPolicyField(value: unknown, key: string): number | undefined {
+  if (!isPlainObject(value) || !(key in value) || value[key] === undefined) {
+    return undefined;
+  }
+  const raw = value[key];
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return undefined;
+  }
+  return Math.max(1, Math.floor(raw));
+}
+
 function resolvePlannerInvocationOptions(
   body: unknown,
 ): { ok: true; value: PlannerInvocationOptions } | { ok: false; status: number; message: string } {
@@ -528,6 +749,9 @@ function resolvePlannerInvocationOptions(
       message: "Orchestrator profile not found.",
     };
   }
+  const preferDomainMatch = getBooleanPolicyField(profile?.planning_policy, "prefer_domain_match");
+  const defaultMaxAgentNodes = getNumericPolicyField(profile?.planning_policy, "max_agent_nodes");
+  const requireReview = getBooleanPolicyField(profile?.handoff_policy, "require_review");
 
   return {
     ok: true,
@@ -536,6 +760,10 @@ function resolvePlannerInvocationOptions(
       model: model.value || profile?.model || null,
       orchestratorProfileId: profile?.orchestrator_id || profileId.value || null,
       orchestratorSystemPrompt: systemPrompt.value || profile?.system_prompt || null,
+      preferredSubagentProfileIds: uniqueTrimmedStrings(profile?.default_subagent_profile_ids || []),
+      preferDomainMatch,
+      defaultMaxAgentNodes: defaultMaxAgentNodes ?? null,
+      requireReview,
     },
   };
 }
@@ -550,11 +778,18 @@ function resolveSessionPlannerInvocationOptions(session: SessionRecord): Planner
       ? metadata.orchestrator_profile_id.trim()
       : null;
   const profile = profileId ? getOrchestratorProfile(profileId) : null;
+  const preferDomainMatch = getBooleanPolicyField(profile?.planning_policy, "prefer_domain_match");
+  const defaultMaxAgentNodes = getNumericPolicyField(profile?.planning_policy, "max_agent_nodes");
+  const requireReview = getBooleanPolicyField(profile?.handoff_policy, "require_review");
   return {
     providerId: profile?.provider || null,
     model: profile?.model || null,
     orchestratorProfileId: profile?.orchestrator_id || profileId,
     orchestratorSystemPrompt: profile?.system_prompt || null,
+    preferredSubagentProfileIds: uniqueTrimmedStrings(profile?.default_subagent_profile_ids || []),
+    preferDomainMatch,
+    defaultMaxAgentNodes: defaultMaxAgentNodes ?? null,
+    requireReview,
   };
 }
 
@@ -571,7 +806,19 @@ function isAgentProfileBody(value: unknown): value is UpsertAgentProfileRequest 
   if ("description" in value && typeof value.description !== "string") {
     return false;
   }
-  if (typeof value.openclaw_agent_id !== "string") {
+  if ("runtime_agent_ref" in value && typeof value.runtime_agent_ref !== "string") {
+    return false;
+  }
+  if ("agent_runtime" in value && typeof value.agent_runtime !== "string") {
+    return false;
+  }
+  if ("harness_profile" in value && !isNullableString(value.harness_profile)) {
+    return false;
+  }
+  if ("openclaw_agent_id" in value && typeof value.openclaw_agent_id !== "string") {
+    return false;
+  }
+  if (typeof value.runtime_agent_ref !== "string" && typeof value.openclaw_agent_id !== "string") {
     return false;
   }
   if ("default_skills" in value && !isStringArray(value.default_skills)) {
@@ -604,6 +851,15 @@ function isAgentHostingUpdateBody(value: unknown): value is UpdateAgentHostingRe
     return false;
   }
   if ("openclaw_agent_id" in value && typeof value.openclaw_agent_id !== "string") {
+    return false;
+  }
+  if ("runtime_agent_ref" in value && typeof value.runtime_agent_ref !== "string") {
+    return false;
+  }
+  if ("agent_runtime" in value && typeof value.agent_runtime !== "string") {
+    return false;
+  }
+  if ("harness_profile" in value && !isNullableString(value.harness_profile)) {
     return false;
   }
   if ("provider" in value && !isNullableString(value.provider)) {
@@ -1018,10 +1274,121 @@ function isSupersedeDagProposalBody(value: unknown): value is SupersedeDagPropos
   return true;
 }
 
-export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
+function getAuditRequestPath(req: Request): string {
+  const pathname = new URL(req.originalUrl, "http://control-plane.local").pathname;
+  if (pathname === "/api" || pathname.startsWith("/api/")) return pathname;
+  return `/api${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
+}
+
+function getAuditResourceSegments(pathname: string): string[] {
+  return pathname.replace(/^\/api(?:\/|$)/, "").split("/").filter(Boolean);
+}
+
+export function createApp(options?: {
+  executionAdapter?: ExecutionAdapter;
+  dispatcher?: RuntimeDispatcher;
+  onRuntimeEngine?: (runtimeEngine: RuntimeEngine) => void;
+  doctor?: Omit<DoctorServiceOptions, "runtimeStatus" | "executionAdapterKind">;
+  security?: SecurityOptions;
+}) {
+  migrateLegacyWorkspaceRecords();
   const app = express();
   app.use(express.json({ limit: "1mb" }));
+  app.use("/api", (req: Request, res: Response, next) => {
+    if (req.path.startsWith("/internal/")) return next();
+    const resolution = resolveTrustedRequestContext(req, {
+      internalAuthSecret: options?.security?.internalAuthSecret ?? INTERNAL_AUTH_SECRET,
+      allowDevelopmentIdentity: options?.security?.allowDevelopmentIdentity,
+    });
+    if (!resolution.ok) {
+      const auditPath = getAuditRequestPath(req);
+      appendAuditEvent({
+        workspaceId: req.header("x-my-mate-workspace-id") || "default",
+        action: "request.authenticate",
+        method: req.method,
+        path: auditPath,
+        outcome: "denied",
+        statusCode: resolution.status,
+        requestId: req.header("x-request-id") || "unknown",
+        metadata: { reason: resolution.code },
+      });
+      return res.status(resolution.status).json({
+        code: resolution.code,
+        message: resolution.message,
+      });
+    }
+    return runWithRequestContext(resolution.context, () => {
+      const permission = requiredPermission(req);
+      const auditPath = getAuditRequestPath(req);
+      const segments = getAuditResourceSegments(auditPath);
+      const shouldAudit = req.method.toUpperCase() !== "GET";
+      res.once("finish", () => {
+        if (!shouldAudit && res.statusCode < 400) return;
+        appendAuditEvent({
+          context: resolution.context,
+          action: permission,
+          permission,
+          method: req.method,
+          path: auditPath,
+          resourceType: segments[0] || null,
+          resourceId: segments[1] || null,
+          outcome:
+            res.statusCode === 401 || res.statusCode === 403
+              ? "denied"
+              : res.statusCode >= 400
+                ? "error"
+                : "allowed",
+          statusCode: res.statusCode,
+        });
+      });
+      return next();
+    });
+  });
+  app.use("/api", (req: Request, res: Response, next) => {
+    if (req.path.startsWith("/internal/")) return next();
+    const permission = requiredPermission(req);
+    if (!hasPermission(permission)) {
+      return res.status(403).json({
+        code: "permission_denied",
+        message: `Permission ${permission} is required for this operation.`,
+      });
+    }
+    return next();
+  });
+  app.use("/api", (req: Request, res: Response, next) => {
+    if (req.path.startsWith("/internal/")) return next();
+    const runMatch = /^\/(?:mobile\/)?runs\/([^/]+)/.exec(req.path);
+    if (runMatch && !getRun(decodeURIComponent(runMatch[1]))) {
+      return res.status(404).json({ code: "not_found", message: "Run not found." });
+    }
+    const sessionMatch = /^\/(?:sessions|missions)\/([^/]+)/.exec(req.path);
+    if (sessionMatch && !getSession(decodeURIComponent(sessionMatch[1]))) {
+      return res.status(404).json({ code: "not_found", message: "Mission not found." });
+    }
+    const templateMatch = /^\/templates\/([^/]+)/.exec(req.path);
+    if (templateMatch && !getTemplate(decodeURIComponent(templateMatch[1]))) {
+      return res.status(404).json({ code: "not_found", message: "Template not found." });
+    }
+    const approvalMatch = /^\/approvals\/([^/]+)/.exec(req.path);
+    if (approvalMatch && !getApproval(decodeURIComponent(approvalMatch[1]))) {
+      return res.status(404).json({ code: "not_found", message: "Approval not found." });
+    }
+    const humanInputMatch = /^\/human-inputs\/([^/]+)/.exec(req.path);
+    if (humanInputMatch && !getHumanInput(decodeURIComponent(humanInputMatch[1]))) {
+      return res.status(404).json({ code: "not_found", message: "Human input not found." });
+    }
+    return next();
+  });
   const executionAdapter = options?.executionAdapter || getExecutionAdapter();
+  const runtimeEngine = new RuntimeEngine({
+    executionAdapter,
+    dispatcher: options?.dispatcher,
+    refreshSessionsLinkedToRun,
+  });
+  options?.onRuntimeEngine?.(runtimeEngine);
+  options?.dispatcher?.bindWorkerEventHandler?.((event) =>
+    runtimeEngine.applyWorkerEvent(event).then(() => undefined),
+  );
 
   function eventSummary(event: EventRecord): string | null {
     const message = event.payload.message;
@@ -1228,6 +1595,14 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
           session.active_run_ids.includes(runId),
       ) || null;
     const linkedMission = linkedSession ? buildMissionListItem(linkedSession.session_id) : null;
+    const operatorTimeline = detail.timeline.filter(
+      (event) =>
+        !event.type.startsWith("job.") &&
+        !event.type.startsWith("worker.") &&
+        !event.type.startsWith("lease.") &&
+        event.type !== "evidence.recorded" &&
+        event.type !== "runtime.quiescent",
+    );
 
     return {
       run: detail.run,
@@ -1242,7 +1617,9 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       active_task: getActiveMobileTask(detail),
       pending_approvals: detail.pending_approvals,
       pending_human_inputs: detail.pending_human_inputs,
-      latest_timeline: detail.timeline.slice(-10).reverse(),
+      latest_timeline: (operatorTimeline.length > 0 ? operatorTimeline : detail.timeline)
+        .slice(-10)
+        .reverse(),
       artifacts: detail.artifacts,
       artifact_count: detail.artifacts.length,
       next_actions: detail.next_actions,
@@ -1275,6 +1652,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         attempt: nodeRun?.attempt ?? node.retry_policy.attempt,
         started_at: nodeRun?.started_at ?? null,
         finished_at: nodeRun?.finished_at ?? null,
+        runtime_agent_ref: node.runtime_agent_ref ?? node.openclaw_agent_id ?? null,
         openclaw_agent_id: node.openclaw_agent_id,
         execution_ref: node.execution_ref,
       };
@@ -1890,6 +2268,9 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       session,
       messages: threadMessages,
       workspaceState,
+      runRoute: session.latest_run_id
+        ? getRunRouteOrLegacy(session.latest_run_id)
+        : null,
     });
     const persistedMissionState = buildPersistedMissionContractState(missionProjection);
     const metadata = getSessionMetadataObject(session);
@@ -3817,12 +4198,6 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     };
   }
 
-  function countActiveDispatchNodes(plan: RunPlanRecord): number {
-    return plan.compiled_nodes.filter((node) =>
-      node.status === "running" || node.status === "waiting_human",
-    ).length;
-  }
-
   function resolveMaxParallelNodes(plan: RunPlanRecord): number {
     const raw =
       isPlainObject(plan.policy_snapshot) && typeof plan.policy_snapshot.max_parallel_nodes === "number"
@@ -4090,6 +4465,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
             node_type: node.type,
             status: nodeRun.status,
             progress: nodeRun.progress,
+            runtime_agent_ref: node.runtime_agent_ref ?? node.openclaw_agent_id ?? null,
             openclaw_agent_id: node.openclaw_agent_id,
           },
           created_at: nodeRun.progress.updated_at || run.updated_at,
@@ -4240,6 +4616,9 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       session: summarySession,
       messages: threadMessages,
       workspaceState,
+      runRoute: summaryLatestRunId
+        ? getRunRouteOrLegacy(summaryLatestRunId)
+        : null,
     });
     const persistedMissionState = buildPersistedMissionContractState(missionProjection);
 
@@ -4513,7 +4892,21 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       .filter((mission) => sessionMatchesVisibility(mission, filters));
   }
 
-  function buildMissionDetailResponse(sessionId: string): MissionDetailResponse | null {
+  function resolveSessionWorkspaceRun(sessionId: string, requestedRunId: string | null): RunRecord | null {
+    const session = buildSessionSummary(sessionId);
+    if (!session) {
+      return null;
+    }
+    if (!requestedRunId) {
+      return session.latest_run_id ? getRun(session.latest_run_id) : null;
+    }
+    if (!getSessionLinkedRunIds(sessionId).includes(requestedRunId)) {
+      return null;
+    }
+    return getRun(requestedRunId);
+  }
+
+  function buildMissionDetailResponse(sessionId: string, selectedRunId: string | null = null): MissionDetailResponse | null {
     const session = buildSessionSummary(sessionId);
     if (!session) {
       return null;
@@ -4526,17 +4919,19 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
 
     const messages = buildSessionThreadMessages(sessionId);
     const workspaceState = isPlainObject(session.workspace_state) ? session.workspace_state : {};
+    const selectedRun = resolveSessionWorkspaceRun(sessionId, selectedRunId);
     const missionProjection = buildMissionWorkspaceProjection({
       session: session as SessionRecord,
       messages,
       workspaceState,
+      runRoute: selectedRun ? getRunRouteOrLegacy(selectedRun.run_id) : null,
     });
 
     return {
       mission,
       session,
       messages,
-      latest_run: session.latest_run_id ? getRun(session.latest_run_id) : null,
+      latest_run: selectedRun,
       attachments: listSessionAttachments(sessionId),
       workspace_state: workspaceState,
       next_actions: buildSessionNextActions(sessionId),
@@ -4545,6 +4940,9 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       mission_spec_contract: missionProjection.missionSpecContract,
       mission_snapshot: missionProjection.missionSnapshot,
       mission_view: mission.mission_view,
+      runtime_projection: selectedRun
+        ? buildRuntimeRunProjection(selectedRun.run_id)
+        : null,
     };
   }
 
@@ -4578,8 +4976,11 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     return [...new Set(actions)];
   }
 
-  function buildSessionWorkspaceDetailResponse(sessionId: string): SessionWorkspaceDetailResponse | null {
-    const mission = buildMissionDetailResponse(sessionId);
+  function buildSessionWorkspaceDetailResponse(
+    sessionId: string,
+    selectedRunId: string | null = null,
+  ): SessionWorkspaceDetailResponse | null {
+    const mission = buildMissionDetailResponse(sessionId, selectedRunId);
     if (!mission) {
       return null;
     }
@@ -4588,6 +4989,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       session: mission.session,
       messages: mission.messages,
       latest_run: mission.latest_run,
+      selected_run_id: mission.latest_run?.run_id || null,
       attachments: mission.attachments,
       workspace_state: mission.workspace_state || {},
       next_actions: mission.next_actions || [],
@@ -4595,13 +4997,15 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       mission_spec: mission.mission_spec || null,
       mission_spec_contract: mission.mission_spec_contract || null,
       mission_snapshot: mission.mission_snapshot || null,
+      runtime_projection: mission.runtime_projection || null,
     };
   }
 
   function buildAgentHostingSummary(agentProfiles = listAgentProfiles()): AgentHostingSummary {
     return {
       ownership: {
-        execution_runtime: "openclaw",
+        execution_runtime: executionAdapter.kind,
+        runtime_protocol: "my_mate",
         orchestration_binding: "my_mate",
       },
       profiles: agentProfiles.map((profile) => {
@@ -4625,13 +5029,19 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
             : typeof metadata.openclaw_runtime_mode === "string" && metadata.openclaw_runtime_mode.trim()
               ? metadata.openclaw_runtime_mode.trim()
               : null;
-        const ready = profile.status === "active" && !!profile.openclaw_agent_id.trim();
+        const runtimeAgentRef = (profile.runtime_agent_ref || profile.openclaw_agent_id || "").trim();
+        const agentRuntime = (profile.agent_runtime || "openclaw").trim() || "openclaw";
+        const harnessProfile = profile.harness_profile?.trim() || runtimeMode || null;
+        const ready = profile.status === "active" && !!runtimeAgentRef;
 
         return {
           profile_id: profile.profile_id,
           name: profile.name,
           status: profile.status,
-          openclaw_agent_id: profile.openclaw_agent_id,
+          runtime_agent_ref: runtimeAgentRef,
+          agent_runtime: agentRuntime,
+          harness_profile: harnessProfile,
+          openclaw_agent_id: profile.openclaw_agent_id || runtimeAgentRef,
           default_skills: profile.default_skills,
           provider,
           model,
@@ -4648,8 +5058,8 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
               profile.status === "disabled"
                 ? "Agent profile is disabled."
                 : ready
-                  ? "Profile is bound to an OpenClaw agent; provider/model settings are passed as registry intent."
-                  : "Profile needs an OpenClaw agent id before execution can resolve it.",
+                  ? "Profile is bound to a runtime agent; provider/model settings are passed as registry intent."
+                  : "Profile needs a runtime agent ref before execution can resolve it.",
           },
         };
       }),
@@ -4664,10 +5074,15 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     const templates = listTemplates();
     const bridgeConfigured = !!OPENCLAW_BRIDGE_BASE_URL;
     const callbackConfigured = !!OPENCLAW_CALLBACK_BASE_URL;
+    const runtimeStatus = runtimeEngine.getRuntimeStatus();
+    const runtimeWorkerConfigured = !runtimeStatus.legacy_execution_adapter_bridge;
+    const runtimeWorkerReady =
+      runtimeWorkerConfigured && runtimeStatus.node_provisioner_status === "ready";
 
     return {
       execution_runtime: {
         adapter_kind: executionAdapter.kind,
+        registered_adapter_kinds: listAvailableExecutionAdapterKinds(),
         local_execution_enabled: ENABLE_LOCAL_EXECUTION,
         auto_approve_human_gates: AUTO_APPROVE_HUMAN_GATES,
         bridge_base_url: OPENCLAW_BRIDGE_BASE_URL || null,
@@ -4682,20 +5097,64 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         container_name: OPENCLAW_CONTAINER_NAME || null,
         runtime_health: {
           status:
-            executionAdapter.kind === "openclaw" && !bridgeConfigured
-              ? "warn"
-              : "ok",
+            runtimeWorkerConfigured
+              ? runtimeWorkerReady
+                ? "ok"
+                : "warn"
+              : executionAdapter.kind === "openclaw" && !bridgeConfigured
+                ? "warn"
+                : "ok",
           detail:
-            executionAdapter.kind === "openclaw" && !bridgeConfigured
-              ? "OpenClaw bridge adapter is selected but bridge base URL is not configured."
-              : executionAdapter.kind === "openclaw"
-                ? "OpenClaw bridge runtime is configured."
-                : "Local execution runtime is active.",
+            runtimeWorkerReady
+              ? runtimeStatus.node_provisioner_kind === "docker"
+                ? "Docker worker runtime is active."
+                : `${runtimeStatus.node_provisioner_kind} worker runtime is active.`
+              : runtimeWorkerConfigured
+                ? `Runtime worker dispatcher is configured, but the ${runtimeStatus.node_provisioner_kind} provisioner is ${runtimeStatus.node_provisioner_status}.`
+                : executionAdapter.kind === "openclaw" && !bridgeConfigured
+                  ? "OpenClaw bridge adapter is selected but bridge base URL is not configured."
+                  : executionAdapter.kind === "openclaw"
+                    ? "OpenClaw bridge runtime is configured."
+                    : executionAdapter.kind === "local"
+                      ? "Local execution runtime is active."
+                      : `${executionAdapter.kind} execution adapter is active.`,
           bridge_configured: bridgeConfigured,
           callback_configured: callbackConfigured,
         },
         maintenance: {
           supported_actions: ["dispatch_sweep"],
+        },
+        runtime_dispatcher: {
+          kind: runtimeStatus.dispatcher_kind,
+          dispatch_mainline: runtimeStatus.dispatch_mainline,
+          legacy_execution_adapter_bridge: runtimeStatus.legacy_execution_adapter_bridge,
+        },
+        node_provisioner: {
+          kind: runtimeStatus.node_provisioner_kind,
+          status: runtimeStatus.node_provisioner_status,
+          capacity: {
+            max_concurrent_workers: runtimeStatus.worker_capacity_limit,
+            active_workers: runtimeStatus.worker_capacity_active,
+            queue_depth: runtimeStatus.worker_queue_depth,
+            queue_limit: runtimeStatus.worker_queue_limit,
+            queue_timeout_ms: runtimeStatus.worker_queue_timeout_ms,
+          },
+          recovery: {
+            cleanup_pending: runtimeStatus.worker_cleanup_pending,
+            cleanup_failed: runtimeStatus.worker_cleanup_failed,
+            last_reconciliation_at: runtimeStatus.worker_reconciliation_at,
+            last_reconciliation_status: runtimeStatus.worker_reconciliation_status,
+            discovered_containers: runtimeStatus.worker_reconciliation_discovered,
+            orphan_containers: runtimeStatus.worker_reconciliation_orphans,
+            removed_containers: runtimeStatus.worker_reconciliation_removed,
+            cleanup_failures: runtimeStatus.worker_reconciliation_failures,
+          },
+        },
+        worker_hub: {
+          kind: runtimeStatus.worker_hub_kind,
+          connected_workers: runtimeStatus.connected_workers,
+          busy_workers: runtimeStatus.busy_workers,
+          stale_workers: runtimeStatus.stale_workers,
         },
       },
       agent_hosting: buildAgentHostingSummary(agentProfiles),
@@ -4747,14 +5206,26 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
           ? currentOpenClaw.runtime_mode ?? null
           : update.runtime_mode?.trim() || null,
     };
+    const runtimeAgentRef = (
+      update.runtime_agent_ref ??
+      update.openclaw_agent_id ??
+      current.runtime_agent_ref ??
+      current.openclaw_agent_id
+    ).trim();
 
     return upsertAgentProfile({
       profile_id: current.profile_id,
       name: current.name,
       description: current.description,
+      runtime_agent_ref: runtimeAgentRef,
+      agent_runtime: update.agent_runtime?.trim() || current.agent_runtime || "openclaw",
+      harness_profile:
+        update.harness_profile === undefined
+          ? current.harness_profile ?? null
+          : update.harness_profile?.trim() || null,
       openclaw_agent_id:
         update.openclaw_agent_id === undefined
-          ? current.openclaw_agent_id
+          ? current.openclaw_agent_id || runtimeAgentRef
           : update.openclaw_agent_id.trim(),
       default_skills: current.default_skills,
       allowed_tools: current.allowed_tools,
@@ -4768,8 +5239,8 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     });
   }
 
-  function buildSessionWorkspaceStreamSnapshot(sessionId: string) {
-    const workspace = buildSessionWorkspaceDetailResponse(sessionId);
+  function buildSessionWorkspaceStreamSnapshot(sessionId: string, selectedRunId: string | null = null) {
+    const workspace = buildSessionWorkspaceDetailResponse(sessionId, selectedRunId);
     if (!workspace) {
       return null;
     }
@@ -4778,6 +5249,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       session: workspace.session,
       messages: workspace.messages,
       latest_run: workspace.latest_run,
+      selected_run_id: workspace.selected_run_id || null,
       workspace_state: workspace.workspace_state,
       next_actions: workspace.next_actions,
       mission_snapshot: workspace.mission_snapshot,
@@ -5176,6 +5648,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
   function parseReviseDirectives(instructions: string): ReviseDirective[] {
     const normalized = instructions.toLowerCase();
     const directives: ReviseDirective[] = [];
+    const requestedParallelism = extractRequestedParallelismFromText(instructions);
     const ordinalMatch =
       normalized.match(/\b(?:step|phase|task)\s+(\d+)\b/) ||
       normalized.match(/\b(first|second|third|fourth)\s+(?:step|phase|task)\b/);
@@ -5196,13 +5669,44 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       }
     }
 
+    const asksPreparationStep =
+      /\b(?:add|insert|include|prepend|start with|begin with)\b.*\b(?:research|discovery|prep|preparation|requirements|context|brief|investigation)\b/.test(
+        normalized,
+      ) ||
+      /\b(?:research|discovery|prep|preparation|requirements|context gathering|investigation)\s+(?:step|phase|task)\b/.test(
+        normalized,
+      ) ||
+      /\b(?:before|first|up front|upfront|initial)\b.*\b(?:research|discovery|requirements|context|brief)\b/.test(
+        normalized,
+      );
+    if (asksPreparationStep) {
+      directives.push({
+        kind: "add_preparation_node",
+        reason:
+          targetIndex !== null
+            ? `Revision requested a preparation step before step ${targetIndex + 1}.`
+            : "Revision requested an upfront research or preparation step.",
+        target_index: targetIndex,
+      });
+    }
+
     if (/\b(review|summary|summarize|final review|double-check)\b/.test(normalized)) {
       directives.push({
         kind: "add_review_node",
         reason: "Revision requested an explicit review or summary step.",
       });
     }
-    if (/\b(parallel|in parallel|concurrently|fan out)\b/.test(normalized)) {
+    if (requestedParallelism !== null) {
+      directives.push({
+        kind: "set_parallelism",
+        reason:
+          targetIndex !== null
+            ? `Revision requested ${requestedParallelism} parallel worker(s) on step ${targetIndex + 1}.`
+            : `Revision requested ${requestedParallelism} parallel worker(s).`,
+        target_index: targetIndex,
+        parallelism: requestedParallelism,
+      });
+    } else if (/\b(parallel|in parallel|concurrently|fan out)\b/.test(normalized)) {
       directives.push({
         kind: "increase_parallelism",
         reason: "Revision requested a more parallel execution shape.",
@@ -5253,6 +5757,115 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       ...edge,
       condition: edge.condition ? { ...edge.condition } : null,
     };
+  }
+
+  function isExecutableWorkflowNode(node: WorkflowNode): boolean {
+    return node.type === "agent_task" || node.type === "tool_task";
+  }
+
+  function getWorkflowRootNodeIds(template: WorkflowTemplateRecord): string[] {
+    const nodeIds = new Set(template.nodes.map((node) => node.id));
+    const nodesWithIncomingEdges = new Set(template.edges.map((edge) => edge.to));
+    return [...nodeIds].filter((nodeId) => !nodesWithIncomingEdges.has(nodeId));
+  }
+
+  function getExecutableWorkflowNodeByIndex(
+    template: WorkflowTemplateRecord,
+    targetIndex: number | null,
+  ): WorkflowNode | null {
+    if (targetIndex === null) {
+      return null;
+    }
+    let executableIndex = 0;
+    for (const node of template.nodes) {
+      if (!isExecutableWorkflowNode(node)) {
+        continue;
+      }
+      if (executableIndex === targetIndex) {
+        return node;
+      }
+      executableIndex += 1;
+    }
+    return null;
+  }
+
+  function insertPreparationNode(input: {
+    template: WorkflowTemplateRecord;
+    directive: Extract<ReviseDirective, { kind: "add_preparation_node" }>;
+  }): boolean {
+    const { template, directive } = input;
+    if (template.nodes.some((node) => node.id === "node_revision_preparation")) {
+      return false;
+    }
+    const targetedNode = getExecutableWorkflowNodeByIndex(template, directive.target_index);
+    const targetNodeIds =
+      targetedNode !== null
+        ? [targetedNode.id]
+        : getWorkflowRootNodeIds(template).filter((nodeId) =>
+            template.nodes.some((node) => node.id === nodeId),
+          );
+    const effectiveTargetNodeIds =
+      targetNodeIds.length > 0
+        ? targetNodeIds
+        : template.nodes.length > 0
+          ? [template.nodes[0].id]
+          : [];
+    if (effectiveTargetNodeIds.length === 0) {
+      return false;
+    }
+    const targetNodeSet = new Set(effectiveTargetNodeIds);
+    const firstTargetIndex = template.nodes.findIndex((node) => targetNodeSet.has(node.id));
+    const sourceNode =
+      (targetedNode || template.nodes.find((node) => targetNodeSet.has(node.id))) ??
+      template.nodes.find(isExecutableWorkflowNode) ??
+      null;
+    const preparationNode: WorkflowNode = {
+      id: "node_revision_preparation",
+      name: "Revision Preparation",
+      type: "agent_task",
+      agent_profile: sourceNode?.agent_profile || "backend",
+      allowed_skills: sourceNode?.allowed_skills?.length ? [...sourceNode.allowed_skills] : ["coding-agent"],
+      config: {
+        allowed_tools:
+          isPlainObject(sourceNode?.config) && Array.isArray(sourceNode?.config.allowed_tools)
+            ? [...sourceNode.config.allowed_tools]
+            : ["read", "write"],
+        output_contract: {
+          expected_artifacts: ["preparation-brief"],
+        },
+      },
+      retry_policy: sourceNode?.retry_policy ? { ...sourceNode.retry_policy } : { max_attempts: 1, backoff_seconds: 5 },
+      timeout_seconds:
+        sourceNode?.timeout_seconds || template.policy.default_timeout_seconds || 900,
+      parallelism: 1,
+      approval_kind: null,
+      human_input_schema: null,
+    };
+    const insertionIndex = firstTargetIndex >= 0 ? firstTargetIndex : 0;
+    template.nodes = [
+      ...template.nodes.slice(0, insertionIndex),
+      preparationNode,
+      ...template.nodes.slice(insertionIndex),
+    ];
+
+    const incomingEdges = template.edges.filter((edge) => targetNodeSet.has(edge.to));
+    const rewiredIncomingEdges = incomingEdges.map((edge) => ({
+      ...edge,
+      to: preparationNode.id,
+      label: edge.label || "prepare",
+    }));
+    const preparationEdges = effectiveTargetNodeIds.map((nodeId) => ({
+      from: preparationNode.id,
+      to: nodeId,
+      condition: null,
+      label: "prepare",
+    }));
+    template.edges = [
+      ...template.edges.filter((edge) => !targetNodeSet.has(edge.to)),
+      ...rewiredIncomingEdges,
+      ...preparationEdges,
+    ];
+    return true;
   }
 
   function buildMutatedTemplateFromSource(input: {
@@ -5330,6 +5943,12 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         notes.push(directive.reason);
       }
 
+      if (directive.kind === "add_preparation_node") {
+        if (insertPreparationNode({ template, directive })) {
+          notes.push(directive.reason);
+        }
+      }
+
       if (directive.kind === "add_review_node") {
         if (!template.nodes.some((node) => node.id === "node_revision_review")) {
           const nodeIds = new Set(template.nodes.map((node) => node.id));
@@ -5375,6 +5994,31 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
           parallelism: Math.max(node.parallelism, 2),
         }));
         notes.push(directive.reason);
+      }
+
+      if (directive.kind === "set_parallelism") {
+        template.policy.max_parallel_nodes = Math.max(template.policy.max_parallel_nodes, directive.parallelism);
+        let executableIndex = 0;
+        let parallelismApplied = false;
+        template.nodes = template.nodes.map((node) => {
+          if (!isExecutableWorkflowNode(node)) {
+            return node;
+          }
+          const shouldApply =
+            directive.target_index === null ? true : executableIndex === directive.target_index;
+          executableIndex += 1;
+          if (!shouldApply) {
+            return node;
+          }
+          parallelismApplied = true;
+          return {
+            ...node,
+            parallelism: directive.parallelism,
+          };
+        });
+        if (parallelismApplied) {
+          notes.push(directive.reason);
+        }
       }
 
       if (directive.kind === "flatten_parallelism") {
@@ -5586,7 +6230,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       resolveExecutionTemplateIdFromDraftTemplate(templateForPlan) ||
       input.recommendation?.selected_template.template_id ||
       primaryTemplateId;
-    const primaryPlanOption = {
+    const primaryPlanOption: PlannerPlanOptionContent = {
       source: "primary" as const,
       template_id: primaryTemplateId,
       execution_template_id: primaryExecutionTemplateId,
@@ -5595,6 +6239,10 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         primaryRecommendation?.reason ||
         input.recommendation?.selected_template.reason ||
         (template ? `Using template ${template.name}.` : `Using template ${primaryTemplateName}.`),
+      recommendation_evidence:
+        primaryRecommendation?.evidence ||
+        input.recommendation?.selected_template.evidence ||
+        undefined,
       candidate_plan: candidatePlan.candidate_plan,
       validation: candidatePlan.validation,
       confirmation_checklist: buildConfirmationChecklist({
@@ -5605,7 +6253,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         validation: candidatePlan.validation,
       }),
     };
-    const alternativePlanOption = alternativePlan
+    const alternativePlanOption: PlannerPlanOptionContent | null = alternativePlan
         ? {
           source: "alternative" as const,
           template_id: alternativeTemplate?.template_id || alternativeCandidate?.template_id || "",
@@ -5613,6 +6261,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
           template_name:
             alternativeTemplate?.name || alternativeCandidate?.name || alternativeCandidate?.template_id || "Alternative",
           recommendation_reason: alternativeCandidate?.reason || "Alternative recommendation.",
+          recommendation_evidence: alternativeCandidate?.evidence || undefined,
           candidate_plan: alternativePlan.candidate_plan,
           validation: alternativePlan.validation,
           confirmation_checklist: buildConfirmationChecklist({
@@ -5625,6 +6274,31 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
           }),
         }
       : null;
+    const comparisonRationale = buildPlanOptionComparisonRationale({
+      primaryTemplateName,
+      primaryValidation: candidatePlan.validation,
+      primaryPlan: candidatePlan.candidate_plan,
+      primaryRecommendationReason:
+        primaryRecommendation?.reason ||
+        input.recommendation?.selected_template.reason ||
+        null,
+      primaryRecommendationEvidence:
+        primaryRecommendation?.evidence ||
+        input.recommendation?.selected_template.evidence ||
+        null,
+      alternativeTemplateName:
+        alternativeTemplate?.name || alternativeCandidate?.name || alternativeCandidate?.template_id || null,
+      alternativeValidation: alternativePlan?.validation || null,
+      alternativePlan: alternativePlan?.candidate_plan || null,
+      alternativeRecommendationReason: alternativeCandidate?.reason || null,
+      alternativeRecommendationEvidence: alternativeCandidate?.evidence || null,
+    });
+    if (comparisonRationale) {
+      primaryPlanOption.comparison_rationale = comparisonRationale;
+      if (alternativePlanOption) {
+        alternativePlanOption.comparison_rationale = comparisonRationale;
+      }
+    }
     const planOptionsCard = appendSessionMessage({
       sessionId: input.sessionId,
       role: "system",
@@ -5714,6 +6388,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     inputs: Record<string, unknown>;
     validationMode: RunValidationMode;
     proposalId?: string | null;
+    routeSource?: RunRouteSource;
   }) {
     const template = getTemplate(input.templateId.trim());
     if (!template) {
@@ -5765,7 +6440,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       };
     }
 
-    const run = createRun(
+    const run = buildRunRecord(
       {
         intent: input.intent.trim(),
         template_id: input.templateId.trim(),
@@ -5779,69 +6454,42 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     );
 
     const runPlan = compileRunPlan(run, template);
-    saveRunPlan(runPlan);
-
     const nodeRuns = materializeInitialNodeRuns(runPlan, run.created_at);
-    saveNodeRuns(run.run_id, nodeRuns);
-
-    appendRunEvent({
-      run_id: run.run_id,
-      type: "run.created",
-      actor_type: "user",
-      actor_id: run.requested_by,
-      payload: {
-        template_id: run.template_id,
-        template_version: run.template_version,
-        validation_mode: input.validationMode,
-        validation_passed: validation.passed,
-        validation_warning_count: validation.warnings.length,
-        proposal_id: input.proposalId || null,
-      },
-      created_at: run.created_at,
-    });
-
-    const queuedEvent = appendRunEvent({
-      run_id: run.run_id,
-      type: "run.queued",
-      actor_type: "system",
-      actor_id: "control-plane",
-      payload: {
-        current_summary: run.current_summary,
-      },
-      created_at: run.created_at,
-    });
-
-    let lastEventId = queuedEvent.event_id;
-    const readyNodes = getReadyNodeRuns(runPlan);
-    for (const node of readyNodes) {
-      const readyEvent = appendRunEvent({
-        run_id: run.run_id,
-        node_run_id: node.node_run_id,
-        type: "node.ready",
-        actor_type: "system",
-        actor_id: "scheduler",
-        payload: {
-          node_id: node.node_id,
-          node_name: node.name,
-          node_type: node.type,
+    const routeSource: RunRouteSource = input.routeSource || {
+      kind: input.proposalId ? "proposal" : "direct_template",
+      proposal_id: input.proposalId || null,
+    };
+    const route = buildRunRouteSnapshot({ run, plan: runPlan, template, source: routeSource });
+    let readyNodeRunIds: string[];
+    try {
+      readyNodeRunIds = persistRunBundle({
+        run,
+        plan: runPlan,
+        route,
+        nodeRuns,
+        validationMode: input.validationMode,
+        validationPassed: validation.passed,
+        validationWarningCount: validation.warnings.length,
+      }).readyNodeRunIds;
+    } catch (error) {
+      return {
+        ok: false as const,
+        status: 500,
+        body: {
+          code: "run_initialization_failed",
+          message: error instanceof Error ? error.message : "Run initialization failed.",
         },
-        created_at: run.created_at,
-      });
-      lastEventId = readyEvent.event_id;
+      };
     }
 
-    if (readyNodes.length > 0) {
-      run.current_summary = `${readyNodes.length} node(s) ready for dispatch`;
-      run.updated_at = run.created_at;
-    }
-
-    run.last_event_id = lastEventId;
-    saveRun(run);
-
-    if (readyNodes.length > 0) {
-      executionAdapter.enqueueRun(run.run_id);
-      if (executionAdapter.kind === "openclaw") {
+    if (readyNodeRunIds.length > 0) {
+      if (options?.dispatcher) {
         queueReadyNodes(run.run_id);
+      } else {
+        executionAdapter.enqueueRun(run.run_id);
+        if (executionAdapter.kind === "openclaw") {
+          queueReadyNodes(run.run_id);
+        }
       }
     }
 
@@ -5851,6 +6499,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       body: {
         run_id: run.run_id,
         status: run.status,
+        route,
         validation,
       },
     };
@@ -5931,6 +6580,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         metadata: {
           node_type: node.type,
           recommendation_reason: recommendation?.reason || null,
+          runtime_agent_ref: recommendation?.runtime_agent_ref || recommendation?.openclaw_agent_id || null,
           openclaw_agent_id: recommendation?.openclaw_agent_id || null,
         },
       };
@@ -6451,12 +7101,37 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       requestedInputs.goal = runIntent;
     }
     const validationMode = input.validationMode || "strict";
+    const resolvedPlanRevision =
+      selectedProposal?.source_revision ??
+      selectedPlanConfig?.revision ??
+      input.session.confirmed_plan_revision ??
+      null;
+    const routeSource: RunRouteSource = selectedProposal
+      ? {
+          kind: "proposal",
+          session_id: input.sessionId,
+          proposal_id: selectedProposal.proposal_id,
+          plan_revision: resolvedPlanRevision,
+          plan_option: selectedOption,
+        }
+      : selectedPlanCard || resolvedPlanRevision !== null
+        ? {
+            kind: "session_plan",
+            session_id: input.sessionId,
+            plan_revision: resolvedPlanRevision,
+            plan_option: selectedOption,
+          }
+        : {
+            kind: "direct_template",
+            session_id: input.sessionId,
+          };
     const result = createRunAndPersist({
       intent: runIntent,
       templateId,
       inputs: requestedInputs,
       validationMode,
       proposalId: selectedProposal?.proposal_id || requestedProposalId,
+      routeSource,
     });
     if (!result.ok) {
       return result;
@@ -6472,11 +7147,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         status: result.body.status,
         template_id: templateId,
         validation: result.body.validation,
-        plan_revision:
-          selectedProposal?.source_revision ??
-          selectedPlanConfig?.revision ??
-          input.session.confirmed_plan_revision ??
-          null,
+        plan_revision: resolvedPlanRevision,
         plan_option: selectedOption,
         proposal_id: selectedProposal?.proposal_id || null,
       },
@@ -6549,291 +7220,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
   }
 
   function queueReadyNodes(runId: string): void {
-    const run = getRun(runId);
-    const plan = getRunPlan(runId);
-    if (!run || !plan) {
-      return;
-    }
-    if (["paused", "completed", "failed", "cancelled"].includes(run.status)) {
-      return;
-    }
-
-    const readyNodes = getReadyNodeRuns(plan);
-    if (readyNodes.length === 0) {
-      return;
-    }
-
-    const maxParallelNodes = resolveMaxParallelNodes(plan);
-    const activeDispatchNodes = countActiveDispatchNodes(plan);
-    const availableSlots = Math.max(0, maxParallelNodes - activeDispatchNodes);
-    if (availableSlots <= 0) {
-      return;
-    }
-    const readyNodesToDispatch = readyNodes.slice(0, availableSlots);
-    if (readyNodesToDispatch.length === 0) {
-      return;
-    }
-
-    const nodeRuns = listNodeRuns(runId);
-    const dispatchTime = nowIso();
-
-    if (run.status === "queued") {
-      const runStartedEvent = appendRunEvent({
-        run_id: runId,
-        type: "run.started",
-        actor_type: "system",
-        actor_id: "scheduler",
-        payload: {
-          ready_nodes: readyNodesToDispatch.length,
-        },
-        created_at: dispatchTime,
-      });
-      run.status = "running";
-      run.started_at = run.started_at ?? dispatchTime;
-      run.updated_at = dispatchTime;
-      run.last_event_id = runStartedEvent.event_id;
-    } else if (run.status !== "paused" && run.status !== "cancelled") {
-      run.status = "running";
-      run.updated_at = dispatchTime;
-    }
-
-    let lastEventId = run.last_event_id;
-    for (const node of readyNodesToDispatch) {
-      const nodeRun = getMutableNodeRun(nodeRuns, node.node_run_id);
-      if (!nodeRun || nodeRun.status !== "ready") {
-        continue;
-      }
-
-      if (node.type === "end") {
-        applyNodeStatus(
-          plan,
-          nodeRuns,
-          node.node_run_id,
-          "completed",
-          dispatchTime,
-          "Workflow completed",
-          100,
-        );
-
-        const completedEvent = appendRunEvent({
-          run_id: runId,
-          node_run_id: node.node_run_id,
-          type: "node.completed",
-          actor_type: "system",
-          actor_id: "scheduler",
-          payload: {
-            node_id: node.node_id,
-            node_name: node.name,
-            artifacts: [],
-          },
-          created_at: dispatchTime,
-        });
-        lastEventId = completedEvent.event_id;
-        run.current_summary = "Workflow completed";
-
-        if (areAllNodesCompleted(nodeRuns)) {
-          const runCompletedEvent = appendRunEvent({
-            run_id: runId,
-            type: "run.completed",
-            actor_type: "system",
-            actor_id: "control-plane",
-            payload: {
-              completed_nodes: nodeRuns.length,
-            },
-            created_at: dispatchTime,
-          });
-          run.status = "completed";
-          run.current_summary = "Run completed";
-          run.finished_at = dispatchTime;
-          run.updated_at = dispatchTime;
-          run.last_event_id = runCompletedEvent.event_id;
-          plan.status = "completed";
-          saveRun(run);
-          saveRunPlan(plan);
-          saveNodeRuns(runId, nodeRuns);
-          return;
-        }
-        continue;
-      }
-
-      applyNodeStatus(
-        plan,
-        nodeRuns,
-        node.node_run_id,
-        "running",
-        dispatchTime,
-        "Dispatching to OpenClaw bridge",
-        5,
-      );
-
-      const startedEvent = appendRunEvent({
-        run_id: runId,
-        node_run_id: node.node_run_id,
-        type: "node.started",
-        actor_type: "system",
-        actor_id: "scheduler",
-        payload: {
-          node_id: node.node_id,
-          node_name: node.name,
-          node_type: node.type,
-          adapter: executionAdapter.kind,
-        },
-        created_at: dispatchTime,
-      });
-      lastEventId = startedEvent.event_id;
-      run.current_summary = `Dispatching node: ${node.name}`;
-
-      const upstreamNodeIds = new Set(
-        plan.edges
-          .filter((edge) => edge.to === node.node_id)
-          .map((edge) => edge.from),
-      );
-      const upstreamCompiledNodes = plan.compiled_nodes.filter((compiled) =>
-        upstreamNodeIds.has(compiled.node_id),
-      );
-      const artifactsByNodeRunId = new Map<string, ReturnType<typeof listArtifacts>>(
-        upstreamCompiledNodes.map((compiled) => [
-          compiled.node_run_id,
-          listArtifacts(runId).filter((artifact) => artifact.node_run_id === compiled.node_run_id),
-        ]),
-      );
-      const upstreamContext = upstreamCompiledNodes.map((compiled) => {
-        const upstreamRun = getMutableNodeRun(nodeRuns, compiled.node_run_id);
-        const upstreamArtifacts = artifactsByNodeRunId.get(compiled.node_run_id) || [];
-        return {
-          node_run_id: compiled.node_run_id,
-          node_id: compiled.node_id,
-          node_name: compiled.name,
-          status: upstreamRun?.status || compiled.status,
-          summary: upstreamRun?.progress.message || "",
-          artifacts: upstreamArtifacts.map((artifact) => ({
-            artifact_id: artifact.artifact_id,
-            type: artifact.type,
-            name: artifact.name,
-            storage_uri: artifact.storage_uri,
-            mime_type: artifact.mime_type,
-            size_bytes: artifact.size_bytes,
-          })),
-        };
-      });
-      const extraInputPayload =
-        (() => {
-          const value: Record<string, unknown> = {};
-          if (upstreamContext.length > 0) {
-            value.upstream_context = {
-              nodes: upstreamContext,
-            };
-          }
-
-          const explicitProjectSlug =
-            typeof run.inputs.project_slug === "string" && run.inputs.project_slug.trim()
-              ? run.inputs.project_slug.trim()
-              : typeof run.inputs.subject === "string" &&
-                  /^[a-z0-9_-]+$/i.test(run.inputs.subject.trim())
-                ? run.inputs.subject.trim()
-              : null;
-          const explicitProjectLocalRepo =
-            typeof run.inputs.project_local_repo === "string" && run.inputs.project_local_repo.trim()
-              ? run.inputs.project_local_repo.trim()
-              : null;
-
-          if (explicitProjectSlug) {
-            value.project_slug = explicitProjectSlug;
-          }
-          if (explicitProjectLocalRepo) {
-            value.project_local_repo = explicitProjectLocalRepo;
-          }
-
-          return Object.keys(value).length > 0 ? value : undefined;
-        })();
-
-      const envelope = buildDispatchEnvelope(run, plan, node, {
-        extraInputPayload,
-      });
-      void executionAdapter
-        .dispatchNode(envelope)
-        .then(async (dispatch) => {
-          node.execution_ref = {
-            openclaw_task_id: dispatch.openclaw_task_id,
-            openclaw_session_id: dispatch.openclaw_session_id,
-          };
-          saveRunPlan(plan);
-          await executionAdapter.handleReport(buildAcceptedReport(envelope, dispatch));
-
-          const payload: Record<string, unknown> = {
-            dispatch_id: dispatch.dispatch_id,
-            openclaw_task_id: dispatch.openclaw_task_id,
-            openclaw_session_id: dispatch.openclaw_session_id,
-            dispatch_status: dispatch.status,
-          };
-
-          appendRunEvent({
-            run_id: runId,
-            node_run_id: node.node_run_id,
-            type: "node.progress",
-            actor_type: "system",
-            actor_id: "openclaw-adapter",
-            payload,
-            created_at: nowIso(),
-          });
-        })
-        .catch((error) => {
-          const failedAt = nowIso();
-          const latestRun = getRun(runId);
-          const latestPlan = getRunPlan(runId);
-          const latestNodeRuns = listNodeRuns(runId);
-          if (!latestRun || !latestPlan) {
-            return;
-          }
-
-          const latestNode = getCompiledNode(latestPlan, node.node_run_id);
-          const latestNodeRun = getMutableNodeRun(latestNodeRuns, node.node_run_id);
-          if (!latestNode || !latestNodeRun) {
-            return;
-          }
-
-          applyNodeStatus(
-            latestPlan,
-            latestNodeRuns,
-            node.node_run_id,
-            "failed",
-            failedAt,
-            error instanceof Error ? error.message : "OpenClaw dispatch failed",
-            100,
-          );
-
-          const failedEvent = appendRunEvent({
-            run_id: runId,
-            node_run_id: node.node_run_id,
-            type: "node.failed",
-            actor_type: "system",
-            actor_id: "openclaw-adapter",
-            payload: {
-              node_id: latestNode.node_id,
-              node_name: latestNode.name,
-              error: error instanceof Error ? error.message : "OpenClaw dispatch failed",
-            },
-            created_at: failedAt,
-          });
-
-          latestRun.status = "failed";
-          latestRun.current_summary =
-            error instanceof Error ? error.message : "OpenClaw dispatch failed";
-          latestRun.blocked_reason = latestRun.current_summary;
-          latestRun.finished_at = failedAt;
-          latestRun.updated_at = failedAt;
-          latestRun.last_event_id = failedEvent.event_id;
-          latestPlan.status = "failed";
-          saveRun(latestRun);
-          saveRunPlan(latestPlan);
-          saveNodeRuns(runId, latestNodeRuns);
-        });
-    }
-
-    run.last_event_id = lastEventId ?? run.last_event_id;
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(runId, nodeRuns);
+    void runtimeEngine.queueReadyNodes(runId);
   }
 
   function isValidReportCallback(body: unknown): body is OpenClawReportCallbackRequest {
@@ -6850,327 +7237,243 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     );
   }
 
-  function applyOpenClawCallback(report: OpenClawReportCallbackRequest): void {
-    const run = getRun(report.run_id);
-    const plan = getRunPlan(report.run_id);
-    const nodeRuns = listNodeRuns(report.run_id);
-    if (!run || !plan) {
-      throw new Error("RUN_NOT_FOUND");
-    }
-
-    const node = getCompiledNode(plan, report.node_run_id);
-    const nodeRun = getMutableNodeRun(nodeRuns, report.node_run_id);
-    if (!node || !nodeRun) {
-      throw new Error("NODE_NOT_FOUND");
-    }
-
-    const timestamp = report.created_at || nowIso();
-    const progress = report.progress || null;
-    const normalizedMessage =
-      progress?.message ||
-      (report.status === "completed"
-        ? "Node completed"
-        : report.status === "failed"
-          ? report.error?.message || "Node failed"
-          : report.status === "accepted"
-            ? "Dispatch accepted"
-            : "Node running");
-    const normalizedPercent =
-      typeof progress?.percent === "number"
-        ? progress.percent
-        : report.status === "completed" || report.status === "failed"
-          ? 100
-          : report.status === "accepted"
-            ? 0
-            : 50;
-
-    if (report.raw_ref) {
-      node.execution_ref = {
-        openclaw_task_id: report.raw_ref.openclaw_task_id,
-        openclaw_session_id: report.raw_ref.openclaw_session_id,
-      };
-    }
-
-    if (report.status === "accepted") {
-      nodeRun.progress = {
-        percent: normalizedPercent,
-        message: normalizedMessage,
-        updated_at: timestamp,
-      };
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
-      return;
-    }
-
-    if (report.status === "running" || report.status === "waiting_human") {
-      applyNodeStatus(
-        plan,
-        nodeRuns,
-        report.node_run_id,
-        report.status,
-        timestamp,
-        normalizedMessage,
-        normalizedPercent,
-      );
-
-      let eventType:
-        | "approval.requested"
-        | "approval.granted"
-        | "human_input.requested"
-        | "human_input.submitted"
-        | "node.progress" =
-        "node.progress";
-      let shouldAutoResumeNode = false;
-      if (report.status === "waiting_human") {
-        if ((process.env.MY_MATE_AUTO_APPROVE_HUMAN_GATES || "false").toLowerCase() === "true") {
-          shouldAutoResumeNode = true;
-          eventType = node.human_input_schema ? "human_input.submitted" : "approval.granted";
-        } else {
-          if (node.human_input_schema) {
-            eventType = "human_input.requested";
-            const pendingInput = findPendingHumanInputForNode(run.run_id, report.node_run_id);
-            if (!pendingInput) {
-              saveHumanInput(
-                createHumanInputRecord({
-                  runId: run.run_id,
-                  nodeRunId: report.node_run_id,
-                  summary: normalizedMessage,
-                  inputSchema: node.human_input_schema,
-                  requestedAt: timestamp,
-                }),
-              );
-            }
-          } else {
-            eventType = "approval.requested";
-            const pendingApproval = findPendingApprovalForNode(run.run_id, report.node_run_id);
-            if (!pendingApproval) {
-              saveApproval(
-                createApprovalRecord({
-                  runId: run.run_id,
-                  nodeRunId: report.node_run_id,
-                  kind: node.approval_kind || "human_review",
-                  summary: normalizedMessage,
-                  requestedAt: timestamp,
-                }),
-              );
-            }
-          }
-        }
-      }
-
-      const event = appendRunEvent({
-        run_id: run.run_id,
-        node_run_id: report.node_run_id,
-        type: eventType,
-        actor_type: "agent",
-        actor_id: "openclaw-bridge",
-        payload: {
-          node_id: node.node_id,
-          node_name: node.name,
-          message: normalizedMessage,
-          percent: normalizedPercent,
-          auto_approved: shouldAutoResumeNode,
-        },
-        created_at: timestamp,
-      });
-
-      if (shouldAutoResumeNode) {
-        node.status = "ready";
-        node.execution_ref = {
-          openclaw_task_id: null,
-          openclaw_session_id: null,
-        };
-        node.retry_policy.attempt = nodeRun.attempt;
-        nodeRun.status = "ready";
-        nodeRun.progress = {
-          percent: 0,
-          message: "Human gate auto-approved; ready for dispatch",
-          updated_at: timestamp,
-        };
-        nodeRun.finished_at = null;
-      }
-
-      run.status =
-        report.status === "waiting_human" && !shouldAutoResumeNode
-          ? "waiting_human"
-          : "running";
-      run.current_summary = shouldAutoResumeNode
-        ? `Human gate auto-approved: ${node.name}`
-        : normalizedMessage;
-      run.waiting_reason =
-        report.status === "waiting_human" && !shouldAutoResumeNode
-          ? normalizedMessage
-          : run.waiting_reason;
-      run.updated_at = timestamp;
-      run.last_event_id = event.event_id;
-      plan.status = run.status;
-      saveRun(run);
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
-      refreshSessionsLinkedToRun(run.run_id, run.status);
-      if (shouldAutoResumeNode) {
-        queueReadyNodes(run.run_id);
-      }
-      return;
-    }
-
-    if (report.status === "failed" || report.status === "cancelled") {
-      applyNodeStatus(
-        plan,
-        nodeRuns,
-        report.node_run_id,
-        report.status,
-        timestamp,
-        normalizedMessage,
-        normalizedPercent,
-      );
-
-      const event = appendRunEvent({
-        run_id: run.run_id,
-        node_run_id: report.node_run_id,
-        type: "node.failed",
-        actor_type: "agent",
-        actor_id: "openclaw-bridge",
-        payload: {
-          node_id: node.node_id,
-          node_name: node.name,
-          error: report.error || null,
-        },
-        created_at: timestamp,
-      });
-
-      run.status = report.status === "cancelled" ? "cancelled" : "failed";
-      run.current_summary = normalizedMessage;
-      run.blocked_reason = report.error?.message || normalizedMessage;
-      run.finished_at = timestamp;
-      run.updated_at = timestamp;
-      run.last_event_id = event.event_id;
-      plan.status = run.status;
-      saveRun(run);
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
-      refreshSessionsLinkedToRun(run.run_id, run.status);
-      return;
-    }
-
-    if (report.status !== "completed") {
-      throw new Error("INVALID_REPORT_STATUS");
-    }
-
-    applyNodeStatus(
-      plan,
-      nodeRuns,
-      report.node_run_id,
-      "completed",
-      timestamp,
-      normalizedMessage,
-      normalizedPercent,
-    );
-
-    const artifactRecords = (report.artifacts || []).map((artifact) =>
-      createArtifactRecord({
-        runId: run.run_id,
-        nodeRunId: report.node_run_id,
-        artifact,
-        createdAt: timestamp,
-      }),
-    );
-    if (artifactRecords.length > 0) {
-      upsertArtifacts(artifactRecords);
-      for (const artifactRecord of artifactRecords) {
-        appendRunEvent({
-          run_id: run.run_id,
-          node_run_id: report.node_run_id,
-          type: "artifact.created",
-          actor_type: "agent",
-          actor_id: "openclaw-bridge",
-          payload: {
-            artifact_id: artifactRecord.artifact_id,
-            name: artifactRecord.name,
-            type: artifactRecord.type,
-            storage_uri: artifactRecord.storage_uri,
-          },
-          created_at: timestamp,
-        });
-      }
-    }
-
-    let lastEventId = appendRunEvent({
-      run_id: run.run_id,
-      node_run_id: report.node_run_id,
-      type: "node.completed",
-      actor_type: "agent",
-      actor_id: "openclaw-bridge",
-      payload: {
-        node_id: node.node_id,
-        node_name: node.name,
-        artifacts: report.artifacts || [],
-      },
-      created_at: timestamp,
-    }).event_id;
-
-    const unlockedNodes = unlockReadyNodeRuns(plan, nodeRuns, timestamp);
-    for (const unlockedNode of unlockedNodes) {
-      const readyEvent = appendRunEvent({
-        run_id: run.run_id,
-        node_run_id: unlockedNode.node_run_id,
-        type: "node.ready",
-        actor_type: "system",
-        actor_id: "scheduler",
-        payload: {
-          node_id: unlockedNode.node_id,
-          node_name: unlockedNode.name,
-          node_type: unlockedNode.type,
-        },
-        created_at: timestamp,
-      });
-      lastEventId = readyEvent.event_id;
-    }
-
-    if (areAllNodesCompleted(nodeRuns)) {
-      const completedEvent = appendRunEvent({
-        run_id: run.run_id,
-        type: "run.completed",
-        actor_type: "system",
-        actor_id: "control-plane",
-        payload: {
-          completed_nodes: nodeRuns.length,
-        },
-        created_at: timestamp,
-      });
-      run.status = "completed";
-      run.current_summary = "Run completed";
-      run.finished_at = timestamp;
-      run.updated_at = timestamp;
-      run.last_event_id = completedEvent.event_id;
-      plan.status = "completed";
-      saveRun(run);
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
-      refreshSessionsLinkedToRun(run.run_id, run.status);
-      return;
-    }
-
-    run.status = "running";
-    run.current_summary =
-      unlockedNodes.length > 0
-        ? `${unlockedNodes.length} downstream node(s) unlocked`
-        : "Waiting for next node callback";
-    run.updated_at = timestamp;
-    run.last_event_id = lastEventId;
-    plan.status = "running";
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(run.run_id, nodeRuns);
-    refreshSessionsLinkedToRun(run.run_id, run.status);
-
-    if (unlockedNodes.length > 0) {
-      queueReadyNodes(run.run_id);
-    }
+  async function applyOpenClawCallback(
+    report: OpenClawReportCallbackRequest,
+  ): Promise<void> {
+    await runtimeEngine.applyExecutionReport(report);
   }
 
   app.get("/health", (_req: Request, res: Response) => {
-    res.json({ status: "ok" });
+    const runtimeStatus = runtimeEngine.getRuntimeStatus();
+    res.json({
+      status: "ok",
+      storage: {
+        backend_kind: getJsonStorageBackendKind(),
+      },
+      execution: {
+        adapter_kind: executionAdapter.kind,
+        runtime_dispatcher_kind: runtimeStatus.dispatcher_kind,
+        dispatch_mainline: runtimeStatus.dispatch_mainline,
+        node_provisioner_kind: runtimeStatus.node_provisioner_kind,
+      },
+    });
+  });
+
+  app.get("/api/auth/me", (_req: Request, res: Response) => {
+    const context = getRequestAuthContext();
+    if (!context) {
+      return res.status(401).json({ code: "unauthorized", message: "Identity context is missing." });
+    }
+    const availableWorkspaces = context.memberships.flatMap((membership) => {
+      const current = reconcileMembership(membership, context.principal);
+      return current.status === "active"
+        ? [{ ...membership, role: current.role }]
+        : [];
+    });
+    const response: AuthMeResponse = {
+      ...context,
+      memberships: availableWorkspaces,
+      available_workspaces: availableWorkspaces,
+    };
+    return res.json(response);
+  });
+
+  app.get("/api/workspaces", (_req: Request, res: Response) => {
+    const context = getRequestAuthContext();
+    const ids = context?.memberships.flatMap((membership) => {
+      const current = reconcileMembership(membership, context.principal);
+      return current.status === "active" ? [membership.workspace_id] : [];
+    }) || [];
+    return res.json({ items: listWorkspaceRecords(ids) });
+  });
+
+  app.post("/api/workspaces", (req: Request, res: Response) => {
+    const context = getRequestAuthContext();
+    const workspaceId = typeof req.body?.workspace_id === "string" ? req.body.workspace_id.trim() : "";
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!context || !workspaceId || !name) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "workspace_id and name are required.",
+      });
+    }
+    if (getWorkspace(workspaceId)) {
+      return res.status(409).json({ code: "workspace_exists", message: "Workspace already exists." });
+    }
+    const workspace = ensureWorkspace({
+      workspaceId,
+      name,
+      createdBy: context.principal.principal_id,
+    });
+    const membership = upsertWorkspaceMember({
+      workspaceId: workspace.workspace_id,
+      principal: context.principal,
+      role: "owner",
+    });
+    return res.status(201).json({ workspace, membership });
+  });
+
+  app.get("/api/workspaces/:workspaceId/members", (req: Request, res: Response) => {
+    const context = getRequestAuthContext();
+    const workspaceId = getSingleParam(req.params.workspaceId);
+    if (!workspaceId || context?.selected_workspace.workspace_id !== workspaceId) {
+      return res.status(404).json({ code: "not_found", message: "Workspace not found." });
+    }
+    return res.json({ items: listWorkspaceMembers(workspaceId) });
+  });
+
+  app.put("/api/workspaces/:workspaceId/members/:principalId", (req: Request, res: Response) => {
+    const context = getRequestAuthContext();
+    const workspaceId = getSingleParam(req.params.workspaceId);
+    const principalId = getSingleParam(req.params.principalId);
+    const role = req.body?.role as WorkspaceRole | undefined;
+    const status = req.body?.status as "active" | "revoked" | undefined;
+    if (
+      !context ||
+      !workspaceId ||
+      context.selected_workspace.workspace_id !== workspaceId ||
+      !principalId ||
+      !["owner", "admin", "operator", "viewer"].includes(role || "") ||
+      !["active", "revoked"].includes(status || "active")
+    ) {
+      return res.status(400).json({ code: "invalid_request", message: "A valid principal, role, and status are required." });
+    }
+    const currentMember = getWorkspaceMember(workspaceId, principalId);
+    const activeOwners = listWorkspaceMembers(workspaceId).filter(
+      (member) => member.status === "active" && member.role === "owner",
+    );
+    if (
+      currentMember?.role === "owner" &&
+      currentMember.status === "active" &&
+      (role !== "owner" || status === "revoked") &&
+      activeOwners.length <= 1
+    ) {
+      return res.status(409).json({
+        code: "last_workspace_owner",
+        message: "The last active workspace owner cannot be demoted or revoked.",
+      });
+    }
+    const member = upsertWorkspaceMember({
+      workspaceId,
+      principal: {
+        principal_id: principalId,
+        display_name:
+          typeof req.body?.display_name === "string" && req.body.display_name.trim()
+            ? req.body.display_name.trim()
+            : principalId,
+        principal_type: ["user", "service", "development"].includes(req.body?.principal_type)
+          ? req.body.principal_type
+          : "user",
+      },
+      role: role!,
+      status: status || "active",
+    });
+    return res.json(member);
+  });
+
+  app.get("/api/audit-events", (req: Request, res: Response) => {
+    const context = getRequestAuthContext();
+    if (!context) return res.status(401).json({ code: "unauthorized", message: "Identity context is missing." });
+    const limit = Number(getSingleParam(req.query.limit) || 100);
+    const outcome = getSingleParam(req.query.outcome) as "allowed" | "denied" | "error" | undefined;
+    if (!Number.isFinite(limit) || limit < 1 || limit > 500 || (outcome && !["allowed", "denied", "error"].includes(outcome))) {
+      return res.status(400).json({ code: "invalid_request", message: "limit must be 1-500 and outcome must be allowed, denied, or error." });
+    }
+    const items = listAuditEvents({
+      workspaceId: context.selected_workspace.workspace_id,
+      principalId: getSingleParam(req.query.principal_id) || undefined,
+      action: getSingleParam(req.query.action) || undefined,
+      resourceType: getSingleParam(req.query.resource_type) || undefined,
+      outcome,
+      since: getSingleParam(req.query.since) || undefined,
+      limit,
+    });
+    return res.json({
+      items,
+      chain_verified: verifyWorkspaceAuditChain(context.selected_workspace.workspace_id),
+      filters: { limit, outcome: outcome || null },
+    });
+  });
+
+  app.post("/api/diagnostics/doctor", async (req: Request, res: Response) => {
+    const body = isPlainObject(req.body) ? req.body : {};
+    const mode = (body.mode || "quick") as DoctorMode;
+    const runtime = body.runtime as DoctorRuntime | undefined;
+    const validModes: DoctorMode[] = ["quick", "docker", "model"];
+    const validRuntimes: DoctorRuntime[] = [
+      "local",
+      "docker-worker",
+      "openclaw",
+      "codex",
+      "claude-sdk",
+      "kimi",
+    ];
+    if (
+      !validModes.includes(mode) ||
+      (runtime !== undefined && !validRuntimes.includes(runtime)) ||
+      (body.model_probe !== undefined && typeof body.model_probe !== "boolean")
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message:
+          "mode must be quick, docker, or model; runtime and model_probe must use supported values.",
+      });
+    }
+
+    const request: DoctorRequest = {
+      mode,
+      runtime,
+      model_probe: body.model_probe === true,
+    };
+    const report = await runDoctor(request, {
+      ...(options?.doctor || {}),
+      runtimeStatus: runtimeEngine.getRuntimeStatus(),
+      executionAdapterKind: executionAdapter.kind,
+    });
+    return res.json(report);
+  });
+
+  app.get("/api/dashboard/summary", (req: Request, res: Response) => {
+    const windowRaw = getSingleParam(req.query.window_hours);
+    const parsedWindow = getPositiveNumberQueryParam(req.query.window_hours);
+    const statusRaw = getSingleParam(req.query.status)?.toLowerCase() || "all";
+    const allowedStatuses = new Set<DashboardObservabilityStatusFilter>([
+      "all",
+      "active",
+      "terminal",
+      "completed",
+      "failed",
+      "cancelled",
+    ]);
+    const correlationLimitRaw = getSingleParam(req.query.correlation_limit);
+    const correlationLimit = getPositiveNumberQueryParam(req.query.correlation_limit);
+    const compareRaw = getSingleParam(req.query.compare)?.toLowerCase() || "none";
+    if (
+      (windowRaw && (parsedWindow === null || parsedWindow > 720)) ||
+      !allowedStatuses.has(statusRaw as DashboardObservabilityStatusFilter) ||
+      (correlationLimitRaw && (correlationLimit === null || correlationLimit > 100)) ||
+      !["none", "previous"].includes(compareRaw) ||
+      (compareRaw === "previous" && !windowRaw)
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message:
+          "Dashboard filters require window_hours between 1 and 720, " +
+          "status all/active/terminal/completed/failed/cancelled, correlation_limit between 1 and 100, " +
+          "and compare none/previous; previous comparison requires window_hours.",
+      });
+    }
+    res.json(
+      buildDashboardSummary({
+        executionAdapterKind: executionAdapter.kind,
+        observability: {
+          windowHours: windowRaw ? parsedWindow : null,
+          status: statusRaw as DashboardObservabilityStatusFilter,
+          correlationLimit: correlationLimit || 20,
+          compare: compareRaw as "none" | "previous",
+        },
+      }),
+    );
   });
 
   app.get("/api/templates", (_req: Request, res: Response) => {
@@ -7516,7 +7819,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     if (!isAgentProfileBody(req.body)) {
       return res.status(400).json({
         code: "invalid_request",
-        message: "name and openclaw_agent_id are required.",
+        message: "name and runtime_agent_ref are required.",
       });
     }
     try {
@@ -7919,10 +8222,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         message: "sessionId is required.",
       });
     }
-    const requestedBy =
-      typeof req.body?.requested_by === "string" && req.body.requested_by.trim()
-        ? req.body.requested_by.trim()
-        : "user";
+    const requestedBy = requestActor(req);
     const reason =
       typeof req.body?.reason === "string" && req.body.reason.trim()
         ? req.body.reason.trim()
@@ -8003,7 +8303,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       return res.status(400).json({
         code: "invalid_request",
         message:
-          "Expected OpenClaw hosting fields: openclaw_agent_id, provider, model, runtime_mode.",
+          "Expected hosting fields: runtime_agent_ref, agent_runtime, harness_profile, provider, model, runtime_mode.",
       });
     }
 
@@ -8037,7 +8337,15 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       });
     }
 
-    const mission = buildMissionDetailResponse(sessionId);
+    const selectedRunId = getSingleParam(req.query.run_id);
+    if (selectedRunId && !resolveSessionWorkspaceRun(sessionId, selectedRunId)) {
+      return res.status(404).json({
+        code: "run_not_found",
+        message: "Requested run is not linked to the session.",
+      });
+    }
+
+    const mission = buildMissionDetailResponse(sessionId, selectedRunId || null);
     if (!mission) {
       return res.status(404).json({
         code: "not_found",
@@ -8045,10 +8353,12 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       });
     }
 
+    const selectedRun = mission.latest_run;
     return res.json({
       session: mission.session,
       messages: mission.messages,
-      latest_run: mission.latest_run,
+      latest_run: selectedRun,
+      selected_run_id: selectedRun?.run_id || null,
       attachments: mission.attachments,
       workspace_state: mission.workspace_state || {},
       next_actions: mission.next_actions || [],
@@ -8056,6 +8366,13 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       mission_spec: mission.mission_spec,
       mission_spec_contract: mission.mission_spec_contract,
       mission_snapshot: mission.mission_snapshot,
+      artifacts: selectedRun ? listArtifacts(selectedRun.run_id) : [],
+      pending_approvals: selectedRun ? listApprovals("pending").filter((item) => item.run_id === selectedRun.run_id) : [],
+      pending_human_inputs: selectedRun
+        ? listHumanInputs("pending").filter((item) => item.run_id === selectedRun.run_id)
+        : [],
+      interventions: listSessionInterventions(sessionId),
+      dag_patches: listSessionDagPatches(sessionId),
     });
   });
 
@@ -8199,6 +8516,14 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       });
     }
 
+    const selectedRunId = getSingleParam(req.query.run_id);
+    if (selectedRunId && !resolveSessionWorkspaceRun(sessionId, selectedRunId)) {
+      return res.status(404).json({
+        code: "run_not_found",
+        message: "Requested run is not linked to the session.",
+      });
+    }
+
     res.status(200);
     res.setHeader("content-type", "text/event-stream; charset=utf-8");
     res.setHeader("cache-control", "no-cache, no-transform");
@@ -8212,7 +8537,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 
-    const snapshot = buildSessionWorkspaceStreamSnapshot(sessionId);
+    const snapshot = buildSessionWorkspaceStreamSnapshot(sessionId, selectedRunId || null);
     if (!snapshot) {
       writeEvent(
         buildSessionWorkspaceStreamEvent({
@@ -8245,7 +8570,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     }, 15000);
 
     const poller = setInterval(() => {
-      const nextSnapshot = buildSessionWorkspaceStreamSnapshot(sessionId);
+      const nextSnapshot = buildSessionWorkspaceStreamSnapshot(sessionId, selectedRunId || null);
       if (!nextSnapshot) {
         return;
       }
@@ -8858,6 +9183,9 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       name: requestedStep,
       type: "agent_task",
       agent_profile: fallbackNode?.agent_profile || null,
+      runtime_agent_ref: fallbackNode?.runtime_agent_ref ?? fallbackNode?.openclaw_agent_id ?? null,
+      agent_runtime: fallbackNode?.agent_runtime ?? null,
+      harness_profile: fallbackNode?.harness_profile ?? null,
       openclaw_agent_id: fallbackNode?.openclaw_agent_id || null,
       allowed_skills: inheritedAllowedSkills,
       allowed_tools: inheritedAllowedTools,
@@ -8881,10 +9209,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         fallbackNode && isPlainObject(fallbackNode.output_contract)
           ? { ...fallbackNode.output_contract }
           : {},
-      execution_ref: {
-        openclaw_task_id: null,
-        openclaw_session_id: null,
-      },
+      execution_ref: createEmptyExecutionRef(),
       registry_provenance:
         fallbackNode && isPlainObject(fallbackNode.registry_provenance)
           ? JSON.parse(JSON.stringify(fallbackNode.registry_provenance))
@@ -8893,6 +9218,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
               agent_profile_resolved: null,
               agent_profile_status: null,
               agent_profile_source: "none",
+              runtime_agent_ref_source: "none",
               openclaw_agent_id_source: "none",
               skill_bindings: [],
               tool_bindings: [],
@@ -9338,7 +9664,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     const finalStatus: DagPatchRecord["status"] =
       result.failedCount === 0 ? "applied" : "applied_with_errors";
     const appliedAt = nowIso();
-    const appliedBy = req.body?.requested_by || "user";
+    const appliedBy = requestActor(req);
     const graphPreview = buildDagPatchGraphPreview({
       runId: patch.run_id,
       operations: patch.operations,
@@ -9422,7 +9748,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         ? req.body.reason.trim()
         : "User rejected the patch proposal.";
     const rejectedAt = nowIso();
-    const rejectedBy = req.body?.requested_by || "user";
+    const rejectedBy = requestActor(req);
     const updated = updateDagPatch(sessionId, patchId, (current) => ({
       ...current,
       status: "rejected",
@@ -10157,6 +10483,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       status: run.status,
       current_summary: run.current_summary,
       proposal_id: run.proposal_id,
+      route: getRunRouteOrLegacy(run.run_id),
     }));
     res.json({ items: runs });
   });
@@ -10251,6 +10578,16 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         typeof body.proposal_id === "string" && body.proposal_id.trim()
           ? body.proposal_id.trim()
           : null,
+      routeSource: {
+        kind:
+          typeof body.proposal_id === "string" && body.proposal_id.trim()
+            ? "proposal"
+            : "direct_template",
+        proposal_id:
+          typeof body.proposal_id === "string" && body.proposal_id.trim()
+            ? body.proposal_id.trim()
+            : null,
+      },
     });
     return res.status(result.status).json(result.body);
   });
@@ -10290,7 +10627,355 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
       last_event_id: run.last_event_id,
       inputs: run.inputs,
       proposal_id: run.proposal_id,
+      source_run_id: run.source_run_id || null,
+      rerun_reason: run.rerun_reason || null,
+      rerun_idempotency_key: run.rerun_idempotency_key || null,
+      route: getRunRouteOrLegacy(run.run_id),
     });
+  });
+
+  app.get("/api/runs/:runId/route", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "runId is required.",
+      });
+    }
+    const route = getRunRouteOrLegacy(runId);
+    if (!route) {
+      return res.status(404).json({
+        code: "not_found",
+        message: "Run route not found.",
+      });
+    }
+    return res.json(route);
+  });
+
+  app.get("/api/runs/:runId/supervise", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    const cursor = getSingleParam(req.query.cursor);
+    const limit = getPositiveNumberQueryParam(req.query.limit) || 100;
+    try {
+      const projection = buildSupervisionProjection({ runId, cursor, limit });
+      if (!projection) {
+        return res.status(404).json({ code: "not_found", message: "Run not found." });
+      }
+      return res.json(projection);
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_CURSOR") {
+        return res.status(400).json({ code: "invalid_cursor", message: "Supervision cursor is invalid." });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/api/runs/:runId/scorecards", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    const body = isPlainObject(req.body) ? req.body : {};
+    if (
+      (body.profile !== undefined &&
+        (typeof body.profile !== "string" || !body.profile.trim())) ||
+      (body.allow_incomplete !== undefined && typeof body.allow_incomplete !== "boolean")
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "profile must be a non-empty string and allow_incomplete must be boolean.",
+      });
+    }
+    try {
+      const outcome = createOrGetPipelineScorecard(runId, {
+        profile: typeof body.profile === "string" ? body.profile.trim() : undefined,
+        allowIncomplete: body.allow_incomplete === true,
+      });
+      return res.status(outcome.created ? 201 : 200).json(outcome.result);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "RUN_EVIDENCE_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Run evidence was not found." });
+      }
+      if (code === "RUN_NOT_TERMINAL" || code === "RUN_NOT_SETTLED") {
+        return res.status(409).json({
+          code: code === "RUN_NOT_TERMINAL" ? "run_not_terminal" : "run_not_settled",
+          message:
+            code === "RUN_NOT_TERMINAL"
+              ? "Run must be terminal before creating a scorecard."
+              : "Run runtime resources must settle before creating a scorecard.",
+        });
+      }
+      if (code === "UNSUPPORTED_SCORECARD_PROFILE") {
+        return res.status(400).json({
+          code: "unsupported_scorecard_profile",
+          message: "P0 supports only the pipeline-v1 scorecard profile.",
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/runs/:runId/scorecards", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    if (!getRun(runId)) {
+      return res.status(404).json({ code: "not_found", message: "Run not found." });
+    }
+    return res.json({ items: listScorecards(runId) });
+  });
+
+  app.get("/api/runs/:runId/scorecards/:scorecardId", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const scorecardId = getSingleParam(req.params.scorecardId);
+    if (!runId || !scorecardId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "runId and scorecardId are required.",
+      });
+    }
+    if (!getRun(runId)) {
+      return res.status(404).json({ code: "not_found", message: "Run not found." });
+    }
+    const scorecard = getScorecard(runId, scorecardId);
+    if (!scorecard) {
+      return res.status(404).json({ code: "not_found", message: "Scorecard not found." });
+    }
+    return res.json(scorecard);
+  });
+
+  app.post("/api/runs/:runId/evaluations", async (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    const body = isPlainObject(req.body) ? req.body : {};
+    if (
+      (body.evaluator !== undefined && (typeof body.evaluator !== "string" || !body.evaluator.trim())) ||
+      (body.allow_incomplete !== undefined && typeof body.allow_incomplete !== "boolean")
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "evaluator must be a non-empty string and allow_incomplete must be boolean.",
+      });
+    }
+    try {
+      const outcome = await createOrGetEvaluation(runId, {
+        evaluatorId: typeof body.evaluator === "string" ? body.evaluator.trim() : "none",
+        allowIncomplete: body.allow_incomplete === true,
+      });
+      const pending = ["queued", "running"].includes(outcome.result.status);
+      return res.status(pending ? 202 : outcome.created ? 201 : 200).json(outcome.result);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "RUN_EVIDENCE_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Run evidence was not found." });
+      }
+      if (code === "RUN_NOT_TERMINAL" || code === "RUN_NOT_SETTLED") {
+        return res.status(409).json({
+          code: code === "RUN_NOT_TERMINAL" ? "run_not_terminal" : "run_not_settled",
+          message: code === "RUN_NOT_TERMINAL"
+            ? "Run must be terminal before evaluation."
+            : "Run runtime resources must settle before evaluation.",
+        });
+      }
+      if (code === "UNSUPPORTED_EVALUATOR") {
+        return res.status(400).json({
+          code: "unsupported_evaluator",
+          message: "Evaluator must be none, deterministic-v1, or a registered model evaluator.",
+        });
+      }
+      return res.status(500).json({
+        code: "evaluation_failed",
+        message: error instanceof Error ? error.message : "Evaluation failed.",
+      });
+    }
+  });
+
+  app.get("/api/runs/:runId/evaluations", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    if (!getRun(runId)) return res.status(404).json({ code: "not_found", message: "Run not found." });
+    return res.json({ items: listEvaluations(runId) });
+  });
+
+  app.get("/api/runs/:runId/evaluations/:evaluationId", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const evaluationId = getSingleParam(req.params.evaluationId);
+    if (!runId || !evaluationId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId and evaluationId are required." });
+    }
+    if (!getRun(runId)) return res.status(404).json({ code: "not_found", message: "Run not found." });
+    const evaluation = getEvaluation(runId, evaluationId);
+    if (!evaluation) return res.status(404).json({ code: "not_found", message: "Evaluation not found." });
+    return res.json(evaluation);
+  });
+
+  app.get("/api/runs/:runId/trace", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    if (!getRun(runId)) {
+      return res.status(404).json({ code: "not_found", message: "Run not found." });
+    }
+    const kind = getSingleParam(req.query.kind);
+    const allowedKinds = new Set<TraceSpanKind>([
+      "run", "node", "job", "model", "tool", "handoff", "artifact", "control",
+    ]);
+    if (kind && !allowedKinds.has(kind as TraceSpanKind)) {
+      return res.status(400).json({ code: "invalid_request", message: "Unsupported trace span kind." });
+    }
+    try {
+      return res.json(buildTraceProjection({
+        runId,
+        nodeRunId: getSingleParam(req.query.node_run_id),
+        kind: kind as TraceSpanKind | null,
+        cursor: getSingleParam(req.query.cursor),
+        limit: getPositiveNumberQueryParam(req.query.limit) || 200,
+      }));
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_TRACE_CURSOR") {
+        return res.status(400).json({ code: "invalid_cursor", message: "Trace cursor is invalid." });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/api/runs/:runId/replays", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    try {
+      const outcome = createOrGetReplay(runId);
+      return res.status(outcome.created ? 201 : 200).json(outcome.result);
+    } catch (error) {
+      if (error instanceof Error && error.message === "RUN_EVIDENCE_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Run evidence was not found." });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/runs/:runId/replays/:replayId", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const replayId = getSingleParam(req.params.replayId);
+    if (!runId || !replayId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId and replayId are required." });
+    }
+    const replay = getReplay(runId, replayId);
+    return replay
+      ? res.json(replay)
+      : res.status(404).json({ code: "not_found", message: "Replay was not found." });
+  });
+
+  app.post("/api/runs/:runId/replay-plans", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    const body = isPlainObject(req.body) ? req.body : {};
+    if (
+      (body.scorecard_id !== undefined && typeof body.scorecard_id !== "string") ||
+      (body.evaluation_id !== undefined && typeof body.evaluation_id !== "string")
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "scorecard_id and evaluation_id must be strings when provided.",
+      });
+    }
+    try {
+      const outcome = createOrGetReplayPlan(runId, {
+        scorecardId: typeof body.scorecard_id === "string" ? body.scorecard_id.trim() : null,
+        evaluationId: typeof body.evaluation_id === "string" ? body.evaluation_id.trim() : null,
+      });
+      return res.status(outcome.created ? 201 : 200).json(outcome.result);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "RUN_EVIDENCE_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Run evidence was not found." });
+      }
+      if (code === "SCORECARD_NOT_FOUND" || code === "EVALUATION_NOT_FOUND") {
+        return res.status(404).json({
+          code: "not_found",
+          message: code === "SCORECARD_NOT_FOUND" ? "Scorecard was not found." : "Evaluation was not found.",
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/runs/:runId/replay-plans/:replayPlanId", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const replayPlanId = getSingleParam(req.params.replayPlanId);
+    if (!runId || !replayPlanId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId and replayPlanId are required." });
+    }
+    const replayPlan = getReplayPlan(runId, replayPlanId);
+    return replayPlan
+      ? res.json(replayPlan)
+      : res.status(404).json({ code: "not_found", message: "Replay plan was not found." });
+  });
+
+  app.post("/api/runs/:runId/reruns", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    }
+    const body = isPlainObject(req.body) ? req.body : {};
+    if (
+      typeof body.reason !== "string" ||
+      !body.reason.trim() ||
+      (body.input_overrides !== undefined && !isPlainObject(body.input_overrides))
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "reason is required and input_overrides must be an object when provided.",
+      });
+    }
+    const idempotencyKey = req.header("idempotency-key")?.trim() || null;
+    try {
+      const outcome = createOrGetRerun({
+        sourceRunId: runId,
+        reason: body.reason.trim(),
+        inputOverrides: isPlainObject(body.input_overrides) ? body.input_overrides : {},
+        idempotencyKey,
+      });
+      if (outcome.created && outcome.readyNodeRunIds.length > 0) {
+        if (options?.dispatcher) {
+          queueReadyNodes(outcome.run.run_id);
+        } else {
+          executionAdapter.enqueueRun(outcome.run.run_id);
+          if (executionAdapter.kind === "openclaw") queueReadyNodes(outcome.run.run_id);
+        }
+      }
+      return res.status(outcome.created ? 201 : 200).json({
+        run_id: outcome.run.run_id,
+        status: outcome.run.status,
+        source_run_id: outcome.run.source_run_id,
+        rerun_reason: outcome.run.rerun_reason,
+        rerun_idempotency_key: outcome.run.rerun_idempotency_key,
+        route: outcome.route,
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "SOURCE_RUN_NOT_FOUND" || code === "RERUN_ROUTE_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Source run was not found." });
+      }
+      if (code === "SOURCE_RUN_NOT_TERMINAL") {
+        return res.status(409).json({ code: "source_run_not_terminal", message: "Source run must be terminal before rerun." });
+      }
+      if (code === "IDEMPOTENCY_KEY_CONFLICT") {
+        return res.status(409).json({ code: "idempotency_key_conflict", message: "Idempotency-Key is already bound to another source run." });
+      }
+      throw error;
+    }
   });
 
   app.get("/api/runs/:runId/events", (req: Request, res: Response) => {
@@ -10397,6 +11082,24 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
         nodeRuns: listNodeRuns(runId),
       }),
     );
+  });
+
+  app.get("/api/runs/:runId/runtime", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "runId is required.",
+      });
+    }
+    const projection = buildRuntimeRunProjection(runId);
+    if (!projection) {
+      return res.status(404).json({
+        code: "not_found",
+        message: "Run not found.",
+      });
+    }
+    return res.json(projection);
   });
 
   app.get("/api/runs/:runId/nodes", (req: Request, res: Response) => {
@@ -10656,10 +11359,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
 
       if (run && plan && nodeRun && node) {
         node.status = "ready";
-        node.execution_ref = {
-          openclaw_task_id: null,
-          openclaw_session_id: null,
-        };
+        node.execution_ref = createEmptyExecutionRef();
         node.retry_policy.attempt = nodeRun.attempt;
         nodeRun.status = "ready";
         nodeRun.progress = {
@@ -10817,10 +11517,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
 
       if (run && plan && nodeRun && node) {
         node.status = "ready";
-        node.execution_ref = {
-          openclaw_task_id: null,
-          openclaw_session_id: null,
-        };
+        node.execution_ref = createEmptyExecutionRef();
         node.retry_policy.attempt = nodeRun.attempt;
         nodeRun.status = "ready";
         nodeRun.progress = {
@@ -10858,7 +11555,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     });
   });
 
-  app.post("/api/internal/openclaw/reports", (req: Request, res: Response) => {
+  app.post("/api/internal/openclaw/reports", async (req: Request, res: Response) => {
     if (OPENCLAW_CALLBACK_TOKEN) {
       const authHeader = req.header("authorization") || "";
       const expected = `Bearer ${OPENCLAW_CALLBACK_TOKEN}`;
@@ -10878,7 +11575,7 @@ export function createApp(options?: { executionAdapter?: ExecutionAdapter }) {
     }
 
     try {
-      applyOpenClawCallback(req.body);
+      await applyOpenClawCallback(req.body);
       return res.status(202).json({ accepted: true });
     } catch (error) {
       if (error instanceof Error && error.message === "RUN_NOT_FOUND") {

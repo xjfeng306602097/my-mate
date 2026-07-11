@@ -22,6 +22,7 @@ export interface RegistryProvenance {
   agent_profile_resolved: string | null;
   agent_profile_status: RegistryStatus | "missing" | null;
   agent_profile_source: "registry" | "template_binding" | "fallback" | "none";
+  runtime_agent_ref_source?: "registry" | "template_binding" | "fallback" | "none";
   openclaw_agent_id_source: "registry" | "template_binding" | "fallback" | "none";
   skill_bindings: RegistrySkillProvenance[];
   tool_bindings: RegistryToolProvenance[];

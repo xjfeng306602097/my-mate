@@ -2,6 +2,8 @@ import express from "express";
 import { Readable } from "node:stream";
 import type { Request, Response } from "express";
 import { readConfig, type GatewayConfig } from "./config.js";
+import { encodeSignedIdentity, resolveRequestIdentity } from "./identity.js";
+import type { RequestAuthContext } from "@my-mate/shared-types/identity";
 
 type RouteRule = {
   method: "GET" | "POST" | "PUT" | "PATCH";
@@ -9,6 +11,12 @@ type RouteRule = {
 };
 
 const PROXY_RULES: RouteRule[] = [
+  { method: "GET", pattern: /^\/api\/auth\/me$/ },
+  { method: "GET", pattern: /^\/api\/workspaces$/ },
+  { method: "POST", pattern: /^\/api\/workspaces$/ },
+  { method: "GET", pattern: /^\/api\/workspaces\/[^/]+\/members$/ },
+  { method: "PUT", pattern: /^\/api\/workspaces\/[^/]+\/members\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/audit-events$/ },
   { method: "GET", pattern: /^\/api\/templates$/ },
   { method: "POST", pattern: /^\/api\/templates$/ },
   { method: "GET", pattern: /^\/api\/templates\/[^/]+$/ },
@@ -35,6 +43,7 @@ const PROXY_RULES: RouteRule[] = [
   { method: "GET", pattern: /^\/api\/missions$/ },
   { method: "GET", pattern: /^\/api\/missions\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/runtime\/summary$/ },
+  { method: "GET", pattern: /^\/api\/dashboard\/summary$/ },
   { method: "GET", pattern: /^\/api\/agents\/hosting$/ },
   { method: "PUT", pattern: /^\/api\/agents\/[^/]+\/hosting$/ },
   { method: "GET", pattern: /^\/api\/sessions$/ },
@@ -59,13 +68,29 @@ const PROXY_RULES: RouteRule[] = [
   { method: "PATCH", pattern: /^\/api\/sessions\/[^/]+\/dag-proposals\/[^/]+\/assignments$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/dag-proposals\/[^/]+\/(?:confirm|reject|supersede)$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/runs$/ },
+  { method: "POST", pattern: /^\/api\/diagnostics\/doctor$/ },
   { method: "GET", pattern: /^\/api\/runs$/ },
   { method: "POST", pattern: /^\/api\/runs$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/route$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/supervise$/ },
+  { method: "POST", pattern: /^\/api\/runs\/[^/]+\/scorecards$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/scorecards$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/scorecards\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/runs\/[^/]+\/evaluations$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/evaluations$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/evaluations\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/trace$/ },
+  { method: "POST", pattern: /^\/api\/runs\/[^/]+\/replays$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/replays\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/runs\/[^/]+\/replay-plans$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/replay-plans\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/runs\/[^/]+\/reruns$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/events$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/artifacts$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/plan$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/graph$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/runtime$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/nodes$/ },
   { method: "POST", pattern: /^\/api\/runs\/[^/]+\/actions\/(?:pause|resume|cancel)$/ },
   { method: "POST", pattern: /^\/api\/runs\/[^/]+\/nodes\/[^/]+\/actions\/(?:retry|skip)$/ },
@@ -79,13 +104,6 @@ const PROXY_RULES: RouteRule[] = [
   { method: "GET", pattern: /^\/api\/human-inputs$/ },
   { method: "POST", pattern: /^\/api\/human-inputs\/[^/]+\/submit$/ },
 ];
-
-function isAuthorized(req: Request, config: GatewayConfig): boolean {
-  if (!config.apiKey) {
-    return true;
-  }
-  return req.header("authorization") === `Bearer ${config.apiKey}`;
-}
 
 function isAllowedProxyRequest(req: Request): boolean {
   const method = req.method.toUpperCase();
@@ -103,9 +121,17 @@ function buildTargetUrl(req: Request, config: GatewayConfig): URL {
   return target;
 }
 
-function copyHeaders(req: Request): Headers {
+function copyHeaders(
+  req: Request,
+  authContext: RequestAuthContext,
+  internalAuthSecret: string,
+): Headers {
   const headers = new Headers();
   headers.set("x-my-mate-gateway", "api-gateway");
+  const signedIdentity = encodeSignedIdentity(authContext, internalAuthSecret);
+  headers.set("x-my-mate-auth-context", signedIdentity.payload);
+  headers.set("x-my-mate-auth-signature", signedIdentity.signature);
+  headers.set("x-my-mate-workspace-id", authContext.selected_workspace.workspace_id);
 
   const contentType = req.header("content-type");
   if (contentType) {
@@ -124,6 +150,11 @@ function copyHeaders(req: Request): Headers {
     headers.set("x-request-id", requestId);
   }
 
+  const idempotencyKey = req.header("idempotency-key");
+  if (idempotencyKey && /^\/api\/runs\/[^/]+\/reruns$/.test(getOriginalPath(req))) {
+    headers.set("idempotency-key", idempotencyKey);
+  }
+
   return headers;
 }
 
@@ -136,11 +167,9 @@ async function proxyToControlPlane(
   res: Response,
   config: GatewayConfig,
 ): Promise<void> {
-  if (!isAuthorized(req, config)) {
-    res.status(401).json({
-      code: "unauthorized",
-      message: "Invalid API gateway token.",
-    });
+  const identity = resolveRequestIdentity(req, config);
+  if (!identity.ok) {
+    res.status(identity.status).json({ code: identity.code, message: identity.message });
     return;
   }
 
@@ -160,7 +189,7 @@ async function proxyToControlPlane(
     const targetUrl = buildTargetUrl(req, config);
     const upstream = await fetch(targetUrl, {
       method: req.method,
-      headers: copyHeaders(req),
+      headers: copyHeaders(req, identity.context, config.internalAuthSecret),
       body: hasBody ? JSON.stringify(req.body ?? {}) : undefined,
       signal: abortController.signal,
     });
@@ -212,7 +241,10 @@ export function createApp(overrides: Partial<GatewayConfig> = {}) {
   const app = express();
   app.use((req: Request, res: Response, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, X-Request-Id, X-My-Mate-Workspace-Id",
+    );
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,OPTIONS");
     if (req.method.toUpperCase() === "OPTIONS") {
       res.status(204).send();
@@ -227,7 +259,8 @@ export function createApp(overrides: Partial<GatewayConfig> = {}) {
       status: "ok",
       port: config.port,
       control_plane_base_url: config.controlPlaneBaseUrl,
-      auth_required: !!config.apiKey,
+      auth_required: !!config.apiKey || config.identities.length > 0,
+      identity_count: config.identities.length + (config.apiKey ? 1 : 0),
     });
   });
 

@@ -11,6 +11,10 @@ export interface PlannerInvocationOptions {
   model?: string | null;
   orchestratorProfileId?: string | null;
   orchestratorSystemPrompt?: string | null;
+  preferredSubagentProfileIds?: string[];
+  preferDomainMatch?: boolean;
+  defaultMaxAgentNodes?: number | null;
+  requireReview?: boolean;
 }
 
 export interface PlannerProvider {

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/evaluation/run-evidence-snapshot.schema.json",
+  "title": "Run Evidence Snapshot",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "snapshot_id": { "type": "string", "minLength": 1 },
+    "snapshot_state": { "type": "string", "enum": ["terminal", "incomplete"] },
+    "generated_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "run": { "type": "object" },
+    "route": { "$ref": "../workflow/run-route.schema.json" },
+    "initial_plan": { "$ref": "../workflow/run-plan.schema.json" },
+    "effective_plan": { "$ref": "../workflow/run-plan.schema.json" },
+    "node_runs": {
+      "type": "array",
+      "items": { "$ref": "../workflow/node-run.schema.json" }
+    },
+    "runtime_jobs": { "type": "array", "items": { "type": "object" } },
+    "runtime_workers": { "type": "array", "items": { "type": "object" } },
+    "worker_leases": { "type": "array", "items": { "type": "object" } },
+    "event_cursors": { "type": "array", "items": { "type": "object" } },
+    "events": { "type": "array", "items": { "$ref": "../workflow/event.schema.json" } },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "../runtime/worker-evidence.schema.json" }
+    },
+    "handoffs": { "type": "array", "items": { "type": "object" } },
+    "artifacts": { "type": "array", "items": { "$ref": "../workflow/artifact.schema.json" } },
+    "approvals": { "type": "array", "items": { "$ref": "../workflow/approval.schema.json" } },
+    "human_inputs": { "type": "array", "items": { "$ref": "../workflow/human-input.schema.json" } },
+    "interventions": { "type": "array", "items": { "type": "object" } },
+    "dag_patches": { "type": "array", "items": { "type": "object" } },
+    "completeness": {
+      "type": "object",
+      "properties": {
+        "route": { "type": "string", "enum": ["complete", "legacy_inferred", "missing"] },
+        "events": { "type": "string", "enum": ["complete", "legacy_partial", "missing"] },
+        "evidence": { "type": "string", "enum": ["complete", "partial", "unavailable"] },
+        "usage": { "type": "string", "enum": ["complete", "partial", "unavailable"] },
+        "cost": { "type": "string", "enum": ["complete", "partial", "unavailable"] },
+        "redaction_blocked_count": { "type": "integer", "minimum": 0 },
+        "late_record_count": { "type": "integer", "minimum": 0 },
+        "blind_spots": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": [
+        "route", "events", "evidence", "usage", "cost", "redaction_blocked_count",
+        "late_record_count", "blind_spots"
+      ],
+      "additionalProperties": false
+    },
+    "snapshot_cursor": { "type": "string", "minLength": 1 },
+    "evidence_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  },
+  "required": [
+    "schema_version", "snapshot_id", "snapshot_state", "generated_at", "run", "route",
+    "initial_plan", "effective_plan", "node_runs", "runtime_jobs", "runtime_workers",
+    "worker_leases", "event_cursors", "events", "evidence", "handoffs", "artifacts",
+    "approvals", "human_inputs", "interventions", "dag_patches", "completeness",
+    "snapshot_cursor", "evidence_digest"
+  ],
+  "additionalProperties": false
+}

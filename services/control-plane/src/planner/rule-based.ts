@@ -20,7 +20,7 @@ import type {
   CreateTemplateRequest,
 } from "../types.js";
 import { isPlainObject, nowIso, slugify } from "../utils.js";
-import type { PlannerProvider } from "./provider.js";
+import type { PlannerInvocationOptions, PlannerProvider } from "./provider.js";
 
 const STOP_WORDS = new Set([
   "a",
@@ -67,6 +67,24 @@ function uniqueTokens(values: unknown[]): string[] {
 
 function uniqueStringValues(values: string[]): string[] {
   return [...new Set(values.filter((item) => item.trim()).map((item) => item.trim()))];
+}
+
+function buildPreferredProfileRankMap(preferredProfileIds: string[] = []): Map<string, number> {
+  const result = new Map<string, number>();
+  preferredProfileIds.forEach((value, index) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (!result.has(trimmed)) {
+      result.set(trimmed, index);
+    }
+    const slug = slugify(trimmed);
+    if (slug && !result.has(slug)) {
+      result.set(slug, index);
+    }
+  });
+  return result;
 }
 
 function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
@@ -139,6 +157,15 @@ function getRegistryProfile(agentProfile: string | null): AgentProfileRecord | n
 
 function getRegistrySkill(skillId: string): SkillRecord | null {
   return getSkill(skillId) || getSkill(slugify(skillId));
+}
+
+function getConfiguredAllowedTools(config: Record<string, unknown>): string[] {
+  if (!Array.isArray(config.allowed_tools)) {
+    return [];
+  }
+  return uniqueStringValues(
+    config.allowed_tools.filter((item): item is string => typeof item === "string"),
+  );
 }
 
 function stringAndSlugSet(values: string[]): Set<string> {
@@ -237,9 +264,9 @@ export function collectRegistryValidation(template: WorkflowTemplateRecord): {
         skill_id: null,
       });
       warn({
-        code: "missing_openclaw_agent",
+        code: "missing_runtime_agent_ref",
         category: "registry",
-        message: `Node ${nodeLabel} has no OpenClaw agent id.`,
+        message: `Node ${nodeLabel} has no runtime agent ref.`,
         field: null,
         node_id: node.id,
         node_name: node.name,
@@ -276,12 +303,12 @@ export function collectRegistryValidation(template: WorkflowTemplateRecord): {
       });
     } else {
       stats.registry_bound_node_count += 1;
-      if (!profile.openclaw_agent_id.trim()) {
+      if (!getRuntimeAgentRef(profile)) {
         stats.missing_openclaw_agent_count += 1;
         warn({
-          code: "missing_openclaw_agent",
+          code: "missing_runtime_agent_ref",
           category: "registry",
-          message: `Node ${nodeLabel} active profile ${profile.profile_id} has no OpenClaw agent id.`,
+          message: `Node ${nodeLabel} active profile ${profile.profile_id} has no runtime agent ref.`,
           field: null,
           node_id: node.id,
           node_name: node.name,
@@ -414,12 +441,16 @@ function getAgentProfileSearchTokens(profile: AgentProfileRecord): string[] {
     profile.profile_id,
     profile.name,
     profile.description,
-    profile.openclaw_agent_id,
+    getRuntimeAgentRef(profile),
     ...profile.default_skills,
     ...profile.allowed_tools,
     ...profile.policy_tags,
     ...collectMetadataText(profile.metadata),
   ]);
+}
+
+function getRuntimeAgentRef(profile: AgentProfileRecord): string {
+  return (profile.runtime_agent_ref || profile.openclaw_agent_id || "").trim();
 }
 
 function scoreTemplate(
@@ -453,6 +484,11 @@ function scoreTemplate(
     score,
     matched_terms: matchedTerms,
     reason,
+    evidence: {
+      coverage_score: Number(coverageScore.toFixed(4)),
+      density_score: Number(densityScore.toFixed(4)),
+      registry_readiness_score: Number(registryScore.toFixed(4)),
+    },
   };
 }
 
@@ -491,6 +527,7 @@ interface ProfileScoreBreakdown {
   readinessScore: number;
   defaultSkillHealth: number;
   disallowedHitCount: number;
+  disallowedPenalty: number;
   openclawReady: boolean;
   reason: string;
 }
@@ -526,7 +563,7 @@ function scoreAgentProfile(
   const disallowedPenalty =
     intentTokens.length > 0 ? Math.min(0.3, (disallowedHitCount / intentTokens.length) * 0.3) : 0;
 
-  const openclawReady = profile.openclaw_agent_id.trim().length > 0;
+  const openclawReady = getRuntimeAgentRef(profile).length > 0;
   const readinessScore =
     (openclawReady ? 0.6 : 0) + defaultSkillHealth * 0.4;
 
@@ -568,6 +605,7 @@ function scoreAgentProfile(
     readinessScore,
     defaultSkillHealth,
     disallowedHitCount,
+    disallowedPenalty: Number(disallowedPenalty.toFixed(4)),
     openclawReady,
     reason,
   };
@@ -576,11 +614,20 @@ function scoreAgentProfile(
 function buildRegistryRecommendations(
   intentTokens: string[],
   maxAgentNodes: number,
+  preferredProfileIds: string[] = [],
 ): PlannerRegistryRecommendation[] {
   const activeSkills = listSkills("active");
   const activeProfiles = listAgentProfiles("active");
+  const preferredRanks = buildPreferredProfileRankMap(preferredProfileIds);
   const scoredProfiles = activeProfiles
-    .map((profile) => scoreAgentProfile(profile, intentTokens))
+    .map((profile) => {
+      const breakdown = scoreAgentProfile(profile, intentTokens);
+      const preferredRank = preferredRanks.get(profile.profile_id) ?? preferredRanks.get(slugify(profile.profile_id)) ?? null;
+      return {
+        ...breakdown,
+        preferredRank,
+      };
+    })
     .sort((a, b) => {
       if (b.score !== a.score) {
         return b.score - a.score;
@@ -588,9 +635,13 @@ function buildRegistryRecommendations(
       return a.profile.profile_id.localeCompare(b.profile.profile_id);
     });
 
+  const preferredSelected = [...scoredProfiles]
+    .filter((entry) => entry.preferredRank !== null)
+    .sort((a, b) => (a.preferredRank ?? Number.MAX_SAFE_INTEGER) - (b.preferredRank ?? Number.MAX_SAFE_INTEGER));
+  const remainingSelected = scoredProfiles.filter((entry) => entry.preferredRank === null);
   const selectedProfiles =
     scoredProfiles.length > 0
-      ? scoredProfiles.slice(0, maxAgentNodes)
+      ? [...preferredSelected, ...remainingSelected].slice(0, maxAgentNodes)
       : [];
 
   if (selectedProfiles.length === 0) {
@@ -600,8 +651,10 @@ function buildRegistryRecommendations(
         node_name: "Task 1",
         agent_profile_id: null,
         agent_profile_name: null,
+        runtime_agent_ref: null,
         openclaw_agent_id: null,
         skill_ids: activeSkills.slice(0, 3).map((skill) => skill.skill_id),
+        allowed_tools: [],
         score: 0,
         reason: "No active agent profile is available; human assignment is required.",
         warnings: ["No active agent profile found."],
@@ -610,7 +663,7 @@ function buildRegistryRecommendations(
   }
 
   return selectedProfiles.map((breakdown, index) => {
-    const { profile, score } = breakdown;
+    const { profile, preferredRank } = breakdown;
     const disallowedSet = stringAndSlugSet(profile.disallowed_skills);
     const defaultActiveSkills = profile.default_skills.filter((skillId) => {
       const skill = getRegistrySkill(skillId);
@@ -633,9 +686,10 @@ function buildRegistryRecommendations(
     const skillIds = uniqueStringValues([...defaultActiveSkills, ...fallbackSkills]).filter(
       (skillId) => !disallowedSet.has(skillId) && !disallowedSet.has(slugify(skillId)),
     );
+    const allowedTools = uniqueStringValues(profile.allowed_tools);
     const warnings = [];
     if (!breakdown.openclawReady) {
-      warnings.push(`Agent profile ${profile.profile_id} has no OpenClaw agent id.`);
+      warnings.push(`Agent profile ${profile.profile_id} has no runtime agent ref.`);
     }
     if (breakdown.defaultSkillHealth < 1 && profile.default_skills.length > 0) {
       warnings.push(
@@ -650,17 +704,31 @@ function buildRegistryRecommendations(
     if (skillIds.length === 0) {
       warnings.push(`Agent profile ${profile.profile_id} has no active recommended skill.`);
     }
+    const score = preferredRank !== null ? Number(Math.max(breakdown.score, 0.1).toFixed(4)) : breakdown.score;
+    const reason = preferredRank !== null
+      ? `${breakdown.reason} Selected from orchestrator default subagent order.`
+      : breakdown.reason;
 
     return {
       node_id: `node_task_${index + 1}`,
       node_name: selectedProfiles.length === 1 ? "Execute Task" : `Execute Task ${index + 1}`,
       agent_profile_id: profile.profile_id,
       agent_profile_name: profile.name,
-      openclaw_agent_id: profile.openclaw_agent_id || null,
+      runtime_agent_ref: getRuntimeAgentRef(profile) || null,
+      openclaw_agent_id: profile.openclaw_agent_id || getRuntimeAgentRef(profile) || null,
       skill_ids: skillIds,
+      allowed_tools: allowedTools,
       score,
-      reason: breakdown.reason,
+      reason,
       warnings,
+      evidence: {
+        preferred_rank: preferredRank,
+        policy_score: Number(breakdown.policyScore.toFixed(4)),
+        profile_token_score: Number(breakdown.profileTokenScore.toFixed(4)),
+        skill_score: Number((breakdown.skillMaxScore * 0.7 + breakdown.skillMeanScore * 0.3).toFixed(4)),
+        readiness_score: Number(breakdown.readinessScore.toFixed(4)),
+        disallowed_penalty: breakdown.disallowedPenalty,
+      },
     };
   });
 }
@@ -672,9 +740,14 @@ function buildTemplateRegistryRecommendations(
     .filter(isExecutableNode)
     .map((node) => {
       const profile = getRegistryProfile(node.agent_profile);
+      const config = isPlainObject(node.config) ? node.config : {};
       const skillIds = uniqueStringValues([
         ...(profile?.status === "active" ? profile.default_skills : []),
         ...node.allowed_skills,
+      ]);
+      const allowedTools = uniqueStringValues([
+        ...(profile?.status === "active" ? profile.allowed_tools : []),
+        ...getConfiguredAllowedTools(config),
       ]);
       const warnings = [];
       if (!node.agent_profile) {
@@ -684,8 +757,8 @@ function buildTemplateRegistryRecommendations(
       } else if (profile.status !== "active") {
         warnings.push(`Node ${node.id} uses disabled agent profile: ${profile.profile_id}`);
       }
-      if (profile?.status === "active" && !profile.openclaw_agent_id.trim()) {
-        warnings.push(`Agent profile ${profile.profile_id} has no OpenClaw agent id.`);
+      if (profile?.status === "active" && !getRuntimeAgentRef(profile)) {
+        warnings.push(`Agent profile ${profile.profile_id} has no runtime agent ref.`);
       }
       for (const skillId of skillIds) {
         const skill = getRegistrySkill(skillId);
@@ -701,13 +774,21 @@ function buildTemplateRegistryRecommendations(
         node_name: node.name,
         agent_profile_id: profile?.profile_id || node.agent_profile,
         agent_profile_name: profile?.name || null,
-        openclaw_agent_id: profile?.openclaw_agent_id || null,
+        runtime_agent_ref: profile ? getRuntimeAgentRef(profile) || null : null,
+        openclaw_agent_id: profile?.openclaw_agent_id || (profile ? getRuntimeAgentRef(profile) : null) || null,
         skill_ids: skillIds,
+        allowed_tools: allowedTools,
         score: warnings.length === 0 ? 1 : 0.35,
         reason: profile
           ? "Kept template node binding and checked it against the active registry."
           : "Kept template node binding; human registry assignment is required.",
         warnings,
+        evidence: {
+          readiness_score:
+            profile?.status === "active"
+              ? Number((getRuntimeAgentRef(profile) ? 1 : 0.4).toFixed(4))
+              : undefined,
+        },
       };
     });
 }
@@ -723,7 +804,9 @@ function nodeFromRegistryRecommendation(
     agent_profile: recommendation.agent_profile_id,
     allowed_skills: recommendation.skill_ids,
     config: {
-      allowed_tools: ["read", "write", "shell"],
+      allowed_tools: recommendation.allowed_tools.length
+        ? recommendation.allowed_tools
+        : ["read", "write", "shell"],
       output_contract: {
         expected_artifacts: [`task-${index + 1}-report`],
       },
@@ -805,6 +888,7 @@ function buildDraftFromTemplate(input: {
   intent: string;
   template: WorkflowTemplateRecord;
   source: PlannerTemplateSelectionResponse | null;
+  requireReview: boolean;
 }): CreateTemplateRequest & { template_id: string } {
   return {
     template_id: buildDraftTemplateId(input.intent),
@@ -823,6 +907,7 @@ function buildDraftFromTemplate(input: {
       planner_source_template_selected_by: input.source ? "template_selection" : "explicit_request",
       planner_intent: input.intent.trim(),
       planner_human_confirmation_required: true,
+      planner_require_review: input.requireReview,
     },
   };
 }
@@ -831,6 +916,7 @@ function buildDraftFromRegistry(input: {
   intent: string;
   inputs: Record<string, unknown>;
   recommendations: PlannerRegistryRecommendation[];
+  requireReview: boolean;
 }): CreateTemplateRequest & { template_id: string } {
   const taskNodes = input.recommendations.map(nodeFromRegistryRecommendation);
   const nodes = [...taskNodes, endNode()];
@@ -842,8 +928,8 @@ function buildDraftFromRegistry(input: {
   }));
   const agentProfileBindings: Record<string, string> = {};
   for (const recommendation of input.recommendations) {
-    if (recommendation.agent_profile_id && recommendation.openclaw_agent_id) {
-      agentProfileBindings[recommendation.agent_profile_id] = recommendation.openclaw_agent_id;
+    if (recommendation.agent_profile_id && recommendation.runtime_agent_ref) {
+      agentProfileBindings[recommendation.agent_profile_id] = recommendation.runtime_agent_ref;
     }
   }
 
@@ -866,6 +952,7 @@ function buildDraftFromRegistry(input: {
       planner_intent: input.intent.trim(),
       planner_strategy: "registry_synthesis",
       planner_human_confirmation_required: true,
+      planner_require_review: input.requireReview,
     },
   };
 }
@@ -1029,11 +1116,19 @@ function recommendTemplateImpl(intent: string): PlannerTemplateSelectionResponse
   };
 }
 
-function generateDagDraftImpl(request: PlannerDagDraftRequest): PlannerDagDraftResponse {
+function generateDagDraftImpl(
+  request: PlannerDagDraftRequest,
+  options?: PlannerInvocationOptions,
+): PlannerDagDraftResponse {
   const intent = request.intent.trim();
   const intentTokens = uniqueTokens([intent]);
   const inputs = isPlainObject(request.inputs) ? request.inputs : {};
-  const maxAgentNodes = clampInteger(request.max_agent_nodes, 1, 1, 6);
+  const requestedMaxAgentNodes =
+    typeof request.max_agent_nodes === "number" && Number.isFinite(request.max_agent_nodes)
+      ? request.max_agent_nodes
+      : options?.defaultMaxAgentNodes ?? undefined;
+  const maxAgentNodes = clampInteger(requestedMaxAgentNodes, 1, 1, 6);
+  const requireReview = options?.requireReview === true;
   let recommendation: PlannerTemplateSelectionResponse | null = null;
   let sourceTemplate: WorkflowTemplateRecord | null = null;
 
@@ -1057,6 +1152,7 @@ function generateDagDraftImpl(request: PlannerDagDraftRequest): PlannerDagDraftR
       intent,
       template: sourceTemplate,
       source: recommendation,
+      requireReview,
     });
     const draftTemplateRecord = templateRecordFromDraft(draftTemplate, sourceTemplate);
     const candidateRun = buildCandidateRun(
@@ -1089,15 +1185,21 @@ function generateDagDraftImpl(request: PlannerDagDraftRequest): PlannerDagDraftR
         source_template_id: sourceTemplate.template_id,
         draft_strategy: "template_variant",
         human_confirmation_required: true,
+        require_review: requireReview,
       },
     };
   }
 
-  const registryRecommendations = buildRegistryRecommendations(intentTokens, maxAgentNodes);
+  const registryRecommendations = buildRegistryRecommendations(
+    intentTokens,
+    maxAgentNodes,
+    options?.preferredSubagentProfileIds || [],
+  );
   const draftTemplate = buildDraftFromRegistry({
     intent,
     inputs,
     recommendations: registryRecommendations,
+    requireReview,
   });
   const syntheticTemplate = templateRecordFromDraft(draftTemplate);
   const validation = validateRunRequestForTemplate(
@@ -1120,6 +1222,7 @@ function generateDagDraftImpl(request: PlannerDagDraftRequest): PlannerDagDraftR
       source_template_id: null,
       draft_strategy: "registry_synthesis",
       human_confirmation_required: true,
+      require_review: requireReview,
     },
   };
 }
@@ -1159,8 +1262,8 @@ export const ruleBasedPlannerProvider: PlannerProvider = {
   async recommendTemplate(intent: string) {
     return recommendTemplateImpl(intent);
   },
-  async generateDagDraft(request) {
-    return generateDagDraftImpl(request);
+  async generateDagDraft(request, options) {
+    return generateDagDraftImpl(request, options);
   },
   async generateCandidatePlan(request) {
     return generateCandidatePlanImpl(request);

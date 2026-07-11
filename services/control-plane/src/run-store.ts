@@ -1,6 +1,8 @@
-import fs from "node:fs";
 import path from "node:path";
 import { RUNS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getActivePrincipalId, getActiveWorkspaceId } from "./request-security.js";
+import { markObservabilityRunDirty } from "./observability-index-dirty.js";
 import type { CreateRunRequest, RunRecord } from "./types.js";
 import { ensureDir, generateRunId, nowIso, writeJsonAtomic } from "./utils.js";
 import { validateRunState } from "./validators.js";
@@ -11,17 +13,38 @@ function runPath(runId: string): string {
 
 export function saveRun(run: RunRecord): RunRecord {
   const normalized = normalizeRunRecord(run);
+  const activeWorkspaceId = getActiveWorkspaceId();
+  if (activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId) {
+    throw new Error("WORKSPACE_SCOPE_MISMATCH");
+  }
   assertValidRun(run);
   writeJsonAtomic(runPath(normalized.run_id), normalized);
+  markObservabilityRunDirty(normalized.run_id);
   return normalized;
 }
 
 function normalizeRunRecord(record: RunRecord): RunRecord {
   return {
     ...record,
+    workspace_id:
+      typeof record.workspace_id === "string" && record.workspace_id.trim()
+        ? record.workspace_id.trim()
+        : "default",
     proposal_id:
       typeof record.proposal_id === "string" && record.proposal_id.trim()
         ? record.proposal_id.trim()
+        : null,
+    source_run_id:
+      typeof record.source_run_id === "string" && record.source_run_id.trim()
+        ? record.source_run_id.trim()
+        : null,
+    rerun_reason:
+      typeof record.rerun_reason === "string" && record.rerun_reason.trim()
+        ? record.rerun_reason.trim()
+        : null,
+    rerun_idempotency_key:
+      typeof record.rerun_idempotency_key === "string" && record.rerun_idempotency_key.trim()
+        ? record.rerun_idempotency_key.trim()
         : null,
   };
 }
@@ -47,19 +70,17 @@ function assertValidRun(run: RunRecord): void {
   }
 }
 
-export function createRun(
+export function buildRunRecord(
   input: CreateRunRequest,
   options?: { requestedBy?: string; workspaceId?: string; templateVersion?: number },
 ): RunRecord {
-  ensureDir(RUNS_DIR);
-
   const timestamp = nowIso();
-  const run: RunRecord = {
+  return {
     run_id: generateRunId(),
     template_id: input.template_id,
     template_version: options?.templateVersion ?? 1,
-    workspace_id: options?.workspaceId || "default",
-    requested_by: options?.requestedBy || "demo-user",
+    workspace_id: getActiveWorkspaceId() || options?.workspaceId || "default",
+    requested_by: getActivePrincipalId() || options?.requestedBy || "demo-user",
     intent: input.intent,
     status: "queued",
     current_summary: "Run created and queued",
@@ -72,30 +93,43 @@ export function createRun(
     updated_at: timestamp,
     inputs: input.inputs,
     proposal_id: input.proposal_id || null,
+    source_run_id: null,
+    rerun_reason: null,
+    rerun_idempotency_key: null,
   };
+}
+
+export function createRun(
+  input: CreateRunRequest,
+  options?: { requestedBy?: string; workspaceId?: string; templateVersion?: number },
+): RunRecord {
+  ensureDir(RUNS_DIR);
+  const run = buildRunRecord(input, options);
 
   return saveRun(run);
 }
 
 export function listRuns(): RunRecord[] {
   ensureDir(RUNS_DIR);
-  const files = fs
-    .readdirSync(RUNS_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(RUNS_DIR, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(RUNS_DIR);
 
+  const activeWorkspaceId = getActiveWorkspaceId();
   const runs = files.map((file) =>
-    normalizeRunRecord(JSON.parse(fs.readFileSync(file, "utf-8")) as RunRecord),
-  );
+    normalizeRunRecord(storage.readJson<RunRecord>(file)),
+  ).filter((run) => !activeWorkspaceId || run.workspace_id === activeWorkspaceId);
 
   runs.sort((a, b) => b.created_at.localeCompare(a.created_at));
   return runs;
 }
 
 export function getRun(runId: string): RunRecord | null {
+  const storage = getJsonStorageBackend();
   const filePath = runPath(runId);
-  if (!fs.existsSync(filePath)) {
+  if (!storage.exists(filePath)) {
     return null;
   }
-  return normalizeRunRecord(JSON.parse(fs.readFileSync(filePath, "utf-8")) as RunRecord);
+  const run = normalizeRunRecord(storage.readJson<RunRecord>(filePath));
+  const activeWorkspaceId = getActiveWorkspaceId();
+  return activeWorkspaceId && run.workspace_id !== activeWorkspaceId ? null : run;
 }

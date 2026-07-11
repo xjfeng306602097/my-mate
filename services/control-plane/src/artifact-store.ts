@@ -1,6 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { ARTIFACTS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getRun } from "./run-store.js";
 import type { ArtifactRecord, ExecutionArtifactRecord } from "./types.js";
 import { ensureDir, generateArtifactId, nowIso, writeJsonAtomic } from "./utils.js";
 
@@ -45,18 +46,12 @@ export function upsertArtifacts(records: ArtifactRecord[]): ArtifactRecord[] {
 }
 
 export function listArtifacts(runId: string): ArtifactRecord[] {
-  const dir = runArtifactsDir(runId);
-  if (!fs.existsSync(dir)) {
-    return [];
-  }
-
-  const files = fs
-    .readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dir, entry.name));
+  if (!getRun(runId)) return [];
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(runArtifactsDir(runId));
 
   const items = files.map((filePath) =>
-    JSON.parse(fs.readFileSync(filePath, "utf-8")) as ArtifactRecord,
+    storage.readJson<ArtifactRecord>(filePath),
   );
   items.sort((a, b) => a.created_at.localeCompare(b.created_at));
   return items;

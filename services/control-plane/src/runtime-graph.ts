@@ -12,11 +12,7 @@ import type {
   RuntimeGraphWorkPackage,
 } from "./types.js";
 import { isPlainObject, nowIso } from "./utils.js";
-
-type WorkPackagePresentation = {
-  key: string;
-  label: string;
-};
+import { normalizeCompiledWorkPackage } from "./work-package.js";
 
 const NODE_STATUSES: NodeStatus[] = [
   "pending",
@@ -42,50 +38,6 @@ function extractExpectedArtifacts(node: CompiledNodeRecord): string[] {
     ? node.output_contract.expected_artifacts
     : [];
   return expectedArtifacts.filter((item): item is string => typeof item === "string" && !!item.trim());
-}
-
-function inferWorkPackage(node: CompiledNodeRecord): WorkPackagePresentation {
-  const name = `${node.name} ${node.node_id} ${node.type}`.toLowerCase();
-  if (node.approval_kind || node.type === "approval") {
-    return {
-      key: "review",
-      label: "Review and approval",
-    };
-  }
-  if (node.human_input_schema || node.type === "human_input") {
-    return {
-      key: "human-input",
-      label: "Human input",
-    };
-  }
-  if (/deliver|final|handoff|publish|notify|send/.test(name)) {
-    return {
-      key: "deliver",
-      label: "Delivery",
-    };
-  }
-  if (/collect|research|context|gather|scan|intake/.test(name)) {
-    return {
-      key: "research",
-      label: "Context collection",
-    };
-  }
-  if (/draft|write|compose|generate|summar/i.test(name)) {
-    return {
-      key: "draft",
-      label: "Drafting",
-    };
-  }
-  if (extractExpectedArtifacts(node).length > 0) {
-    return {
-      key: "deliver",
-      label: "Delivery",
-    };
-  }
-  return {
-    key: "other",
-    label: "Execution",
-  };
 }
 
 function emptyProgress(status: NodeStatus, timestamp: string) {
@@ -163,10 +115,10 @@ function buildGraphNodes(input: {
   const nodeRunById = new Map(input.nodeRuns.map((nodeRun) => [nodeRun.node_run_id, nodeRun]));
   const frontier = new Set(input.plan.frontier);
 
-  return input.plan.compiled_nodes.map((node) => {
+  return input.plan.compiled_nodes.map((node, index) => {
     const nodeRun = nodeRunById.get(node.node_run_id) || null;
     const status = mergeNodeStatus(node, nodeRun);
-    const workPackage = inferWorkPackage(node);
+    const workPackage = normalizeCompiledWorkPackage(node, index);
     return {
       nodeRunId: node.node_run_id,
       nodeId: node.node_id,
@@ -178,12 +130,15 @@ function buildGraphNodes(input: {
       startedAt: nodeRun?.started_at || null,
       finishedAt: nodeRun?.finished_at || null,
       agentProfile: node.agent_profile,
+      runtimeAgentRef: node.runtime_agent_ref ?? node.openclaw_agent_id ?? null,
       openclawAgentId: node.openclaw_agent_id,
       approvalKind: node.approval_kind,
       humanInputRequired: !!node.human_input_schema || node.type === "human_input",
       expectedArtifacts: extractExpectedArtifacts(node),
       workPackageKey: workPackage.key,
       workPackageLabel: workPackage.label,
+      workPackageOrder: workPackage.order,
+      workPackageIdentitySource: workPackage.identity_source,
       markers: buildNodeMarkers({
         node,
         status,
@@ -256,10 +211,22 @@ function buildWorkPackages(nodes: RuntimeGraphNode[]): RuntimeGraphWorkPackage[]
           : allDone
             ? "done"
             : "pending";
+    const identitySource: RuntimeGraphWorkPackage["identitySource"] =
+      groupNodes.some(
+        (node) => node.workPackageIdentitySource === "legacy_inferred",
+      )
+        ? "legacy_inferred"
+        : groupNodes.some(
+              (node) => node.workPackageIdentitySource === "compiler_default",
+            )
+          ? "compiler_default"
+          : "declared";
 
     return {
       key,
       label,
+      order: Math.min(...groupNodes.map((node) => node.workPackageOrder)),
+      identitySource,
       nodeRunIds: groupNodes.map((node) => node.nodeRunId),
       status,
       readyCount,
@@ -267,7 +234,7 @@ function buildWorkPackages(nodes: RuntimeGraphNode[]): RuntimeGraphWorkPackage[]
       completedCount,
       blockedCount,
     };
-  });
+  }).sort((left, right) => left.order - right.order || left.key.localeCompare(right.key));
 }
 
 function buildSummaryLines(input: {

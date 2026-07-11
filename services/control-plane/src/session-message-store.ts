@@ -1,6 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { SESSION_MESSAGES_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
+import { getSession } from "./session-store.js";
 import type {
   SessionMessageKind,
   SessionMessageRecord,
@@ -22,6 +23,7 @@ function sessionMessagePath(sessionId: string, messageId: string): string {
 }
 
 export function saveSessionMessage(message: SessionMessageRecord): SessionMessageRecord {
+  if (!getSession(message.session_id)) throw new Error("SESSION_NOT_FOUND");
   ensureDir(sessionMessageDir(message.session_id));
   writeJsonAtomic(sessionMessagePath(message.session_id, message.message_id), message);
   return message;
@@ -51,15 +53,13 @@ export function createSessionMessage(input: {
 }
 
 export function listSessionMessages(sessionId: string): SessionMessageRecord[] {
+  if (!getSession(sessionId)) return [];
   const dirPath = sessionMessageDir(sessionId);
-  ensureDir(dirPath);
-  const files = fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dirPath, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(dirPath);
 
   const messages = files.map((filePath) =>
-    JSON.parse(fs.readFileSync(filePath, "utf-8")) as SessionMessageRecord,
+    storage.readJson<SessionMessageRecord>(filePath),
   );
 
   messages.sort((a, b) => {

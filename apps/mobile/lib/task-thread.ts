@@ -117,6 +117,17 @@ export type PlanOptionSummary = {
   templateName: string;
   validationSummary: ValidationStateSummary;
   recommendationReason: string | null;
+  recommendationEvidence: {
+    chips: Array<{
+      label: string;
+      tone: ThreadTone;
+    }>;
+    metrics: Array<{
+      label: string;
+      value: string;
+    }>;
+    detailLines: string[];
+  } | null;
   nodeCount: number;
   readyFrontierCount: number;
   warningGroups: Array<{
@@ -130,6 +141,18 @@ export type PlanOptionSummary = {
   content: Record<string, unknown>;
   confirmed: boolean;
   selectedRevise: boolean;
+};
+
+export type RecommendationEvidenceSummary = {
+  chips: Array<{
+    label: string;
+    tone: ThreadTone;
+  }>;
+  metrics: Array<{
+    label: string;
+    value: string;
+  }>;
+  detailLines: string[];
 };
 
 export type PlanOptionsNarrative = {
@@ -515,6 +538,29 @@ function asStringArray(value: unknown): string[] {
     return [];
   }
   return value.filter((item): item is string => typeof item === "string" && !!item.trim());
+}
+
+function formatPlannerDomainLabel(domainId: string): string {
+  const labels: Record<string, string> = {
+    coding: "Software engineering",
+    research: "Research and analysis",
+    content: "Content and creative",
+    ops: "Operations and automation",
+    customer: "Customer and follow-up",
+    review: "Approval and review",
+  };
+  return labels[domainId] || domainId;
+}
+
+function formatPlannerDomainList(domainIds: unknown, limit = 3): string[] {
+  if (!Array.isArray(domainIds)) {
+    return [];
+  }
+  return domainIds
+    .map((item) => asString(item))
+    .filter((item): item is string => !!item)
+    .slice(0, limit)
+    .map(formatPlannerDomainLabel);
 }
 
 function getPatchOperationOutcomes(content: Record<string, unknown>): Record<string, unknown>[] {
@@ -1661,19 +1707,207 @@ export function getPlanReason(content: Record<string, unknown> | null): string |
 
   const rawReason = asString(content.recommendation_reason);
   if (rawReason && !isPlannerStyleSummary(rawReason)) {
-    return rawReason;
+    const evidenceSummary = summarizePlanRecommendationEvidence(content);
+    return evidenceSummary ? `${rawReason} ${evidenceSummary}` : rawReason;
   }
 
   const templateName = getPlanContentIdentity(content) || "this route";
   const source = asString(content.source);
   const validationSummary = summarizeValidationState(getValidationFromPlanContent(content));
   const routeLabel = source === "alternative" ? "backup route" : "main route";
+  const evidenceSummary = summarizePlanRecommendationEvidence(content);
   const riskLine =
     validationSummary.warningCount > 0
       ? `It carries ${validationSummary.warningCount} warning(s), so review the checklist before launch.`
       : "It is the cleanest route from the current planner pass.";
 
-  return `${templateName} is the ${routeLabel} for this revision. ${riskLine}`;
+  return [`${templateName} is the ${routeLabel} for this revision.`, evidenceSummary, riskLine]
+    .filter((item): item is string => !!item)
+    .join(" ");
+}
+
+export function getPlanRecommendationEvidence(content: Record<string, unknown> | null): {
+  chips: Array<{
+    label: string;
+    tone: ThreadTone;
+  }>;
+  metrics: Array<{
+    label: string;
+    value: string;
+  }>;
+  detailLines: string[];
+} | null {
+  if (!content) {
+    return null;
+  }
+
+  const evidence = isObject(content.recommendation_evidence) ? content.recommendation_evidence : null;
+  if (!evidence) {
+    return null;
+  }
+
+  const matchedDomains = formatPlannerDomainList(evidence.matched_domains);
+  const coverageDomains = formatPlannerDomainList(evidence.coverage_domains);
+  const coverage = asNumber(evidence.coverage_score);
+  const density = asNumber(evidence.density_score);
+  const readiness = asNumber(evidence.registry_readiness_score);
+  const domainOverlap = asNumber(evidence.domain_overlap_score);
+  const metadataDomainMatch = evidence.metadata_domain_match === true;
+
+  const chips: Array<{ label: string; tone: ThreadTone }> = [];
+  if (coverageDomains.length > 0) {
+    chips.push({
+      label: `Coverage: ${coverageDomains.join(", ")}`,
+      tone: "success",
+    });
+  }
+  if (matchedDomains.length > 0) {
+    chips.push({
+      label: `Domain: ${matchedDomains.join(", ")}`,
+      tone: "neutral",
+    });
+  }
+  if (metadataDomainMatch) {
+    chips.push({
+      label: "Metadata domain",
+      tone: "success",
+    });
+  }
+
+  const metrics = [
+    coverage !== null ? { label: "Coverage", value: `${Math.round(coverage * 100)}%` } : null,
+    density !== null ? { label: "Density", value: `${Math.round(density * 100)}%` } : null,
+    readiness !== null ? { label: "Readiness", value: `${Math.round(readiness * 100)}%` } : null,
+    domainOverlap !== null ? { label: "Overlap", value: `${Math.round(domainOverlap * 100)}%` } : null,
+  ].filter((item): item is { label: string; value: string } => item !== null);
+
+  const detailLines: string[] = [];
+  if (coverageDomains.length > 0) {
+    detailLines.push(`Coverage fill: ${coverageDomains.join(", ")}.`);
+  }
+  if (matchedDomains.length > 0) {
+    detailLines.push(`Matched planner domains: ${matchedDomains.join(", ")}.`);
+  }
+  if (coverage !== null || readiness !== null || domainOverlap !== null) {
+    detailLines.push(
+      [
+        coverage !== null ? `Coverage ${Math.round(coverage * 100)}%` : null,
+        readiness !== null ? `registry readiness ${Math.round(readiness * 100)}%` : null,
+        domainOverlap !== null ? `domain overlap ${Math.round(domainOverlap * 100)}%` : null,
+      ]
+        .filter((item): item is string => !!item)
+        .join(", ") + ".",
+    );
+  }
+
+  if (chips.length === 0 && metrics.length === 0 && detailLines.length === 0) {
+    return null;
+  }
+
+  return {
+    chips,
+    metrics,
+    detailLines,
+  };
+}
+
+export function getRegistryRecommendationEvidence(
+  recommendation: Record<string, unknown> | null,
+): RecommendationEvidenceSummary | null {
+  if (!recommendation) {
+    return null;
+  }
+  const evidence = isObject(recommendation.evidence) ? recommendation.evidence : null;
+  if (!evidence) {
+    return null;
+  }
+
+  const coverageDomains = formatPlannerDomainList(evidence.coverage_domains);
+  const matchedDomains = formatPlannerDomainList(evidence.matched_domains);
+  const preferredRank = asNumber(evidence.preferred_rank);
+  const policy = asNumber(evidence.policy_score);
+  const tokenFit = asNumber(evidence.profile_token_score);
+  const skillFit = asNumber(evidence.skill_score);
+  const readiness = asNumber(evidence.readiness_score);
+  const domainOverlap = asNumber(evidence.domain_overlap_score);
+  const disallowedPenalty = asNumber(evidence.disallowed_penalty);
+
+  const chips: RecommendationEvidenceSummary["chips"] = [];
+  if (coverageDomains.length > 0) {
+    chips.push({ label: `Coverage: ${coverageDomains.join(", ")}`, tone: "success" });
+  }
+  if (matchedDomains.length > 0) {
+    chips.push({ label: `Domain: ${matchedDomains.join(", ")}`, tone: "neutral" });
+  }
+  if (preferredRank !== null) {
+    chips.push({ label: `Preferred #${preferredRank + 1}`, tone: "success" });
+  }
+  if ((disallowedPenalty || 0) > 0) {
+    chips.push({ label: "Disallowed filtered", tone: "warn" });
+  }
+
+  const metrics = [
+    policy !== null ? { label: "Policy", value: policy.toFixed(2) } : null,
+    tokenFit !== null ? { label: "Token", value: tokenFit.toFixed(2) } : null,
+    skillFit !== null ? { label: "Skill", value: skillFit.toFixed(2) } : null,
+    readiness !== null ? { label: "Readiness", value: readiness.toFixed(2) } : null,
+    domainOverlap !== null ? { label: "Overlap", value: domainOverlap.toFixed(2) } : null,
+  ].filter((item): item is { label: string; value: string } => item !== null);
+
+  const detailLines: string[] = [];
+  if (coverageDomains.length > 0) {
+    detailLines.push(`Coverage fill: ${coverageDomains.join(", ")}.`);
+  }
+  if (matchedDomains.length > 0) {
+    detailLines.push(`Matched planner domains: ${matchedDomains.join(", ")}.`);
+  }
+  if (Array.isArray(recommendation.allowed_tools) && recommendation.allowed_tools.length > 0) {
+    detailLines.push(
+      `Tools: ${recommendation.allowed_tools
+        .map((tool) => asString(tool))
+        .filter((tool): tool is string => !!tool)
+        .join(", ")}.`,
+    );
+  }
+
+  if (chips.length === 0 && metrics.length === 0 && detailLines.length === 0) {
+    return null;
+  }
+
+  return { chips, metrics, detailLines };
+}
+
+function summarizePlanRecommendationEvidence(content: Record<string, unknown>): string | null {
+  const evidence = getPlanRecommendationEvidence(content);
+  if (!evidence) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  const coverageChip = evidence.chips.find((chip) => chip.label.startsWith("Coverage: "));
+  if (coverageChip) {
+    parts.push(`${coverageChip.label.replace(/^Coverage:\s*/, "Coverage fill: ")}.`);
+  }
+  const domainChip = evidence.chips.find((chip) => chip.label.startsWith("Domain: "));
+  if (domainChip) {
+    parts.push(`${domainChip.label.replace(/^Domain:\s*/, "Domain fit: ")}.`);
+  }
+  if (evidence.metrics.length > 0) {
+    parts.push(
+      `Planner signals: ${evidence.metrics
+        .map((metric) => {
+          const label =
+            metric.label === "Readiness"
+              ? "registry readiness"
+              : metric.label === "Overlap"
+                ? "domain overlap"
+                : metric.label.toLowerCase();
+          return `${label} ${metric.value}`;
+        })
+        .join(", ")}.`,
+    );
+  }
+  return parts.length ? parts.join(" ") : null;
 }
 
 function getCandidatePlan(content: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -2706,7 +2940,10 @@ export function buildWorkPackages(
         .join(", ");
       const agentCounts = new Map<string, number>();
       for (const node of value.nodes) {
-        const label = asString(node.agent_profile) || asString(node.openclaw_agent_id);
+        const label =
+          asString(node.agent_profile) ||
+          asString(node.runtime_agent_ref) ||
+          asString(node.openclaw_agent_id);
         if (label) {
           agentCounts.set(label, (agentCounts.get(label) || 0) + 1);
         }
@@ -4906,6 +5143,7 @@ export function buildPlanOptionsNarrative(input: {
         templateName: getPlanContentIdentity(content) || `${optionKey} option`,
         validationSummary: summarizeValidationState(validation),
         recommendationReason: getPlanReason(content),
+        recommendationEvidence: getPlanRecommendationEvidence(content),
         nodeCount: getNodeCountFromPlan(content),
         readyFrontierCount:
           asNumber(checklist?.ready_frontier_count) || getReadyFrontierCountFromPlan(content),
@@ -4942,7 +5180,8 @@ export function buildPlanOptionsNarrative(input: {
     ? focusedSummary.nodeCount - alternateSummary.nodeCount
     : 0;
   const comparisonSummary = alternateSummary
-    ? `${focusedSummary.templateName} is the current ${
+    ? asString(focusedSummary.content.comparison_rationale) ||
+      `${focusedSummary.templateName} is the current ${
         focusedSummary.confirmed ? "confirmed" : "recommended"
       } route, and ${
         nodeDelta === 0

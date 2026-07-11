@@ -1,3 +1,7 @@
+import { buildDagLayout } from "./dag-layout.js";
+import { buildRuntimeGraphModel, findRuntimeNeighbor } from "./runtime-graph-model.js";
+import { renderRuntimeGraphView } from "./runtime-graph-view.js";
+
 const NODE_TYPES = [
   "agent_task",
   "approval",
@@ -39,9 +43,24 @@ const DEFAULT_POLICY = {
 const DEFAULT_REGISTRY_METADATA = {};
 const DEFAULT_SKILL_SCHEMA = { type: "object" };
 const DEFAULT_SKILL_OUTPUT_CONTRACT = {};
+const STUDIO_API_KEY_STORAGE = "my-mate.studio.api-key";
+const STUDIO_WORKSPACE_STORAGE = "my-mate.studio.workspace-id";
 
 function emptyHumanInputDrafts() {
   return {};
+}
+
+function emptyOrchestratorEditor() {
+  return {
+    selectedProfileId: "",
+    name: "Studio Orchestrator",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "You are the mission orchestrator. Clarify the user's intent, define the MissionSpec, propose a DAG, assign subagents, and supervise execution until the requested deliverables are complete.",
+    defaultToolsText: "",
+    defaultSubagentsText: "",
+  };
 }
 
 const state = {
@@ -63,6 +82,7 @@ const state = {
   sessionsLoading: false,
   sessionVisibilitySaving: false,
   runtimeLoading: false,
+  dashboardLoading: false,
   routeCompareLoading: false,
   saving: false,
   publishing: false,
@@ -80,6 +100,21 @@ const state = {
   error: null,
   notice: null,
   runtimeSummary: null,
+  dashboardSummary: null,
+  security: {
+    identity: null,
+    members: [],
+    auditEvents: [],
+    auditChainVerified: false,
+    loading: false,
+    apiKey: globalThis.localStorage?.getItem(STUDIO_API_KEY_STORAGE) || "",
+    workspaceId: globalThis.localStorage?.getItem(STUDIO_WORKSPACE_STORAGE) || "",
+  },
+  dashboardFilters: {
+    windowHours: 24,
+    status: "all",
+    comparePrevious: true,
+  },
   workspaceDetail: null,
   missionQuery: "",
   sessionQuery: "",
@@ -106,20 +141,17 @@ const state = {
     profile: emptyAgentProfileEditor(),
     skill: emptySkillEditor(),
   },
-  orchestrator: {
-    selectedProfileId: "",
-    name: "Studio Orchestrator",
-    provider: "",
-    model: "",
-    systemPrompt:
-      "You are the mission orchestrator. Clarify the user's intent, define the MissionSpec, propose a DAG, assign subagents, and supervise execution until the requested deliverables are complete.",
-    defaultToolsText: "",
-    defaultSubagentsText: "",
-  },
+  orchestrator: emptyOrchestratorEditor(),
   ui: {
     orchestratorSetupExpanded: false,
     workspaceFeedFilter: "all",
     workspaceFeedExpanded: false,
+    runtimeOverlayOpen: false,
+    runtimeNodeRunId: "",
+    runtimeDrawerOpen: false,
+    runtimeGraphZoom: 1,
+    runtimeGraphTab: "timeline",
+    runtimeGraphListFallback: false,
     authoringGraphSelection: {
       type: "none",
       index: null,
@@ -135,6 +167,7 @@ const state = {
     mimeType: "",
     summary: "",
   },
+  attachmentFilePickerKey: 0,
   executionControl: {
     interventionText: "",
     interventionKind: "guidance",
@@ -169,11 +202,16 @@ let restoreWorkspaceFocusFromLocation = false;
 let workspaceLoadSeq = 0;
 let missionSearchTimer = null;
 let sessionSearchTimer = null;
+let runtimeSupervisionTimer = null;
+let runtimeSupervisionRunId = "";
+let runtimeSupervisionCursor = "";
+let pendingRuntimeNodeFocus = false;
 
 const DESKTOP_NAV_ITEMS = new Set([
   "orchestrator",
   "missions",
   "sessions",
+  "dashboard",
   "agents",
   "templates",
   "registry",
@@ -228,7 +266,7 @@ function editorFromAgentProfile(profile) {
     status: profile.status || "active",
     name: profile.name || profile.profile_id,
     description: profile.description || "",
-    openclawAgentId: profile.openclaw_agent_id || "",
+    openclawAgentId: profile.runtime_agent_ref || profile.openclaw_agent_id || "",
     openclawProvider: openclaw.provider || metadata.openclaw_provider || "",
     openclawModel: openclaw.model || metadata.openclaw_model || "",
     openclawRuntimeMode: openclaw.runtime_mode || metadata.openclaw_runtime_mode || "",
@@ -238,6 +276,10 @@ function editorFromAgentProfile(profile) {
     policyTagsText: (profile.policy_tags || []).join(", "),
     metadataText: prettyJson(metadata),
   };
+}
+
+function runtimeAgentRefOf(value) {
+  return value?.runtime_agent_ref || value?.openclaw_agent_id || "";
 }
 
 function editorFromSkill(skill) {
@@ -738,6 +780,23 @@ function statusTone(status) {
   return "neutral";
 }
 
+function getRuntimeExecutionLabel(runtime) {
+  return runtime?.runtime_dispatcher?.kind || runtime?.adapter_kind || "unknown";
+}
+
+function formatRuntimeCapacityValue(current, limit) {
+  return Number.isFinite(current) && Number.isFinite(limit) && limit > 0
+    ? `${current} / ${limit}`
+    : "n/a";
+}
+
+function formatRuntimeQueueTimeout(value) {
+  if (!Number.isFinite(value) || value <= 0) return "n/a";
+  if (value >= 60000 && value % 60000 === 0) return `${value / 60000}m`;
+  if (value >= 1000 && value % 1000 === 0) return `${value / 1000}s`;
+  return `${value}ms`;
+}
+
 function normalizeTone(value) {
   return ["neutral", "warn", "success", "danger"].includes(value) ? value : statusTone(value);
 }
@@ -908,24 +967,17 @@ function buildRouteCompareGraphSide(side) {
   const compiledNodes = Array.isArray(candidatePlan?.compiled_nodes) ? candidatePlan.compiled_nodes : [];
   const rawEdges = Array.isArray(candidatePlan?.edges) ? candidatePlan.edges : [];
   const nodeIndexById = new Map();
-  const adjacency = new Map();
-  const indegree = new Map();
   compiledNodes.forEach((node, index) => {
     const nodeId = getRouteCompareNodeIdentity(node, index);
     nodeIndexById.set(nodeId, index);
-    adjacency.set(index, []);
-    indegree.set(index, 0);
   });
+  const layoutNodeIds = compiledNodes.map((_, index) => `route-node-${index}`);
   const edges = rawEdges.map((edge, index) => {
     const from = String(edge?.from || "");
     const to = String(edge?.to || "");
     const fromIndex = nodeIndexById.has(from) ? nodeIndexById.get(from) : -1;
     const toIndex = nodeIndexById.has(to) ? nodeIndexById.get(to) : -1;
     const valid = fromIndex >= 0 && toIndex >= 0;
-    if (valid) {
-      adjacency.get(fromIndex).push(toIndex);
-      indegree.set(toIndex, (indegree.get(toIndex) || 0) + 1);
-    }
     return {
       key: `${from}->${to}:${index}`,
       from,
@@ -941,51 +993,44 @@ function buildRouteCompareGraphSide(side) {
       valid,
     };
   });
-  const depth = new Map(compiledNodes.map((_, index) => [index, 0]));
-  const remaining = new Map(indegree);
-  const queue = [...remaining.entries()].filter(([, count]) => count === 0).map(([index]) => index);
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const current = queue[cursor];
-    for (const target of adjacency.get(current) || []) {
-      depth.set(target, Math.max(depth.get(target) || 0, (depth.get(current) || 0) + 1));
-      const nextIndegree = (remaining.get(target) || 0) - 1;
-      remaining.set(target, nextIndegree);
-      if (nextIndegree === 0) queue.push(target);
-    }
-  }
-  const rowsByColumn = new Map();
+  const layout = buildDagLayout(
+    compiledNodes.map((_, index) => ({ id: layoutNodeIds[index], order: index, width: 164, height: 70 })),
+    edges
+      .filter((edge) => edge.valid)
+      .map((edge) => ({ id: edge.key, from: layoutNodeIds[edge.fromIndex], to: layoutNodeIds[edge.toIndex] })),
+    { paddingX: 20, paddingY: 20, columnGap: 36, rowGap: 26, minWidth: 420, minHeight: 180 },
+  );
+  const layoutNodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  const layoutEdgeById = new Map(layout.edges.map((edge) => [edge.id, edge]));
   const nodes = compiledNodes.map((node, index) => {
     const id = getRouteCompareNodeIdentity(node, index);
-    const column = Math.max(0, depth.get(index) || 0);
-    const row = rowsByColumn.get(column) || 0;
-    rowsByColumn.set(column, row + 1);
+    const positioned = layoutNodeById.get(layoutNodeIds[index]);
     return {
       key: id,
       id,
       label: getRouteCompareNodeName(node, id),
       type: String(node?.type || "agent_task"),
       agent: String(node?.agent_profile || ""),
-      column,
-      row,
-      x: 20 + column * 200,
-      y: 20 + row * 96,
+      column: positioned?.column || 0,
+      row: positioned?.row || 0,
+      x: positioned?.x || 20,
+      y: positioned?.y || 20,
     };
   });
   return {
     nodes,
     edges: edges.map((edge) => {
-      const fromNode = nodes[edge.fromIndex];
-      const toNode = nodes[edge.toIndex];
+      const positioned = layoutEdgeById.get(edge.key);
       return {
         ...edge,
-        fromX: fromNode ? fromNode.x + 164 : 0,
-        fromY: fromNode ? fromNode.y + 35 : 0,
-        toX: toNode ? toNode.x : 0,
-        toY: toNode ? toNode.y + 35 : 0,
+        fromX: positioned?.fromX || 0,
+        fromY: positioned?.fromY || 0,
+        toX: positioned?.toX || 0,
+        toY: positioned?.toY || 0,
       };
     }),
-    width: Math.max(420, (Math.max(0, ...nodes.map((node) => node.column)) + 1) * 200 + 48),
-    height: Math.max(180, (Math.max(0, ...nodes.map((node) => node.row)) + 1) * 96 + 40),
+    width: layout.width,
+    height: layout.height,
   };
 }
 
@@ -1017,9 +1062,14 @@ function buildRouteCompareDiffBrowser(detail = state.workspaceDetail) {
   for (const label of compare.changedEdges?.added || []) edgeDiffSet.set(label, "added");
   for (const label of compare.changedEdges?.removed || []) edgeDiffSet.set(label, "removed");
   for (const label of compare.changedEdges?.changed || []) edgeDiffSet.set(label, "changed");
+  const recommendationDetail = compare.recommendation?.detail || "";
   const summary =
-    (compare.summaryLines || []).filter((line) => !/^Comparing /i.test(line)).slice(0, 2).join(" ") ||
-    compare.recommendation?.detail ||
+    (compare.summaryLines || [])
+      .filter((line) => !/^Comparing /i.test(line))
+      .filter((line) => !recommendationDetail || line !== recommendationDetail)
+      .slice(0, 2)
+      .join(" ") ||
+    recommendationDetail ||
     "No material route changes detected.";
   return {
     history,
@@ -1346,6 +1396,10 @@ function getWorkspaceLatestRunId(detail) {
   return detail?.latest_run?.run_id || detail?.session?.latest_run_id || detail?.mission?.latest_run_id || null;
 }
 
+function getWorkspaceSelectedRunId(detail) {
+  return detail?.selected_run_id || detail?.latest_run?.run_id || null;
+}
+
 function formatMissionRouteLabel(route) {
   if (!route) return "Unrouted";
   const revision = route.activeRevision ?? route.confirmedRevision ?? route.latestRevision;
@@ -1572,7 +1626,14 @@ function renderRouteComparePanel(compare) {
                 <small>${escapeHtml(routeCompareSideSubtitle(compare.right))}</small>
               </div>
             </div>
-            <p class="muted">${escapeHtml(browser.summary)}</p>
+            ${
+              compare.recommendation?.detail
+                ? `<div class="route-compare-recommendation ${escapeHtml(compare.recommendation.tone || "neutral")}">
+                    <p>${escapeHtml(compare.recommendation.detail)}</p>
+                  </div>`
+                : ""
+            }
+            <p class="muted route-compare-summary">${escapeHtml(browser.summary)}</p>
             <div class="route-compare-browser-grid">
               ${renderRouteCompareGraphSurface("Left Graph", leftRoute, browser.leftGraph, browser.nodeDiffSet, browser.edgeDiffSet, "left")}
               ${renderRouteCompareGraphSurface("Right Graph", rightRoute, browser.rightGraph, browser.nodeDiffSet, browser.edgeDiffSet, "right")}
@@ -2039,6 +2100,13 @@ function resetWorkspaceDrilldownState({ resetFeed = true } = {}) {
     state.ui.workspaceFeedExpanded = false;
   }
   state.ui.routeCompareSelection = { leftKey: "", rightKey: "" };
+  state.ui.runtimeNodeRunId = "";
+  state.ui.runtimeDrawerOpen = false;
+  state.ui.runtimeGraphZoom = 1;
+  state.ui.runtimeGraphTab = "timeline";
+  state.ui.runtimeGraphListFallback = false;
+  state.ui.runtimeOverlayOpen = false;
+  document.body.classList.remove("runtime-overlay-active");
 }
 
 function prepareWorkspaceSessionChange(nextSessionId) {
@@ -3224,7 +3292,80 @@ function formatFileSize(sizeBytes) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function renderAttachmentContextPanel(attachments) {
+function buildWorkspaceContextBrowserItems(detail) {
+  const attachments = Array.isArray(detail?.attachments) ? detail.attachments : [];
+  const artifacts = Array.isArray(detail?.artifacts) ? detail.artifacts : [];
+  const contextItems = attachments.map((attachment) => ({
+    key: `attachment:${attachment.attachment_id || attachment.storage_uri || attachment.name}`,
+    type: "context",
+    title: attachment.name || "Attached file",
+    summary: attachment.summary || attachment.storage_uri || "Context reference",
+    storageUri: attachment.storage_uri || "",
+    mimeType: attachment.mime_type || "",
+    sizeBytes: attachment.size_bytes,
+    createdAt: attachment.created_at || "",
+    badge: formatFileSize(attachment.size_bytes) || attachment.mime_type || attachment.kind || "context",
+    attachable: false,
+  }));
+  const outputItems = artifacts.map((artifact) => ({
+    key: `artifact:${getArtifactWorkspaceFeedKey(artifact) || artifact.artifact_id || artifact.storage_uri || artifact.name}`,
+    type: "output",
+    title: artifact.name || artifact.kind || artifact.type || artifact.artifact_id || "Generated output",
+    summary: artifact.summary || artifact.storage_uri || artifact.path || artifact.kind || "Generated workspace material",
+    storageUri: artifact.storage_uri || artifact.path || "",
+    mimeType: artifact.mime_type || "",
+    sizeBytes: artifact.size_bytes,
+    createdAt: artifact.created_at || "",
+    badge: formatFileSize(artifact.size_bytes) || artifact.mime_type || artifact.kind || "output",
+    attachable: Boolean(artifact.storage_uri || artifact.path),
+  }));
+  return [...contextItems, ...outputItems].sort((left, right) => {
+    if (left.type !== right.type) {
+      return left.type === "context" ? -1 : 1;
+    }
+    return String(right.createdAt || "").localeCompare(String(left.createdAt || ""));
+  });
+}
+
+function renderWorkspaceContextBrowser(detail) {
+  const items = buildWorkspaceContextBrowserItems(detail).slice(0, 8);
+  return `
+    <div class="attachment-browser" data-workspace-context-browser="true">
+      <div class="attachment-browser-head">
+        <strong>Workspace Browser</strong>
+        <span class="badge neutral">${escapeHtml(String(items.length))}</span>
+      </div>
+      <div class="attachment-browser-list">
+        ${
+          items.length
+            ? items
+                .map(
+                  (item) => `
+                    <div class="attachment-browser-item">
+                      <div>
+                        <strong>${escapeHtml(item.title)}</strong>
+                        <small>${escapeHtml(item.summary)}</small>
+                      </div>
+                      <div class="attachment-browser-actions">
+                        <span class="badge neutral">${escapeHtml(item.badge || item.type)}</span>
+                        ${
+                          item.attachable
+                            ? `<button class="mini-button" data-action="attach-workspace-context-reference" data-key="${escapeHtml(item.key)}" ${state.attachmentSaving || !state.selectedSessionId ? "disabled" : ""}>Use</button>`
+                            : ""
+                        }
+                      </div>
+                    </div>
+                  `,
+                )
+                .join("")
+            : '<p class="muted">No workspace material yet.</p>'
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderAttachmentContextPanel(attachments, detail = state.workspaceDetail) {
   const values = Array.isArray(attachments) ? attachments : [];
   const editor = state.attachmentEditor;
   return `
@@ -3232,6 +3373,16 @@ function renderAttachmentContextPanel(attachments) {
       <div class="subpanel-header">
         <strong>Context Files</strong>
         <span class="badge ${values.length ? "success" : "neutral"}">${escapeHtml(String(values.length))}</span>
+      </div>
+      <div class="attachment-drop-zone" data-attachment-drop-zone="true">
+        <div>
+          <strong>Local References</strong>
+          <small>Files stay local; Studio stores context metadata.</small>
+        </div>
+        <div class="attachment-drop-actions">
+          <button class="mini-button" data-action="pick-context-file" ${state.attachmentSaving || !state.selectedSessionId ? "disabled" : ""}>Choose Files</button>
+          <input class="hidden-file-input" type="file" multiple data-field="attachment.filePicker" data-key="${escapeHtml(String(state.attachmentFilePickerKey))}" />
+        </div>
       </div>
       <div class="attachment-form">
         <label>Name<input value="${escapeHtml(editor.name)}" data-field="attachment.name" placeholder="Brief, screenshot, notes" /></label>
@@ -3262,6 +3413,7 @@ function renderAttachmentContextPanel(attachments) {
             : '<p class="muted">No context files attached yet.</p>'
         }
       </div>
+      ${renderWorkspaceContextBrowser(detail)}
     </section>
   `;
 }
@@ -3656,6 +3808,8 @@ function renderExecutionRunControls(detail) {
 function renderExecutionInterventionComposer(detail) {
   const sessionId = detail?.session?.session_id || state.selectedSessionId || "";
   const runId = detail?.latest_run?.run_id || detail?.workspace_state?.latest_run_id || "";
+  const runStatus = detail?.latest_run?.status || detail?.workspace_state?.run_status || "idle";
+  const terminalRun = ["completed", "failed", "cancelled"].includes(runStatus);
   const submitting = isActionLoading("intervention-submit", sessionId || "session");
   const kinds = [
     { value: "guidance", label: "Guidance" },
@@ -3670,7 +3824,7 @@ function renderExecutionInterventionComposer(detail) {
     <section class="subpanel execution-control-panel" data-workspace-focus="runtime-intervention">
       <div class="subpanel-header">
         <strong>Runtime Intervention</strong>
-        <span class="badge neutral">${escapeHtml(runId ? "live run" : "next pass")}</span>
+        <span class="badge neutral">${escapeHtml(runId ? terminalRun ? `${formatWorkspaceLabel(runStatus)} run` : "live run" : "next pass")}</span>
       </div>
       <div class="execution-intervention-form">
         <label>Kind
@@ -3832,6 +3986,7 @@ function renderExecutionCockpit(detail) {
         </div>
         <span class="badge ${statusTone(runStatus)}">${escapeHtml(runStatus)}</span>
       </div>
+      ${renderRuntimeInspectorPanel(detail?.runtime_graph || null, detail?.runtime_projection || null)}
       <div class="workspace-summary-grid compact-summary execution-cockpit-summary">
         <div class="summary-stat">
           <strong>Deliverables</strong>
@@ -3855,7 +4010,6 @@ function renderExecutionCockpit(detail) {
           ${renderExecutionRunControls(detail)}
           ${renderExecutionInterventionComposer(detail)}
           ${renderPatchGraphReviewPanel(detail)}
-          ${renderRuntimeGraphPanel(detail?.runtime_graph || null)}
           ${renderAttachmentContextPanel(attachments)}
         </div>
         <div class="execution-cockpit-side">
@@ -4043,10 +4197,184 @@ function renderRuntimeGraphPanel(graph) {
   `;
 }
 
+function renderLegacyRuntimeInspectorPanel(graph, projection) {
+  if (!graph) {
+    return renderRuntimeGraphPanel(graph);
+  }
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  const jobs = Array.isArray(projection?.jobs) ? projection.jobs : [];
+  const leases = Array.isArray(projection?.leases) ? projection.leases : [];
+  const workers = Array.isArray(projection?.workers) ? projection.workers : [];
+  const evidence = Array.isArray(projection?.evidence) ? projection.evidence : [];
+  const handoffs = Array.isArray(projection?.handoffs) ? projection.handoffs : [];
+  const artifacts = Array.isArray(projection?.artifacts) ? projection.artifacts : [];
+  const activeNode =
+    nodes.find((node) => node.nodeRunId === state.ui.runtimeNodeRunId) ||
+    nodes.find((node) => node.status === "running" || node.status === "waiting_human") ||
+    nodes.find((node) => (node.markers || []).includes("active_frontier")) ||
+    nodes[0] ||
+    null;
+  if (activeNode && state.ui.runtimeNodeRunId !== activeNode.nodeRunId) {
+    state.ui.runtimeNodeRunId = activeNode.nodeRunId;
+  }
+  const nodeJobs = activeNode
+    ? jobs.filter((job) => job.node_run_id === activeNode.nodeRunId)
+    : [];
+  const activeJob = nodeJobs.at(-1) || null;
+  const activeLease = activeJob
+    ? leases.find((lease) => lease.job_id === activeJob.job_id || lease.lease_id === activeJob.lease_id) || null
+    : null;
+  const activeWorker = activeLease
+    ? workers.find((worker) => worker.worker_id === activeLease.worker_id) || null
+    : null;
+  const nodeEvidence = activeNode
+    ? evidence.filter((item) => item.node_run_id === activeNode.nodeRunId).slice(-12).reverse()
+    : [];
+  const nodeHandoffs = activeNode
+    ? handoffs.filter((item) => item.node_run_id === activeNode.nodeRunId).slice(-4).reverse()
+    : [];
+  const nodeArtifacts = activeNode
+    ? artifacts.filter((item) => item.node_run_id === activeNode.nodeRunId).slice(-6).reverse()
+    : [];
+  const graphTone = nodes.some((node) => node.status === "failed" || node.status === "cancelled")
+    ? "danger"
+    : graph.runStatus === "completed"
+      ? "success"
+      : nodes.some((node) => node.status === "running" || node.status === "waiting_human")
+        ? "warn"
+        : "neutral";
+  const summary = projection?.summary || {};
+  const overlayClass = state.ui.runtimeOverlayOpen ? " runtime-inspector-overlay" : "";
+  const overlayStyle = state.ui.runtimeOverlayOpen
+    ? ' style="position:fixed;inset:10px;z-index:1200;margin:0;overflow:auto"'
+    : "";
+  const nodeNameById = new Map(nodes.map((node) => [node.nodeId, node.name]));
+
+  return `
+    <section class="subpanel runtime-inspector${overlayClass}" data-workspace-focus="graph"${overlayStyle}>
+      <div class="runtime-inspector-toolbar">
+        <div>
+          <div class="subpanel-header runtime-inspector-title">
+            <strong>Runtime Inspector</strong>
+            <span class="badge ${graphTone}">${escapeHtml(graph.runStatus || "runtime")}</span>
+          </div>
+          <p class="muted">Worker execution, graph state, handoffs, evidence, and artifacts share one live projection.</p>
+        </div>
+        <div class="runtime-inspector-actions">
+          <button class="icon-button" type="button" data-action="refresh-runtime-projection" title="Refresh runtime">&#8635;</button>
+          <button class="icon-button" type="button" data-action="toggle-runtime-overlay" title="${state.ui.runtimeOverlayOpen ? "Exit full screen" : "Open full screen"}">${state.ui.runtimeOverlayOpen ? "&#10005;" : "&#9974;"}</button>
+        </div>
+      </div>
+      <div class="runtime-inspector-metrics">
+        <div><strong>${escapeHtml(String(summary.active_jobs ?? jobs.filter((job) => ["dispatching", "accepted", "running", "waiting_human"].includes(job.status)).length))}</strong><span>Active jobs</span></div>
+        <div><strong>${escapeHtml(String(summary.connected_workers ?? workers.filter((worker) => ["connected", "busy"].includes(worker.status)).length))}</strong><span>Workers</span></div>
+        <div><strong>${escapeHtml(String(summary.active_leases ?? leases.filter((lease) => ["provisioning", "ready", "active"].includes(lease.status)).length))}</strong><span>Leases</span></div>
+        <div><strong>${escapeHtml(String(summary.evidence_items ?? evidence.length))}</strong><span>Evidence</span></div>
+        <div><strong>${escapeHtml(String(summary.handoffs ?? handoffs.length))}</strong><span>Handoffs</span></div>
+      </div>
+      <div class="runtime-inspector-grid">
+        <div class="runtime-inspector-nodes">
+          <div class="runtime-pane-heading"><strong>Execution Graph</strong><span>${escapeHtml(String(nodes.length))} nodes</span></div>
+          <div class="runtime-node-list runtime-node-list-selectable">
+            ${nodes.map((node, index) => `
+              <button type="button" class="runtime-node runtime-node-button ${activeNode?.nodeRunId === node.nodeRunId ? "selected" : ""}" data-action="select-runtime-node" data-node-run-id="${escapeHtml(node.nodeRunId || "")}">
+                <span class="runtime-node-index ${statusTone(node.status)}">${escapeHtml(String(index + 1))}</span>
+                <span class="runtime-node-body">
+                  <span class="runtime-node-head"><strong>${escapeHtml(node.name || node.nodeId || "Node")}</strong><span class="badge ${statusTone(node.status)}">${escapeHtml(node.status || "pending")}</span></span>
+                  <small>${escapeHtml(node.workPackageLabel || "Execution")} / ${escapeHtml(node.type || "task")}</small>
+                  <span class="runtime-node-progress"><span style="width:${Math.max(0, Math.min(100, Number(node.progress?.percent || 0)))}%"></span></span>
+                  ${node.progress?.message ? `<small>${escapeHtml(node.progress.message)}</small>` : ""}
+                </span>
+              </button>
+            `).join("") || '<p class="muted">No runtime nodes yet.</p>'}
+          </div>
+          <div class="runtime-edge-list runtime-inspector-edges">
+            ${edges.slice(0, 12).map((edge) => `
+              <div class="runtime-edge">
+                <span>${escapeHtml(nodeNameById.get(edge.fromNodeId) || edge.fromNodeId || "from")} -&gt; ${escapeHtml(nodeNameById.get(edge.toNodeId) || edge.toNodeId || "to")}</span>
+                <span class="badge ${statusTone(edge.status)}">${escapeHtml(edge.label || edge.status || "pending")}</span>
+              </div>
+            `).join("") || '<p class="muted">No runtime edges yet.</p>'}
+          </div>
+        </div>
+        <div class="runtime-inspector-detail">
+          <div class="runtime-pane-heading"><strong>${escapeHtml(activeNode?.name || "Node detail")}</strong><span>${escapeHtml(activeNode?.nodeRunId || "No selection")}</span></div>
+          <div class="runtime-execution-identity">
+            <div><span>Harness</span><strong>${escapeHtml(activeJob?.agent_runtime || activeNode?.agentProfile || "not assigned")}</strong></div>
+            <div><span>Worker</span><strong>${escapeHtml(activeWorker?.worker_id || activeJob?.worker_id || "not connected")}</strong></div>
+            <div><span>Lease</span><strong>${escapeHtml(activeLease?.status || "none")}</strong></div>
+            <div><span>Target</span><strong>${escapeHtml(activeJob?.target_kind || "local")}</strong></div>
+          </div>
+          <div class="runtime-detail-section">
+            <div class="runtime-pane-heading"><strong>Handoffs</strong><span>${escapeHtml(String(nodeHandoffs.length))}</span></div>
+            ${nodeHandoffs.map((handoff) => `
+              <div class="runtime-evidence-row">
+                <span class="badge ${/fail|error|reject/i.test(handoff.port || "") ? "danger" : "success"}">${escapeHtml(handoff.port || "success")}</span>
+                <div><strong>${escapeHtml(handoff.summary || "Node handoff")}</strong><small>${escapeHtml((handoff.routed_node_run_ids || []).length ? `Routed ${handoff.routed_node_run_ids.length} node(s)` : "No downstream route selected")}</small></div>
+              </div>
+            `).join("") || '<p class="muted">No handoff evidence for this node.</p>'}
+          </div>
+          <div class="runtime-detail-section runtime-evidence-section">
+            <div class="runtime-pane-heading"><strong>Evidence Stream</strong><span>${escapeHtml(String(nodeEvidence.length))}</span></div>
+            ${nodeEvidence.map((item) => `
+              <div class="runtime-evidence-row">
+                <span class="runtime-evidence-kind">${escapeHtml(String(item.kind || "log").slice(0, 2).toUpperCase())}</span>
+                <div><strong>${escapeHtml(item.summary || item.kind || "Evidence")}</strong><small>${escapeHtml(item.created_at ? formatWorkspaceTimestamp(item.created_at) : "")}${item.storage_uri ? ` / ${escapeHtml(item.storage_uri)}` : ""}</small></div>
+              </div>
+            `).join("") || '<p class="muted">Evidence appears as the worker executes tools and returns output.</p>'}
+          </div>
+          <div class="runtime-detail-section">
+            <div class="runtime-pane-heading"><strong>Artifacts</strong><span>${escapeHtml(String(nodeArtifacts.length))}</span></div>
+            ${nodeArtifacts.map((artifact) => `
+              <div class="runtime-evidence-row">
+                <span class="runtime-evidence-kind">AR</span>
+                <div><strong>${escapeHtml(artifact.name || artifact.artifact_id || "Artifact")}</strong><small>${escapeHtml(artifact.storage_uri || artifact.mime_type || "Stored output")}</small></div>
+              </div>
+            `).join("") || '<p class="muted">No artifacts returned by this node.</p>'}
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function getCurrentRuntimeGraphModel(graph = state.workspaceDetail?.runtime_graph, projection = state.workspaceDetail?.runtime_projection) {
+  return buildRuntimeGraphModel({
+    graph,
+    projection,
+    trace: state.workspaceDetail?.runtime_trace || null,
+    scorecards: state.workspaceDetail?.runtime_scorecards || [],
+    evaluations: state.workspaceDetail?.runtime_evaluations || [],
+    replay: state.workspaceDetail?.runtime_replay || null,
+    routeChanges: state.workspaceDetail?.route_compare || null,
+    selectedNodeRunId: state.ui.runtimeNodeRunId,
+  });
+}
+
+function renderRuntimeInspectorPanel(graph, projection) {
+  const model = getCurrentRuntimeGraphModel(graph, projection);
+  return renderRuntimeGraphView(model, {
+    zoom: state.ui.runtimeGraphZoom,
+    activeTab: state.ui.runtimeGraphTab,
+    drawerOpen: state.ui.runtimeDrawerOpen,
+    listFallback: state.ui.runtimeGraphListFallback,
+    overlayOpen: state.ui.runtimeOverlayOpen,
+    scorecardLoading: isActionLoading("runtime-scorecard", model.runId),
+    evaluationLoading: isActionLoading("runtime-evaluation", model.runId),
+    replayLoading: isActionLoading("runtime-replay", model.runId),
+  });
+}
+
 async function request(path, options = {}) {
+  const authHeaders = {
+    ...(state.security.apiKey ? { authorization: `Bearer ${state.security.apiKey}` } : {}),
+    ...(state.security.workspaceId ? { "x-my-mate-workspace-id": state.security.workspaceId } : {}),
+  };
   const response = await fetch(path, {
     headers: {
       "content-type": "application/json",
+      ...authHeaders,
       ...(options.headers || {}),
     },
     ...options,
@@ -4057,6 +4385,127 @@ async function request(path, options = {}) {
     throw new Error(body && body.message ? body.message : `Request failed: ${response.status}`);
   }
   return body;
+}
+
+function resetWorkspaceScopedState() {
+  workspaceLoadSeq += 1;
+  closeSessionStream();
+  state.templates = [];
+  state.missions = [];
+  state.sessions = [];
+  state.orchestratorProfiles = [];
+  state.agentProfiles = [];
+  state.skills = [];
+  state.lineage = null;
+  state.selectedId = null;
+  state.selectedSessionId = null;
+  state.workspaceDetail = null;
+  state.runtimeSummary = null;
+  state.dashboardSummary = null;
+  state.preview = { type: "workspace", key: null };
+  state.registryEditor = {
+    profile: emptyAgentProfileEditor(),
+    skill: emptySkillEditor(),
+  };
+  state.orchestrator = emptyOrchestratorEditor();
+  state.editor = emptyEditor();
+  state.planner.templateId = "";
+  state.planner.recommendation = null;
+  state.planner.candidatePlan = null;
+  state.planner.dagDraft = null;
+  state.planner.error = null;
+  resetDurableProposalState("");
+  resetWorkspaceDrilldownState();
+}
+
+async function loadSecurity(shouldRender = true) {
+  state.security.loading = true;
+  if (shouldRender) render();
+  try {
+    const identity = await request("/api/auth/me");
+    state.security.identity = identity;
+    state.security.workspaceId = identity.selected_workspace.workspace_id;
+    globalThis.localStorage?.setItem(STUDIO_WORKSPACE_STORAGE, state.security.workspaceId);
+    const [members, audit] = await Promise.all([
+      request(`/api/workspaces/${encodeURIComponent(state.security.workspaceId)}/members`),
+      request("/api/audit-events?limit=50"),
+    ]);
+    state.security.members = members.items || [];
+    state.security.auditEvents = audit.items || [];
+    state.security.auditChainVerified = audit.chain_verified === true;
+    state.error = null;
+    return true;
+  } catch (error) {
+    state.security.identity = null;
+    state.security.members = [];
+    state.security.auditEvents = [];
+    state.security.auditChainVerified = false;
+    state.error = error.message || "Failed to load identity and workspace security.";
+    return false;
+  } finally {
+    state.security.loading = false;
+    if (shouldRender) render();
+  }
+}
+
+async function switchSecurityWorkspace(workspaceId) {
+  if (!workspaceId || workspaceId === state.security.workspaceId) return;
+  state.security.workspaceId = workspaceId;
+  globalThis.localStorage?.setItem(STUDIO_WORKSPACE_STORAGE, workspaceId);
+  resetWorkspaceScopedState();
+  state.error = null;
+  render();
+  if (await loadSecurity(false)) {
+    await loadWorkspaceData();
+  }
+  render();
+}
+
+async function refreshStudioSecurityAndWorkspace() {
+  if (!(await loadSecurity(false))) {
+    resetWorkspaceScopedState();
+    render();
+    return;
+  }
+  resetWorkspaceScopedState();
+  await loadWorkspaceData();
+  render();
+}
+
+async function saveStudioSecuritySettings() {
+  const input = document.querySelector("input[data-field='security.apiKey']");
+  const nextApiKey = input?.value?.trim() || "";
+  const identityChanged = nextApiKey !== state.security.apiKey;
+  state.security.apiKey = nextApiKey;
+  if (state.security.apiKey) globalThis.localStorage?.setItem(STUDIO_API_KEY_STORAGE, state.security.apiKey);
+  else globalThis.localStorage?.removeItem(STUDIO_API_KEY_STORAGE);
+  if (identityChanged) {
+    state.security.workspaceId = "";
+    globalThis.localStorage?.removeItem(STUDIO_WORKSPACE_STORAGE);
+    resetWorkspaceScopedState();
+    state.error = null;
+    render();
+  }
+  await refreshStudioSecurityAndWorkspace();
+}
+
+async function updateStudioMemberRole(principalId, role) {
+  const identity = state.security.identity;
+  const member = state.security.members.find((item) => item.principal_id === principalId);
+  if (!identity || !member || !role) return;
+  await request(
+    `/api/workspaces/${encodeURIComponent(identity.selected_workspace.workspace_id)}/members/${encodeURIComponent(principalId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        display_name: member.display_name,
+        principal_type: member.principal_type,
+        role,
+        status: member.status,
+      }),
+    },
+  );
+  await loadSecurity();
 }
 
 function setRouteCompareSelection(side, key) {
@@ -4130,6 +4579,16 @@ function shouldPersistWorkspaceLocationState() {
   return Boolean(state.selectedSessionId && isWorkspaceSurfaceNav());
 }
 
+function shouldPersistWorkspaceRunSelection() {
+  const selectedRunId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  const latestSessionRunId = state.workspaceDetail?.session?.latest_run_id || null;
+  return Boolean(
+    shouldPersistWorkspaceLocationState() &&
+      selectedRunId &&
+      selectedRunId !== latestSessionRunId,
+  );
+}
+
 function getWorkspaceFocusForLocationState() {
   if (!isWorkspaceSurfaceNav()) return "";
   const selection = state.workspaceSelection || {};
@@ -4163,6 +4622,9 @@ function buildStudioLocationState() {
   if (state.selectedSessionId) {
     params.set("session", state.selectedSessionId);
   }
+  if (shouldPersistWorkspaceRunSelection() || (shouldPersistWorkspaceLocationState() && state.ui.runtimeNodeRunId)) {
+    params.set("run", getWorkspaceSelectedRunId(state.workspaceDetail));
+  }
   if (state.missionQuery.trim()) {
     params.set("mq", state.missionQuery.trim());
   }
@@ -4188,6 +4650,9 @@ function buildStudioLocationState() {
     if (state.ui.workspaceFeedExpanded === true) {
       params.set("wfe", "1");
     }
+    if (state.ui.runtimeNodeRunId) {
+      params.set("node", state.ui.runtimeNodeRunId);
+    }
   }
   const next = params.toString();
   const target = next ? `${window.location.pathname}?${next}` : window.location.pathname;
@@ -4202,6 +4667,7 @@ function hydrateStudioLocationState() {
   const params = new URLSearchParams(window.location.search);
   const nav = params.get("nav");
   const sessionId = params.get("session");
+  const selectedRunId = params.get("run");
   const missionQuery = params.get("mq");
   const missionVisibility = params.get("mv");
   const sessionQuery = params.get("sq");
@@ -4210,12 +4676,19 @@ function hydrateStudioLocationState() {
   const workspaceSelectionKey = params.get("wsk");
   const workspaceFeedFilter = params.get("wf");
   const workspaceFeedExpanded = params.get("wfe");
+  const runtimeNodeRunId = params.get("node");
 
   if (nav && DESKTOP_NAV_ITEMS.has(nav)) {
     state.activeNav = nav;
   }
   if (sessionId) {
     state.selectedSessionId = sessionId;
+  }
+  if (selectedRunId) {
+    state.workspaceDetail = {
+      ...(state.workspaceDetail || {}),
+      selected_run_id: selectedRunId,
+    };
   }
   if (missionQuery) {
     state.missionQuery = missionQuery;
@@ -4249,6 +4722,11 @@ function hydrateStudioLocationState() {
       state.ui.workspaceFeedExpanded = true;
       restoreWorkspaceFocusFromLocation = true;
     }
+    if (runtimeNodeRunId) {
+      state.ui.runtimeNodeRunId = runtimeNodeRunId;
+      state.ui.runtimeDrawerOpen = true;
+      pendingRuntimeNodeFocus = true;
+    }
   }
 }
 
@@ -4256,13 +4734,19 @@ function getLocationSessionId() {
   return new URLSearchParams(window.location.search).get("session") || "";
 }
 
+function getLocationRunId() {
+  return new URLSearchParams(window.location.search).get("run") || "";
+}
+
 async function restoreWorkspaceSessionFromLocation() {
   const sessionId = getLocationSessionId();
+  const runId = getLocationRunId();
   if (!sessionId || !isWorkspaceSurfaceNav()) return;
   const currentSessionId = getWorkspaceSessionId(state.workspaceDetail);
-  if (currentSessionId === sessionId) return;
+  const currentRunId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  if (currentSessionId === sessionId && (!runId || currentRunId === runId)) return;
   state.selectedSessionId = sessionId;
-  await loadSessionWorkspace(sessionId, false);
+  await loadSessionWorkspace(sessionId, false, { runId: runId || null });
   render();
 }
 
@@ -4286,7 +4770,65 @@ function scheduleSessionSearch() {
   }, 180);
 }
 
+function stopRuntimeSupervision() {
+  if (runtimeSupervisionTimer) {
+    window.clearTimeout(runtimeSupervisionTimer);
+    runtimeSupervisionTimer = null;
+  }
+  runtimeSupervisionRunId = "";
+  runtimeSupervisionCursor = "";
+}
+
+function scheduleRuntimeSupervision(runId, delayMs) {
+  if (!runId || runtimeSupervisionRunId !== runId) return;
+  if (runtimeSupervisionTimer) window.clearTimeout(runtimeSupervisionTimer);
+  runtimeSupervisionTimer = window.setTimeout(() => {
+    runtimeSupervisionTimer = null;
+    void pollRuntimeSupervision(runId);
+  }, Math.max(0, Number(delayMs || 0)));
+}
+
+async function pollRuntimeSupervision(runId) {
+  if (!runId || runtimeSupervisionRunId !== runId) return;
+  const query = new URLSearchParams({ limit: "200" });
+  if (runtimeSupervisionCursor) query.set("cursor", runtimeSupervisionCursor);
+  try {
+    const projection = await request(`/api/runs/${encodeURIComponent(runId)}/supervise?${query}`);
+    if (runtimeSupervisionRunId !== runId || getWorkspaceSelectedRunId(state.workspaceDetail) !== runId) return;
+    runtimeSupervisionCursor = projection.cursor || runtimeSupervisionCursor;
+    const deltaCount =
+      (projection.deltas?.events?.length || 0) +
+      (projection.deltas?.evidence?.length || 0) +
+      (projection.deltas?.handoffs?.length || 0) +
+      (projection.deltas?.artifacts?.length || 0) +
+      (projection.changed_nodes?.length || 0);
+    if (deltaCount) {
+      await loadRuntimeGraphForWorkspace(false);
+      render();
+    }
+    if (projection.settled) {
+      stopRuntimeSupervision();
+      return;
+    }
+    scheduleRuntimeSupervision(runId, projection.has_more ? 0 : projection.next_poll_after_ms || 1000);
+  } catch {
+    if (runtimeSupervisionRunId === runId) scheduleRuntimeSupervision(runId, 2000);
+  }
+}
+
+function startRuntimeSupervision(runId) {
+  if (!runId) {
+    stopRuntimeSupervision();
+    return;
+  }
+  if (runtimeSupervisionRunId === runId && runtimeSupervisionTimer) return;
+  stopRuntimeSupervision();
+  runtimeSupervisionRunId = runId;
+  scheduleRuntimeSupervision(runId, 0);
+}
+
 function closeSessionStream() {
+  stopRuntimeSupervision();
   if (state.streamSource) {
     state.streamSource.close();
     state.streamSource = null;
@@ -4299,11 +4841,17 @@ function applyWorkspaceSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return;
   const latestRunId = getWorkspaceLatestRunId(snapshot);
   const currentGraph = state.workspaceDetail?.runtime_graph || null;
+  const currentRuntimeProjection = state.workspaceDetail?.runtime_projection || null;
+  const currentRuntimeTrace = state.workspaceDetail?.runtime_trace || null;
+  const currentRuntimeScorecards = state.workspaceDetail?.runtime_scorecards || [];
+  const currentRuntimeEvaluations = state.workspaceDetail?.runtime_evaluations || [];
+  const currentRuntimeReplay = state.workspaceDetail?.runtime_replay || null;
   const snapshotGraph = snapshot.runtime_graph || snapshot.runtimeGraph || null;
   state.workspaceDetail = {
     session: snapshot.session || null,
     messages: snapshot.messages || [],
     latest_run: snapshot.latest_run || null,
+    selected_run_id: snapshot.selected_run_id || snapshot.latest_run?.run_id || null,
     workspace_state: snapshot.workspace_state || {},
     next_actions: snapshot.next_actions || [],
     mission_snapshot: snapshot.mission_snapshot || null,
@@ -4314,6 +4862,21 @@ function applyWorkspaceSnapshot(snapshot) {
     runtime_graph:
       snapshotGraph ||
       (currentGraph && currentGraph.runId === latestRunId ? currentGraph : null),
+    runtime_projection:
+      snapshot.runtime_projection ||
+      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeProjection : null),
+    runtime_trace:
+      snapshot.runtime_trace ||
+      (currentRuntimeTrace?.run_id === latestRunId ? currentRuntimeTrace : null),
+    runtime_scorecards:
+      snapshot.runtime_scorecards ||
+      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeScorecards : []),
+    runtime_evaluations:
+      snapshot.runtime_evaluations ||
+      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeEvaluations : []),
+    runtime_replay:
+      snapshot.runtime_replay ||
+      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeReplay : null),
     artifacts: snapshot.artifacts || state.workspaceDetail?.artifacts || [],
     pending_approvals: snapshot.pending_approvals || [],
     pending_human_inputs: snapshot.pending_human_inputs || [],
@@ -4324,27 +4887,156 @@ function applyWorkspaceSnapshot(snapshot) {
 }
 
 async function loadRuntimeGraphForWorkspace(shouldRender = true) {
-  const runId = getWorkspaceLatestRunId(state.workspaceDetail);
+  const runId = getWorkspaceSelectedRunId(state.workspaceDetail);
   if (!state.workspaceDetail || !runId) {
     if (state.workspaceDetail) {
       state.workspaceDetail.runtime_graph = null;
+      state.workspaceDetail.runtime_projection = null;
+      state.workspaceDetail.runtime_trace = null;
+      state.workspaceDetail.runtime_scorecards = [];
+      state.workspaceDetail.runtime_evaluations = [];
+      state.workspaceDetail.runtime_replay = null;
     }
     if (shouldRender) render();
     return null;
   }
   try {
-    const graph = await request(`/api/runs/${encodeURIComponent(runId)}/graph`);
-    if (state.workspaceDetail && getWorkspaceLatestRunId(state.workspaceDetail) === runId) {
+    const [projection, trace, scorecards, evaluations] = await Promise.all([
+      request(`/api/runs/${encodeURIComponent(runId)}/runtime`),
+      request(`/api/runs/${encodeURIComponent(runId)}/trace?limit=500`).catch(() => null),
+      request(`/api/runs/${encodeURIComponent(runId)}/scorecards`).catch(() => ({ items: [] })),
+      request(`/api/runs/${encodeURIComponent(runId)}/evaluations`).catch(() => ({ items: [] })),
+    ]);
+    const graph = projection?.graph || null;
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
       state.workspaceDetail.runtime_graph = graph;
+      state.workspaceDetail.runtime_projection = projection;
+      state.workspaceDetail.runtime_trace = trace;
+      state.workspaceDetail.runtime_scorecards = scorecards?.items || [];
+      state.workspaceDetail.runtime_evaluations = evaluations?.items || [];
     }
     if (shouldRender) render();
     return graph;
   } catch (_error) {
-    if (state.workspaceDetail && getWorkspaceLatestRunId(state.workspaceDetail) === runId) {
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
       state.workspaceDetail.runtime_graph = null;
+      state.workspaceDetail.runtime_projection = null;
+      state.workspaceDetail.runtime_trace = null;
+      state.workspaceDetail.runtime_scorecards = [];
+      state.workspaceDetail.runtime_evaluations = [];
+      state.workspaceDetail.runtime_replay = null;
     }
     if (shouldRender) render();
     return null;
+  }
+}
+
+function upsertRuntimeResult(items, result, idKey) {
+  const existing = Array.isArray(items) ? items : [];
+  const resultId = result?.[idKey];
+  if (!resultId) return existing;
+  return [...existing.filter((item) => item?.[idKey] !== resultId), result];
+}
+
+async function createRuntimeScorecard() {
+  const runId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  if (!runId || !state.workspaceDetail) return;
+  setActionLoading("runtime-scorecard", runId, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const scorecard = await request(`/api/runs/${encodeURIComponent(runId)}/scorecards`, {
+      method: "POST",
+      body: JSON.stringify({ profile: "pipeline-v1", allow_incomplete: false }),
+    });
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
+      state.workspaceDetail.runtime_scorecards = upsertRuntimeResult(
+        state.workspaceDetail.runtime_scorecards,
+        scorecard,
+        "scorecard_id",
+      );
+    }
+    state.notice = `Scorecard ${scorecard.pipeline_verdict || "recorded"}: ${scorecard.passed_checks ?? 0}/${scorecard.total_checks ?? 0} checks.`;
+  } catch (error) {
+    state.error = error.message || "Failed to create runtime scorecard.";
+  } finally {
+    setActionLoading("runtime-scorecard", runId, false);
+    render();
+  }
+}
+
+async function pollRuntimeEvaluation(runId, evaluation) {
+  let current = evaluation;
+  for (let attempt = 0; attempt < 60 && ["queued", "running"].includes(current?.status); attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    if (getWorkspaceSelectedRunId(state.workspaceDetail) !== runId) return current;
+    current = await request(
+      `/api/runs/${encodeURIComponent(runId)}/evaluations/${encodeURIComponent(current.evaluation_id)}`,
+    );
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
+      state.workspaceDetail.runtime_evaluations = upsertRuntimeResult(
+        state.workspaceDetail.runtime_evaluations,
+        current,
+        "evaluation_id",
+      );
+      render();
+    }
+  }
+  return current;
+}
+
+async function runRuntimeEvaluation(evaluator) {
+  const runId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  if (!runId || !state.workspaceDetail) return;
+  setActionLoading("runtime-evaluation", runId, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    let evaluation = await request(`/api/runs/${encodeURIComponent(runId)}/evaluations`, {
+      method: "POST",
+      body: JSON.stringify({ evaluator: evaluator || "deterministic-v1", allow_incomplete: false }),
+    });
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
+      state.workspaceDetail.runtime_evaluations = upsertRuntimeResult(
+        state.workspaceDetail.runtime_evaluations,
+        evaluation,
+        "evaluation_id",
+      );
+      render();
+    }
+    evaluation = await pollRuntimeEvaluation(runId, evaluation);
+    state.notice = `Evaluation ${evaluation.status || "recorded"}; quality ${evaluation.quality_verdict || "not evaluated"}.`;
+  } catch (error) {
+    state.error = error.message || "Failed to run evaluation.";
+  } finally {
+    setActionLoading("runtime-evaluation", runId, false);
+    render();
+  }
+}
+
+async function verifyRuntimeReplay() {
+  const runId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  if (!runId || !state.workspaceDetail) return;
+  setActionLoading("runtime-replay", runId, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const replay = await request(`/api/runs/${encodeURIComponent(runId)}/replays`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
+      state.workspaceDetail.runtime_replay = replay;
+    }
+    state.notice = `Replay ${replay.verification || "recorded"}: ${replay.processed_events ?? 0} events, ${(replay.projection_differences || []).length} differences.`;
+  } catch (error) {
+    state.error = error.message || "Failed to verify replay.";
+  } finally {
+    setActionLoading("runtime-replay", runId, false);
+    render();
   }
 }
 
@@ -4397,13 +5089,16 @@ async function loadRouteCompareForWorkspace(selection = null, shouldRender = tru
   }
 }
 
-function openSessionStream(sessionId) {
+function openSessionStream(sessionId, options = {}) {
   closeSessionStream();
   if (!sessionId) return;
   state.streamStatus = "connecting";
   state.streamError = null;
-  const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/stream`);
+  const selectedRunId = options?.runId || getWorkspaceSelectedRunId(state.workspaceDetail) || "";
+  const streamQuery = selectedRunId ? `?run_id=${encodeURIComponent(selectedRunId)}` : "";
+  const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/stream${streamQuery}`);
   state.streamSource = source;
+  startRuntimeSupervision(selectedRunId);
 
   source.addEventListener("open", () => {
     state.streamStatus = "open";
@@ -4516,6 +5211,7 @@ function buildAgentProfilePayload(editor = state.registryEditor.profile) {
       profile_id: editor.profileId.trim() || slugify(editor.name),
       name: editor.name.trim(),
       description: editor.description.trim(),
+      runtime_agent_ref: editor.openclawAgentId.trim(),
       openclaw_agent_id: editor.openclawAgentId.trim(),
       default_skills: parseCsv(editor.defaultSkillsText),
       allowed_tools: parseCsv(editor.allowedToolsText),
@@ -4678,8 +5374,6 @@ async function loadMissions(shouldRender = true) {
       if (state.activeNav === "orchestrator") {
         state.activeNav = "missions";
       }
-    } else if (!state.selectedSessionId && state.activeNav === "missions") {
-      state.activeNav = "orchestrator";
     }
     buildStudioLocationState();
   } catch (error) {
@@ -4725,6 +5419,25 @@ async function loadRuntimeSummary(shouldRender = true) {
     state.error = error.message || "Failed to load runtime summary.";
   } finally {
     state.runtimeLoading = false;
+    if (shouldRender) render();
+  }
+}
+
+async function loadDashboardSummary(shouldRender = true) {
+  state.dashboardLoading = true;
+  if (shouldRender) render();
+  try {
+    const params = new URLSearchParams({
+      window_hours: String(state.dashboardFilters.windowHours || 24),
+      status: state.dashboardFilters.status || "all",
+      correlation_limit: "20",
+      compare: state.dashboardFilters.comparePrevious ? "previous" : "none",
+    });
+    state.dashboardSummary = await request(`/api/dashboard/summary?${params.toString()}`);
+  } catch (error) {
+    state.error = error.message || "Failed to load dashboard summary.";
+  } finally {
+    state.dashboardLoading = false;
     if (shouldRender) render();
   }
 }
@@ -4781,7 +5494,8 @@ async function loadSessionDagProposals(sessionId, shouldRender = true, workspace
   }
 }
 
-async function loadSessionWorkspace(sessionId, shouldRender = true) {
+async function loadSessionWorkspace(sessionId, shouldRender = true, options = {}) {
+  const selectedRunId = options?.runId || null;
   const loadSeq = ++workspaceLoadSeq;
   if (!sessionId) {
     state.workspaceDetail = null;
@@ -4800,23 +5514,34 @@ async function loadSessionWorkspace(sessionId, shouldRender = true) {
     render();
   }
   try {
+    const sessionQuery = selectedRunId ? `?run_id=${encodeURIComponent(selectedRunId)}` : "";
     const [detail, routeCompare] = await Promise.all([
-      request(`/api/sessions/${encodeURIComponent(sessionId)}`),
+      request(`/api/sessions/${encodeURIComponent(sessionId)}${sessionQuery}`),
       request(`/api/sessions/${encodeURIComponent(sessionId)}/compare`).catch(() => null),
     ]);
     if (loadSeq !== workspaceLoadSeq) return;
-    const latestRunId = getWorkspaceLatestRunId(detail);
-    const runArtifactsPromise = latestRunId
-      ? request(`/api/runs/${encodeURIComponent(latestRunId)}/artifacts`).catch(() => null)
+    const activeRunId = getWorkspaceSelectedRunId(detail);
+    const runArtifactsPromise = activeRunId
+      ? request(`/api/runs/${encodeURIComponent(activeRunId)}/artifacts`).catch(() => null)
       : Promise.resolve(null);
-    const runtimeGraph = latestRunId
-      ? await request(`/api/runs/${encodeURIComponent(latestRunId)}/graph`).catch(() => null)
-      : null;
+    const [runtimeProjection, runtimeTrace, runtimeScorecards, runtimeEvaluations] = activeRunId
+      ? await Promise.all([
+          request(`/api/runs/${encodeURIComponent(activeRunId)}/runtime`).catch(() => null),
+          request(`/api/runs/${encodeURIComponent(activeRunId)}/trace?limit=500`).catch(() => null),
+          request(`/api/runs/${encodeURIComponent(activeRunId)}/scorecards`).catch(() => ({ items: [] })),
+          request(`/api/runs/${encodeURIComponent(activeRunId)}/evaluations`).catch(() => ({ items: [] })),
+        ])
+      : [null, null, { items: [] }, { items: [] }];
     if (loadSeq !== workspaceLoadSeq) return;
     applyWorkspaceSnapshot({
       ...detail,
       route_compare: routeCompare,
-      runtime_graph: runtimeGraph,
+      runtime_graph: runtimeProjection?.graph || detail.runtime_projection?.graph || null,
+      runtime_projection: runtimeProjection || detail.runtime_projection || null,
+      runtime_trace: runtimeTrace,
+      runtime_scorecards: runtimeScorecards?.items || [],
+      runtime_evaluations: runtimeEvaluations?.items || [],
+      runtime_replay: null,
       artifacts: detail.artifacts || [],
       pending_approvals: detail.pending_approvals || [],
       pending_human_inputs: detail.pending_human_inputs || [],
@@ -4834,10 +5559,10 @@ async function loadSessionWorkspace(sessionId, shouldRender = true) {
     buildStudioLocationState();
     await loadSessionDagProposals(sessionId, false, loadSeq);
     if (loadSeq !== workspaceLoadSeq) return;
-    openSessionStream(sessionId);
+    openSessionStream(sessionId, { runId: activeRunId });
     void runArtifactsPromise.then((runArtifacts) => {
       if (loadSeq !== workspaceLoadSeq) return;
-      if (!state.workspaceDetail || getWorkspaceLatestRunId(state.workspaceDetail) !== latestRunId) return;
+      if (!state.workspaceDetail || getWorkspaceSelectedRunId(state.workspaceDetail) !== activeRunId) return;
       state.workspaceDetail = {
         ...state.workspaceDetail,
         artifacts: runArtifacts?.items || state.workspaceDetail.artifacts || [],
@@ -4864,6 +5589,7 @@ async function loadWorkspaceData(nextSelectedId = state.selectedId) {
     loadOrchestratorProfiles(false),
     loadRegistry(false),
     loadRuntimeSummary(false),
+    loadDashboardSummary(false),
   ];
 
   if (initialSessionId) {
@@ -5300,20 +6026,14 @@ async function createWorkspaceAttachment() {
   state.notice = null;
   render();
   try {
-    const response = await request(
-      `/api/sessions/${encodeURIComponent(state.selectedSessionId)}/attachments`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          name: editor.name.trim() || undefined,
-          storage_uri: storageUri,
-          mime_type: editor.mimeType.trim() || undefined,
-          summary: editor.summary.trim() || undefined,
-          kind: "context",
-          created_by: "studio",
-        }),
-      },
-    );
+    const response = await createWorkspaceAttachmentRequest({
+      name: editor.name.trim() || undefined,
+      storage_uri: storageUri,
+      mime_type: editor.mimeType.trim() || undefined,
+      summary: editor.summary.trim() || undefined,
+      kind: "context",
+      created_by: "studio",
+    });
     if (state.workspaceDetail) {
       state.workspaceDetail.attachments = response.items || [response.attachment].filter(Boolean);
     }
@@ -5327,6 +6047,129 @@ async function createWorkspaceAttachment() {
     await Promise.all([loadMissions(false), loadSessions(false)]);
   } catch (error) {
     state.error = error.message || "Failed to attach context.";
+  } finally {
+    state.attachmentSaving = false;
+    render();
+  }
+}
+
+function buildBrowserFileStorageUri(file) {
+  const fileName = file?.name || "local-file";
+  return `browser-file://${encodeURIComponent(fileName)}`;
+}
+
+function buildAttachmentPayloadFromFile(file) {
+  const name = file?.name || "Local file";
+  const size = typeof file?.size === "number" && Number.isFinite(file.size) ? Math.max(0, Math.floor(file.size)) : null;
+  return {
+    name,
+    storage_uri: buildBrowserFileStorageUri(file),
+    mime_type: file?.type || undefined,
+    size_bytes: size,
+    summary: "Local desktop reference captured from Studio.",
+    kind: "context",
+    created_by: "studio",
+    metadata: {
+      source: "studio_file_picker",
+      browser_path_available: false,
+      last_modified:
+        typeof file?.lastModified === "number" && Number.isFinite(file.lastModified)
+          ? new Date(file.lastModified).toISOString()
+          : null,
+    },
+  };
+}
+
+async function createWorkspaceAttachmentRequest(payload) {
+  return await request(
+    `/api/sessions/${encodeURIComponent(state.selectedSessionId)}/attachments`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+async function createWorkspaceAttachmentsFromFiles(fileList) {
+  if (!state.selectedSessionId) {
+    state.error = "Select a mission or session before attaching context.";
+    state.notice = null;
+    render();
+    return;
+  }
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) {
+    return;
+  }
+  state.attachmentSaving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    let latestResponse = null;
+    for (const file of files) {
+      latestResponse = await createWorkspaceAttachmentRequest(buildAttachmentPayloadFromFile(file));
+    }
+    if (state.workspaceDetail && latestResponse) {
+      state.workspaceDetail.attachments = latestResponse.items || [latestResponse.attachment].filter(Boolean);
+    }
+    state.notice = `Attached ${files.length} local reference${files.length === 1 ? "" : "s"}.`;
+    await Promise.all([loadMissions(false), loadSessions(false)]);
+  } catch (error) {
+    state.error = error.message || "Failed to attach local file reference.";
+  } finally {
+    state.attachmentSaving = false;
+    state.attachmentFilePickerKey += 1;
+    render();
+  }
+}
+
+function getWorkspaceContextReferenceByKey(key) {
+  const normalizedKey = String(key || "");
+  if (!normalizedKey || !state.workspaceDetail) return null;
+  return buildWorkspaceContextBrowserItems(state.workspaceDetail).find((item) => item.key === normalizedKey) || null;
+}
+
+async function attachWorkspaceContextReference(key) {
+  if (!state.selectedSessionId) {
+    state.error = "Select a mission or session before attaching context.";
+    state.notice = null;
+    render();
+    return;
+  }
+  const item = getWorkspaceContextReferenceByKey(key);
+  if (!item?.storageUri) {
+    state.error = "Selected workspace item has no reusable reference.";
+    state.notice = null;
+    render();
+    return;
+  }
+  state.attachmentSaving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const response = await createWorkspaceAttachmentRequest({
+      name: item.title,
+      storage_uri: item.storageUri,
+      mime_type: item.mimeType || undefined,
+      size_bytes: item.sizeBytes ?? undefined,
+      summary: item.summary || undefined,
+      kind: "context",
+      created_by: "studio",
+      metadata: {
+        source: "studio_workspace_browser",
+        source_type: item.type,
+        source_key: item.key,
+      },
+    });
+    if (state.workspaceDetail) {
+      state.workspaceDetail.attachments = response.items || [response.attachment].filter(Boolean);
+    }
+    state.notice = `Attached ${response.attachment?.name || item.title || "workspace item"}.`;
+    await Promise.all([loadMissions(false), loadSessions(false)]);
+  } catch (error) {
+    state.error = error.message || "Failed to attach workspace reference.";
   } finally {
     state.attachmentSaving = false;
     render();
@@ -5385,6 +6228,7 @@ async function sendOrchestratorMessage() {
       }
       state.notice = "Started a new orchestrated mission.";
     }
+    state.planner.intent = "";
   } catch (error) {
     state.error = error.message || "Failed to send instruction to orchestrator.";
   } finally {
@@ -5428,6 +6272,9 @@ function getActiveSessionInventoryItems() {
 function switchDesktopNav(nav) {
   state.activeNav = nav;
   state.error = null;
+  if (nav === "dashboard" && !state.dashboardSummary && !state.dashboardLoading) {
+    void loadDashboardSummary(false).then(() => render());
+  }
   buildStudioLocationState();
   render();
 }
@@ -5452,13 +6299,13 @@ function closeCommandPalette() {
   render();
 }
 
-async function openSessionFromCommand(nav, sessionId) {
+async function openSessionFromCommand(nav, sessionId, options = {}) {
   if (!sessionId) return;
   prepareWorkspaceSessionChange(sessionId);
   state.activeNav = nav === "orchestrator" ? "missions" : nav;
   state.selectedSessionId = sessionId;
   pendingSessionInventoryScroll = true;
-  await loadSessionWorkspace(sessionId);
+  await loadSessionWorkspace(sessionId, true, options);
 }
 
 async function openWorkspaceFocusPanel(kind) {
@@ -5481,6 +6328,13 @@ async function openWorkspaceFocusPanel(kind) {
     await loadRuntimeGraphForWorkspace(false);
   }
 
+  if (kind === "execution-queue" || kind === "workspace-feed" || kind === "checkpoint-ledger" || kind === "output-history") {
+    pendingWorkspaceFocus = kind;
+    state.notice = "Opened workspace queue.";
+    render();
+    return;
+  }
+
   const hasPanel =
     kind === "compare"
       ? !!state.workspaceDetail?.route_compare
@@ -5498,6 +6352,14 @@ async function openWorkspaceFocusPanel(kind) {
   pendingWorkspaceFocus = kind;
   state.notice = kind === "compare" ? "Opened route compare." : "Opened runtime graph.";
   render();
+}
+
+async function openDashboardHotspotSession(sessionId, focusKind, runId = "") {
+  if (!sessionId) return;
+  await openSessionFromCommand("missions", sessionId, { runId: runId || null });
+  if (focusKind) {
+    await openWorkspaceFocusPanel(focusKind);
+  }
 }
 
 function commandSearchText(item) {
@@ -5543,6 +6405,18 @@ function buildCommandPaletteItems() {
       subtitle: "Session inventory and archived work",
       keywords: ["session", "inventory"],
       run: () => switchDesktopNav("sessions"),
+    },
+    {
+      key: "nav:dashboard",
+      group: "Navigate",
+      title: "Go to Dashboard",
+      subtitle: "Unified runtime dashboard and operator backlog",
+      keywords: ["dashboard", "observability", "runtime", "backlog", "health"],
+      run: async () => {
+        state.activeNav = "dashboard";
+        await Promise.all([loadRuntimeSummary(false), loadDashboardSummary(false)]);
+        render();
+      },
     },
     {
       key: "nav:templates",
@@ -5625,6 +6499,18 @@ function buildCommandPaletteItems() {
       run: async () => {
         await loadRuntimeSummary(false);
         state.notice = "Runtime summary refreshed.";
+        render();
+      },
+    },
+    {
+      key: "refresh:dashboard",
+      group: "Refresh",
+      title: "Refresh Dashboard",
+      subtitle: "Dashboard summary and runtime posture",
+      keywords: ["dashboard", "summary", "reload"],
+      run: async () => {
+        await Promise.all([loadRuntimeSummary(false), loadDashboardSummary(false)]);
+        state.notice = "Dashboard refreshed.";
         render();
       },
     },
@@ -5814,6 +6700,17 @@ function applyPendingSessionInventoryScroll() {
   }, 0);
 }
 
+function applyPendingRuntimeNodeFocus() {
+  if (!pendingRuntimeNodeFocus) return;
+  pendingRuntimeNodeFocus = false;
+  window.setTimeout(() => {
+    const target = document.querySelector(`.runtime-graph-node[data-node-run-id="${CSS.escape(state.ui.runtimeNodeRunId)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    target.focus({ preventScroll: true });
+  }, 0);
+}
+
 function afterRender() {
   if (state.commandPaletteOpen && !pendingCommandPaletteFocus) {
     pendingCommandPaletteFocus = "end";
@@ -5823,6 +6720,7 @@ function afterRender() {
   applyPendingWorkspaceFeedEntryHighlight();
   applyPendingAuthoringGraphFocus();
   applyPendingSessionInventoryScroll();
+  applyPendingRuntimeNodeFocus();
 }
 
 async function saveOrchestratorProfile() {
@@ -6670,6 +7568,7 @@ function renderDesktopNav() {
     { id: "orchestrator", label: "Orchestrator" },
     { id: "missions", label: "Missions" },
     { id: "sessions", label: "Sessions" },
+    { id: "dashboard", label: "Dashboard" },
     { id: "agents", label: "Subagents" },
     { id: "templates", label: "Templates" },
     { id: "registry", label: "Registry" },
@@ -6702,7 +7601,7 @@ function renderAgentHostingSidebarList() {
           <span class="status-dot ${profile.health?.status === "ready" ? "success" : profile.health?.status === "disabled" ? "neutral" : "warn"}"></span>
           <span>
             <strong>${escapeHtml(profile.profile_id)}</strong>
-            <small>${escapeHtml(profile.model || profile.openclaw_agent_id || profile.health?.status || "unbound")}</small>
+            <small>${escapeHtml(profile.model || runtimeAgentRefOf(profile) || profile.health?.status || "unbound")}</small>
           </span>
         </button>
       `,
@@ -6710,14 +7609,463 @@ function renderAgentHostingSidebarList() {
     .join("");
 }
 
+function dashboardToneBadgeClass(tone) {
+  if (tone === "danger") return "danger";
+  if (tone === "warn") return "warn";
+  return "success";
+}
+
+function formatDashboardStatusCounts(items) {
+  return Array.isArray(items)
+    ? items
+        .filter((item) => Number(item?.count || 0) > 0)
+        .map((item) => `${item.status}: ${item.count}`)
+        .join(" / ")
+    : "";
+}
+
+function renderDashboardStatusBreakdown(title, items) {
+  const lines = formatDashboardStatusCounts(items);
+  return `
+    <section class="subpanel dashboard-breakdown-panel">
+      <div class="subpanel-header">
+        <strong>${escapeHtml(title)}</strong>
+      </div>
+      <p class="muted">${escapeHtml(lines || "No active status counts.")}</p>
+    </section>
+  `;
+}
+
+function renderDashboardHotspotList(title, items, emptyText, kind = "run") {
+  return `
+    <section class="subpanel dashboard-hotspot-panel" data-workspace-focus="dashboard-hotspots">
+      <div class="subpanel-header">
+        <strong>${escapeHtml(title)}</strong>
+        <span class="badge neutral">${escapeHtml(String(Array.isArray(items) ? items.length : 0))}</span>
+      </div>
+      <div class="rail-feed">
+        ${
+          Array.isArray(items) && items.length
+            ? items
+                .map((item) => {
+                  const sessionId = item.session_id || "";
+                  const focusKind =
+                    kind === "approval" || kind === "human-input" || kind === "run" && item.status
+                      ? kind === "run" && item.status === "failed"
+                        ? "graph"
+                        : "execution-queue"
+                      : "graph";
+                  const titleText =
+                    kind === "approval"
+                      ? item.summary || item.approval_id || "Pending approval"
+                      : kind === "human-input"
+                        ? item.summary || item.input_request_id || "Pending human input"
+                        : item.summary || item.run_id || "Run hotspot";
+                  const metaText =
+                    kind === "approval"
+                      ? item.run_id || item.kind || "approval"
+                      : kind === "human-input"
+                        ? item.run_id || "human input"
+                        : item.run_id || item.status || item.updated_at || "run";
+                  const marker =
+                    kind === "approval"
+                      ? item.kind || "approval"
+                      : kind === "human-input"
+                        ? "human input"
+                        : item.latest_failure_event_type || item.status || "run";
+                  if (sessionId) {
+                    return `
+                      <button type="button" class="rail-feed-item rail-feed-jump-button" data-action="open-dashboard-hotspot" data-session-id="${escapeHtml(sessionId)}" data-focus-kind="${escapeHtml(focusKind)}" data-run-id="${escapeHtml(item.run_id || "")}">
+                        <strong>${escapeHtml(titleText)}</strong>
+                        <small>${escapeHtml(metaText)}</small>
+                        <small>${escapeHtml(marker)}</small>
+                      </button>
+                    `;
+                  }
+                  if (kind === "approval") {
+                    return `
+                      <div class="rail-feed-item">
+                        <strong>${escapeHtml(titleText)}</strong>
+                        <small>${escapeHtml(metaText)}</small>
+                      </div>
+                    `;
+                  }
+                  if (kind === "human-input") {
+                    return `
+                      <div class="rail-feed-item">
+                        <strong>${escapeHtml(titleText)}</strong>
+                        <small>${escapeHtml(metaText)}</small>
+                      </div>
+                    `;
+                  }
+                  return `
+                    <div class="rail-feed-item">
+                      <strong>${escapeHtml(titleText)}</strong>
+                      <small>${escapeHtml(metaText)}</small>
+                    </div>
+                  `;
+                })
+                .join("")
+            : `<p class="muted">${escapeHtml(emptyText)}</p>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function formatDashboardRate(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(value === 1 || value === 0 ? 0 : 1)}%` : "-";
+}
+
+function formatDashboardDuration(value) {
+  if (!Number.isFinite(value)) return "-";
+  if (value < 1000) return `${Math.round(value)} ms`;
+  if (value < 60_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`;
+  const minutes = Math.floor(value / 60_000);
+  return `${minutes}m ${Math.round((value % 60_000) / 1000)}s`;
+}
+
+function formatDashboardMoney(values) {
+  const entries = Object.entries(values || {});
+  return entries.length ? entries.map(([currency, amount]) => `${currency} ${amount}`).join(" + ") : "-";
+}
+
+function dashboardVerdictTone(value) {
+  if (["pass", "complete", "completed", "ok"].includes(value)) return "success";
+  if (["fail", "failed", "error", "reject"].includes(value)) return "danger";
+  if (["partial", "incomplete", "running", "queued"].includes(value)) return "warn";
+  return "neutral";
+}
+
+function renderDashboardFilters(observability) {
+  const query = observability?.query || {};
+  const retention = observability?.retention || {};
+  const rebuilt = Number(query.rebuilt_runs || 0);
+  const indexLabel = rebuilt > 0
+    ? `${rebuilt} rebuilt / ${query.indexed_runs || 0} indexed`
+    : `${query.indexed_runs || 0} indexed`;
+  const retentionHours = Number(retention.retention_hours || 0);
+  const retentionLabel = retention.enabled
+    ? `${retentionHours % 24 === 0 ? `${retentionHours / 24}d` : `${retentionHours}h`} retention`
+    : "Unlimited retention";
+  const pruned = Number(retention.pruned_indexes || 0) + Number(retention.pruned_dirty_markers || 0);
+  return `
+    <div class="dashboard-toolbar">
+      <select class="dashboard-filter-select" data-field="dashboard.windowHours" aria-label="Dashboard time window">
+        <option value="24" ${state.dashboardFilters.windowHours === 24 ? "selected" : ""}>24 hours</option>
+        <option value="168" ${state.dashboardFilters.windowHours === 168 ? "selected" : ""}>7 days</option>
+        <option value="720" ${state.dashboardFilters.windowHours === 720 ? "selected" : ""}>30 days</option>
+      </select>
+      <select class="dashboard-filter-select" data-field="dashboard.status" aria-label="Dashboard run status">
+        <option value="all" ${state.dashboardFilters.status === "all" ? "selected" : ""}>All runs</option>
+        <option value="active" ${state.dashboardFilters.status === "active" ? "selected" : ""}>Active</option>
+        <option value="terminal" ${state.dashboardFilters.status === "terminal" ? "selected" : ""}>Terminal</option>
+        <option value="completed" ${state.dashboardFilters.status === "completed" ? "selected" : ""}>Completed</option>
+        <option value="failed" ${state.dashboardFilters.status === "failed" ? "selected" : ""}>Failed</option>
+        <option value="cancelled" ${state.dashboardFilters.status === "cancelled" ? "selected" : ""}>Cancelled</option>
+      </select>
+      <label class="dashboard-compare-toggle">
+        <input type="checkbox" data-field="dashboard.comparePrevious" aria-label="Compare previous period" ${state.dashboardFilters.comparePrevious ? "checked" : ""}>
+        <span>Previous period</span>
+      </label>
+      <span class="badge ${rebuilt > 0 ? "warn" : "neutral"}">${escapeHtml(indexLabel)}</span>
+      <span class="badge ${pruned > 0 ? "warn" : "neutral"}" title="Canonical run and evidence data are retained.">${escapeHtml(pruned > 0 ? `${pruned} pruned / ${retentionLabel}` : retentionLabel)}</span>
+      <button class="secondary" data-action="refresh-dashboard" ${state.dashboardLoading || state.runtimeLoading ? "disabled" : ""}>
+        ${state.dashboardLoading || state.runtimeLoading ? "Refreshing..." : "Refresh"}
+      </button>
+    </div>
+  `;
+}
+
+function formatDashboardActivityTitle(observability) {
+  const windowHours = Number(observability?.query?.window_hours || 24);
+  if (windowHours > 0 && windowHours % 24 === 0) {
+    const days = windowHours / 24;
+    return days === 1 ? "24 Hour Activity" : `${days} Day Activity`;
+  }
+  return `${windowHours} Hour Activity`;
+}
+
+function formatDashboardComparisonValue(kind, value) {
+  if (!Number.isFinite(value)) return "-";
+  if (kind === "rate") return formatDashboardRate(value);
+  if (kind === "duration") return formatDashboardDuration(value);
+  return String(Math.round(value));
+}
+
+function formatDashboardComparisonDelta(kind, metric) {
+  if (!Number.isFinite(metric?.delta)) return "No comparable value";
+  const sign = metric.delta > 0 ? "+" : "";
+  if (kind === "rate") return `${sign}${(metric.delta * 100).toFixed(metric.delta === 0 ? 0 : 1)} pp`;
+  if (kind === "duration") {
+    const durationSign = metric.delta > 0 ? "+" : metric.delta < 0 ? "-" : "";
+    return `${durationSign}${formatDashboardDuration(Math.abs(metric.delta))}`;
+  }
+  return `${sign}${Math.round(metric.delta)}`;
+}
+
+function dashboardComparisonTone(metric) {
+  if (metric?.outcome === "improved") return "success";
+  if (metric?.outcome === "regressed") return "danger";
+  return "neutral";
+}
+
+function renderDashboardComparison(observability) {
+  const comparison = observability?.comparison || null;
+  if (!comparison) return "";
+  const metrics = comparison.metrics || {};
+  const items = [
+    ["Run volume", "count", metrics.runs_observed],
+    ["Run success", "rate", metrics.run_success_rate],
+    ["Job success", "rate", metrics.job_success_rate],
+    ["Retry rate", "rate", metrics.retry_rate],
+    ["Run P95", "duration", metrics.run_p95_ms],
+    ["Tokens", "count", metrics.total_tokens],
+  ];
+  return `
+    <section class="subpanel span-2 dashboard-comparison-panel">
+      <div class="subpanel-header">
+        <strong>Previous Period Comparison</strong>
+        <span class="badge ${comparison.coverage === "complete" ? "success" : "warn"}">${escapeHtml(`${comparison.coverage || "partial"} coverage`)}</span>
+      </div>
+      <div class="dashboard-comparison-strip">
+        ${items.map(([label, kind, metric]) => `
+          <div>
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(formatDashboardComparisonValue(kind, metric?.current))}</strong>
+            <small><span class="badge ${dashboardComparisonTone(metric)}">${escapeHtml(formatDashboardComparisonDelta(kind, metric))}</span> vs ${escapeHtml(formatDashboardComparisonValue(kind, metric?.previous))}</small>
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderDashboardActivity(observability) {
+  const buckets = Array.isArray(observability?.activity) ? observability.activity : [];
+  const totals = buckets.map((bucket) =>
+    Number(bucket.runs_completed || 0) +
+    Number(bucket.runs_failed || 0) +
+    Number(bucket.jobs_completed || 0) +
+    Number(bucket.jobs_failed || 0));
+  const maximum = Math.max(1, ...totals);
+  const segmentHeight = (value) => Number(value || 0) > 0
+    ? Math.max(2, Math.round((Number(value) / maximum) * 64))
+    : 0;
+  const labelForBucket = (bucket) => {
+    const parsed = Date.parse(bucket?.bucket_start || "");
+    return Number.isFinite(parsed)
+      ? new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(parsed))
+      : "-";
+  };
+  return `
+    <section class="subpanel span-2 dashboard-activity-panel">
+      <div class="subpanel-header">
+        <strong>${escapeHtml(formatDashboardActivityTitle(observability))}</strong>
+        <span class="badge neutral">${escapeHtml(`${observability?.window?.bucket_minutes || 60}m buckets`)}</span>
+      </div>
+      <div class="dashboard-activity-bars" aria-label="Runtime activity by time bucket">
+        ${buckets.map((bucket) => `
+          <div class="dashboard-activity-column" title="${escapeHtml(`${labelForBucket(bucket)} / runs ${bucket.runs_started || 0} started, ${bucket.runs_completed || 0} completed, ${bucket.runs_failed || 0} failed / jobs ${bucket.jobs_completed || 0} completed, ${bucket.jobs_failed || 0} failed / ${bucket.total_tokens || 0} tokens`)}">
+            <span class="dashboard-activity-segment jobs" style="height:${segmentHeight((bucket.jobs_completed || 0) + (bucket.jobs_failed || 0))}px"></span>
+            <span class="dashboard-activity-segment completed" style="height:${segmentHeight(bucket.runs_completed)}px"></span>
+            <span class="dashboard-activity-segment failed" style="height:${segmentHeight(bucket.runs_failed)}px"></span>
+          </div>
+        `).join("")}
+      </div>
+      <div class="dashboard-activity-axis">
+        <span>${escapeHtml(labelForBucket(buckets[0]))}</span>
+        <span>${escapeHtml(labelForBucket(buckets[Math.floor(buckets.length / 2)]))}</span>
+        <span>${escapeHtml(labelForBucket(buckets.at(-1)))}</span>
+      </div>
+      <div class="dashboard-activity-legend">
+        <span><i class="jobs"></i>Jobs settled</span>
+        <span><i class="completed"></i>Runs completed</span>
+        <span><i class="failed"></i>Runs failed</span>
+      </div>
+    </section>
+  `;
+}
+
+function renderDashboardCorrelations(observability) {
+  const correlations = Array.isArray(observability?.correlations) ? observability.correlations : [];
+  return `
+    <section class="subpanel span-2 dashboard-correlation-panel" data-workspace-focus="dashboard-correlations">
+      <div class="subpanel-header">
+        <strong>Trace / Event / Evaluation Correlation</strong>
+        <span class="badge neutral">${escapeHtml(String(correlations.length))}</span>
+      </div>
+      <div class="dashboard-correlation-table">
+        <div class="dashboard-correlation-head">
+          <span>Run / Trace</span><span>Runtime</span><span>Events</span><span>Evaluation</span><span>Usage</span>
+        </div>
+        ${correlations.length ? correlations.map((item) => {
+          const content = `
+            <span class="dashboard-correlation-identity"><strong>${escapeHtml(item.intent || item.run_id)}</strong><small>${escapeHtml(item.trace_id || item.run_id)}</small></span>
+            <span><strong class="badge ${dashboardVerdictTone(item.status)}">${escapeHtml(item.status || "unknown")}</strong><small>${escapeHtml(formatDashboardDuration(item.duration_ms))} / ${escapeHtml(`${item.job_count || 0} jobs`)}</small></span>
+            <span><strong>${escapeHtml(String(item.event_count || 0))}</strong><small>${escapeHtml(`seq ${item.last_sequence ?? "-"} / ${item.retry_count || 0} retry`)}</small></span>
+            <span><strong class="badge ${dashboardVerdictTone(item.quality_verdict || item.pipeline_verdict)}">${escapeHtml(item.quality_verdict || item.pipeline_verdict || "not evaluated")}</strong><small>${escapeHtml(`${item.finding_count || 0} findings / ${item.gate_verdict || "no gate"}`)}</small></span>
+            <span><strong>${escapeHtml(item.total_tokens ?? "-")}</strong><small>${escapeHtml(formatDashboardMoney(Object.keys(item.provider_reported_costs || {}).length ? item.provider_reported_costs : item.estimated_costs))}</small></span>
+          `;
+          return item.session_id
+            ? `<button type="button" class="dashboard-correlation-row" data-action="open-dashboard-hotspot" data-session-id="${escapeHtml(item.session_id)}" data-focus-kind="graph" data-run-id="${escapeHtml(item.run_id || "")}">${content}</button>`
+            : `<div class="dashboard-correlation-row">${content}</div>`;
+        }).join("") : '<p class="muted dashboard-correlation-empty">No correlated runs are available.</p>'}
+      </div>
+    </section>
+  `;
+}
+
+function renderDashboardObservability(observability) {
+  const reliability = observability?.reliability || {};
+  const latency = observability?.latency || {};
+  const usage = observability?.usage || {};
+  const costs = Object.keys(usage.provider_reported_costs || {}).length
+    ? usage.provider_reported_costs
+    : usage.estimated_costs;
+  return `
+    <section class="subpanel span-2 dashboard-observability-panel">
+      <div class="subpanel-header">
+        <strong>Runtime Performance</strong>
+        <span class="badge ${usage.token_completeness === "complete" ? "success" : usage.token_completeness === "partial" ? "warn" : "neutral"}">${escapeHtml(`usage ${usage.token_completeness || "unavailable"}`)}</span>
+      </div>
+      <div class="dashboard-metric-strip">
+        <div><span>Run success</span><strong>${escapeHtml(formatDashboardRate(reliability.run_success_rate))}</strong><small>${escapeHtml(`${reliability.completed_runs || 0}/${reliability.terminal_runs || 0} terminal`)}</small></div>
+        <div><span>Job success</span><strong>${escapeHtml(formatDashboardRate(reliability.job_success_rate))}</strong><small>${escapeHtml(`${reliability.completed_jobs || 0}/${reliability.terminal_jobs || 0} settled`)}</small></div>
+        <div><span>Run P95</span><strong>${escapeHtml(formatDashboardDuration(latency.run_duration?.p95_ms))}</strong><small>${escapeHtml(`${latency.run_duration?.count || 0} samples`)}</small></div>
+        <div><span>Job P95</span><strong>${escapeHtml(formatDashboardDuration(latency.job_duration?.p95_ms))}</strong><small>${escapeHtml(`${latency.job_duration?.count || 0} samples`)}</small></div>
+        <div><span>Retry rate</span><strong>${escapeHtml(formatDashboardRate(reliability.retry_rate))}</strong><small>${escapeHtml(`${reliability.retry_attempts || 0} retry attempts`)}</small></div>
+        <div><span>Usage</span><strong>${escapeHtml(usage.total_tokens ?? "-")}</strong><small>${escapeHtml(formatDashboardMoney(costs))}</small></div>
+      </div>
+    </section>
+    ${renderDashboardComparison(observability)}
+    ${renderDashboardActivity(observability)}
+    ${renderDashboardCorrelations(observability)}
+  `;
+}
+
+function renderDashboardWorkspace() {
+  const dashboard = state.dashboardSummary || null;
+  const runtime = state.runtimeSummary?.execution_runtime || null;
+  const capacity = runtime?.node_provisioner?.capacity || null;
+  const recovery = runtime?.node_provisioner?.recovery || null;
+  const planner = state.runtimeSummary?.planner || null;
+  const registry = state.runtimeSummary?.registry || null;
+  const tone = dashboard?.runtime_health?.attention_tone || "neutral";
+
+  return `
+    <section class="panel dashboard-panel">
+      <div class="panel-header">
+        <div>
+          <h3>Unified Dashboard</h3>
+          <p>Top-level runtime workload, operator backlog, and waiting or failure hotspots.</p>
+        </div>
+        ${renderDashboardFilters(dashboard?.observability || null)}
+      </div>
+      <div class="workspace-summary-grid compact-summary dashboard-summary-grid">
+        <div class="summary-stat">
+          <strong>Sessions</strong>
+          <p>${escapeHtml(String(dashboard?.workload?.sessions?.total ?? 0))}</p>
+        </div>
+        <div class="summary-stat">
+          <strong>Runs</strong>
+          <p>${escapeHtml(String(dashboard?.workload?.runs?.total ?? 0))}</p>
+        </div>
+        <div class="summary-stat">
+          <strong>Pending Approvals</strong>
+          <p>${escapeHtml(String(dashboard?.backlog?.pending_approvals ?? 0))}</p>
+        </div>
+        <div class="summary-stat">
+          <strong>Human Inputs</strong>
+          <p>${escapeHtml(String(dashboard?.backlog?.pending_human_inputs ?? 0))}</p>
+        </div>
+        <div class="summary-stat">
+          <strong>Patch Confirms</strong>
+          <p>${escapeHtml(String(dashboard?.backlog?.pending_patch_confirmations ?? 0))}</p>
+        </div>
+        <div class="summary-stat">
+          <strong>Recent Failures</strong>
+          <p>${escapeHtml(String(dashboard?.workload?.runs?.recently_failed ?? 0))}</p>
+        </div>
+      </div>
+      <div class="settings-grid dashboard-grid">
+        <section class="subpanel span-2 dashboard-runtime-panel">
+          <div class="subpanel-header">
+            <strong>Runtime Health</strong>
+            <span class="badge ${dashboardToneBadgeClass(tone)}">${escapeHtml(tone)}</span>
+          </div>
+          <div class="rail-kv-list">
+            <div><strong>Storage</strong><span>${escapeHtml(dashboard?.runtime_health?.storage_backend_kind || "unknown")}</span></div>
+            <div><strong>Execution</strong><span>${escapeHtml(getRuntimeExecutionLabel(runtime))}</span></div>
+            <div><strong>Workers</strong><span>${escapeHtml(formatRuntimeCapacityValue(capacity?.active_workers, capacity?.max_concurrent_workers))}</span></div>
+            <div><strong>Queue</strong><span>${escapeHtml(formatRuntimeCapacityValue(capacity?.queue_depth, capacity?.queue_limit))}</span></div>
+            <div><strong>Queue Timeout</strong><span>${escapeHtml(formatRuntimeQueueTimeout(capacity?.queue_timeout_ms))}</span></div>
+            <div><strong>Cleanup</strong><span>${escapeHtml(`${recovery?.cleanup_pending ?? 0} pending / ${recovery?.cleanup_failed ?? 0} failed`)}</span></div>
+            <div><strong>Reconciliation</strong><span>${escapeHtml(recovery?.last_reconciliation_status || "not run")}</span></div>
+            <div><strong>Containers</strong><span>${escapeHtml(`${recovery?.removed_containers ?? 0} removed / ${recovery?.orphan_containers ?? 0} orphaned`)}</span></div>
+            <div><strong>Planner</strong><span>${escapeHtml(planner?.provider_name || planner?.provider_id || "unknown")}</span></div>
+            <div><strong>Templates</strong><span>${escapeHtml(String(registry?.template_count ?? 0))}</span></div>
+          </div>
+          <div class="dashboard-summary-lines">
+            ${(dashboard?.runtime_health?.summary_lines || []).map((line) => `<span class="skill-chip">${escapeHtml(line)}</span>`).join("")}
+          </div>
+        </section>
+        ${renderDashboardObservability(dashboard?.observability || null)}
+        ${renderDashboardStatusBreakdown("Session Status", dashboard?.workload?.sessions?.by_status || [])}
+        ${renderDashboardStatusBreakdown("Run Status", dashboard?.workload?.runs?.by_status || [])}
+        <section class="subpanel dashboard-backlog-panel">
+          <div class="subpanel-header">
+            <strong>Backlog</strong>
+          </div>
+          <div class="rail-kv-list">
+            <div><strong>Approvals</strong><span>${escapeHtml(String(dashboard?.backlog?.pending_approvals ?? 0))}</span></div>
+            <div><strong>Human Input</strong><span>${escapeHtml(String(dashboard?.backlog?.pending_human_inputs ?? 0))}</span></div>
+            <div><strong>Patch Confirm</strong><span>${escapeHtml(String(dashboard?.backlog?.pending_patch_confirmations ?? 0))}</span></div>
+            <div><strong>Unsupported Patches</strong><span>${escapeHtml(String(dashboard?.backlog?.unsupported_patch_proposals ?? 0))}</span></div>
+            <div><strong>Stale Sessions</strong><span>${escapeHtml(String(dashboard?.backlog?.stale_sessions ?? 0))}</span></div>
+            <div><strong>Stuck Runs</strong><span>${escapeHtml(String(dashboard?.workload?.runs?.stuck ?? 0))}</span></div>
+          </div>
+        </section>
+        ${renderDashboardHotspotList("Waiting Runs", dashboard?.hotspots?.waiting_runs || [], "No waiting runs.", "run")}
+        ${renderDashboardHotspotList("Recent Failures", dashboard?.hotspots?.recently_failed_runs || [], "No recent failures.", "run")}
+        ${renderDashboardHotspotList("Approval Backlog", dashboard?.hotspots?.approval_backlog || [], "No pending approvals.", "approval")}
+        ${renderDashboardHotspotList("Human Input Backlog", dashboard?.hotspots?.human_input_backlog || [], "No pending human input.", "human-input")}
+      </div>
+    </section>
+  `;
+}
+
 function renderMissionWorkspace() {
   const model = buildMissionWorkspaceViewModel(state.workspaceDetail);
   if (!model.ready) {
+    const hasMissionInventory = state.missions.length > 0 || state.sessions.length > 0;
     return `
       <section class="panel desktop-empty-panel">
         <div class="panel-header">
-          <div><h3>Mission Workspace</h3><p>Select a mission or session from the left rail.</p></div>
+          <div>
+            <h3>Mission Workspace</h3>
+            <p>${
+              hasMissionInventory
+                ? "Select a mission from the left rail."
+                : "Start a mission here to make Mission Workspace the default working surface."
+            }</p>
+          </div>
         </div>
+        ${
+          hasMissionInventory
+            ? ""
+            : `
+              <div class="mission-empty-intake">
+                <label>Mission instruction<textarea rows="5" data-field="planner.intent" placeholder="Describe the outcome, constraints, and outputs you need.">${escapeHtml(state.planner.intent)}</textarea></label>
+                <div class="orchestrator-actions">
+                  <button class="primary" data-action="orchestrator-send-message" ${state.planning ? "disabled" : ""}>${state.planning ? "Thinking..." : "Start mission"}</button>
+                  <button class="secondary" data-action="generate-dag-draft" ${state.planning || !state.planner.intent.trim() ? "disabled" : ""}>Generate DAG</button>
+                  <button class="secondary" data-action="plan-intent" ${state.planning || !state.planner.intent.trim() ? "disabled" : ""}>Plan mission</button>
+                </div>
+                ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
+              </div>
+            `
+        }
       </section>
     `;
   }
@@ -6731,6 +8079,7 @@ function renderMissionWorkspace() {
         </div>
         <span class="badge ${model.header.statusTone}">${escapeHtml(model.header.statusLabel)}</span>
       </div>
+      ${state.workspaceDetail?.runtime_graph ? renderRuntimeInspectorPanel(state.workspaceDetail.runtime_graph, state.workspaceDetail.runtime_projection || null) : ""}
       ${renderMissionWorkspaceSectionGrid(model.workspaceSections)}
       <div class="mission-context-strip">
       <div class="mission-spec-band">
@@ -6984,14 +8333,13 @@ function renderDesktopRail() {
         }
       </section>
       ${
-        routeCompare || hasRuntimeContext
+        routeCompare
           ? `
             <section class="panel rail-panel operational-context-panel">
               <div class="panel-header">
-                <div><h3>Operational Context</h3><p>Route comparison and runtime topology stay secondary to the mission surfaces.</p></div>
+                <div><h3>Route Comparison</h3><p>Review planning revisions without displacing the primary runtime graph.</p></div>
               </div>
               ${routeCompare ? renderRouteComparePanel(routeCompare) : ""}
-              ${hasRuntimeContext ? renderRuntimeGraphPanel(detail?.runtime_graph || null) : ""}
             </section>
           `
           : ""
@@ -7107,7 +8455,7 @@ function renderRegistryPanel() {
                 (profile) => `
                   <div class="registry-item">
                     <strong>${escapeHtml(profile.profile_id)}</strong>
-                    <small>${escapeHtml(profile.openclaw_agent_id)} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
+                    <small>${escapeHtml(runtimeAgentRefOf(profile) || "unbound")} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
                   </div>
                 `,
               )
@@ -7181,7 +8529,7 @@ function renderAgentProfileManager() {
                     <button class="registry-record ${profile.profile_id === selectedId ? "selected" : ""}" data-action="edit-agent-profile" data-id="${escapeHtml(profile.profile_id)}">
                       <span>
                         <strong>${escapeHtml(profile.profile_id)}</strong>
-                        <small>${escapeHtml(profile.openclaw_agent_id || "unbound")} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
+                        <small>${escapeHtml(runtimeAgentRefOf(profile) || "unbound")} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
                       </span>
                       <span class="badge ${profile.status === "active" ? "success" : "neutral"}">${escapeHtml(profile.status)}</span>
                     </button>
@@ -7201,9 +8549,9 @@ function renderAgentProfileManager() {
             </select>
           </label>
           <label>Name<input value="${escapeHtml(editor.name)}" data-field="agent.name" /></label>
-          <label>OpenClaw agent<input value="${escapeHtml(editor.openclawAgentId)}" data-field="agent.openclawAgentId" /></label>
-          <label>OpenClaw provider<input value="${escapeHtml(editor.openclawProvider)}" data-field="agent.openclawProvider" placeholder="openai / anthropic / custom" /></label>
-          <label>OpenClaw model<input value="${escapeHtml(editor.openclawModel)}" data-field="agent.openclawModel" placeholder="runtime model id" /></label>
+          <label>Runtime agent<input value="${escapeHtml(editor.openclawAgentId)}" data-field="agent.openclawAgentId" /></label>
+          <label>Runtime provider<input value="${escapeHtml(editor.openclawProvider)}" data-field="agent.openclawProvider" placeholder="openai / anthropic / custom" /></label>
+          <label>Runtime model<input value="${escapeHtml(editor.openclawModel)}" data-field="agent.openclawModel" placeholder="runtime model id" /></label>
           <label>Runtime mode<input value="${escapeHtml(editor.openclawRuntimeMode)}" data-field="agent.openclawRuntimeMode" placeholder="native-agent / bridge / custom" /></label>
           <label class="span-2">Description<textarea rows="2" data-field="agent.description">${escapeHtml(editor.description)}</textarea></label>
           <label>Default skills<input value="${escapeHtml(editor.defaultSkillsText)}" list="skill-options" data-field="agent.defaultSkillsText" /></label>
@@ -7296,11 +8644,16 @@ function renderRegistryManagerPanel() {
 
 function renderPlannerCandidate(candidate) {
   const selected = candidate.template_id === state.planner.templateId;
+  const evidenceLines = summarizeTemplateEvidence(candidate);
+  const evidenceChips = buildPlannerEvidenceChips(templateEvidenceChips(candidate));
   return `
     <button class="planner-candidate ${selected ? "selected" : ""}" data-action="select-planner-template" data-id="${escapeHtml(candidate.template_id)}">
       <span>
         <strong>${escapeHtml(candidate.name)}</strong>
         <small>${escapeHtml(candidate.template_id)}</small>
+        <small>${escapeHtml(candidate.reason || "No recommendation summary.")}</small>
+        ${evidenceChips}
+        ${evidenceLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}
       </span>
       <span class="badge ${candidate.score > 0 ? "success" : "warn"}">${candidate.score.toFixed(2)}</span>
     </button>
@@ -7308,13 +8661,17 @@ function renderPlannerCandidate(candidate) {
 }
 
 function renderRegistryRecommendation(recommendation, index) {
+  const evidenceLines = summarizeRegistryRecommendationEvidence(recommendation);
+  const evidenceChips = buildPlannerEvidenceChips(registryEvidenceChips(recommendation));
   return `
     <div class="mini-node">
       <strong>${index + 1}. ${escapeHtml(recommendation.node_name)}</strong>
       <small>Agent: ${escapeHtml(recommendation.agent_profile_id || "needs assignment")}</small>
-      <small>OpenClaw: ${escapeHtml(recommendation.openclaw_agent_id || "unbound")}</small>
+      <small>Runtime: ${escapeHtml(runtimeAgentRefOf(recommendation) || "unbound")}</small>
       <small>Skills: ${escapeHtml((recommendation.skill_ids || []).join(", ") || "none")}</small>
       <small>Score ${Number(recommendation.score || 0).toFixed(2)} / ${escapeHtml(recommendation.reason || "No reason")}</small>
+      ${evidenceChips}
+      ${evidenceLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}
       ${
         recommendation.warnings?.length
           ? `<ul class="warning-list compact">${recommendation.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
@@ -7353,6 +8710,142 @@ function groupValidationWarnings(validation) {
   }
 
   return groups.filter((group) => group.items.length > 0);
+}
+
+function formatPlannerScore(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : null;
+}
+
+function formatPlannerPercent(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 100)}%` : null;
+}
+
+function formatPlannerDomainLabel(domainId) {
+  const labels = {
+    coding: "Software engineering",
+    research: "Research and analysis",
+    content: "Content and creative",
+    ops: "Operations and automation",
+    customer: "Customer and follow-up",
+    review: "Approval and review",
+  };
+  return labels[domainId] || domainId;
+}
+
+function formatPlannerDomainList(domainIds, limit = 2) {
+  if (!Array.isArray(domainIds)) {
+    return "";
+  }
+  return domainIds
+    .filter((domainId) => typeof domainId === "string" && domainId.trim())
+    .slice(0, limit)
+    .map((domainId) => formatPlannerDomainLabel(domainId.trim()))
+    .join(", ");
+}
+
+function buildPlannerEvidenceChips(items) {
+  const values = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!values.length) {
+    return "";
+  }
+  return `<div class="skill-chip-list planner-evidence-chip-list">${values
+    .map(
+      (item) =>
+        `<span class="skill-chip ${escapeHtml(item.tone || "neutral")}">${escapeHtml(item.label || "Evidence")}</span>`,
+    )
+    .join("")}</div>`;
+}
+
+function templateEvidenceChips(candidate) {
+  const evidence = candidate?.evidence || {};
+  const chips = [];
+  if (Array.isArray(candidate?.matched_terms) && candidate.matched_terms.length) {
+    chips.push({ tone: "success", label: `${candidate.matched_terms.length} term match` });
+  }
+  if (Array.isArray(evidence.matched_domains) && evidence.matched_domains.length) {
+    chips.push({ tone: "neutral", label: `Domain: ${formatPlannerDomainList(evidence.matched_domains)}` });
+  }
+  if (evidence.metadata_domain_match) {
+    chips.push({ tone: "success", label: "Metadata domain" });
+  }
+  return chips;
+}
+
+function summarizeTemplateEvidence(candidate) {
+  const evidence = candidate?.evidence || {};
+  const lines = [];
+  const coverage = formatPlannerPercent(evidence.coverage_score);
+  const density = formatPlannerPercent(evidence.density_score);
+  const readiness = formatPlannerPercent(evidence.registry_readiness_score);
+  const domain = formatPlannerPercent(evidence.domain_overlap_score);
+
+  if (coverage || density || readiness) {
+    lines.push(
+      [
+        coverage ? `Coverage ${coverage}` : null,
+        density ? `density ${density}` : null,
+        readiness ? `registry readiness ${readiness}` : null,
+      ]
+        .filter(Boolean)
+        .join(" / "),
+    );
+  }
+  if (domain) {
+    lines.push(`Domain overlap ${domain}`);
+  }
+  return lines;
+}
+
+function registryEvidenceChips(recommendation) {
+  const evidence = recommendation?.evidence || {};
+  const chips = [];
+  if (Array.isArray(evidence.coverage_domains) && evidence.coverage_domains.length) {
+    chips.push({ tone: "success", label: `Coverage: ${formatPlannerDomainList(evidence.coverage_domains)}` });
+  }
+  if (Array.isArray(evidence.matched_domains) && evidence.matched_domains.length) {
+    chips.push({ tone: "neutral", label: `Domain: ${formatPlannerDomainList(evidence.matched_domains)}` });
+  }
+  if (typeof evidence.preferred_rank === "number") {
+    chips.push({ tone: "success", label: `Preferred #${evidence.preferred_rank + 1}` });
+  }
+  if ((evidence.disallowed_penalty || 0) > 0) {
+    chips.push({ tone: "warn", label: "Disallowed filtered" });
+  }
+  return chips;
+}
+
+function summarizeRegistryRecommendationEvidence(recommendation) {
+  const evidence = recommendation?.evidence || {};
+  const lines = [];
+  const policy = formatPlannerScore(evidence.policy_score);
+  const tokenFit = formatPlannerScore(evidence.profile_token_score);
+  const skillFit = formatPlannerScore(evidence.skill_score);
+  const readiness = formatPlannerScore(evidence.readiness_score);
+  const domain = formatPlannerScore(evidence.domain_overlap_score);
+  const coverageDomains = formatPlannerDomainList(evidence.coverage_domains, 4);
+
+  if (policy || tokenFit || skillFit || readiness) {
+    lines.push(
+      [
+        policy ? `Policy ${policy}` : null,
+        tokenFit ? `token fit ${tokenFit}` : null,
+        skillFit ? `skill fit ${skillFit}` : null,
+        readiness ? `readiness ${readiness}` : null,
+      ]
+        .filter(Boolean)
+        .join(" / "),
+    );
+  }
+  if (domain) {
+    lines.push(`Domain overlap ${domain}`);
+  }
+  if (coverageDomains) {
+    lines.push(`Coverage fill: ${coverageDomains}`);
+  }
+  if (Array.isArray(recommendation?.allowed_tools) && recommendation.allowed_tools.length) {
+    lines.push(`Tools: ${recommendation.allowed_tools.join(", ")}`);
+  }
+  return lines;
 }
 
 function renderValidationGroups(validation, emptyText) {
@@ -7482,9 +8975,9 @@ function renderPlannerPanel() {
                                <div class="mini-node">
                                  <strong>${index + 1}. ${escapeHtml(node.name)}</strong>
                                  <small>${escapeHtml(node.type)} / ${escapeHtml(node.status)} / ${escapeHtml(node.agent_profile || "no-agent")}</small>
-                                 <small>OpenClaw: ${escapeHtml(node.openclaw_agent_id || "unbound")}</small>
+                                 <small>Runtime: ${escapeHtml(runtimeAgentRefOf(node) || "unbound")}</small>
                                  <small>Skills: ${escapeHtml((node.allowed_skills || []).join(", ") || "none")}</small>
-                                 <small>Source: ${escapeHtml(node.registry_provenance?.agent_profile_source || "unknown")} / OpenClaw ${escapeHtml(node.registry_provenance?.openclaw_agent_id_source || "unknown")}</small>
+                                 <small>Source: ${escapeHtml(node.registry_provenance?.agent_profile_source || "unknown")} / Runtime ${escapeHtml(node.registry_provenance?.runtime_agent_ref_source || node.registry_provenance?.openclaw_agent_id_source || "unknown")}</small>
                                </div>
                              `,
                            )
@@ -7529,18 +9022,13 @@ function buildAuthoringGraphModel(editor = state.editor) {
     if (id && !firstIndexById.has(id)) firstIndexById.set(id, index);
   });
 
-  const adjacency = new Map(sourceNodes.map((_, index) => [index, []]));
-  const indegree = new Map(sourceNodes.map((_, index) => [index, 0]));
+  const layoutNodeIds = sourceNodes.map((_, index) => `authoring-node-${index}`);
   const normalizedEdges = sourceEdges.map((edge, index) => {
     const from = String(edge?.from || "").trim();
     const to = String(edge?.to || "").trim();
     const fromIndex = firstIndexById.has(from) ? firstIndexById.get(from) : -1;
     const toIndex = firstIndexById.has(to) ? firstIndexById.get(to) : -1;
     const valid = fromIndex >= 0 && toIndex >= 0;
-    if (valid) {
-      adjacency.get(fromIndex).push(toIndex);
-      indegree.set(toIndex, (indegree.get(toIndex) || 0) + 1);
-    }
     return {
       index,
       from,
@@ -7553,21 +9041,6 @@ function buildAuthoringGraphModel(editor = state.editor) {
     };
   });
 
-  const depth = new Map(sourceNodes.map((_, index) => [index, 0]));
-  const remainingIndegree = new Map(indegree);
-  const queue = [...remainingIndegree.entries()]
-    .filter(([, count]) => count === 0)
-    .map(([index]) => index);
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const current = queue[cursor];
-    for (const target of adjacency.get(current) || []) {
-      depth.set(target, Math.max(depth.get(target) || 0, (depth.get(current) || 0) + 1));
-      const nextIndegree = (remainingIndegree.get(target) || 0) - 1;
-      remainingIndegree.set(target, nextIndegree);
-      if (nextIndegree === 0) queue.push(target);
-    }
-  }
-
   const inboundCount = new Map(sourceNodes.map((_, index) => [index, 0]));
   const outboundCount = new Map(sourceNodes.map((_, index) => [index, 0]));
   for (const edge of normalizedEdges) {
@@ -7575,12 +9048,17 @@ function buildAuthoringGraphModel(editor = state.editor) {
     outboundCount.set(edge.fromIndex, (outboundCount.get(edge.fromIndex) || 0) + 1);
     inboundCount.set(edge.toIndex, (inboundCount.get(edge.toIndex) || 0) + 1);
   }
-
-  const rowsByColumn = new Map();
+  const layout = buildDagLayout(
+    sourceNodes.map((_, index) => ({ id: layoutNodeIds[index], order: index, width: 188, height: 98 })),
+    normalizedEdges
+      .filter((edge) => edge.valid)
+      .map((edge) => ({ id: `authoring-edge-${edge.index}`, from: layoutNodeIds[edge.fromIndex], to: layoutNodeIds[edge.toIndex] })),
+    { paddingX: 24, paddingY: 24, columnGap: 36, rowGap: 24, minWidth: 720, minHeight: 260 },
+  );
+  const layoutNodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  const layoutEdgeById = new Map(layout.edges.map((edge) => [edge.id, edge]));
   const nodes = sourceNodes.map((node, index) => {
-    const column = Math.max(0, depth.get(index) || 0);
-    const row = rowsByColumn.get(column) || 0;
-    rowsByColumn.set(column, row + 1);
+    const positioned = layoutNodeById.get(layoutNodeIds[index]);
     const outputContract =
       node?.config?.output_contract && typeof node.config.output_contract === "object"
         ? node.config.output_contract
@@ -7604,34 +9082,33 @@ function buildAuthoringGraphModel(editor = state.editor) {
       outputCount: expectedArtifacts.length,
       inboundCount: inboundCount.get(index) || 0,
       outboundCount: outboundCount.get(index) || 0,
-      column,
-      row,
-      x: 24 + column * 224,
-      y: 24 + row * 122,
+      column: positioned?.column || 0,
+      row: positioned?.row || 0,
+      x: positioned?.x || 24,
+      y: positioned?.y || 24,
+      invalid: positioned?.invalid || false,
     };
   });
 
   const edges = normalizedEdges.map((edge) => {
     const fromNode = nodes[edge.fromIndex];
     const toNode = nodes[edge.toIndex];
+    const positioned = layoutEdgeById.get(`authoring-edge-${edge.index}`);
     return {
       ...edge,
       fromLabel: fromNode?.label || edge.from || "missing source",
       toLabel: toNode?.label || edge.to || "missing target",
-      fromX: fromNode ? fromNode.x + 188 : 0,
-      fromY: fromNode ? fromNode.y + 49 : 0,
-      toX: toNode ? toNode.x : 0,
-      toY: toNode ? toNode.y + 49 : 0,
+      fromX: positioned?.fromX || 0,
+      fromY: positioned?.fromY || 0,
+      toX: positioned?.toX || 0,
+      toY: positioned?.toY || 0,
     };
   });
-
-  const maxColumn = Math.max(0, ...nodes.map((node) => node.column));
-  const maxRows = Math.max(1, ...rowsByColumn.values());
   return {
     nodes,
     edges,
-    width: Math.max(720, (maxColumn + 1) * 224 + 96),
-    height: Math.max(260, maxRows * 122 + 64),
+    width: layout.width,
+    height: layout.height,
     stats: {
       nodeCount: nodes.length,
       edgeCount: edges.length,
@@ -7882,6 +9359,9 @@ function renderAgentHostingPanel() {
   const runtime = state.runtimeSummary?.execution_runtime || null;
   const hosting = state.runtimeSummary?.agent_hosting || null;
   const hostedProfiles = hosting?.profiles || [];
+  const registeredAdapters = Array.isArray(runtime?.registered_adapter_kinds)
+    ? runtime.registered_adapter_kinds
+    : [];
   const readyCount = hostedProfiles.filter((profile) => profile.health?.status === "ready").length;
   const needsBindingCount = hostedProfiles.filter((profile) => profile.health?.status === "needs_binding").length;
 
@@ -7889,7 +9369,7 @@ function renderAgentHostingPanel() {
     <div class="agent-hosting-workspace">
       <section class="panel agent-hosting-panel">
         <div class="panel-header">
-          <div><h3>Subagent Hosting</h3><p>OpenClaw runtime ownership with My Mate registry bindings.</p></div>
+          <div><h3>Subagent Hosting</h3><p>Runtime ownership with My Mate registry bindings.</p></div>
           <button class="secondary" data-action="refresh-runtime" ${state.runtimeLoading ? "disabled" : ""}>${state.runtimeLoading ? "Refreshing..." : "Refresh"}</button>
         </div>
         <div class="workspace-summary-grid compact-summary">
@@ -7907,7 +9387,11 @@ function renderAgentHostingPanel() {
           </div>
           <div class="summary-stat">
             <strong>Runtime</strong>
-            <p>${escapeHtml(runtime?.adapter_kind || "unknown")}</p>
+            <p>${escapeHtml(getRuntimeExecutionLabel(runtime))}</p>
+          </div>
+          <div class="summary-stat">
+            <strong>Adapters</strong>
+            <p>${escapeHtml(registeredAdapters.join(", ") || "none")}</p>
           </div>
         </div>
         <div class="hosting-list expanded">
@@ -7919,7 +9403,7 @@ function renderAgentHostingPanel() {
                       <div class="hosting-item">
                         <div>
                           <strong>${escapeHtml(profile.profile_id)}</strong>
-                          <p>${escapeHtml(profile.name)} / ${escapeHtml(profile.openclaw_agent_id || "unbound")}</p>
+                          <p>${escapeHtml(profile.name)} / ${escapeHtml(runtimeAgentRefOf(profile) || "unbound")}</p>
                         </div>
                         <div class="hosting-meta">
                           <span>${escapeHtml(profile.provider || "provider unset")}</span>
@@ -7945,10 +9429,15 @@ function renderAgentHostingPanel() {
 
 function renderSettingsPanel() {
   const runtime = state.runtimeSummary?.execution_runtime || null;
+  const capacity = runtime?.node_provisioner?.capacity || null;
+  const recovery = runtime?.node_provisioner?.recovery || null;
   const hosting = state.runtimeSummary?.agent_hosting || null;
   const planner = state.runtimeSummary?.planner || null;
   const registry = state.runtimeSummary?.registry || null;
   const hostedProfiles = hosting?.profiles || [];
+  const identity = state.security.identity;
+  const canManageMembers = identity?.permissions?.includes("workspace.manage_members") === true;
+  const workspace = identity?.selected_workspace || null;
 
   return `
     <section class="panel settings-panel">
@@ -7957,6 +9446,64 @@ function renderSettingsPanel() {
         <button class="secondary" data-action="refresh-runtime" ${state.runtimeLoading ? "disabled" : ""}>${state.runtimeLoading ? "Refreshing..." : "Refresh runtime"}</button>
       </div>
       <div class="settings-grid">
+        <section class="subpanel span-2 security-console" data-security-console="true">
+          <div class="subpanel-header">
+            <div>
+              <strong>Identity And Workspace</strong>
+              <p>${escapeHtml(identity ? `${identity.principal.display_name} (${identity.principal.principal_id})` : "Identity unavailable")}</p>
+            </div>
+            <span class="badge ${identity ? "success" : "danger"}">${escapeHtml(workspace?.role || "signed out")}</span>
+          </div>
+          <div class="security-auth-row">
+            <label class="field grow"><span>API Token</span><input type="password" data-field="security.apiKey" value="${escapeHtml(state.security.apiKey)}" autocomplete="off" /></label>
+            <button class="secondary" data-action="save-security-settings">Save token</button>
+            <button class="icon-button" data-action="refresh-security" title="Refresh identity" aria-label="Refresh identity">Ref</button>
+          </div>
+          <div class="workspace-segments" role="tablist" aria-label="Workspace">
+            ${(identity?.available_workspaces || []).map((membership) => `
+              <button
+                class="workspace-segment ${membership.workspace_id === workspace?.workspace_id ? "selected" : ""}"
+                data-action="select-security-workspace"
+                data-workspace-id="${escapeHtml(membership.workspace_id)}"
+                role="tab"
+                aria-selected="${membership.workspace_id === workspace?.workspace_id ? "true" : "false"}"
+              >${escapeHtml(membership.workspace_name)} <small>${escapeHtml(membership.role)}</small></button>
+            `).join("") || '<span class="muted">No workspace memberships.</span>'}
+          </div>
+        </section>
+        <section class="subpanel span-2 security-members" data-security-members="true">
+          <div class="subpanel-header">
+            <strong>Workspace Members</strong>
+            <span class="badge neutral">${escapeHtml(String(state.security.members.length))} members</span>
+          </div>
+          <div class="security-member-list">
+            ${state.security.members.map((member) => `
+              <div class="security-member-row">
+                <div><strong>${escapeHtml(member.display_name)}</strong><small>${escapeHtml(member.principal_id)} / ${escapeHtml(member.status)}</small></div>
+                <div class="role-segments" role="group" aria-label="Role for ${escapeHtml(member.display_name)}">
+                  ${["owner", "admin", "operator", "viewer"].map((role) => `
+                    <button class="role-segment ${member.role === role ? "selected" : ""}" data-action="set-security-member-role" data-principal-id="${escapeHtml(member.principal_id)}" data-role="${role}" ${canManageMembers ? "" : "disabled"}>${role}</button>
+                  `).join("")}
+                </div>
+              </div>
+            `).join("") || '<p class="muted">No members in this workspace.</p>'}
+          </div>
+        </section>
+        <section class="subpanel span-2 security-audit" data-security-audit="true">
+          <div class="subpanel-header">
+            <strong>Security Audit</strong>
+            <span class="badge ${state.security.auditChainVerified ? "success" : "danger"}">${state.security.auditChainVerified ? "Chain verified" : "Chain unverified"}</span>
+          </div>
+          <div class="security-audit-list">
+            ${state.security.auditEvents.slice(0, 30).map((event) => `
+              <div class="security-audit-row">
+                <span class="status-dot ${event.outcome === "allowed" ? "success" : event.outcome === "denied" ? "danger" : "warn"}"></span>
+                <div><strong>${escapeHtml(event.action)}</strong><small>${escapeHtml(event.principal_id)} / ${escapeHtml(new Date(event.created_at).toLocaleString())}</small></div>
+                <span class="badge ${event.outcome === "allowed" ? "success" : event.outcome === "denied" ? "danger" : "warn"}">${escapeHtml(event.outcome)}</span>
+              </div>
+            `).join("") || '<p class="muted">No security audit events.</p>'}
+          </div>
+        </section>
         <section class="subpanel span-2">
           <div class="subpanel-header">
             <strong>Subagent Hosting</strong>
@@ -7971,7 +9518,7 @@ function renderSettingsPanel() {
                         <div class="hosting-item">
                           <div>
                             <strong>${escapeHtml(profile.profile_id)}</strong>
-                            <p>${escapeHtml(profile.name)} / ${escapeHtml(profile.openclaw_agent_id || "unbound")}</p>
+                            <p>${escapeHtml(profile.name)} / ${escapeHtml(runtimeAgentRefOf(profile) || "unbound")}</p>
                           </div>
                           <div class="hosting-meta">
                             <span>${escapeHtml(profile.provider || "provider unset")}</span>
@@ -7991,10 +9538,17 @@ function renderSettingsPanel() {
         <section class="subpanel">
           <div class="subpanel-header"><strong>Execution Runtime</strong></div>
           <div class="rail-kv-list">
+            <div><strong>Dispatcher</strong><span>${escapeHtml(getRuntimeExecutionLabel(runtime))}</span></div>
             <div><strong>Adapter</strong><span>${escapeHtml(runtime?.adapter_kind || "unknown")}</span></div>
             <div><strong>Bridge Mode</strong><span>${escapeHtml(runtime?.bridge_execution_mode || "n/a")}</span></div>
             <div><strong>Health</strong><span>${escapeHtml(runtime?.runtime_health?.status || "unknown")}</span></div>
             <div><strong>Detail</strong><span>${escapeHtml(runtime?.runtime_health?.detail || "No runtime detail.")}</span></div>
+            <div><strong>Workers</strong><span>${escapeHtml(formatRuntimeCapacityValue(capacity?.active_workers, capacity?.max_concurrent_workers))}</span></div>
+            <div><strong>Queue</strong><span>${escapeHtml(formatRuntimeCapacityValue(capacity?.queue_depth, capacity?.queue_limit))}</span></div>
+            <div><strong>Queue Timeout</strong><span>${escapeHtml(formatRuntimeQueueTimeout(capacity?.queue_timeout_ms))}</span></div>
+            <div><strong>Cleanup</strong><span>${escapeHtml(`${recovery?.cleanup_pending ?? 0} pending / ${recovery?.cleanup_failed ?? 0} failed`)}</span></div>
+            <div><strong>Reconciliation</strong><span>${escapeHtml(`${recovery?.last_reconciliation_status || "not run"}${recovery?.last_reconciliation_at ? ` at ${recovery.last_reconciliation_at}` : ""}`)}</span></div>
+            <div><strong>Containers</strong><span>${escapeHtml(`${recovery?.discovered_containers ?? 0} found / ${recovery?.removed_containers ?? 0} removed / ${recovery?.orphan_containers ?? 0} orphaned`)}</span></div>
           </div>
         </section>
         <section class="subpanel">
@@ -8076,13 +9630,17 @@ function renderOrchestratorSidebarContent() {
 }
 
 function renderOrchestratorConversation(messages) {
+  const seen = new Set();
   const visible = messages
-    .filter((message) =>
-      message.role === "user" ||
-      message.role === "orchestrator" ||
-      message.kind === "goal_update_card" ||
-      message.kind === "workspace_snapshot_card",
-    )
+    .filter((message) => message.role === "user" || message.role === "orchestrator")
+    .filter((message) => {
+      const text = getMessageText(message).trim();
+      if (!text) return false;
+      const key = `${message.role}:${text}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(-10);
   if (!visible.length) {
     return '<p class="muted">Start by describing the mission. The orchestrator will turn it into a MissionSpec and DAG proposal.</p>';
@@ -8110,6 +9668,12 @@ function renderProposalAssignmentEditor(node, index, recommendation) {
   const recommendationText = recommendation
     ? `${recommendation.agent_profile_name || recommendation.agent_profile_id || "registry"} / score ${recommendation.score ?? "n/a"}`
     : "";
+  const recommendationEvidenceChips = recommendation
+    ? buildPlannerEvidenceChips(registryEvidenceChips(recommendation))
+    : "";
+  const recommendationEvidenceLines = recommendation
+    ? summarizeRegistryRecommendationEvidence(recommendation)
+    : [];
   return `
     <article class="orchestrator-node-card editable">
       <span>${escapeHtml(String(index + 1))}</span>
@@ -8118,6 +9682,24 @@ function renderProposalAssignmentEditor(node, index, recommendation) {
           <strong>${escapeHtml(draft.name)}</strong>
           <small>${escapeHtml(draft.type)}${recommendationText ? ` / ${escapeHtml(recommendationText)}` : ""}</small>
         </div>
+        ${
+          recommendation
+            ? `<div class="proposal-recommendation-block">
+                <div class="proposal-recommendation-head">
+                  <strong>${escapeHtml(recommendation.agent_profile_name || recommendation.agent_profile_id || "Registry recommendation")}</strong>
+                  <span class="badge ${Number(recommendation.score || 0) > 0 ? "success" : "warn"}">${escapeHtml(formatPlannerScore(Number(recommendation.score || 0)) || "n/a")}</span>
+                </div>
+                <small>${escapeHtml(recommendation.reason || "No recommendation summary.")}</small>
+                ${recommendationEvidenceChips}
+                ${recommendationEvidenceLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}
+                ${
+                  recommendation.warnings?.length
+                    ? `<ul class="warning-list compact">${recommendation.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+                    : ""
+                }
+              </div>`
+            : '<p class="muted">No registry recommendation was attached to this node draft.</p>'
+        }
         <div class="proposal-assignment-grid">
           <label>Subagent<input value="${escapeHtml(draft.agentProfile)}" list="agent-profile-options" data-field="proposal.agent_profile" data-key="${escapeHtml(draft.key)}" /></label>
           <label>Skills<input value="${escapeHtml(draft.skillsText)}" list="skill-options" data-field="proposal.allowed_skills" data-key="${escapeHtml(draft.key)}" /></label>
@@ -8498,7 +10080,7 @@ function renderOrchestratorRail() {
               ? hostedProfiles.slice(0, 8).map((profile) => `
                   <div class="rail-feed-item">
                     <strong>${escapeHtml(profile.profile_id)}</strong>
-                    <small>${escapeHtml(profile.model || profile.openclaw_agent_id || profile.health?.status || "unbound")}</small>
+                    <small>${escapeHtml(profile.model || runtimeAgentRefOf(profile) || profile.health?.status || "unbound")}</small>
                   </div>
                 `).join("")
               : '<p class="muted">No subagents registered yet.</p>'
@@ -8508,7 +10090,7 @@ function renderOrchestratorRail() {
       <section class="panel rail-panel">
         <div class="panel-header">
           <div><h3>Runtime</h3><p>${escapeHtml(runtime?.runtime_health?.detail || "Runtime summary unavailable.")}</p></div>
-          <span class="badge ${runtime?.runtime_health?.status === "ok" ? "success" : "warn"}">${escapeHtml(runtime?.adapter_kind || "runtime")}</span>
+          <span class="badge ${runtime?.runtime_health?.status === "ok" ? "success" : "warn"}">${escapeHtml(getRuntimeExecutionLabel(runtime))}</span>
         </div>
         <div class="rail-kv-list">
           <div><strong>Planner</strong><span>${escapeHtml(planner?.provider_name || planner?.provider_id || "unknown")}</span></div>
@@ -8542,6 +10124,28 @@ function renderDesktopSidebarContent() {
       </div>
       ${renderSessionInventoryControls("sessions")}
       <div class="template-list">${renderSessionList()}</div>
+    `;
+  }
+  if (state.activeNav === "dashboard") {
+    return `
+      <div class="sidebar-section-header">
+        <strong>Dashboard</strong>
+        <button class="mini-button" data-action="refresh-dashboard">${state.dashboardLoading ? "..." : "Ref"}</button>
+      </div>
+      <div class="sidebar-panel">
+        <div class="sidebar-panel-header"><strong>Attention</strong></div>
+        <div class="registry-item">
+          <strong>${escapeHtml(state.dashboardSummary?.runtime_health?.attention_tone || "neutral")}</strong>
+          <small>${escapeHtml((state.dashboardSummary?.runtime_health?.summary_lines || []).join(" / ") || "Runtime summary unavailable.")}</small>
+        </div>
+      </div>
+      <div class="sidebar-panel">
+        <div class="sidebar-panel-header"><strong>Backlog</strong></div>
+        <div class="registry-item">
+          <strong>${escapeHtml(String((state.dashboardSummary?.backlog?.pending_approvals || 0) + (state.dashboardSummary?.backlog?.pending_human_inputs || 0)))}</strong>
+          <small>${escapeHtml(`approvals ${state.dashboardSummary?.backlog?.pending_approvals || 0} / input ${state.dashboardSummary?.backlog?.pending_human_inputs || 0}`)}</small>
+        </div>
+      </div>
     `;
   }
   if (state.activeNav === "agents") {
@@ -8584,6 +10188,9 @@ function renderDesktopCenter(readOnly, warnings, preview) {
   }
   if (state.activeNav === "missions" || state.activeNav === "sessions") {
     return renderMissionWorkspace();
+  }
+  if (state.activeNav === "dashboard") {
+    return renderDashboardWorkspace();
   }
   if (state.activeNav === "templates") {
     return `
@@ -8664,8 +10271,10 @@ function render() {
     state.activeNav === "orchestrator"
       ? "Orchestrator Workbench"
       : state.activeNav === "missions" || state.activeNav === "sessions"
-      ? workspaceSession?.title || "Mission Workspace"
-      : state.activeNav === "templates"
+        ? workspaceSession?.title || "Mission Workspace"
+        : state.activeNav === "dashboard"
+          ? "Unified Dashboard"
+          : state.activeNav === "templates"
         ? state.editor.name
         : state.activeNav === "agents"
           ? "Subagent Hosting"
@@ -8676,13 +10285,15 @@ function render() {
     state.activeNav === "orchestrator"
       ? "Choose model intent, talk through the mission, review the MissionSpec and DAG before subagents execute."
       : state.activeNav === "missions" || state.activeNav === "sessions"
-      ? workspaceSession?.workspace_state?.next_recommended_detail ||
-        state.workspaceDetail?.mission_snapshot?.nextActionDetail ||
-        "Mission-first workspace for brief, work, checkpoints, outputs, and runtime."
-      : state.activeNav === "templates"
+        ? workspaceSession?.workspace_state?.next_recommended_detail ||
+          state.workspaceDetail?.mission_snapshot?.nextActionDetail ||
+          "Mission-first workspace for brief, work, checkpoints, outputs, and runtime."
+        : state.activeNav === "dashboard"
+          ? "Inspect platform workload, operator backlog, and runtime posture in one view."
+          : state.activeNav === "templates"
         ? `${state.editor.templateId || "unsaved draft"}${state.editor.updatedAt ? ` / updated ${new Date(state.editor.updatedAt).toLocaleString()}` : ""}`
         : state.activeNav === "agents"
-          ? "Manage OpenClaw subagent bindings, providers, and runtime model intent."
+          ? "Manage runtime subagent bindings, providers, and model intent."
         : state.activeNav === "registry"
           ? "Manage reusable agent profiles and skills."
           : "Observe runtime, planner, and registry ownership boundaries.";
@@ -8690,8 +10301,8 @@ function render() {
     state.activeNav === "orchestrator"
       ? "V2"
       : state.activeNav === "templates"
-      ? `${state.editor.status}${state.editor.version ? ` v${state.editor.version}` : ""}`
-      : state.activeNav === "missions" || state.activeNav === "sessions"
+        ? `${state.editor.status}${state.editor.version ? ` v${state.editor.version}` : ""}`
+        : state.activeNav === "missions" || state.activeNav === "sessions"
         ? workspaceSession?.status || "idle"
         : state.activeNav;
 
@@ -8788,6 +10399,21 @@ function handleChange(target) {
     state.commandPaletteIndex = 0;
     queueCommandPaletteFocus("end");
     render();
+    return;
+  }
+  if (field === "dashboard.windowHours") {
+    state.dashboardFilters.windowHours = Number(value) || 24;
+    void loadDashboardSummary();
+    return;
+  }
+  if (field === "dashboard.status") {
+    state.dashboardFilters.status = value || "all";
+    void loadDashboardSummary();
+    return;
+  }
+  if (field === "dashboard.comparePrevious") {
+    state.dashboardFilters.comparePrevious = target.checked === true;
+    void loadDashboardSummary();
     return;
   }
   if (field === "attachment.name") {
@@ -9062,6 +10688,26 @@ function syncTextareaState(target) {
   }
 }
 
+function selectRuntimeNode(nodeRunId) {
+  if (!nodeRunId) return;
+  state.ui.runtimeNodeRunId = nodeRunId;
+  state.ui.runtimeDrawerOpen = true;
+  pendingRuntimeNodeFocus = true;
+  buildStudioLocationState();
+  render();
+}
+
+function fitRuntimeGraphToView(source) {
+  const panel = source.closest(".runtime-graph-v2");
+  const viewport = panel?.querySelector("[data-runtime-graph-viewport]");
+  const model = getCurrentRuntimeGraphModel();
+  if (!viewport || !model.layout?.width || !model.layout?.height) return;
+  const horizontal = Math.max(240, viewport.clientWidth - 32) / model.layout.width;
+  const vertical = Math.max(220, viewport.clientHeight - 32) / model.layout.height;
+  state.ui.runtimeGraphZoom = Math.max(0.5, Math.min(1.2, horizontal, vertical));
+  render();
+}
+
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -9082,6 +10728,14 @@ document.addEventListener("click", (event) => {
   if (action === "switch-nav") {
     switchDesktopNav(button.dataset.nav || "missions");
   }
+  if (action === "refresh-security") void refreshStudioSecurityAndWorkspace();
+  if (action === "save-security-settings") void saveStudioSecuritySettings();
+  if (action === "select-security-workspace") {
+    void switchSecurityWorkspace(button.dataset.workspaceId || "");
+  }
+  if (action === "set-security-member-role") {
+    void updateStudioMemberRole(button.dataset.principalId || "", button.dataset.role || "");
+  }
   if (action === "switch-view") {
     state.activeView = button.dataset.view || "plan";
     render();
@@ -9101,6 +10755,13 @@ document.addEventListener("click", (event) => {
   if (action === "archive-session") void updateSelectedSessionVisibility("archive");
   if (action === "unarchive-session") void updateSelectedSessionVisibility("unarchive");
   if (action === "attach-context-file") void createWorkspaceAttachment();
+  if (action === "pick-context-file") {
+    const input = document.querySelector("input[data-field='attachment.filePicker']");
+    if (input) input.click();
+  }
+  if (action === "attach-workspace-context-reference") {
+    void attachWorkspaceContextReference(button.dataset.key || "");
+  }
   if (action === "orchestrator-send-message") void sendOrchestratorMessage();
   if (action === "save-orchestrator-profile") void saveOrchestratorProfile();
   if (action === "toggle-orchestrator-setup") {
@@ -9190,6 +10851,55 @@ document.addEventListener("click", (event) => {
     render();
   }
   if (action === "refresh-runtime") void loadRuntimeSummary();
+  if (action === "refresh-runtime-projection") void loadRuntimeGraphForWorkspace();
+  if (action === "toggle-runtime-overlay") {
+    state.ui.runtimeOverlayOpen = !state.ui.runtimeOverlayOpen;
+    document.body.classList.toggle("runtime-overlay-active", state.ui.runtimeOverlayOpen);
+    render();
+  }
+  if (action === "select-runtime-node" || action === "select-runtime-edge" || action === "select-runtime-trace" || action === "select-runtime-evidence") {
+    selectRuntimeNode(button.dataset.nodeRunId || "");
+  }
+  if (action === "close-runtime-node") {
+    state.ui.runtimeDrawerOpen = false;
+    state.ui.runtimeNodeRunId = "";
+    buildStudioLocationState();
+    render();
+  }
+  if (action === "runtime-zoom-in") {
+    state.ui.runtimeGraphZoom = Math.min(1.35, state.ui.runtimeGraphZoom + 0.1);
+    render();
+  }
+  if (action === "runtime-zoom-out") {
+    state.ui.runtimeGraphZoom = Math.max(0.5, state.ui.runtimeGraphZoom - 0.1);
+    render();
+  }
+  if (action === "runtime-fit-view") {
+    fitRuntimeGraphToView(button);
+  }
+  if (action === "toggle-runtime-list") {
+    state.ui.runtimeGraphListFallback = !state.ui.runtimeGraphListFallback;
+    render();
+  }
+  if (action === "select-runtime-tab") {
+    state.ui.runtimeGraphTab = button.dataset.runtimeTab || "timeline";
+    render();
+  }
+  if (action === "create-runtime-scorecard") void createRuntimeScorecard();
+  if (action === "run-runtime-evaluation") {
+    void runRuntimeEvaluation(button.dataset.evaluator || "deterministic-v1");
+  }
+  if (action === "verify-runtime-replay") void verifyRuntimeReplay();
+  if (action === "refresh-dashboard") {
+    void Promise.all([loadRuntimeSummary(false), loadDashboardSummary(false)]).then(() => render());
+  }
+  if (action === "open-dashboard-hotspot") {
+    void openDashboardHotspotSession(
+      button.dataset.sessionId || "",
+      button.dataset.focusKind || "",
+      button.dataset.runId || "",
+    );
+  }
   if (action === "run-pause") void controlRun(button.dataset.runId, "pause");
   if (action === "run-resume") void controlRun(button.dataset.runId, "resume");
   if (action === "run-cancel") void controlRun(button.dataset.runId, "cancel");
@@ -9308,8 +11018,52 @@ document.addEventListener("input", (event) => {
   }
 });
 
+document.addEventListener("change", (event) => {
+  if (event.target.matches("input[data-field='attachment.filePicker']")) {
+    void createWorkspaceAttachmentsFromFiles(event.target.files);
+    event.target.value = "";
+  }
+});
+
+document.addEventListener("dragover", (event) => {
+  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true']");
+  if (!dropZone) return;
+  event.preventDefault();
+  dropZone.classList.add("dragging");
+});
+
+document.addEventListener("dragleave", (event) => {
+  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true']");
+  const relatedTarget = event.relatedTarget;
+  if (!dropZone || (relatedTarget instanceof Node && dropZone.contains(relatedTarget))) return;
+  dropZone.classList.remove("dragging");
+});
+
+document.addEventListener("drop", (event) => {
+  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true']");
+  if (!dropZone) return;
+  event.preventDefault();
+  dropZone.classList.remove("dragging");
+  void createWorkspaceAttachmentsFromFiles(event.dataTransfer?.files);
+});
+
 document.addEventListener("keydown", (event) => {
   const key = event.key;
+  if (key === "Escape" && state.ui.runtimeDrawerOpen) {
+    event.preventDefault();
+    state.ui.runtimeDrawerOpen = false;
+    state.ui.runtimeNodeRunId = "";
+    buildStudioLocationState();
+    render();
+    return;
+  }
+  if (key === "Escape" && state.ui.runtimeOverlayOpen) {
+    event.preventDefault();
+    state.ui.runtimeOverlayOpen = false;
+    document.body.classList.remove("runtime-overlay-active");
+    render();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === "k") {
     event.preventDefault();
     openCommandPalette();
@@ -9340,6 +11094,18 @@ document.addEventListener("keydown", (event) => {
   }
 
   if (isTextEntryTarget(event.target)) return;
+  if (state.ui.runtimeDrawerOpen && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) {
+    event.preventDefault();
+    const direction = {
+      ArrowLeft: "left",
+      ArrowRight: "right",
+      ArrowUp: "up",
+      ArrowDown: "down",
+    }[key];
+    const neighbor = findRuntimeNeighbor(getCurrentRuntimeGraphModel(), state.ui.runtimeNodeRunId, direction);
+    if (neighbor) selectRuntimeNode(neighbor.nodeRunId);
+    return;
+  }
   if (state.activeNav !== "missions" && state.activeNav !== "sessions") return;
 
   if (key === "ArrowDown") {
@@ -9358,5 +11124,12 @@ document.addEventListener("keydown", (event) => {
 
 hydrateStudioLocationState();
 render();
-void loadWorkspaceData();
-void restoreWorkspaceSessionFromLocation();
+void loadSecurity(false).then(async (securityLoaded) => {
+  if (!securityLoaded) {
+    resetWorkspaceScopedState();
+    render();
+    return;
+  }
+  await loadWorkspaceData();
+  await restoreWorkspaceSessionFromLocation();
+});

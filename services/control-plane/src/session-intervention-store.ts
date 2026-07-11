@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { SESSION_INTERVENTIONS_DIR } from "./config.js";
+import { getJsonStorageBackend } from "./storage-backend.js";
 import type {
   SessionInterventionKind,
   SessionInterventionRecord,
@@ -67,14 +67,11 @@ export function createSessionIntervention(input: {
 
 export function listSessionInterventions(sessionId: string): SessionInterventionRecord[] {
   const dirPath = sessionInterventionDir(sessionId);
-  ensureDir(dirPath);
-  const files = fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(dirPath, entry.name));
+  const storage = getJsonStorageBackend();
+  const files = storage.listJsonFiles(dirPath);
 
   const interventions = files.map((filePath) =>
-    JSON.parse(fs.readFileSync(filePath, "utf-8")) as SessionInterventionRecord,
+    storage.readJson<SessionInterventionRecord>(filePath),
   );
 
   interventions.sort((a, b) => {
@@ -84,4 +81,21 @@ export function listSessionInterventions(sessionId: string): SessionIntervention
     return a.created_at.localeCompare(b.created_at);
   });
   return interventions;
+}
+
+export function listRunInterventions(runId: string): SessionInterventionRecord[] {
+  const storage = getJsonStorageBackend();
+  return storage
+    .listDirs(SESSION_INTERVENTIONS_DIR)
+    .flatMap((dir) =>
+      storage
+        .listJsonFiles(dir)
+        .map((file) => storage.readJson<SessionInterventionRecord>(file)),
+    )
+    .filter((record) => record.run_id === runId)
+    .sort(
+      (left, right) =>
+        left.created_at.localeCompare(right.created_at) ||
+        left.intervention_id.localeCompare(right.intervention_id),
+    );
 }
