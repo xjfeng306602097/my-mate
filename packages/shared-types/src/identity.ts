@@ -5,6 +5,7 @@ export const WORKSPACE_PERMISSIONS = [
   "workspace.read",
   "workspace.manage_members",
   "registry.manage",
+  "governance.review",
   "mission.create",
   "mission.edit",
   "run.create",

@@ -9,6 +9,10 @@ import { WorkerRuntimeDispatcher } from "./worker-runtime-dispatcher.js";
 import type { RuntimeEngine } from "./runtime/runtime-engine.js";
 import { recoverRuntimeState } from "./runtime/runtime-recovery.js";
 import { recoverPendingEvaluations } from "./evaluation/evaluation-engine.js";
+import {
+  resumeRequestedFailureReplays,
+  scanRuntimeTimeouts,
+} from "./runtime/runtime-recovery-service.js";
 
 export function createControlPlaneRuntimeServer() {
   const executionAdapter = getExecutionAdapter();
@@ -25,6 +29,7 @@ export function createControlPlaneRuntimeServer() {
   const app = createApp({
     executionAdapter,
     dispatcher,
+    provisioner,
     doctor: {
       workerHub,
       publicBaseUrl: PUBLIC_BASE_URL,
@@ -46,6 +51,8 @@ export function createControlPlaneRuntimeServer() {
 }
 
 const runtime = createControlPlaneRuntimeServer();
+let recoveryWatchdog: NodeJS.Timeout | null = null;
+let recoveryScanRunning = false;
 
 async function startControlPlane(): Promise<void> {
   const evaluationRecovery = recoverPendingEvaluations();
@@ -65,6 +72,22 @@ async function startControlPlane(): Promise<void> {
           `Runtime recovery: ${summary.recovered_runs.length} recovered, ${summary.redispatched_runs.length} redispatched, ${summary.cleanup_failed_leases.length} cleanup failures.`,
         );
       }
+      const timeoutRecovery = await scanRuntimeTimeouts({
+        engine: runtime.runtimeEngine,
+        dispatcher: runtime.dispatcher,
+        provisioner: runtime.provisioner,
+      });
+      if (timeoutRecovery.detected > 0) {
+        console.log(
+          `Timeout compensation: ${timeoutRecovery.completed} completed, ${timeoutRecovery.failed} failed.`,
+        );
+      }
+      const replayRecovery = await resumeRequestedFailureReplays({ engine: runtime.runtimeEngine });
+      if (replayRecovery.resumed.length || replayRecovery.failed.length) {
+        console.log(
+          `Failure replay recovery: ${replayRecovery.resumed.length} resumed, ${replayRecovery.failed.length} failed.`,
+        );
+      }
     } catch (error) {
       console.error("Runtime recovery failed:", error);
     }
@@ -75,6 +98,24 @@ async function startControlPlane(): Promise<void> {
       `Runtime dispatcher: ${runtime.dispatcher?.kind || "legacy-execution-adapter"}`,
     );
   });
+  if (runtime.runtimeEngine) {
+    const engine = runtime.runtimeEngine;
+    const intervalMs = Math.max(250, Number(process.env.MY_MATE_RECOVERY_SCAN_INTERVAL_MS || 1000));
+    recoveryWatchdog = setInterval(() => {
+      if (recoveryScanRunning) return;
+      recoveryScanRunning = true;
+      void scanRuntimeTimeouts({
+        engine,
+        dispatcher: runtime.dispatcher,
+        provisioner: runtime.provisioner,
+      })
+        .catch((error) => console.error("Runtime timeout scan failed:", error))
+        .finally(() => {
+          recoveryScanRunning = false;
+        });
+    }, intervalMs);
+    recoveryWatchdog.unref();
+  }
 }
 
 void startControlPlane().catch((error) => {
@@ -83,6 +124,7 @@ void startControlPlane().catch((error) => {
 });
 
 function shutdown(): void {
+  if (recoveryWatchdog) clearInterval(recoveryWatchdog);
   runtime.workerHub?.close();
   runtime.server.close(() => process.exit(0));
 }

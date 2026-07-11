@@ -57,11 +57,15 @@ export let SCORECARDS_DIR = path.join(DATA_DIR, "scorecards");
 export let EVALUATIONS_DIR = path.join(DATA_DIR, "evaluations");
 export let REPLAYS_DIR = path.join(DATA_DIR, "replays");
 export let REPLAY_PLANS_DIR = path.join(DATA_DIR, "replay-plans");
+export let RUNTIME_COMPENSATIONS_DIR = path.join(DATA_DIR, "runtime-compensations");
+export let EXECUTION_REPLAYS_DIR = path.join(DATA_DIR, "execution-replays");
 export let OBSERVABILITY_RUN_INDEX_DIR = path.join(DATA_DIR, "observability-run-index");
 export let OBSERVABILITY_DIRTY_DIR = path.join(DATA_DIR, "observability-dirty");
 export let WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
 export let WORKSPACE_MEMBERS_DIR = path.join(DATA_DIR, "workspace-members");
 export let AUDIT_EVENTS_DIR = path.join(DATA_DIR, "audit-events");
+export let GOVERNANCE_POLICIES_DIR = path.join(DATA_DIR, "governance-policies");
+export let GOVERNANCE_CHANGES_DIR = path.join(DATA_DIR, "governance-changes");
 
 export function overrideDataDir(dataDir: string): void {
   DATA_DIR = dataDir;
@@ -98,11 +102,15 @@ export function overrideDataDir(dataDir: string): void {
   EVALUATIONS_DIR = path.join(DATA_DIR, "evaluations");
   REPLAYS_DIR = path.join(DATA_DIR, "replays");
   REPLAY_PLANS_DIR = path.join(DATA_DIR, "replay-plans");
+  RUNTIME_COMPENSATIONS_DIR = path.join(DATA_DIR, "runtime-compensations");
+  EXECUTION_REPLAYS_DIR = path.join(DATA_DIR, "execution-replays");
   OBSERVABILITY_RUN_INDEX_DIR = path.join(DATA_DIR, "observability-run-index");
   OBSERVABILITY_DIRTY_DIR = path.join(DATA_DIR, "observability-dirty");
   WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
   WORKSPACE_MEMBERS_DIR = path.join(DATA_DIR, "workspace-members");
   AUDIT_EVENTS_DIR = path.join(DATA_DIR, "audit-events");
+  GOVERNANCE_POLICIES_DIR = path.join(DATA_DIR, "governance-policies");
+  GOVERNANCE_CHANGES_DIR = path.join(DATA_DIR, "governance-changes");
 }
 export const PORT = Number(process.env.PORT || 4010);
 export const SCHEMAS_ROOT = path.join(REPO_ROOT, "schemas");

@@ -10,7 +10,15 @@ import { executeTrace } from "../src/commands/trace.js";
 import { executeReplay } from "../src/commands/replay.js";
 import { executeReplayPlan } from "../src/commands/replay-plan.js";
 import { executeRerun } from "../src/commands/rerun.js";
+import { executeRecovery } from "../src/commands/recovery.js";
+import { executeFailureReplay } from "../src/commands/failure-replay.js";
 import { executeAudit, executeWhoAmI } from "../src/commands/identity.js";
+import {
+  executeGovernanceDecision,
+  executeGovernanceList,
+  executeGovernancePropose,
+} from "../src/commands/governance.js";
+import { executeCostReport } from "../src/commands/cost-report.js";
 import type { CommandIo } from "../src/output.js";
 
 function captureIo(): CommandIo & { out: string[]; err: string[] } {
@@ -337,4 +345,194 @@ test("identity commands render selected workspace and verified audit state", asy
   const audit = await executeAudit(stubClient({ get: () => ({ items: [], chain_verified: true }) }), {}, auditIo);
   assert.equal(audit, 0);
   assert.match(auditIo.out[0] || "", /verified/);
+});
+
+test("governance commands list, propose, and review protected changes", async () => {
+  const listIo = captureIo();
+  const list = await executeGovernanceList(stubClient({ get: () => ({
+    policy: {
+      mode: "enforced",
+      required_approvals: 1,
+      allow_self_approval: false,
+    },
+    items: [{
+      change_id: "gch-one",
+      status: "pending",
+      action: "skill.upsert",
+      resource_type: "skill",
+      resource_id: "review-skill",
+      approvals: [],
+      required_approvals: 1,
+    }],
+  }) }), {}, listIo);
+  assert.equal(list, 0);
+  assert.match(listIo.out.join("\n"), /Governance enforced/);
+  assert.match(listIo.out.join("\n"), /gch-one.*skill\.upsert/);
+
+  let proposalPath = "";
+  let proposalBody: unknown;
+  const propose = await executeGovernancePropose(stubClient({ post: (path, body) => {
+    proposalPath = path;
+    proposalBody = body;
+    return {
+      change_id: "gch-two",
+      status: "pending",
+      action: "skill.upsert",
+      resource_type: "skill",
+      resource_id: "review-skill",
+      approvals: [],
+      required_approvals: 1,
+    };
+  } }), {
+    action: "skill.upsert",
+    resourceId: "review-skill",
+    reason: "Add reviewed skill",
+    payload: '{"name":"Review Skill"}',
+  }, captureIo());
+  assert.equal(propose, 0);
+  assert.equal(proposalPath, "/api/governance/changes");
+  assert.deepEqual(proposalBody, {
+    action: "skill.upsert",
+    resource_id: "review-skill",
+    reason: "Add reviewed skill",
+    payload: { name: "Review Skill" },
+  });
+
+  let decisionPath = "";
+  const approve = await executeGovernanceDecision(stubClient({ post: (path) => {
+    decisionPath = path;
+    return {
+      change_id: "gch-two",
+      status: "approved",
+      action: "skill.upsert",
+      resource_type: "skill",
+      resource_id: "review-skill",
+      approvals: [{ principal_id: "reviewer" }],
+      required_approvals: 1,
+    };
+  } }), "gch-two", "approve", { comment: "Reviewed" }, captureIo());
+  assert.equal(approve, 0);
+  assert.equal(decisionPath, "/api/governance/changes/gch-two/approve");
+});
+
+test("cost report renders attributed effective cost and completeness", async () => {
+  let requestPath = "";
+  const io = captureIo();
+  const exitCode = await executeCostReport(stubClient({ get: (path) => {
+    requestPath = path;
+    return {
+      observability: {
+        query: { window_hours: 168, status: "completed" },
+        cost_report: {
+          basis: "provider_reported_preferred",
+          coverage: {
+            runs_observed: 1,
+            model_jobs: 2,
+            costed_jobs: 1,
+            provider_reported_jobs: 1,
+            estimated_only_jobs: 0,
+            unavailable_jobs: 1,
+            cost_completeness: "partial",
+          },
+          totals: {
+            effective_costs: { USD: "0.12" },
+            provider_reported_costs: { USD: "0.12" },
+            estimated_costs: { USD: "0.1" },
+          },
+          by_agent: [{
+            key: "research-agent",
+            label: "Research Agent",
+            run_count: 1,
+            model_jobs: 2,
+            usage_records: 1,
+            costed_jobs: 1,
+            unavailable_jobs: 1,
+            failed_jobs: 1,
+            retry_attempts: 1,
+            total_tokens: 150,
+            cost_source: "provider_reported",
+            cost_completeness: "partial",
+            effective_costs: { USD: "0.12" },
+            provider_reported_costs: { USD: "0.12" },
+            estimated_costs: { USD: "0.1" },
+          }],
+          by_provider_model: [],
+          by_work_package: [],
+        },
+      },
+    };
+  } }), {
+    windowHours: 168,
+    status: "completed",
+    groupBy: "agent",
+  }, io);
+  assert.equal(exitCode, 0);
+  assert.match(requestPath, /window_hours=168/);
+  assert.match(requestPath, /status=completed/);
+  assert.match(io.out[0] || "", /partial 1\/2 jobs.*USD 0\.12/);
+  assert.match(io.out.join("\n"), /Research Agent.*source=provider_reported.*failures=1.*retries=1/);
+});
+
+test("recovery command renders posture and can trigger a bounded scan", async () => {
+  const io = captureIo();
+  let path = "";
+  const result = await executeRecovery(stubClient({ post: (requestPath) => {
+    path = requestPath;
+    return {
+      detected: 1,
+      completed: 1,
+      failed: 0,
+      records: [],
+      recovery: {
+        run_id: "run-oc02",
+        generated_at: "2026-07-11T00:00:00.000Z",
+        posture: "healthy",
+        summary: {
+          compensations: 1,
+          pending_compensations: 0,
+          cleanup_failures: 0,
+          execution_replays: 0,
+          active_replays: 0,
+        },
+        compensations: [],
+        execution_replays: [],
+      },
+    };
+  } }), "run-oc02", { scan: true }, io);
+  assert.equal(result.exitCode, 0);
+  assert.equal(path, "/api/runs/run-oc02/recovery/scan");
+  assert.match(io.out.join("\n"), /scan detected=1 completed=1 failed=0/);
+});
+
+test("failure replay sends a stable idempotency key and prints lineage", async () => {
+  let headers: Record<string, string> | undefined;
+  const io = captureIo();
+  const result = await executeFailureReplay(stubClient({ post: (_path, _body, requestHeaders) => {
+    headers = requestHeaders;
+    return {
+      schema_version: 1,
+      replay_id: "execution-replay:one",
+      idempotency_key: "stable-key",
+      run_id: "run-oc02",
+      node_run_id: "node-oc02",
+      source_job_id: "job-source",
+      replay_job_id: "job-replay",
+      source_attempt: 1,
+      replay_attempt: 2,
+      status: "dispatching",
+      requested_by: "operator",
+      requested_at: "2026-07-11T00:00:00.000Z",
+      updated_at: "2026-07-11T00:00:00.000Z",
+      completed_at: null,
+      identity_digest: "digest",
+      plan_identity: { template_id: "template", template_version: 1, node_id: "node", node_run_id: "node-oc02" },
+      runtime_identity: { target_kind: "docker-worker", agent_runtime: "codex", runtime_agent_ref: null, harness_profile: null },
+      lineage_event_ids: [],
+      last_error: null,
+      frozen_input: { intent: "test", input_keys: [], allowed_skills: [], allowed_tools: [] },
+    };
+  } }), "run-oc02", "node-oc02", { idempotencyKey: "stable-key" }, io);
+  assert.equal(result.exitCode, 0);
+  assert.equal(headers?.["idempotency-key"], "stable-key");
+  assert.match(io.out.join("\n"), /source-job=job-source replay-job=job-replay/);
 });

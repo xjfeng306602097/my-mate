@@ -293,6 +293,22 @@ Latest implementation update:
     layouts, and clean browser console output
   - implementation and operational details are documented in
     [`docs/28-data-02-tenancy-governance.md`](/C:/project/my-mate/docs/28-data-02-tenancy-governance.md)
+- `DATA-03` Registry and policy governance landed
+  - workspace policy defaults to advisory mode and can enforce approvals for
+    Agent Profile, Skill, and Template publish/archive mutations
+  - proposals freeze payload and resource baseline digests, approval count,
+    self-approval policy, proposer identity, and audit reason
+  - `governance.review` separates review/apply from `registry.manage`; owner
+    self-approval is denied by default and operator review is rejected
+  - approval and apply are separate evidence-bearing actions; baseline drift
+    produces `conflicted` instead of overwriting a concurrent change
+  - OpenAPI/generated types, Gateway routes, CLI commands, and the Studio
+    policy/proposal/approval workbench cover the complete workflow
+  - isolated owner/admin browser acceptance verified staging, self-review
+    blocking, approval, apply, Registry refresh, audit-chain verification, and
+    responsive desktop/mobile layout
+  - implementation and operational details are documented in
+    [`docs/29-data-03-registry-governance.md`](/C:/project/my-mate/docs/29-data-03-registry-governance.md)
 - `STU-03` desktop context workflow slice landed
   - Studio Context Files now supports drag/drop and file picker intake for
     local desktop file references
@@ -377,6 +393,22 @@ Latest implementation update:
   - browser acceptance passed at 1440 x 900, 390 x 844, and 360 x 800 with no
     toolbar overlap, comparison-strip overflow, document-level horizontal
     overflow, or console errors
+- `OBS-02` Agent cost attribution and operational reporting landed
+  - Observability Run Index V2 now persists Node, Agent Profile, runtime,
+    provider/model, and work-package identity beside Job and usage data
+  - effective cost uses provider-reported values first and catalog estimates
+    only as fallback; provider and estimated totals stay separately visible
+  - completeness explicitly counts costed, provider, estimated-only, and
+    unavailable model Jobs without dropping missing evidence
+  - Dashboard reports cost by Agent, provider/model, and work package within
+    the active window/status filters and existing retention behavior
+  - OpenAPI/generated types, Gateway coverage, CLI `cost-report`, and Studio
+    segmented reporting expose the same contract
+  - isolated CLI and 1440 x 900 / 390 x 844 browser acceptance verified
+    `USD 0.2` effective cost, source switching, internal narrow-table scroll,
+    no document overflow, and no console errors
+  - implementation details are documented in
+    [`docs/30-obs-02-cost-attribution.md`](/C:/project/my-mate/docs/30-obs-02-cost-attribution.md)
 - `OC-01A` capacity queue and container hardening landed
   - Docker Worker provisioning now enforces a global concurrency limit and a
     bounded FIFO queue with timeout, queue-limit rejection, and run/node
@@ -993,16 +1025,16 @@ This also means the following may land incrementally:
 | `MOB-03` | Mobile Productization | Deferred | P2 | Add offline and degraded-network handling for key mobile mission flows. | Productization gap; not part of current mainline. |
 | `DATA-01` | Storage | Done | P1 | Move file-backed persistence toward database-backed production storage. | Shared storage backend seam now covers the current store persistence surface, and a sqlite-backed implementation now ships behind the same snapshot migration path. |
 | `DATA-02` | Storage / Governance | Done | P1 | Add multi-tenant workspace support, permissions, and audit logs. | Trusted Gateway identity, request-scoped tenant isolation, persistent RBAC, hash-chained audit, OpenAPI/SDK, CLI, Mobile, and Studio workspace flows are implemented and validated. |
-| `DATA-03` | Storage / Governance | Deferred | P2 | Add registry approval workflow and stronger governance controls. | After core tenancy/auth work; not part of current mainline. |
+| `DATA-03` | Storage / Governance | Done | P2 | Add registry approval workflow and stronger governance controls. | Advisory/enforced workspace policy, independent review, drift-safe apply, audit evidence, OpenAPI/SDK, Gateway, CLI, and Studio workflows are implemented and validated. |
 | `OBS-01` | Observability | Done | P1 | Add unified runtime dashboard, tracing, metrics, latency, and failure aggregation. | `OBS-01A/B/C/D` now cover the unified dashboard, runtime metrics/correlation, indexed queries, bounded filters, non-destructive index retention, and previous-period comparison across CP/GW/Studio. |
 | `OBS-01B` | Observability | Done | P1 | Add runtime metrics, usage/cost completeness, and Trace/Event/Evaluation correlation with Studio drilldown. | 24-hour activity, reliability, retry, latency, usage/cost, correlation, focused integration coverage, and desktop/mobile visual acceptance pass. |
 | `OBS-01C` | Observability | Done | P1 | Replace per-request raw-store scans with per-run indexes and add bounded Dashboard filtering. | Per-run lazy indexes, dirty-write invalidation, 1-720 hour windows, status filters, correlation limits, adaptive buckets, compatibility coverage, Docker smoke, and desktop/mobile acceptance pass. |
 | `OBS-01D` | Observability | Done | P1 | Add configurable derived-index retention and previous-period operational comparison. | Default 90-day non-destructive index retention, unlimited override, explicit coverage, seven comparison metrics, Studio toggle/strip, compatibility tests, Docker smoke, and responsive acceptance pass. |
-| `OBS-02` | Observability | Deferred | P2 | Add agent cost tracking and operational reporting surfaces. | Useful after core metrics exist; not part of current mainline. |
+| `OBS-02` | Observability | Done | P2 | Add agent cost tracking and operational reporting surfaces. | Index V2 attribution, provider-preferred effective cost, completeness, Agent/model/work-package reports, OpenAPI/SDK, Gateway, CLI, and Studio are implemented and validated. |
 | `OC-01` | OpenClaw Production Hardening | Done | P1 | Add stronger concurrency handling, queueing, container health checks, resource isolation, and crash compensation. | `OC-01A/B` cover bounded capacity, health/isolation, Docker inventory reconciliation, orphan removal, durable cleanup attempts, redispatch gating, and operational visibility. |
 | `OC-01A` | OpenClaw Production Hardening | Done | P1 | Add bounded Docker Worker capacity, FIFO provisioning, container health gating, and default isolation. | Unit/integration coverage, real Docker Doctor/runtime smoke, Runtime Summary, Studio Dashboard/Settings, and responsive acceptance pass. |
 | `OC-01B` | OpenClaw Production Hardening | Done | P1 | Reconcile Docker Worker resources across crashes and make cleanup durable, observable, and idempotent. | Focused recovery coverage and real Docker restart smoke remove matched/orphan containers, retain failed cleanup capacity, and gate redispatch until compensation succeeds. |
-| `OC-02` | OpenClaw Production Hardening | Deferred | P2 | Add timeout compensation, failure replay, and more complete recovery audit trails. | Recovery exists, but production replay is still missing; not part of current mainline. |
+| `OC-02` | OpenClaw Production Hardening | Done | P2 | Add timeout compensation, failure replay, and more complete recovery audit trails. | Persistent deadline compensation, cleanup-gated capacity, restart continuation, frozen failed-Job Replay, evidence/Trace lineage, OpenAPI/Gateway/CLI/Studio operations, and focused plus Docker recovery acceptance are implemented. |
 | `SDK-01` | Shared Types / SDK | Done | P1 | Generate shared client types/SDK from schemas and OpenAPI instead of relying on handwritten types. | Committed OpenAPI-generated DTOs, drift checks, typed client factory/tests, strengthened supervision schemas, and CLI consumers have landed. |
 
 ## Suggested Near-Term Milestones
@@ -1130,9 +1162,9 @@ Exit condition:
 - [x] Mobile execution summary renders progress, checkpoint, and cost/capacity
       monitoring cards above the runtime topology.
 - [x] Studio Runtime Graph renders the same monitoring cards for desktop review.
-- [x] The cost-aware surface is intentionally a capacity/budget posture based
-      on existing policy, timeout, retry, and parallelism data; actual spend
-      accounting remains deferred under `OBS-02`.
+- [x] The runtime graph cost-aware surface remains a capacity/budget posture;
+      actual provider/estimated spend accounting is now supplied separately by
+      the completed `OBS-02` Dashboard report.
 - [x] Control Plane, Mobile, and Studio verification guard the new monitoring
       summary path.
 
@@ -1287,6 +1319,31 @@ Exit condition:
 - [x] Control Plane full tests, repository check/test/build, CLI Gateway E2E,
       and desktop/mobile Studio browser acceptance pass.
 
+### DATA-03 Implementation Status
+
+- [x] Workspace governance policy defaults to `advisory`, supports `enforced`,
+      validates 1-5 approvals, and freezes policy values into each proposal.
+- [x] Protected actions cover Agent Profile and Skill upsert/disable plus
+      Template publish/archive without changing unprotected mutation behavior.
+- [x] `governance.review` is granted to owner/admin only; proposals require
+      `registry.manage`, self-approval is denied by default, and duplicate
+      decisions are rejected.
+- [x] Change records persist canonical payload and baseline SHA-256 digests,
+      proposer/reviewer/apply evidence, result metadata, and conflict reason.
+- [x] Approved changes recheck the resource baseline before apply and become
+      `conflicted` when concurrent Registry or Template state has changed.
+- [x] Governance records remain workspace scoped; cross-workspace reads return
+      `404`, and governance events participate in the verified DATA-02 audit
+      chain.
+- [x] OpenAPI, generated shared types, Gateway allowlist, and CLI support cover
+      policy, list, propose, approve, reject, and apply operations.
+- [x] Studio Registry stages protected actions, exposes the policy/proposal/
+      approval workbench, disables proposer self-review, and refreshes affected
+      projections after apply.
+- [x] Focused Control Plane, Gateway, CLI, and Studio checks plus isolated
+      owner/admin browser acceptance cover the governance lifecycle and
+      desktop/mobile overflow behavior.
+
 ### STU-03 Implementation Status
 
 - [x] Studio Context Files now has a desktop drop zone for local file reference
@@ -1341,13 +1398,35 @@ Exit condition:
       comparison strip without changing the additive Dashboard response
       contract.
 
+### OBS-02 Implementation Status
+
+- [x] Observability index schema V2 records Agent Profile, provider/model,
+      runtime, Node, and work-package attribution without changing canonical
+      runtime or Evidence stores.
+- [x] Effective cost prefers provider-reported cost, falls back to catalog
+      estimate, never double counts both, and aggregates decimal strings per
+      currency without FX conversion.
+- [x] Report coverage distinguishes provider, estimated-only, costed, and
+      unavailable model Jobs with complete/partial/unavailable verdicts.
+- [x] Dashboard cost groups cover Agent, provider/model, and work package plus
+      tokens, failed Jobs, retries, Run count, source, and completeness.
+- [x] OpenAPI/generated types, Gateway pass-through coverage, and CLI
+      `cost-report` expose the indexed report with window/status filters.
+- [x] Studio renders a compact segmented Cost Attribution panel with internal
+      table scrolling only where the available workspace width requires it.
+- [x] Focused backend/Gateway/CLI checks and isolated desktop/mobile browser
+      acceptance validate provider preference, estimate fallback, unavailable
+      evidence, grouping, layout, and clean console output.
+
 ### Milestone D: Production Foundations
 
 Track in parallel when product shell risk is lower:
 
 - [x] `DATA-01`
 - [x] `DATA-02`
+- [x] `DATA-03`
 - [x] `OBS-01`
+- [x] `OBS-02`
 - [x] `OC-01`
 - [x] `OC-01A` global Docker Worker capacity, FIFO queue timeout/cancellation,
       container health gating, default resource/security isolation, and
@@ -1355,6 +1434,9 @@ Track in parallel when product shell risk is lower:
 - [x] `OC-01B` durable cleanup attempts, Docker inventory reconciliation,
       orphan removal, crash-safe capacity restoration, recovery audit events,
       redispatch gating, and Runtime Summary/Doctor/Studio recovery posture.
+- [x] `OC-02` persistent timeout compensation, cleanup-gated retries,
+      frozen-identity failed-node Replay, recovery evidence/Trace, API/CLI/Studio
+      operations, restart continuation, and acceptance coverage.
 - [x] `SDK-01` generated OpenAPI DTOs, drift enforcement, typed HTTP client,
       client behavior test, and CLI contract migration.
 

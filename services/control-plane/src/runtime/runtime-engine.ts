@@ -69,6 +69,11 @@ import {
   findLatestNodeHandoff,
   saveNodeHandoffRecord,
 } from "./node-handoff-store.js";
+import {
+  findDispatchableExecutionReplayForNode,
+  findExecutionReplayByJobId,
+  saveExecutionReplay,
+} from "./execution-replay-store.js";
 
 export type RuntimeQueueReason =
   | "run_created"
@@ -560,6 +565,43 @@ export class RuntimeEngine {
       };
     }
     saveRuntimeJobRecord(record);
+    const replay = findExecutionReplayByJobId(record.run_id, record.job_id);
+    if (replay) {
+      replay.status = input.status === "completed"
+        ? "completed"
+        : input.status === "failed"
+          ? "failed"
+          : input.status === "cancelled"
+            ? "cancelled"
+            : input.status === "running" || input.status === "waiting_human"
+              ? "running"
+              : "dispatching";
+      replay.updated_at = input.timestamp;
+      replay.completed_at = ["completed", "failed", "cancelled"].includes(input.status)
+        ? input.timestamp
+        : null;
+      replay.last_error = input.lastError ?? replay.last_error;
+      if (["completed", "failed", "cancelled"].includes(input.status)) {
+        const replayEvent = appendRunEvent({
+          run_id: record.run_id,
+          node_run_id: record.node_run_id,
+          type: input.status === "completed" ? "recovery.replay_completed" : "recovery.replay_failed",
+          actor_type: "system",
+          actor_id: "runtime-replay",
+          payload: {
+            replay_id: replay.replay_id,
+            source_job_id: replay.source_job_id,
+            replay_job_id: record.job_id,
+            status: input.status,
+            error: input.lastError ?? null,
+          },
+          created_at: input.timestamp,
+          idempotency_key: `recovery.replay_terminal:${replay.replay_id}:${input.status}`,
+        });
+        if (!replay.lineage_event_ids.includes(replayEvent.event_id)) replay.lineage_event_ids.push(replayEvent.event_id);
+      }
+      saveExecutionReplay(replay);
+    }
   }
 
   private markRuntimeJobDispatchFailed(input: {
@@ -576,6 +618,31 @@ export class RuntimeEngine {
       input.record.last_event_id = input.lastEventId;
     }
     saveRuntimeJobRecord(input.record);
+    const replay = findExecutionReplayByJobId(input.record.run_id, input.record.job_id);
+    if (replay) {
+      replay.status = "failed";
+      replay.updated_at = input.failedAt;
+      replay.completed_at = input.failedAt;
+      replay.last_error = message;
+      const event = appendRunEvent({
+        run_id: replay.run_id,
+        node_run_id: replay.node_run_id,
+        type: "recovery.replay_failed",
+        actor_type: "system",
+        actor_id: "runtime-replay",
+        payload: {
+          replay_id: replay.replay_id,
+          source_job_id: replay.source_job_id,
+          replay_job_id: input.record.job_id,
+          error: message,
+          phase: "dispatch",
+        },
+        created_at: input.failedAt,
+        idempotency_key: `recovery.replay_failed:${replay.replay_id}:dispatch`,
+      });
+      replay.lineage_event_ids.push(event.event_id);
+      saveExecutionReplay(replay);
+    }
   }
 
   async applyExecutionReport(
@@ -846,6 +913,7 @@ export class RuntimeEngine {
       if (
         report.status === "failed" &&
         !!context?.workerEventId &&
+        (!context.jobId || getRuntimeJobRecord(run.run_id, context.jobId)?.execution_kind !== "failure_replay") &&
         this.canRetryNode(node, nodeRun)
       ) {
         this.prepareNodeRetry({
@@ -1237,13 +1305,22 @@ export class RuntimeEngine {
           return Object.keys(value).length > 0 ? value : undefined;
         })();
 
-      const envelope = buildDispatchEnvelope(run, plan, node, {
-        extraInputPayload,
-      });
+      const failureReplay = findDispatchableExecutionReplayForNode(runId, node.node_run_id);
+      const envelope = failureReplay
+        ? {
+            ...JSON.parse(JSON.stringify(failureReplay.frozen_job.envelope)),
+            retry_policy: {
+              ...failureReplay.frozen_job.envelope.retry_policy,
+              attempt: nodeRun.attempt,
+            },
+          }
+        : buildDispatchEnvelope(run, plan, node, { extraInputPayload });
       const dispatchSequence = nextRuntimeDispatchSequence(runId, node.node_run_id);
       const job = buildRuntimeWorkerJob(envelope, {
+        jobId: failureReplay ? `${runId}:${node.node_run_id}:replay-${failureReplay.replay_id.split(":").at(-1)}` : undefined,
         createdAt: dispatchTime,
         dispatchSequence,
+        targetKind: failureReplay?.frozen_job.provision.target_kind,
       });
       const jobCreatedEvent = appendRunEvent({
         run_id: runId,
@@ -1257,6 +1334,9 @@ export class RuntimeEngine {
           dispatch_sequence: job.dispatch_sequence,
           target_kind: job.provision.target_kind,
           agent_runtime: job.harness.agent_runtime,
+          execution_kind: failureReplay ? "failure_replay" : nodeRun.attempt > 1 ? "retry" : "standard",
+          replay_id: failureReplay?.replay_id || null,
+          source_job_id: failureReplay?.source_job_id || null,
         },
         created_at: dispatchTime,
         idempotency_key: `job.created:${job.job_id}`,
@@ -1270,6 +1350,8 @@ export class RuntimeEngine {
         payload: {
           job_id: job.job_id,
           dispatcher: this.runtimeDispatcher.kind,
+          execution_kind: failureReplay ? "failure_replay" : nodeRun.attempt > 1 ? "retry" : "standard",
+          replay_id: failureReplay?.replay_id || null,
         },
         created_at: dispatchTime,
         causation_id: jobCreatedEvent.event_id,
@@ -1298,13 +1380,44 @@ export class RuntimeEngine {
       lastEventId = startedEvent.event_id;
       run.current_summary = `Dispatching node: ${node.name}`;
 
-      const runtimeJobRecord = saveRuntimeJobRecord(
-        createRuntimeJobRecord({
+      const createdRuntimeJobRecord = createRuntimeJobRecord({
           job,
           status: "dispatching",
           lastEventId: startedEvent.event_id,
-        }),
-      );
+        });
+      createdRuntimeJobRecord.execution_kind = failureReplay
+        ? "failure_replay"
+        : nodeRun.attempt > 1
+          ? "retry"
+          : "standard";
+      createdRuntimeJobRecord.replay_id = failureReplay?.replay_id || null;
+      createdRuntimeJobRecord.source_job_id = failureReplay?.source_job_id || null;
+      createdRuntimeJobRecord.identity_digest = failureReplay?.identity_digest || null;
+      const runtimeJobRecord = saveRuntimeJobRecord(createdRuntimeJobRecord);
+      if (failureReplay) {
+        failureReplay.replay_job_id = job.job_id;
+        failureReplay.replay_attempt = job.attempt;
+        failureReplay.status = "dispatching";
+        failureReplay.updated_at = dispatchTime;
+        const replayEvent = appendRunEvent({
+          run_id: runId,
+          node_run_id: node.node_run_id,
+          type: "recovery.replay_dispatched",
+          actor_type: "system",
+          actor_id: "runtime-replay",
+          payload: {
+            replay_id: failureReplay.replay_id,
+            source_job_id: failureReplay.source_job_id,
+            replay_job_id: job.job_id,
+            identity_digest: failureReplay.identity_digest,
+          },
+          created_at: dispatchTime,
+          causation_id: failureReplay.lineage_event_ids.at(-1) || null,
+          idempotency_key: `recovery.replay_dispatched:${failureReplay.replay_id}`,
+        });
+        failureReplay.lineage_event_ids.push(replayEvent.event_id);
+        saveExecutionReplay(failureReplay);
+      }
       dispatchedNodes += 1;
       void this.runtimeDispatcher
         .dispatchJob(job)

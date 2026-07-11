@@ -20,6 +20,7 @@ import {
   saveWorkerLeaseRecord,
   type WorkerLeaseRecord,
 } from "./worker-lease-store.js";
+import { findExecutionReplayByJobId, saveExecutionReplay } from "./execution-replay-store.js";
 
 export interface RuntimeRecoverySummary {
   scanned_runs: number;
@@ -271,6 +272,30 @@ export async function recoverRuntimeState(input: {
         job.finished_at = timestamp;
         job.last_error = "Control plane restarted while the runtime job was active.";
         saveRuntimeJobRecord(job);
+        const replay = findExecutionReplayByJobId(run.run_id, job.job_id);
+        if (replay) {
+          replay.status = "failed";
+          replay.updated_at = timestamp;
+          replay.completed_at = timestamp;
+          replay.last_error = "Control plane restarted while the failure replay was active.";
+          const replayFailed = appendRunEvent({
+            run_id: run.run_id,
+            node_run_id: node.node_run_id,
+            type: "recovery.replay_failed",
+            actor_type: "system",
+            actor_id: "runtime-recovery",
+            payload: {
+              replay_id: replay.replay_id,
+              source_job_id: replay.source_job_id,
+              replay_job_id: job.job_id,
+              reason: "control_plane_restart",
+            },
+            created_at: timestamp,
+            idempotency_key: `recovery.replay_failed:${replay.replay_id}:control_plane_restart`,
+          });
+          replay.lineage_event_ids.push(replayFailed.event_id);
+          saveExecutionReplay(replay);
+        }
       }
       applyNodeStatus(
         plan,
@@ -296,7 +321,10 @@ export async function recoverRuntimeState(input: {
         },
         created_at: timestamp,
       });
-      if (nodeRun.attempt < Math.max(1, node.retry_policy.max_attempts)) {
+      if (
+        job?.execution_kind !== "failure_replay" &&
+        nodeRun.attempt < Math.max(1, node.retry_policy.max_attempts)
+      ) {
         applyNodeStatus(
           plan,
           nodeRuns,

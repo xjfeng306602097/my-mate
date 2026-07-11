@@ -11,6 +11,20 @@ export type RunStatus =
 
 export type TemplateStatus = "draft" | "published" | "archived";
 export type RegistryStatus = "active" | "disabled";
+export type GovernanceMode = "advisory" | "enforced";
+export type GovernanceProtectedAction =
+  | "agent_profile.upsert"
+  | "agent_profile.disable"
+  | "skill.upsert"
+  | "skill.disable"
+  | "template.publish"
+  | "template.archive";
+export type GovernanceChangeStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "applied"
+  | "conflicted";
 export type TemplateDerivationKind = "derive" | "version";
 export type RunValidationMode = "warn" | "strict" | "bypass";
 export type SessionStatus =
@@ -90,6 +104,14 @@ export type EventType =
   | "evidence.recorded"
   | "runtime.patch_applied"
   | "runtime.quiescent"
+  | "recovery.timeout_detected"
+  | "recovery.compensation_started"
+  | "recovery.compensation_completed"
+  | "recovery.compensation_failed"
+  | "recovery.replay_requested"
+  | "recovery.replay_dispatched"
+  | "recovery.replay_completed"
+  | "recovery.replay_failed"
   | "scorecard.completed"
   | "evaluation.completed";
 
@@ -1124,6 +1146,61 @@ export interface UpsertSkillRequest {
   tags?: string[];
   status?: RegistryStatus;
   metadata?: Record<string, unknown>;
+}
+
+export interface GovernancePolicyRecord {
+  schema_version: 1;
+  workspace_id: string;
+  mode: GovernanceMode;
+  required_approvals: number;
+  allow_self_approval: boolean;
+  protected_actions: GovernanceProtectedAction[];
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GovernanceApprovalRecord {
+  principal_id: string;
+  decision: "approved" | "rejected";
+  comment: string | null;
+  decided_at: string;
+}
+
+export interface GovernanceChangeRecord {
+  schema_version: 1;
+  change_id: string;
+  workspace_id: string;
+  action: GovernanceProtectedAction;
+  resource_type: "agent_profile" | "skill" | "template";
+  resource_id: string;
+  reason: string;
+  payload: Record<string, unknown>;
+  payload_digest: string;
+  base_digest: string;
+  status: GovernanceChangeStatus;
+  required_approvals: number;
+  allow_self_approval: boolean;
+  approvals: GovernanceApprovalRecord[];
+  proposed_by: string;
+  proposed_at: string;
+  approved_at: string | null;
+  applied_by: string | null;
+  applied_at: string | null;
+  result: Record<string, unknown> | null;
+  conflict_reason: string | null;
+  updated_at: string;
+}
+
+export interface CreateGovernanceChangeRequest {
+  action: GovernanceProtectedAction;
+  resource_id: string;
+  reason: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface GovernanceDecisionRequest {
+  comment?: string;
 }
 
 export type ExecutionTargetKind =

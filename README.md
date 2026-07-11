@@ -72,6 +72,8 @@ packages/
 - [docs/26-homerail-gap-closure-plan.md](/C:/project/my-mate/docs/26-homerail-gap-closure-plan.md)
 - [docs/27-p0-p1-implementation-blueprint.md](/C:/project/my-mate/docs/27-p0-p1-implementation-blueprint.md)
 - [docs/28-data-02-tenancy-governance.md](/C:/project/my-mate/docs/28-data-02-tenancy-governance.md)
+- [docs/29-data-03-registry-governance.md](/C:/project/my-mate/docs/29-data-03-registry-governance.md)
+- [docs/30-obs-02-cost-attribution.md](/C:/project/my-mate/docs/30-obs-02-cost-attribution.md)
 
 ## Tenancy And Identity
 
@@ -87,6 +89,22 @@ Clients send a bearer token and may select one of their memberships with
 persistent RBAC state, isolates workspace records, and records protected
 outcomes in a per-workspace audit hash chain. See the DATA-02 document for the
 identity JSON shape, role matrix, migration behavior, and client configuration.
+
+## Registry Governance
+
+Every workspace starts with advisory Registry governance. Owner/admin users can
+enable enforced mode to require a proposal, independent review, and separate
+apply action for Agent Profile, Skill, and Template publish/archive mutations:
+
+```bash
+npm run my-mate -- governance policy --mode enforced --required-approvals 1 --self-approval deny
+npm run my-mate -- governance list --status pending
+```
+
+Enforced direct writes return `409 governance_approval_required`. Proposals
+freeze the reviewed payload and resource baseline digests; apply returns a
+`conflicted` change instead of overwriting concurrent state. See the DATA-03
+document for the protocol, permissions, API, Studio workflow, and rollout plan.
 
 ## Docker Runtime
 
@@ -174,6 +192,11 @@ categorized replay plans, and linked reruns from the frozen effective plan.
 Complete V2 runs can verify `replay=pass`; legacy runs return `partial` rather
 than claiming exact reconstruction. Rerun retries are protected by
 `Idempotency-Key`. Graph-first Studio and evaluation UI remain E1/E2.
+
+OC-02 adds persistent Job/node/Lease deadline compensation, cleanup-gated
+capacity restoration, restart continuation, and failed-node execution Replay
+from the frozen source Job identity. Recovery evidence is visible through
+Trace, Runtime projection, CLI, and the Studio Runtime Graph Recovery tab.
 
 ## Mobile App Shell
 

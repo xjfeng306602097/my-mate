@@ -336,7 +336,7 @@ test("dashboard summary exposes workload health and intervention backlogs", asyn
 
     const summary = await getJson(`${server.baseUrl}/api/dashboard/summary`);
     assert.equal(summary.status, 200);
-    assert.equal(summary.body.observability.query.index_schema_version, 1);
+    assert.equal(summary.body.observability.query.index_schema_version, 2);
     assert.equal(summary.body.observability.query.indexed_runs, 1);
     assert.equal(summary.body.observability.query.rebuilt_runs, 1);
     assert.equal(summary.body.runtime_health.storage_backend_kind, "file-json");
@@ -516,7 +516,11 @@ test("dashboard observability correlates latency retries usage trace and evaluat
       last_event_id: null,
       last_error: "Synthetic first-attempt failure",
       compatibility: { adapter_kind: null, dispatch_id: null, openclaw_task_id: null, openclaw_session_id: null },
-      job: {} as never,
+      job: {
+        node_id: "node-observability",
+        node_name: "Observed Agent Task",
+        envelope: { agent_profile: "observed-agent" },
+      } as never,
     });
     saveRuntimeJobRecord({
       job_id: "job-observability-2",
@@ -536,7 +540,11 @@ test("dashboard observability correlates latency retries usage trace and evaluat
       last_event_id: null,
       last_error: null,
       compatibility: { adapter_kind: null, dispatch_id: null, openclaw_task_id: null, openclaw_session_id: null },
-      job: {} as never,
+      job: {
+        node_id: "node-observability",
+        node_name: "Observed Agent Task",
+        envelope: { agent_profile: "observed-agent" },
+      } as never,
     });
     saveWorkerEvidence({
       evidence_schema_version: 2,
@@ -635,6 +643,23 @@ test("dashboard observability correlates latency retries usage trace and evaluat
     assert.equal(summary.body.observability.usage.token_completeness, "partial");
     assert.equal(summary.body.observability.usage.total_tokens, 150);
     assert.equal(summary.body.observability.usage.provider_reported_costs.USD, "0.12");
+    assert.equal(summary.body.observability.cost_report.basis, "provider_reported_preferred");
+    assert.equal(summary.body.observability.cost_report.coverage.model_jobs, 2);
+    assert.equal(summary.body.observability.cost_report.coverage.costed_jobs, 1);
+    assert.equal(summary.body.observability.cost_report.coverage.unavailable_jobs, 1);
+    assert.equal(summary.body.observability.cost_report.coverage.cost_completeness, "partial");
+    assert.equal(summary.body.observability.cost_report.totals.effective_costs.USD, "0.12");
+    assert.equal(summary.body.observability.cost_report.totals.estimated_costs.USD, "0.1");
+    assert.equal(summary.body.observability.cost_report.by_agent[0].key, "observed-agent");
+    assert.equal(summary.body.observability.cost_report.by_agent[0].model_jobs, 2);
+    assert.equal(summary.body.observability.cost_report.by_agent[0].failed_jobs, 1);
+    assert.equal(summary.body.observability.cost_report.by_agent[0].retry_attempts, 1);
+    assert.equal(summary.body.observability.cost_report.by_agent[0].effective_costs.USD, "0.12");
+    assert.equal(
+      summary.body.observability.cost_report.by_provider_model[0].key,
+      "openai/fixture-model",
+    );
+    assert.equal(summary.body.observability.cost_report.by_work_package[0].key, "unpackaged");
     assert.equal(summary.body.observability.activity.at(-1).total_tokens, 150);
     assert.equal(summary.body.observability.correlations[0].trace_id, `trace:${runId}`);
     assert.equal(summary.body.observability.correlations[0].retry_count, 1);

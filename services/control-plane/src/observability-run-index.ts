@@ -10,6 +10,7 @@ import {
 } from "./observability-index-dirty.js";
 import { listRuntimeJobRecords } from "./runtime/runtime-job-store.js";
 import { listWorkerEvidence } from "./runtime/worker-evidence-store.js";
+import { getRunPlan } from "./run-plan-store.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import type { RunRecord, RunStatus } from "./types.js";
 import { nowIso } from "./utils.js";
@@ -21,6 +22,14 @@ interface MoneyValue {
 
 export interface ObservabilityJobPoint {
   job_id: string;
+  node_run_id: string;
+  node_id: string;
+  node_name: string;
+  agent_profile_id: string | null;
+  work_package_id: string | null;
+  work_package_label: string | null;
+  agent_runtime: string;
+  runtime_agent_ref: string | null;
   status: string;
   attempt: number;
   model_job: boolean;
@@ -30,6 +39,12 @@ export interface ObservabilityJobPoint {
 
 export interface ObservabilityUsagePoint {
   job_id: string;
+  node_run_id: string;
+  agent_profile_id: string | null;
+  work_package_id: string | null;
+  work_package_label: string | null;
+  provider: string | null;
+  model: string | null;
   model_job: boolean;
   created_at: string;
   total_tokens: number | null;
@@ -38,7 +53,7 @@ export interface ObservabilityUsagePoint {
 }
 
 export interface ObservabilityRunIndexRecord {
-  schema_version: 1;
+  schema_version: 2;
   run_id: string;
   indexed_at: string;
   run_updated_at: string;
@@ -108,6 +123,11 @@ function moneyTotals(values: Map<string, string[]>): Record<string, string> {
 function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord {
   const jobs = listRuntimeJobRecords(run.run_id);
   const evidence = listWorkerEvidence(run.run_id);
+  const plan = getRunPlan(run.run_id);
+  const compiledNodesByRunId = new Map(
+    (plan?.compiled_nodes || []).map((node) => [node.node_run_id, node]),
+  );
+  const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
   const events = listRunEvents(run.run_id);
   const scorecard = listScorecards(run.run_id)[0] || null;
   const evaluation = listEvaluations(run.run_id)[0] || null;
@@ -124,6 +144,12 @@ function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord
   let totalTokens = 0;
   let tokenRecords = 0;
   const usage = [...latestUsageByJob.values()].map((item) => {
+    const job = jobsById.get(item.job_id) || null;
+    const compiledNode = compiledNodesByRunId.get(item.node_run_id) || null;
+    const envelope = job?.job?.envelope as unknown as { agent_profile?: unknown } | undefined;
+    const agentProfileId = compiledNode?.agent_profile ||
+      (typeof envelope?.agent_profile === "string" ? envelope.agent_profile : null);
+    const workPackage = compiledNode?.work_package || null;
     if (item.usage?.total_tokens !== null && item.usage?.total_tokens !== undefined) {
       totalTokens += item.usage.total_tokens;
       tokenRecords += 1;
@@ -132,6 +158,12 @@ function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord
     addMoney(estimatedCosts, item.usage?.estimated_cost);
     return {
       job_id: item.job_id,
+      node_run_id: item.node_run_id,
+      agent_profile_id: agentProfileId,
+      work_package_id: workPackage?.key || null,
+      work_package_label: workPackage?.label || null,
+      provider: item.source?.provider || null,
+      model: item.source?.model || null,
       model_job: modelJobIds.has(item.job_id),
       created_at: item.created_at,
       total_tokens: item.usage?.total_tokens ?? null,
@@ -142,7 +174,7 @@ function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord
   const latestEvent = events.at(-1) || null;
 
   return {
-    schema_version: 1,
+    schema_version: 2,
     run_id: run.run_id,
     indexed_at: nowIso(),
     run_updated_at: run.updated_at,
@@ -153,14 +185,28 @@ function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord
     started_at: run.started_at,
     finished_at: run.finished_at,
     duration_ms: durationMs(run.started_at, run.finished_at),
-    jobs: jobs.map((job) => ({
-      job_id: job.job_id,
-      status: job.status,
-      attempt: job.attempt,
-      model_job: job.agent_runtime !== "local",
-      finished_at: job.finished_at,
-      duration_ms: durationMs(job.accepted_at || job.created_at, job.finished_at),
-    })),
+    jobs: jobs.map((job) => {
+      const compiledNode = compiledNodesByRunId.get(job.node_run_id) || null;
+      const envelope = job.job?.envelope as unknown as { agent_profile?: unknown } | undefined;
+      const workPackage = compiledNode?.work_package || null;
+      return {
+        job_id: job.job_id,
+        node_run_id: job.node_run_id,
+        node_id: compiledNode?.node_id || job.job?.node_id || job.node_run_id,
+        node_name: compiledNode?.name || job.job?.node_name || job.node_run_id,
+        agent_profile_id: compiledNode?.agent_profile ||
+          (typeof envelope?.agent_profile === "string" ? envelope.agent_profile : null),
+        work_package_id: workPackage?.key || null,
+        work_package_label: workPackage?.label || null,
+        agent_runtime: job.agent_runtime,
+        runtime_agent_ref: job.runtime_agent_ref,
+        status: job.status,
+        attempt: job.attempt,
+        model_job: job.agent_runtime !== "local",
+        finished_at: job.finished_at,
+        duration_ms: durationMs(job.accepted_at || job.created_at, job.finished_at),
+      };
+    }),
     usage,
     evidence_count: evidence.length,
     native_evidence_count: evidence.filter((item) => item.source?.synthetic === false).length,
@@ -191,7 +237,7 @@ function readCurrentIndex(
   try {
     const record = storage.readJson<ObservabilityRunIndexRecord>(filePath);
     if (
-      record.schema_version !== 1 ||
+      record.schema_version !== 2 ||
       record.run_id !== run.run_id ||
       record.run_updated_at !== run.updated_at
     ) {

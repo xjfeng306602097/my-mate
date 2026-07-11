@@ -327,7 +327,7 @@ export function projectTraceSpans(runId: string): {
     });
   }
 
-  const controlTypes = /^(approval\.|human_input\.|runtime\.patch_|run\.(paused|resumed|blocked|cancelled|failed)|scorecard\.|evaluation\.)/;
+  const controlTypes = /^(approval\.|human_input\.|runtime\.patch_|lease\.cleanup_|recovery\.|run\.(paused|resumed|blocked|cancelled|failed)|scorecard\.|evaluation\.)/;
   for (const event of snapshot.events.filter((item) => controlTypes.test(item.type))) {
     spans.push({
       span_id: `control:${event.event_id}`,

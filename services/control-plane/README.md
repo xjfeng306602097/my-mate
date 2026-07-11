@@ -50,6 +50,10 @@ Current scope:
 - persisted pipeline scorecards
 - trusted Gateway identity verification and request-scoped workspace tenancy
 - centralized workspace RBAC and tamper-evident audit events
+- opt-in Registry and Template governance proposals, independent review,
+  baseline drift detection, and evidence-bearing apply
+- indexed model-cost attribution by Agent Profile, provider/model, and work
+  package with explicit provider/estimate/unavailable completeness
 
 This service is intentionally small and deterministic.
 
@@ -97,6 +101,27 @@ Identity and tenancy:
 - audit events are chained per workspace with SHA-256 and expose a
   `chain_verified` result
 
+Registry governance:
+
+- each workspace defaults to advisory mode, preserving existing writes
+- enforced mode returns `409 governance_approval_required` for protected Agent
+  Profile, Skill, and Template publish/archive mutations
+- `registry.manage` can propose; `governance.review` can update policy,
+  approve/reject, and apply
+- self-approval is denied by default and each proposal freezes its approval
+  threshold, payload digest, and resource baseline digest
+- apply is separate from approval and marks the change `conflicted` when the
+  resource changed after proposal
+- governance endpoints are:
+  - `GET/POST /api/governance/policy`
+  - `GET/POST /api/governance/changes`
+  - `GET /api/governance/changes/:changeId`
+  - `POST /api/governance/changes/:changeId/approve`
+  - `POST /api/governance/changes/:changeId/reject`
+  - `POST /api/governance/changes/:changeId/apply`
+- full protocol and operating guidance are documented in
+  `docs/29-data-03-registry-governance.md`
+
 Additional current behavior:
 
 - operational summary endpoints are available for runtime posture checks:
@@ -128,6 +153,10 @@ Additional current behavior:
 - `compare=previous` returns the immediately preceding equal-length period,
   per-metric deltas/directions/outcomes, and complete/partial coverage metadata
   when retention shortens the comparison period
+- Dashboard `observability.cost_report` uses provider-reported cost first and
+  catalog estimate only as a fallback, while retaining separate raw totals
+- Observability index schema V2 persists Node, Agent, provider/model, runtime,
+  and work-package identity for cost attribution; V1 indexes rebuild lazily
 - `waiting_human` callbacks are normalized into either:
   - approval requests, when the node defines `approval_kind`
   - human input requests, when the node defines `human_input_schema`
@@ -535,3 +564,18 @@ Replay plans only produce categorized recommendations. They do not mutate
 templates, prompts, policies, or assignments. Reruns clone the frozen
 effective plan, preserve the original route ID, persist `source_run_id`, merge
 explicit input overrides, and deduplicate retries through `Idempotency-Key`.
+
+## OC-02 Timeout Compensation And Failure Replay
+
+The runtime watchdog persists expired Job/node/Lease compensation before it
+cancels execution or cleans a Worker. Cleanup attempt IDs and capacity release
+remain linked to the existing Lease record; failed cleanup is resumed by a
+later scan or restart. Configure the scan interval with
+`MY_MATE_RECOVERY_SCAN_INTERVAL_MS`.
+
+`GET /api/runs/:runId/recovery` returns the posture. Operators can run
+`POST /api/runs/:runId/recovery/scan` and replay a failed node through
+`POST /api/runs/:runId/nodes/:nodeRunId/recovery-replays` with a required
+`Idempotency-Key`. Failure Replay uses the frozen source Job identity and
+creates a distinct Job. It remains separate from retry, audit replay, and
+linked rerun.

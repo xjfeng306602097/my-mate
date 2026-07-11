@@ -70,6 +70,47 @@ interface DashboardUsageMetrics {
   estimated_costs: Record<string, string>;
 }
 
+type DashboardCostSource = "provider_reported" | "estimated" | "mixed" | "unavailable";
+
+interface DashboardCostAttributionGroup {
+  key: string;
+  label: string;
+  run_count: number;
+  model_jobs: number;
+  usage_records: number;
+  costed_jobs: number;
+  unavailable_jobs: number;
+  failed_jobs: number;
+  retry_attempts: number;
+  total_tokens: number | null;
+  cost_source: DashboardCostSource;
+  cost_completeness: "complete" | "partial" | "unavailable";
+  effective_costs: Record<string, string>;
+  provider_reported_costs: Record<string, string>;
+  estimated_costs: Record<string, string>;
+}
+
+interface DashboardCostReport {
+  basis: "provider_reported_preferred";
+  coverage: {
+    runs_observed: number;
+    model_jobs: number;
+    costed_jobs: number;
+    provider_reported_jobs: number;
+    estimated_only_jobs: number;
+    unavailable_jobs: number;
+    cost_completeness: "complete" | "partial" | "unavailable";
+  };
+  totals: {
+    effective_costs: Record<string, string>;
+    provider_reported_costs: Record<string, string>;
+    estimated_costs: Record<string, string>;
+  };
+  by_agent: DashboardCostAttributionGroup[];
+  by_provider_model: DashboardCostAttributionGroup[];
+  by_work_package: DashboardCostAttributionGroup[];
+}
+
 interface DashboardComparisonMetric {
   current: number | null;
   previous: number | null;
@@ -149,7 +190,7 @@ export interface DashboardSummaryResponse {
       window_hours: number | null;
       status: DashboardObservabilityStatusFilter;
       correlation_limit: number;
-      index_schema_version: 1;
+      index_schema_version: 2;
       indexed_runs: number;
       rebuilt_runs: number;
       compare: "none" | "previous";
@@ -177,6 +218,7 @@ export interface DashboardSummaryResponse {
       job_duration: DashboardMetricDistribution;
     };
     usage: DashboardUsageMetrics;
+    cost_report: DashboardCostReport;
     activity: DashboardActivityBucket[];
     comparison: {
       mode: "previous_period";
@@ -361,6 +403,178 @@ function moneyTotals(values: Map<string, string[]>): Record<string, string> {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([currency, amounts]) => [currency, sumDecimalStrings(amounts)]),
   );
+}
+
+interface MutableCostGroup {
+  key: string;
+  label: string;
+  runIds: Set<string>;
+  jobIds: Set<string>;
+  providerReportedJobIds: Set<string>;
+  estimatedOnlyJobIds: Set<string>;
+  usageRecords: number;
+  failedJobs: number;
+  retryAttempts: number;
+  totalTokens: number;
+  tokenRecords: number;
+  effectiveCosts: Map<string, string[]>;
+  providerCosts: Map<string, string[]>;
+  estimatedCosts: Map<string, string[]>;
+}
+
+function mutableCostGroup(key: string, label: string): MutableCostGroup {
+  return {
+    key,
+    label,
+    runIds: new Set(),
+    jobIds: new Set(),
+    providerReportedJobIds: new Set(),
+    estimatedOnlyJobIds: new Set(),
+    usageRecords: 0,
+    failedJobs: 0,
+    retryAttempts: 0,
+    totalTokens: 0,
+    tokenRecords: 0,
+    effectiveCosts: new Map(),
+    providerCosts: new Map(),
+    estimatedCosts: new Map(),
+  };
+}
+
+function costCompleteness(modelJobs: number, costedJobs: number) {
+  return modelJobs === 0 || costedJobs === 0
+    ? "unavailable" as const
+    : costedJobs === modelJobs
+      ? "complete" as const
+      : "partial" as const;
+}
+
+function summarizeCostGroup(group: MutableCostGroup): DashboardCostAttributionGroup {
+  const providerReportedJobs = group.providerReportedJobIds.size;
+  const estimatedOnlyJobs = group.estimatedOnlyJobIds.size;
+  const costedJobs = providerReportedJobs + estimatedOnlyJobs;
+  const modelJobs = group.jobIds.size;
+  const costSource: DashboardCostSource = providerReportedJobs && estimatedOnlyJobs
+    ? "mixed"
+    : providerReportedJobs
+      ? "provider_reported"
+      : estimatedOnlyJobs
+        ? "estimated"
+        : "unavailable";
+  return {
+    key: group.key,
+    label: group.label,
+    run_count: group.runIds.size,
+    model_jobs: modelJobs,
+    usage_records: group.usageRecords,
+    costed_jobs: costedJobs,
+    unavailable_jobs: Math.max(0, modelJobs - costedJobs),
+    failed_jobs: group.failedJobs,
+    retry_attempts: group.retryAttempts,
+    total_tokens: group.tokenRecords ? group.totalTokens : null,
+    cost_source: costSource,
+    cost_completeness: costCompleteness(modelJobs, costedJobs),
+    effective_costs: moneyTotals(group.effectiveCosts),
+    provider_reported_costs: moneyTotals(group.providerCosts),
+    estimated_costs: moneyTotals(group.estimatedCosts),
+  };
+}
+
+function addCostPoint(
+  group: MutableCostGroup,
+  runId: string,
+  job: ObservabilityRunIndexRecord["jobs"][number],
+  usage: ObservabilityRunIndexRecord["usage"][number] | null,
+): void {
+  group.runIds.add(runId);
+  group.jobIds.add(job.job_id);
+  if (job.status === "failed" || job.status === "rejected") group.failedJobs += 1;
+  if (job.attempt > 1) group.retryAttempts += 1;
+  if (!usage) return;
+  group.usageRecords += 1;
+  if (usage.total_tokens !== null) {
+    group.totalTokens += usage.total_tokens;
+    group.tokenRecords += 1;
+  }
+  addMoney(group.providerCosts, usage.provider_reported_cost);
+  addMoney(group.estimatedCosts, usage.estimated_cost);
+  if (usage.provider_reported_cost) {
+    group.providerReportedJobIds.add(job.job_id);
+    addMoney(group.effectiveCosts, usage.provider_reported_cost);
+  } else if (usage.estimated_cost) {
+    group.estimatedOnlyJobIds.add(job.job_id);
+    addMoney(group.effectiveCosts, usage.estimated_cost);
+  }
+}
+
+function buildCostGroups(
+  records: ObservabilityRunIndexRecord[],
+  identify: (
+    job: ObservabilityRunIndexRecord["jobs"][number],
+    usage: ObservabilityRunIndexRecord["usage"][number] | null,
+  ) => { key: string; label: string },
+): DashboardCostAttributionGroup[] {
+  const groups = new Map<string, MutableCostGroup>();
+  for (const record of records) {
+    const usageByJob = new Map(record.usage.map((usage) => [usage.job_id, usage]));
+    for (const job of record.jobs.filter((item) => item.model_job)) {
+      const usage = usageByJob.get(job.job_id) || null;
+      const identity = identify(job, usage);
+      const group = groups.get(identity.key) || mutableCostGroup(identity.key, identity.label);
+      addCostPoint(group, record.run_id, job, usage);
+      groups.set(identity.key, group);
+    }
+  }
+  return [...groups.values()]
+    .map(summarizeCostGroup)
+    .sort((left, right) =>
+      right.costed_jobs - left.costed_jobs ||
+      (right.total_tokens || 0) - (left.total_tokens || 0) ||
+      left.label.localeCompare(right.label),
+    );
+}
+
+function buildCostReport(records: ObservabilityRunIndexRecord[]): DashboardCostReport {
+  const total = mutableCostGroup("all", "All model jobs");
+  for (const record of records) {
+    const usageByJob = new Map(record.usage.map((usage) => [usage.job_id, usage]));
+    for (const job of record.jobs.filter((item) => item.model_job)) {
+      addCostPoint(total, record.run_id, job, usageByJob.get(job.job_id) || null);
+    }
+  }
+  const totals = summarizeCostGroup(total);
+  const providerReportedJobs = total.providerReportedJobIds.size;
+  const estimatedOnlyJobs = total.estimatedOnlyJobIds.size;
+  const costedJobs = providerReportedJobs + estimatedOnlyJobs;
+  return {
+    basis: "provider_reported_preferred",
+    coverage: {
+      runs_observed: total.runIds.size,
+      model_jobs: total.jobIds.size,
+      costed_jobs: costedJobs,
+      provider_reported_jobs: providerReportedJobs,
+      estimated_only_jobs: estimatedOnlyJobs,
+      unavailable_jobs: Math.max(0, total.jobIds.size - costedJobs),
+      cost_completeness: costCompleteness(total.jobIds.size, costedJobs),
+    },
+    totals: {
+      effective_costs: totals.effective_costs,
+      provider_reported_costs: totals.provider_reported_costs,
+      estimated_costs: totals.estimated_costs,
+    },
+    by_agent: buildCostGroups(records, (job) => ({
+      key: job.agent_profile_id || "unassigned",
+      label: job.agent_profile_id || "Unassigned",
+    })),
+    by_provider_model: buildCostGroups(records, (_job, usage) => ({
+      key: `${usage?.provider || "unknown"}/${usage?.model || "unknown"}`,
+      label: `${usage?.provider || "Unknown provider"} / ${usage?.model || "Unknown model"}`,
+    })),
+    by_work_package: buildCostGroups(records, (job) => ({
+      key: job.work_package_id || "unpackaged",
+      label: job.work_package_label || job.work_package_id || "Unpackaged",
+    })),
+  };
 }
 
 function buildObservabilityMetricSnapshot(records: ObservabilityRunIndexRecord[]): {
@@ -618,7 +832,7 @@ function buildDashboardObservability(input: {
       window_hours: windowHours,
       status,
       correlation_limit: correlationLimit,
-      index_schema_version: 1,
+      index_schema_version: 2,
       indexed_runs: indexLoad.records.length,
       rebuilt_runs: indexLoad.rebuilt_records,
       compare,
@@ -643,6 +857,7 @@ function buildDashboardObservability(input: {
     reliability: currentMetrics.reliability,
     latency: currentMetrics.latency,
     usage: currentMetrics.usage,
+    cost_report: buildCostReport(records),
     activity,
     comparison: previousMetrics
       ? {

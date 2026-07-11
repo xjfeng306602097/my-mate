@@ -39,6 +39,10 @@ Current MVP scope:
 - manage the Studio bearer token and selected workspace from Settings
 - inspect identity, workspace members, role controls, and the verified audit
   chain
+- configure advisory/enforced Registry governance, stage protected mutations,
+  and independently approve, reject, or apply proposals
+- inspect effective model cost and evidence completeness by Agent, model, or
+  work package from the unified Dashboard
 
 This MVP is intentionally dependency-free. It runs a small Node static server and proxies same-origin `/api/*` requests to the API gateway, avoiding browser CORS setup during local development.
 
@@ -83,6 +87,9 @@ npm run check:runtime-graph
 npm run visual:runtime-graph
 ```
 
+Runtime Graph includes a Recovery tab for deadline scans, compensation audit,
+cleanup attempt status, and frozen-identity Replay of the selected failed node.
+
 OpenClaw E2E projection visual check:
 
 ```bash
@@ -110,3 +117,6 @@ navigation unstable.
 - Planner adoption is explicitly confirmed in the Studio before copying or saving a planner-generated draft.
 - JSON fields are validated locally for parseability; final schema validation is still performed by the control-plane on save/publish.
 - Registry edits use the control-plane upsert APIs; disabled records remain visible for audit and can be re-enabled by saving with `active` status.
+- In enforced governance mode, protected Agent Profile, Skill, and Template
+  lifecycle actions stage a proposal instead of writing directly. Approval and
+  apply remain separate actions, and the Registry refreshes only after apply.

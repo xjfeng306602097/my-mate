@@ -17,6 +17,12 @@ const PROXY_RULES: RouteRule[] = [
   { method: "GET", pattern: /^\/api\/workspaces\/[^/]+\/members$/ },
   { method: "PUT", pattern: /^\/api\/workspaces\/[^/]+\/members\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/audit-events$/ },
+  { method: "GET", pattern: /^\/api\/governance\/policy$/ },
+  { method: "POST", pattern: /^\/api\/governance\/policy$/ },
+  { method: "GET", pattern: /^\/api\/governance\/changes$/ },
+  { method: "POST", pattern: /^\/api\/governance\/changes$/ },
+  { method: "GET", pattern: /^\/api\/governance\/changes\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/governance\/changes\/[^/]+\/(?:approve|reject|apply)$/ },
   { method: "GET", pattern: /^\/api\/templates$/ },
   { method: "POST", pattern: /^\/api\/templates$/ },
   { method: "GET", pattern: /^\/api\/templates\/[^/]+$/ },
@@ -91,6 +97,10 @@ const PROXY_RULES: RouteRule[] = [
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/plan$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/graph$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/runtime$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/recovery$/ },
+  { method: "POST", pattern: /^\/api\/runs\/[^/]+\/recovery\/scan$/ },
+  { method: "POST", pattern: /^\/api\/runs\/[^/]+\/nodes\/[^/]+\/recovery-replays$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/recovery-replays\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/nodes$/ },
   { method: "POST", pattern: /^\/api\/runs\/[^/]+\/actions\/(?:pause|resume|cancel)$/ },
   { method: "POST", pattern: /^\/api\/runs\/[^/]+\/nodes\/[^/]+\/actions\/(?:retry|skip)$/ },
@@ -151,7 +161,13 @@ function copyHeaders(
   }
 
   const idempotencyKey = req.header("idempotency-key");
-  if (idempotencyKey && /^\/api\/runs\/[^/]+\/reruns$/.test(getOriginalPath(req))) {
+  if (
+    idempotencyKey &&
+    (
+      /^\/api\/runs\/[^/]+\/reruns$/.test(getOriginalPath(req)) ||
+      /^\/api\/runs\/[^/]+\/nodes\/[^/]+\/recovery-replays$/.test(getOriginalPath(req))
+    )
+  ) {
     headers.set("idempotency-key", idempotencyKey);
   }
 

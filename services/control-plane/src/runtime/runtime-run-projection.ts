@@ -12,6 +12,7 @@ import { listNodeHandoffRecords } from "./node-handoff-store.js";
 import { nowIso } from "../utils.js";
 import { getRunRouteOrLegacy } from "../run-route-store.js";
 import { buildProviderEvidenceProjection } from "./provider-evidence-projection.js";
+import { buildRuntimeRecoveryView } from "./runtime-recovery-service.js";
 
 export function buildRuntimeRunProjection(runId: string) {
   const run = getRun(runId);
@@ -47,6 +48,7 @@ export function buildRuntimeRunProjection(runId: string) {
     handoffs,
     artifacts,
     provider_evidence: providerEvidence,
+    recovery: buildRuntimeRecoveryView(runId),
     event_delivery: {
       tracked_jobs: eventCursors.length,
       ignored_events: eventCursors.reduce(

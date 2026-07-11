@@ -63,6 +63,21 @@ function emptyOrchestratorEditor() {
   };
 }
 
+function emptyGovernanceState() {
+  return {
+    policy: null,
+    changes: [],
+    loading: false,
+    saving: false,
+    draft: {
+      action: "agent_profile.upsert",
+      resourceId: "",
+      reason: "",
+      payloadText: "{}",
+    },
+  };
+}
+
 const state = {
   templates: [],
   missions: [],
@@ -110,10 +125,12 @@ const state = {
     apiKey: globalThis.localStorage?.getItem(STUDIO_API_KEY_STORAGE) || "",
     workspaceId: globalThis.localStorage?.getItem(STUDIO_WORKSPACE_STORAGE) || "",
   },
+  governance: emptyGovernanceState(),
   dashboardFilters: {
     windowHours: 24,
     status: "all",
     comparePrevious: true,
+    costGroupBy: "agent",
   },
   workspaceDetail: null,
   missionQuery: "",
@@ -4363,6 +4380,8 @@ function renderRuntimeInspectorPanel(graph, projection) {
     scorecardLoading: isActionLoading("runtime-scorecard", model.runId),
     evaluationLoading: isActionLoading("runtime-evaluation", model.runId),
     replayLoading: isActionLoading("runtime-replay", model.runId),
+    recoveryLoading: isActionLoading("runtime-recovery", model.runId),
+    failureReplayLoading: isActionLoading("runtime-failure-replay", model.selectedNode?.nodeRunId || ""),
   });
 }
 
@@ -4387,6 +4406,28 @@ async function request(path, options = {}) {
   return body;
 }
 
+function hasSecurityPermission(permission) {
+  return state.security.identity?.permissions?.includes(permission) === true;
+}
+
+function isGovernedAction(action) {
+  const policy = state.governance.policy;
+  return policy?.mode === "enforced" && policy.protected_actions?.includes(action);
+}
+
+function stageGovernanceProposal(action, resourceId, payload, reason) {
+  state.governance.draft = {
+    action,
+    resourceId: resourceId || "",
+    reason: reason || "",
+    payloadText: prettyJson(payload || {}),
+  };
+  state.activeNav = "registry";
+  state.notice = "Governed change staged for review before submission.";
+  state.error = null;
+  render();
+}
+
 function resetWorkspaceScopedState() {
   workspaceLoadSeq += 1;
   closeSessionStream();
@@ -4396,6 +4437,7 @@ function resetWorkspaceScopedState() {
   state.orchestratorProfiles = [];
   state.agentProfiles = [];
   state.skills = [];
+  state.governance = emptyGovernanceState();
   state.lineage = null;
   state.selectedId = null;
   state.selectedSessionId = null;
@@ -5040,6 +5082,55 @@ async function verifyRuntimeReplay() {
   }
 }
 
+async function scanRuntimeRecovery() {
+  const runId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  if (!runId || !state.workspaceDetail) return;
+  setActionLoading("runtime-recovery", runId, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const result = await request(`/api/runs/${encodeURIComponent(runId)}/recovery/scan`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadRuntimeGraphForWorkspace(false);
+    state.notice = `Recovery scan: ${result.completed || 0} completed, ${result.failed || 0} failed.`;
+  } catch (error) {
+    state.error = error.message || "Failed to scan runtime recovery.";
+  } finally {
+    setActionLoading("runtime-recovery", runId, false);
+    render();
+  }
+}
+
+async function replayFailedRuntimeNode() {
+  const runId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  const nodeRunId = state.ui.runtimeNodeRunId;
+  if (!runId || !nodeRunId || !state.workspaceDetail) return;
+  setActionLoading("runtime-failure-replay", nodeRunId, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const replay = await request(
+      `/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/recovery-replays`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": globalThis.crypto?.randomUUID?.() || `${runId}:${nodeRunId}:${Date.now()}` },
+        body: JSON.stringify({}),
+      },
+    );
+    await loadRuntimeGraphForWorkspace(false);
+    state.notice = `Failure replay ${replay.status || "recorded"}: ${replay.replay_job_id || "dispatch pending"}.`;
+  } catch (error) {
+    state.error = error.message || "Failed to replay the selected node.";
+  } finally {
+    setActionLoading("runtime-failure-replay", nodeRunId, false);
+    render();
+  }
+}
+
 async function loadRouteCompareForWorkspace(selection = null, shouldRender = true) {
   const sessionId = getWorkspaceSessionId(state.workspaceDetail);
   if (!sessionId || !state.workspaceDetail) {
@@ -5321,6 +5412,21 @@ async function loadRegistry(shouldRender = true) {
   }
 }
 
+async function loadGovernance(shouldRender = true) {
+  state.governance.loading = true;
+  if (shouldRender) render();
+  try {
+    const result = await request("/api/governance/changes?limit=100");
+    state.governance.policy = result.policy || null;
+    state.governance.changes = result.items || [];
+  } catch (error) {
+    state.error = error.message || "Failed to load governance changes.";
+  } finally {
+    state.governance.loading = false;
+    if (shouldRender) render();
+  }
+}
+
 function applyOrchestratorProfile(profile) {
   if (!profile) return;
   state.orchestrator.selectedProfileId = profile.orchestrator_id || "";
@@ -5588,6 +5694,7 @@ async function loadWorkspaceData(nextSelectedId = state.selectedId) {
     loadTemplates(nextSelectedId),
     loadOrchestratorProfiles(false),
     loadRegistry(false),
+    loadGovernance(false),
     loadRuntimeSummary(false),
     loadDashboardSummary(false),
   ];
@@ -5867,6 +5974,15 @@ async function publishDraft() {
     render();
     return;
   }
+  if (isGovernedAction("template.publish")) {
+    stageGovernanceProposal(
+      "template.publish",
+      state.editor.templateId,
+      {},
+      `Publish template ${state.editor.templateId}`,
+    );
+    return;
+  }
   state.publishing = true;
   state.error = null;
   state.notice = null;
@@ -5942,6 +6058,15 @@ async function archiveSelectedTemplate() {
   if (!state.editor.templateId) {
     state.error = "Select a saved template before archiving.";
     render();
+    return;
+  }
+  if (isGovernedAction("template.archive")) {
+    stageGovernanceProposal(
+      "template.archive",
+      state.editor.templateId,
+      {},
+      `Archive template ${state.editor.templateId}`,
+    );
     return;
   }
   state.archiving = true;
@@ -6765,12 +6890,112 @@ async function saveOrchestratorProfile() {
   }
 }
 
+async function saveGovernancePolicy() {
+  const policy = state.governance.policy;
+  if (!policy) return;
+  state.governance.saving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    state.governance.policy = await request("/api/governance/policy", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: policy.mode,
+        required_approvals: Number(policy.required_approvals) || 1,
+        allow_self_approval: policy.allow_self_approval === true,
+        protected_actions: policy.protected_actions || [],
+      }),
+    });
+    state.notice = `Governance policy is now ${state.governance.policy.mode}.`;
+  } catch (error) {
+    state.error = error.message || "Failed to update governance policy.";
+  } finally {
+    state.governance.saving = false;
+    render();
+  }
+}
+
+async function submitGovernanceProposal() {
+  const draft = state.governance.draft;
+  const payload = parseJsonObject(draft.payloadText);
+  if (!payload.ok) {
+    state.error = `Governance payload: ${payload.message}`;
+    render();
+    return;
+  }
+  if (!draft.resourceId.trim() || !draft.reason.trim()) {
+    state.error = "Governance resource ID and reason are required.";
+    render();
+    return;
+  }
+  state.governance.saving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const change = await request("/api/governance/changes", {
+      method: "POST",
+      body: JSON.stringify({
+        action: draft.action,
+        resource_id: draft.resourceId.trim(),
+        reason: draft.reason.trim(),
+        payload: payload.value,
+      }),
+    });
+    state.notice = `Proposed ${change.change_id}`;
+    state.governance.draft = emptyGovernanceState().draft;
+    await loadGovernance(false);
+  } catch (error) {
+    state.error = error.message || "Failed to propose governed change.";
+  } finally {
+    state.governance.saving = false;
+    render();
+  }
+}
+
+async function decideStudioGovernanceChange(changeId, decision) {
+  if (!changeId || !["approve", "reject", "apply"].includes(decision)) return;
+  state.governance.saving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const change = await request(
+      `/api/governance/changes/${encodeURIComponent(changeId)}/${decision}`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    state.notice = `${change.change_id} is ${change.status}.`;
+    await Promise.all([
+      loadGovernance(false),
+      decision === "apply" ? loadRegistry(false) : Promise.resolve(),
+      decision === "apply" ? loadTemplates(state.selectedId) : Promise.resolve(),
+      decision === "apply" ? loadRuntimeSummary(false) : Promise.resolve(),
+    ]);
+  } catch (error) {
+    state.error = error.message || `Failed to ${decision} governed change.`;
+  } finally {
+    state.governance.saving = false;
+    render();
+  }
+}
+
 async function saveAgentProfile() {
   const draft = buildAgentProfilePayload();
   if (!draft.ok) {
     state.error = draft.message;
     state.notice = null;
     render();
+    return;
+  }
+  const governedProfileId = draft.payload.profile_id || slugify(draft.payload.name);
+  if (isGovernedAction("agent_profile.upsert")) {
+    stageGovernanceProposal(
+      "agent_profile.upsert",
+      governedProfileId,
+      draft.payload,
+      `Create or update agent profile ${governedProfileId}`,
+    );
     return;
   }
 
@@ -6799,6 +7024,15 @@ async function disableAgentProfile() {
   if (!profileId) {
     state.error = "Select a saved agent profile before disabling.";
     render();
+    return;
+  }
+  if (isGovernedAction("agent_profile.disable")) {
+    stageGovernanceProposal(
+      "agent_profile.disable",
+      profileId,
+      {},
+      `Disable agent profile ${profileId}`,
+    );
     return;
   }
 
@@ -6833,6 +7067,16 @@ async function saveSkill() {
     render();
     return;
   }
+  const governedSkillId = draft.payload.skill_id || slugify(draft.payload.name);
+  if (isGovernedAction("skill.upsert")) {
+    stageGovernanceProposal(
+      "skill.upsert",
+      governedSkillId,
+      draft.payload,
+      `Create or update skill ${governedSkillId}`,
+    );
+    return;
+  }
 
   state.registrySaving = true;
   state.error = null;
@@ -6859,6 +7103,15 @@ async function disableSkill() {
   if (!skillId) {
     state.error = "Select a saved skill before disabling.";
     render();
+    return;
+  }
+  if (isGovernedAction("skill.disable")) {
+    stageGovernanceProposal(
+      "skill.disable",
+      skillId,
+      {},
+      `Disable skill ${skillId}`,
+    );
     return;
   }
 
@@ -7387,12 +7640,10 @@ function updateEditor(patch) {
 
 function updateAgentProfileEditor(patch) {
   state.registryEditor.profile = { ...state.registryEditor.profile, ...patch };
-  render();
 }
 
 function updateSkillEditor(patch) {
   state.registryEditor.skill = { ...state.registryEditor.skill, ...patch };
-  render();
 }
 
 function updateNode(index, patch) {
@@ -7916,6 +8167,61 @@ function renderDashboardCorrelations(observability) {
   `;
 }
 
+function renderDashboardCostReport(observability) {
+  const report = observability?.cost_report || null;
+  if (!report) return "";
+  const groupBy = state.dashboardFilters.costGroupBy || "agent";
+  const groups = groupBy === "model"
+    ? report.by_provider_model || []
+    : groupBy === "work-package"
+      ? report.by_work_package || []
+      : report.by_agent || [];
+  const coverage = report.coverage || {};
+  const total = formatDashboardMoney(report.totals?.effective_costs || {});
+  const completenessTone = coverage.cost_completeness === "complete"
+    ? "success"
+    : coverage.cost_completeness === "partial"
+      ? "warn"
+      : "neutral";
+  return `
+    <section class="subpanel span-2 dashboard-cost-panel" data-workspace-focus="dashboard-cost-report">
+      <div class="subpanel-header">
+        <strong>Cost Attribution</strong>
+        <div class="dashboard-cost-header-actions">
+          <span class="badge ${completenessTone}">${escapeHtml(`${coverage.cost_completeness || "unavailable"} ${coverage.costed_jobs || 0}/${coverage.model_jobs || 0}`)}</span>
+          <span class="badge neutral" title="Provider-reported cost is preferred; catalog estimate is used only when provider cost is absent.">${escapeHtml(total)}</span>
+        </div>
+      </div>
+      <div class="dashboard-cost-summary">
+        <span><strong>${escapeHtml(String(coverage.provider_reported_jobs || 0))}</strong><small>Provider</small></span>
+        <span><strong>${escapeHtml(String(coverage.estimated_only_jobs || 0))}</strong><small>Estimated</small></span>
+        <span><strong>${escapeHtml(String(coverage.unavailable_jobs || 0))}</strong><small>Unavailable</small></span>
+        <div class="dashboard-cost-segments" role="tablist" aria-label="Cost attribution dimension">
+          ${[
+            ["agent", "Agent"],
+            ["model", "Model"],
+            ["work-package", "Work package"],
+          ].map(([value, label]) => `<button type="button" role="tab" class="mini-button ${groupBy === value ? "selected" : ""}" data-action="set-dashboard-cost-group" data-value="${value}" aria-selected="${groupBy === value}">${label}</button>`).join("")}
+        </div>
+      </div>
+      <div class="dashboard-cost-table">
+        <div class="dashboard-cost-head">
+          <span>Attribution</span><span>Coverage</span><span>Tokens</span><span>Effective cost</span><span>Runtime</span>
+        </div>
+        ${groups.length ? groups.map((group) => `
+          <div class="dashboard-cost-row">
+            <span><strong>${escapeHtml(group.label || group.key)}</strong><small>${escapeHtml(group.key || "-")}</small></span>
+            <span><strong>${escapeHtml(`${group.costed_jobs || 0}/${group.model_jobs || 0}`)}</strong><small>${escapeHtml(group.cost_completeness || "unavailable")}</small></span>
+            <span><strong>${escapeHtml(group.total_tokens ?? "-")}</strong><small>${escapeHtml(`${group.usage_records || 0} usage`)}</small></span>
+            <span><strong>${escapeHtml(formatDashboardMoney(group.effective_costs || {}))}</strong><small>${escapeHtml(group.cost_source || "unavailable")}</small></span>
+            <span><strong>${escapeHtml(`${group.failed_jobs || 0} failed`)}</strong><small>${escapeHtml(`${group.retry_attempts || 0} retries / ${group.run_count || 0} runs`)}</small></span>
+          </div>
+        `).join("") : '<p class="muted dashboard-cost-empty">No attributed model cost is available.</p>'}
+      </div>
+    </section>
+  `;
+}
+
 function renderDashboardObservability(observability) {
   const reliability = observability?.reliability || {};
   const latency = observability?.latency || {};
@@ -7940,6 +8246,7 @@ function renderDashboardObservability(observability) {
     </section>
     ${renderDashboardComparison(observability)}
     ${renderDashboardActivity(observability)}
+    ${renderDashboardCostReport(observability)}
     ${renderDashboardCorrelations(observability)}
   `;
 }
@@ -8627,8 +8934,115 @@ function renderSkillManager() {
   `;
 }
 
+function renderGovernancePanel() {
+  const policy = state.governance.policy;
+  if (!policy) {
+    return `
+      <section class="panel governance-panel">
+        <div class="panel-header">
+          <div><h3>Registry Governance</h3><p>Policy and approval state are unavailable.</p></div>
+          <button class="secondary" data-action="refresh-governance" ${state.governance.loading ? "disabled" : ""}>Refresh</button>
+        </div>
+      </section>
+    `;
+  }
+  const identity = state.security.identity;
+  const principalId = identity?.principal?.principal_id || "";
+  const canReview = hasSecurityPermission("governance.review");
+  const canPropose = hasSecurityPermission("registry.manage");
+  const draft = state.governance.draft;
+  const pendingCount = state.governance.changes.filter((change) => change.status === "pending").length;
+  return `
+    <section class="panel governance-panel">
+      <div class="panel-header">
+        <div>
+          <h3>Registry Governance</h3>
+          <p>${pendingCount} pending / ${state.governance.changes.length} recent change(s)</p>
+        </div>
+        <span class="badge ${policy.mode === "enforced" ? "warn" : "neutral"}">${escapeHtml(policy.mode)}</span>
+      </div>
+      <div class="governance-policy-bar">
+        <label>Mode
+          <select data-field="governance.policy.mode" ${!canReview ? "disabled" : ""}>
+            <option value="advisory" ${policy.mode === "advisory" ? "selected" : ""}>advisory</option>
+            <option value="enforced" ${policy.mode === "enforced" ? "selected" : ""}>enforced</option>
+          </select>
+        </label>
+        <label>Approvals
+          <input type="number" min="1" max="5" value="${escapeHtml(String(policy.required_approvals || 1))}" data-field="governance.policy.requiredApprovals" ${!canReview ? "disabled" : ""} />
+        </label>
+        <label class="governance-checkbox">
+          <input type="checkbox" data-field="governance.policy.allowSelfApproval" ${policy.allow_self_approval ? "checked" : ""} ${!canReview ? "disabled" : ""} />
+          <span>Self approval</span>
+        </label>
+        <button class="secondary" data-action="save-governance-policy" ${!canReview || state.governance.saving ? "disabled" : ""}>Save policy</button>
+        <button class="icon-button" data-action="refresh-governance" title="Refresh governance" aria-label="Refresh governance">Ref</button>
+      </div>
+      <div class="governance-workbench">
+        <div class="governance-composer">
+          <div class="registry-manager-header">
+            <div><h4>Propose Change</h4><p>Payload is frozen and hashed at submission.</p></div>
+          </div>
+          <div class="form-grid compact">
+            <label>Action
+              <select data-field="governance.draft.action">
+                ${["agent_profile.upsert", "agent_profile.disable", "skill.upsert", "skill.disable", "template.publish", "template.archive"]
+                  .map((action) => `<option value="${action}" ${draft.action === action ? "selected" : ""}>${action}</option>`)
+                  .join("")}
+              </select>
+            </label>
+            <label>Resource ID<input value="${escapeHtml(draft.resourceId)}" data-field="governance.draft.resourceId" /></label>
+            <label class="span-2">Reason<input value="${escapeHtml(draft.reason)}" data-field="governance.draft.reason" /></label>
+            <label class="span-2">Payload JSON<textarea class="code" rows="6" data-field="governance.draft.payloadText">${escapeHtml(draft.payloadText)}</textarea></label>
+          </div>
+          <div class="registry-actions">
+            <button class="primary" data-action="submit-governance-proposal" ${!canPropose || state.governance.saving ? "disabled" : ""}>Submit proposal</button>
+          </div>
+        </div>
+        <div class="governance-queue">
+          <div class="registry-manager-header">
+            <div><h4>Approval Queue</h4><p>Approval and apply are separate evidence-bearing actions.</p></div>
+          </div>
+          <div class="governance-change-list">
+            ${
+              state.governance.changes.length
+                ? state.governance.changes.map((change) => {
+                    const selfBlocked = !change.allow_self_approval && change.proposed_by === principalId;
+                    const approvalCount = (change.approvals || []).filter((item) => item.decision === "approved").length;
+                    return `
+                      <article class="governance-change-row">
+                        <div class="governance-change-head">
+                          <span>
+                            <strong>${escapeHtml(change.action)}</strong>
+                            <small>${escapeHtml(`${change.resource_type}/${change.resource_id}`)}</small>
+                          </span>
+                          <span class="badge ${statusTone(change.status)}">${escapeHtml(change.status)}</span>
+                        </div>
+                        <p>${escapeHtml(change.reason)}</p>
+                        <small>${escapeHtml(change.proposed_by)} / approvals ${approvalCount}/${change.required_approvals}</small>
+                        ${change.conflict_reason ? `<small class="danger-text">${escapeHtml(change.conflict_reason)}</small>` : ""}
+                        <div class="governance-change-actions">
+                          ${change.status === "pending" ? `
+                            <button class="mini-button" data-action="approve-governance-change" data-id="${escapeHtml(change.change_id)}" ${!canReview || selfBlocked || state.governance.saving ? "disabled" : ""}>Approve</button>
+                            <button class="mini-button danger-action" data-action="reject-governance-change" data-id="${escapeHtml(change.change_id)}" ${!canReview || selfBlocked || state.governance.saving ? "disabled" : ""}>Reject</button>
+                          ` : ""}
+                          ${change.status === "approved" ? `<button class="mini-button" data-action="apply-governance-change" data-id="${escapeHtml(change.change_id)}" ${!canReview || state.governance.saving ? "disabled" : ""}>Apply</button>` : ""}
+                        </div>
+                      </article>
+                    `;
+                  }).join("")
+                : '<p class="muted">No governance changes yet.</p>'
+            }
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderRegistryManagerPanel() {
   return `
+    ${renderGovernancePanel()}
     <section class="panel registry-manager-panel">
       <div class="panel-header">
         <div><h3>Registry Manager</h3><p>Configure reusable agents and skills for DAG nodes.</p></div>
@@ -10416,6 +10830,34 @@ function handleChange(target) {
     void loadDashboardSummary();
     return;
   }
+  if (field === "governance.policy.mode") {
+    state.governance.policy.mode = value;
+    return;
+  }
+  if (field === "governance.policy.requiredApprovals") {
+    state.governance.policy.required_approvals = Math.max(1, Math.min(5, Number(value) || 1));
+    return;
+  }
+  if (field === "governance.policy.allowSelfApproval") {
+    state.governance.policy.allow_self_approval = target.checked === true;
+    return;
+  }
+  if (field === "governance.draft.action") {
+    state.governance.draft.action = value;
+    return;
+  }
+  if (field === "governance.draft.resourceId") {
+    state.governance.draft.resourceId = value;
+    return;
+  }
+  if (field === "governance.draft.reason") {
+    state.governance.draft.reason = value;
+    return;
+  }
+  if (field === "governance.draft.payloadText") {
+    state.governance.draft.payloadText = value;
+    return;
+  }
   if (field === "attachment.name") {
     state.attachmentEditor.name = value;
     return;
@@ -10890,8 +11332,14 @@ document.addEventListener("click", (event) => {
     void runRuntimeEvaluation(button.dataset.evaluator || "deterministic-v1");
   }
   if (action === "verify-runtime-replay") void verifyRuntimeReplay();
+  if (action === "scan-runtime-recovery") void scanRuntimeRecovery();
+  if (action === "replay-runtime-node") void replayFailedRuntimeNode();
   if (action === "refresh-dashboard") {
     void Promise.all([loadRuntimeSummary(false), loadDashboardSummary(false)]).then(() => render());
+  }
+  if (action === "set-dashboard-cost-group") {
+    state.dashboardFilters.costGroupBy = button.dataset.value || "agent";
+    render();
   }
   if (action === "open-dashboard-hotspot") {
     void openDashboardHotspotSession(
@@ -10930,7 +11378,19 @@ document.addEventListener("click", (event) => {
     pendingSessionInventoryScroll = true;
     void loadSessionWorkspace(state.selectedSessionId);
   }
-  if (action === "refresh-registry") void loadRegistry();
+  if (action === "refresh-registry") void Promise.all([loadRegistry(false), loadGovernance(false)]).then(() => render());
+  if (action === "refresh-governance") void loadGovernance();
+  if (action === "save-governance-policy") void saveGovernancePolicy();
+  if (action === "submit-governance-proposal") void submitGovernanceProposal();
+  if (action === "approve-governance-change") {
+    void decideStudioGovernanceChange(button.dataset.id || "", "approve");
+  }
+  if (action === "reject-governance-change") {
+    void decideStudioGovernanceChange(button.dataset.id || "", "reject");
+  }
+  if (action === "apply-governance-change") {
+    void decideStudioGovernanceChange(button.dataset.id || "", "apply");
+  }
   if (action === "new-agent-profile") {
     state.activeNav = "agents";
     state.registryEditor.profile = emptyAgentProfileEditor();
@@ -11013,7 +11473,7 @@ document.addEventListener("change", (event) => handleChange(event.target));
 document.addEventListener("input", (event) => {
   if (event.target.matches("textarea[data-field]")) syncTextareaState(event.target);
   if (event.target.matches("input[data-field^='proposal.']")) syncProposalOverrideField(event.target);
-  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='command.query'], input[data-field^='attachment.'], input[data-field^='orchestrator.'], textarea[data-field='execution.interventionText']")) {
+  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='command.query'], input[data-field^='attachment.'], input[data-field^='orchestrator.'], input[data-field^='agent.'], input[data-field^='skill.'], textarea[data-field='execution.interventionText']")) {
     handleChange(event.target);
   }
 });

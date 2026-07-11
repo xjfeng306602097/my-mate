@@ -106,6 +106,14 @@
         "evidence.recorded",
         "runtime.patch_applied",
         "runtime.quiescent",
+        "recovery.timeout_detected",
+        "recovery.compensation_started",
+        "recovery.compensation_completed",
+        "recovery.compensation_failed",
+        "recovery.replay_requested",
+        "recovery.replay_dispatched",
+        "recovery.replay_completed",
+        "recovery.replay_failed",
         "scorecard.completed",
         "evaluation.completed"
       ]

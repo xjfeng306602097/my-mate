@@ -4,6 +4,7 @@ import { renderRuntimeEvaluationPanel } from "./runtime-evaluation-view.js";
 const RUNTIME_TABS = [
   ["timeline", "Timeline"],
   ["evaluation", "Scorecard / Eval"],
+  ["recovery", "Recovery"],
   ["trace", "Trace"],
   ["evidence", "Raw Evidence"],
   ["routes", "Route Changes"],
@@ -190,8 +191,50 @@ function renderRouteChanges(model) {
   `;
 }
 
+function renderRecovery(model, ui) {
+  const recovery = model.recovery || {};
+  const summary = recovery.summary || {};
+  const compensations = Array.isArray(recovery.compensations) ? recovery.compensations : [];
+  const replays = Array.isArray(recovery.execution_replays) ? recovery.execution_replays : [];
+  const selected = model.selectedNode;
+  const replayEligible = selected && ["failed", "cancelled"].includes(selected.status);
+  const postureTone = recovery.posture === "degraded" ? "danger" : recovery.posture === "recovering" ? "warn" : "success";
+  return `
+    <div class="runtime-recovery-workbench">
+      <div class="runtime-secondary-heading">
+        <div><strong>Recovery Posture</strong><span class="runtime-state-label tone-${postureTone}">${escapeHtml(recovery.posture || "healthy")}</span></div>
+        <div class="runtime-recovery-actions">
+          <button class="secondary" type="button" data-action="scan-runtime-recovery" ${ui.recoveryLoading ? "disabled" : ""}>${ui.recoveryLoading ? "Scanning..." : "Scan deadlines"}</button>
+          <button class="primary" type="button" data-action="replay-runtime-node" ${!replayEligible || ui.failureReplayLoading ? "disabled" : ""}>${ui.failureReplayLoading ? "Dispatching..." : "Replay failed node"}</button>
+        </div>
+      </div>
+      <div class="runtime-recovery-metrics">
+        <div><span>Compensations</span><strong>${escapeHtml(summary.compensations || 0)}</strong></div>
+        <div><span>Pending</span><strong>${escapeHtml(summary.pending_compensations || 0)}</strong></div>
+        <div><span>Cleanup failures</span><strong>${escapeHtml(summary.cleanup_failures || 0)}</strong></div>
+        <div><span>Failure replays</span><strong>${escapeHtml(summary.execution_replays || 0)}</strong></div>
+      </div>
+      <div class="runtime-secondary-heading"><strong>Compensation Audit</strong><span>${escapeHtml(compensations.length)}</span></div>
+      ${compensations.length ? `<div class="runtime-secondary-list">${compensations.slice().reverse().map((item) => `
+        <div class="runtime-secondary-row">
+          <span class="runtime-secondary-kind">CP</span>
+          <div><strong>${escapeHtml(item.reason || "compensation")}</strong><small>${escapeHtml(item.node_run_id || "")}${item.cleanup_attempt_ids?.length ? ` / ${escapeHtml(item.cleanup_attempt_ids.join(", "))}` : ""}</small></div>
+          <span class="runtime-state-label tone-${item.status === "cleanup_failed" ? "danger" : item.status === "completed" ? "success" : "warn"}">${escapeHtml(item.status || "unknown")}</span>
+        </div>`).join("")}</div>` : '<p class="runtime-empty-state">No timeout compensation has been required.</p>'}
+      <div class="runtime-secondary-heading"><strong>Failure Replay Lineage</strong><span>${escapeHtml(replays.length)}</span></div>
+      ${replays.length ? `<div class="runtime-secondary-list">${replays.slice().reverse().map((item) => `
+        <div class="runtime-secondary-row">
+          <span class="runtime-secondary-kind">RP</span>
+          <div><strong>${escapeHtml(item.node_run_id || "failure replay")}</strong><small>${escapeHtml(item.source_job_id || "source unavailable")} -> ${escapeHtml(item.replay_job_id || "dispatch pending")}</small></div>
+          <span class="runtime-state-label tone-${item.status === "failed" ? "danger" : item.status === "completed" ? "success" : "warn"}">${escapeHtml(item.status || "unknown")}</span>
+        </div>`).join("")}</div>` : '<p class="runtime-empty-state">No failed node has been replayed.</p>'}
+    </div>
+  `;
+}
+
 function renderSecondaryPanel(model, activeTab, ui) {
   if (activeTab === "evaluation") return renderRuntimeEvaluationPanel(model, ui);
+  if (activeTab === "recovery") return renderRecovery(model, ui);
   if (activeTab === "trace") return renderTrace(model);
   if (activeTab === "evidence") return renderEvidence(model);
   if (activeTab === "routes") return renderRouteChanges(model);

@@ -40,6 +40,10 @@ export interface RuntimeJobRecord {
   finished_at: string | null;
   last_event_id: string | null;
   last_error: string | null;
+  execution_kind?: "standard" | "retry" | "failure_replay";
+  replay_id?: string | null;
+  source_job_id?: string | null;
+  identity_digest?: string | null;
   compatibility: {
     adapter_kind: string | null;
     dispatch_id: string | null;
@@ -79,6 +83,10 @@ export function createRuntimeJobRecord(input: {
     finished_at: null,
     last_event_id: input.lastEventId ?? null,
     last_error: null,
+    execution_kind: "standard",
+    replay_id: null,
+    source_job_id: null,
+    identity_digest: null,
     compatibility: {
       adapter_kind: null,
       dispatch_id: null,

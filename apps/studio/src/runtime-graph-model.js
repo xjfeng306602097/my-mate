@@ -296,6 +296,7 @@ export function buildRuntimeGraphModel(input = {}) {
     scorecards: array(input.scorecards),
     evaluations: array(input.evaluations),
     replay: input.replay || null,
+    recovery: record(projection.recovery),
     routeChanges: input.routeChanges || null,
     evidence: context.evidence,
     summary: record(projection.summary),

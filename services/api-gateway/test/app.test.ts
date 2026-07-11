@@ -230,6 +230,26 @@ async function startUpstreamServer() {
     res.status(201).json({ run_id: "run_gateway_rerun", source_run_id: "run_gateway_test" });
   });
 
+  app.get("/api/runs/run_gateway_test/recovery", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ run_id: "run_gateway_test", posture: "healthy", compensations: [], execution_replays: [] });
+  });
+
+  app.post("/api/runs/run_gateway_test/recovery/scan", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ detected: 0, completed: 0, failed: 0 });
+  });
+
+  app.post("/api/runs/run_gateway_test/nodes/node_gateway_test/recovery-replays", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway"), idempotencyKey: req.header("idempotency-key") });
+    res.status(201).json({ replay_id: "execution-replay:gateway", run_id: "run_gateway_test", node_run_id: "node_gateway_test" });
+  });
+
+  app.get("/api/runs/run_gateway_test/recovery-replays/execution-replay:gateway", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ replay_id: "execution-replay:gateway", run_id: "run_gateway_test", node_run_id: "node_gateway_test" });
+  });
+
   app.get("/api/runs/run_gateway_test/graph", (req, res) => {
     requests.push({
       method: req.method,
@@ -807,6 +827,46 @@ async function startUpstreamServer() {
     });
   });
 
+  app.get("/api/governance/policy", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.originalUrl,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      schema_version: 1,
+      workspace_id: "default",
+      mode: "enforced",
+      required_approvals: 1,
+      allow_self_approval: false,
+      protected_actions: ["skill.upsert"],
+    });
+  });
+
+  app.post("/api/governance/changes", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.originalUrl,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.status(201).json({ change_id: "gch-gateway", status: "pending", ...req.body });
+  });
+
+  app.post("/api/governance/changes/:changeId/:decision", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.originalUrl,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      change_id: req.params.changeId,
+      status: req.params.decision === "apply" ? "applied" : "approved",
+    });
+  });
+
   app.get("/api/dashboard/summary", (req, res) => {
     requests.push({
       method: req.method,
@@ -926,6 +986,28 @@ async function startUpstreamServer() {
             session_id: "session_waiting_a",
           },
         ],
+      },
+      observability: {
+        cost_report: {
+          basis: "provider_reported_preferred",
+          coverage: {
+            runs_observed: 1,
+            model_jobs: 2,
+            costed_jobs: 1,
+            provider_reported_jobs: 1,
+            estimated_only_jobs: 0,
+            unavailable_jobs: 1,
+            cost_completeness: "partial",
+          },
+          totals: {
+            effective_costs: { USD: "0.12" },
+            provider_reported_costs: { USD: "0.12" },
+            estimated_costs: { USD: "0.1" },
+          },
+          by_agent: [],
+          by_provider_model: [],
+          by_work_package: [],
+        },
       },
     });
   });
@@ -1813,6 +1895,38 @@ test("proxies trace replay replay-plan and idempotent rerun routes", async () =>
   }
 });
 
+test("proxies OC-02 recovery scan and failed-node replay routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const recovery = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/recovery`);
+    const scan = await postJson(`${server.baseUrl}/api/runs/run_gateway_test/recovery/scan`, {});
+    const replay = await postJson(
+      `${server.baseUrl}/api/runs/run_gateway_test/nodes/node_gateway_test/recovery-replays`,
+      {},
+      { "idempotency-key": "gateway-oc02-key" },
+    );
+    const detail = await getJson(`${server.baseUrl}/api/runs/run_gateway_test/recovery-replays/${encodeURIComponent("execution-replay:gateway")}`);
+    assert.equal(recovery.body.posture, "healthy");
+    assert.equal(scan.body.detected, 0);
+    assert.equal(replay.status, 201);
+    assert.equal(detail.body.replay_id, "execution-replay:gateway");
+    assert.deepEqual(
+      upstream.requests.slice(-4).map((request) => `${request.method} ${request.path}`),
+      [
+        "GET /api/runs/run_gateway_test/recovery",
+        "POST /api/runs/run_gateway_test/recovery/scan",
+        "POST /api/runs/run_gateway_test/nodes/node_gateway_test/recovery-replays",
+        "GET /api/runs/run_gateway_test/recovery-replays/execution-replay%3Agateway",
+      ],
+    );
+    assert.equal(upstream.requests.at(-2)?.idempotencyKey, "gateway-oc02-key");
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
 test("proxies planner candidate plan requests", async () => {
   const upstream = await startUpstreamServer();
   const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
@@ -2532,6 +2646,7 @@ test("proxies dashboard summary requests", async () => {
     assert.equal(dashboard.body.hotspots.waiting_runs[0].run_id, "run_waiting_b");
     assert.equal(dashboard.body.hotspots.waiting_runs[0].session_id, "session_waiting_b");
     assert.equal(dashboard.body.hotspots.recently_failed_runs[0].session_id, "session_failed_latest");
+    assert.equal(dashboard.body.observability.cost_report.totals.effective_costs.USD, "0.12");
     assert.equal(upstream.requests.some((item) => item.path === "/api/dashboard/summary"), true);
 
     const filtered = await getJson(
@@ -2542,6 +2657,43 @@ test("proxies dashboard summary requests", async () => {
       upstream.requests.some(
         (item) => item.path === "/api/dashboard/summary?window_hours=168&status=failed&correlation_limit=10&compare=previous",
       ),
+      true,
+    );
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies governance policy, proposal, review, and apply requests", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const policy = await getJson(`${server.baseUrl}/api/governance/policy`);
+    assert.equal(policy.status, 200);
+    assert.equal(policy.body.mode, "enforced");
+
+    const proposal = await postJson(`${server.baseUrl}/api/governance/changes`, {
+      action: "skill.upsert",
+      resource_id: "gateway-skill",
+      reason: "Gateway governance test",
+      payload: { name: "Gateway Skill" },
+    });
+    assert.equal(proposal.status, 201);
+    assert.equal(proposal.body.change_id, "gch-gateway");
+
+    const approved = await postJson(
+      `${server.baseUrl}/api/governance/changes/gch-gateway/approve`,
+      { comment: "Reviewed" },
+    );
+    assert.equal(approved.status, 200);
+    const applied = await postJson(
+      `${server.baseUrl}/api/governance/changes/gch-gateway/apply`,
+      {},
+    );
+    assert.equal(applied.body.status, "applied");
+    assert.equal(
+      upstream.requests.some((item) => item.path === "/api/governance/changes/gch-gateway/apply"),
       true,
     );
   } finally {

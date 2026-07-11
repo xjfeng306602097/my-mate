@@ -52,6 +52,33 @@ npm run my-mate -- --workspace alpha workspaces
 npm run my-mate -- --workspace alpha audit
 ```
 
+Operate Registry governance through the Gateway:
+
+```bash
+npm run my-mate -- governance list --status pending
+npm run my-mate -- governance policy --mode enforced --required-approvals 1 --self-approval deny
+npm run my-mate -- governance propose --action agent_profile.upsert --resource-id research-agent --reason "Reviewed profile" --payload '{"name":"Research Agent","status":"active"}'
+npm run my-mate -- governance approve <change-id> --comment "Reviewed"
+npm run my-mate -- governance reject <change-id> --comment "Needs revision"
+npm run my-mate -- governance apply <change-id>
+```
+
+`governance propose` requires `registry.manage`. Policy, review, and apply
+require `governance.review`. Self-approval is rejected unless the workspace
+policy explicitly allows it.
+
+Report effective model cost with explicit evidence completeness:
+
+```bash
+npm run my-mate -- cost-report
+npm run my-mate -- cost-report --window-hours 168 --status completed
+npm run my-mate -- cost-report --group-by model
+npm run my-mate -- cost-report --group-by work-package --json
+```
+
+Effective cost prefers provider-reported values and uses catalog estimates
+only when provider cost is absent. Missing cost remains `unavailable`.
+
 ## Commands
 
 Check local or Docker readiness:
@@ -130,6 +157,18 @@ npm run my-mate -- rerun <run-id> --reason "Correct input" --input topic=runtime
 `rerun` keeps the original route identity and records `source_run_id`. The CLI
 generates an idempotency key when one is not supplied; pass a stable key when a
 command may be retried across processes.
+
+Inspect or advance recovery and replay one failed node:
+
+```bash
+npm run my-mate -- recovery <run-id>
+npm run my-mate -- recovery <run-id> --scan --json
+npm run my-mate -- failure-replay <run-id> <node-run-id> --idempotency-key stable-replay-key
+```
+
+`failure-replay` creates a new Job from the failed source Job's frozen
+plan/input/runtime identity. It does not invoke audit projection replay or
+create a linked Run.
 
 ## Output And Exit Codes
 

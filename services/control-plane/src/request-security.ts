@@ -142,6 +142,8 @@ export function requiredPermission(req: Request): WorkspacePermission {
   if (method === "GET") return path === "/audit-events" ? "audit.read" : "workspace.read";
   if (path === "/diagnostics/doctor") return "workspace.read";
   if (path.startsWith("/workspaces")) return "workspace.manage_members";
+  if (method === "POST" && path === "/governance/changes") return "registry.manage";
+  if (path.startsWith("/governance")) return "governance.review";
   if (
     path.startsWith("/templates") ||
     path.startsWith("/registry") ||
@@ -154,7 +156,7 @@ export function requiredPermission(req: Request): WorkspacePermission {
   if (/^\/runs\/[^/]+\/(scorecards|evaluations|replays|replay-plans)/.test(path)) {
     return "run.evaluate";
   }
-  if (/^\/runs\/[^/]+\/(actions|nodes\/[^/]+\/actions|reruns)/.test(path)) {
+  if (/^\/runs\/[^/]+\/(actions|nodes\/[^/]+\/(?:actions|recovery-replays)|reruns|recovery)/.test(path)) {
     return "run.control";
   }
   if (method === "POST" && path === "/runs") return "run.create";

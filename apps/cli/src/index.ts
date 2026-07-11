@@ -11,8 +11,17 @@ import { executeSupervise } from "./commands/supervise.js";
 import { executeTrace } from "./commands/trace.js";
 import { executeReplay } from "./commands/replay.js";
 import { executeReplayPlan } from "./commands/replay-plan.js";
+import { executeRecovery } from "./commands/recovery.js";
+import { executeFailureReplay } from "./commands/failure-replay.js";
 import { executeRerun } from "./commands/rerun.js";
 import { executeAudit, executeWhoAmI, executeWorkspaces } from "./commands/identity.js";
+import {
+  executeGovernanceDecision,
+  executeGovernanceList,
+  executeGovernancePolicy,
+  executeGovernancePropose,
+} from "./commands/governance.js";
+import { executeCostReport } from "./commands/cost-report.js";
 import { processIo } from "./output.js";
 
 function clientFor(command: Command): ApiClient {
@@ -53,6 +62,68 @@ export function buildProgram(): Command {
     .option("--json", "Print the audit response as JSON")
     .action(async (options, command) => {
       process.exitCode = await executeAudit(clientFor(command), options, processIo);
+    });
+
+  const governance = program
+    .command("governance")
+    .description("Propose, review, and apply governed registry changes");
+
+  governance
+    .command("list")
+    .addOption(new Option("--status <status>").choices(["pending", "approved", "rejected", "applied", "conflicted"]))
+    .addOption(new Option("--action <action>").choices(["agent_profile.upsert", "agent_profile.disable", "skill.upsert", "skill.disable", "template.publish", "template.archive"]))
+    .option("--limit <count>", "Maximum changes", (value) => Number(value), 100)
+    .option("--json", "Print the change list as JSON")
+    .action(async (options, command) => {
+      process.exitCode = await executeGovernanceList(clientFor(command), options, processIo);
+    });
+
+  governance
+    .command("policy")
+    .addOption(new Option("--mode <mode>").choices(["advisory", "enforced"]))
+    .option("--required-approvals <count>", "Required independent approvals", (value) => Number(value))
+    .addOption(new Option("--self-approval <policy>").choices(["allow", "deny"]))
+    .option("--protected-actions <csv>", "Comma-separated protected actions")
+    .option("--json", "Print the policy as JSON")
+    .action(async (options, command) => {
+      process.exitCode = await executeGovernancePolicy(clientFor(command), options, processIo);
+    });
+
+  governance
+    .command("propose")
+    .requiredOption("--action <action>", "Protected action")
+    .requiredOption("--resource-id <id>", "Registry or template resource ID")
+    .requiredOption("--reason <text>", "Audit reason")
+    .option("--payload <json>", "JSON object payload", "{}")
+    .option("--json", "Print the change as JSON")
+    .action(async (options, command) => {
+      process.exitCode = await executeGovernancePropose(clientFor(command), options, processIo);
+    });
+
+  for (const decision of ["approve", "reject", "apply"] as const) {
+    const command = governance.command(decision).argument("<change_id>");
+    if (decision !== "apply") command.option("--comment <text>", "Review comment");
+    command.option("--json", "Print the change as JSON").action(async (changeId, options, actionCommand) => {
+      process.exitCode = await executeGovernanceDecision(
+        clientFor(actionCommand),
+        changeId,
+        decision,
+        options,
+        processIo,
+      );
+    });
+  }
+
+  program
+    .command("cost-report")
+    .description("Report attributed model cost by agent, provider/model, or work package")
+    .option("--window-hours <hours>", "Observation window", (value) => Number(value), 24)
+    .addOption(new Option("--status <status>").choices(["all", "active", "terminal", "completed", "failed", "cancelled"]).default("all"))
+    .addOption(new Option("--group-by <dimension>").choices(["agent", "model", "work-package"]).default("agent"))
+    .option("--limit <count>", "Maximum attribution groups", (value) => Number(value), 20)
+    .option("--json", "Print the cost report as JSON")
+    .action(async (options, command) => {
+      process.exitCode = await executeCostReport(clientFor(command), options, processIo);
     });
 
   program
@@ -144,6 +215,27 @@ export function buildProgram(): Command {
     .option("--json", "Print the linked rerun as JSON")
     .action(async (runId, options, command) => {
       const outcome = await executeRerun(clientFor(command), runId, options, processIo);
+      process.exitCode = outcome.exitCode;
+    });
+
+  program
+    .command("recovery")
+    .argument("<run_id>")
+    .option("--scan", "Run deadline detection and continue pending compensation")
+    .option("--json", "Print the recovery contract as JSON")
+    .action(async (runId, options, command) => {
+      const outcome = await executeRecovery(clientFor(command), runId, options, processIo);
+      process.exitCode = outcome.exitCode;
+    });
+
+  program
+    .command("failure-replay")
+    .argument("<run_id>")
+    .argument("<node_run_id>")
+    .option("--idempotency-key <key>", "Stable key for safe replay retries")
+    .option("--json", "Print the execution replay as JSON")
+    .action(async (runId, nodeRunId, options, command) => {
+      const outcome = await executeFailureReplay(clientFor(command), runId, nodeRunId, options, processIo);
       process.exitCode = outcome.exitCode;
     });
 

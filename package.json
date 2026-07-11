@@ -11,6 +11,7 @@
     "runtime-worker:image": "docker build -t my-mate-runtime-worker:latest -f services/runtime-worker/Dockerfile .",
     "runtime-worker:smoke": "node scripts/runtime-worker-docker-smoke.mjs",
     "runtime-worker:recovery-smoke": "node scripts/runtime-worker-recovery-smoke.mjs",
+    "runtime-worker:oc02-smoke": "services\\control-plane\\node_modules\\.bin\\tsx services/control-plane/scripts/runtime-worker-oc02-smoke.ts",
     "dev:docker-runtime": "node scripts/start-docker-runtime.mjs"
   }
 }

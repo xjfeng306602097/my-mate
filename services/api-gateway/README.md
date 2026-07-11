@@ -23,6 +23,7 @@ Current scope:
   - approval and human-input actions
   - node retry / skip actions
   - identity, workspace membership, and audit APIs
+  - Registry governance policy, proposal, review, and apply APIs
 
 Current planner/run-create path semantics:
 
@@ -56,6 +57,25 @@ The CLI always calls these Gateway routes. It does not connect directly to the
 Control Plane and does not independently schedule work or calculate verdicts.
 The Gateway forwards `Idempotency-Key` only for the allowlisted linked-rerun
 request path.
+
+Dashboard summary also carries the OBS-02 cost report. Gateway preserves the
+selected `window_hours` and `status` query and forwards Agent, provider/model,
+work-package, completeness, and decimal money maps without recalculation.
+
+## Registry Governance API
+
+The Gateway allowlist also exposes the DATA-03 governance surface:
+
+- `GET/POST /api/governance/policy`
+- `GET/POST /api/governance/changes`
+- `GET /api/governance/changes/:changeId`
+- `POST /api/governance/changes/:changeId/approve`
+- `POST /api/governance/changes/:changeId/reject`
+- `POST /api/governance/changes/:changeId/apply`
+
+The Gateway only authenticates and forwards these requests. Policy decisions,
+independent-review enforcement, drift detection, mutation, and audit evidence
+remain owned by the Control Plane.
 
 ## Env Vars
 
@@ -107,3 +127,7 @@ npm run dev
 npm run check
 npm test
 ```
+
+The allowlist includes OC-02 run recovery reads/scans and failed-node execution
+Replay routes. `Idempotency-Key`, bearer identity, workspace selection, and
+request correlation headers are forwarded unchanged.

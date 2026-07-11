@@ -303,6 +303,110 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/governance/changes": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List workspace registry governance changes */
+        readonly get: operations["listGovernanceChanges"];
+        readonly put?: never;
+        /** Propose a protected registry or template lifecycle change */
+        readonly post: operations["createGovernanceChange"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/governance/changes/{changeId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Return one workspace governance change */
+        readonly get: operations["getGovernanceChange"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/governance/changes/{changeId}/apply": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Apply an approved change when the resource baseline still matches */
+        readonly post: operations["applyGovernanceChange"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/governance/changes/{changeId}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Approve a pending governance change */
+        readonly post: operations["approveGovernanceChange"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/governance/changes/{changeId}/reject": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Reject a pending governance change */
+        readonly post: operations["rejectGovernanceChange"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/governance/policy": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Return the active workspace governance policy */
+        readonly get: operations["getGovernancePolicy"];
+        readonly put?: never;
+        /** Update approval requirements for protected registry changes */
+        readonly post: operations["updateGovernancePolicy"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/human-inputs": {
         readonly parameters: {
             readonly query?: never;
@@ -1483,6 +1587,74 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/runs/{runId}/nodes/{nodeRunId}/recovery-replays": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Replay a failed node from its frozen Job identity */
+        readonly post: operations["createNodeFailureReplay"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/runs/{runId}/recovery": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get timeout compensation and failure replay posture for one run */
+        readonly get: operations["getRunRecovery"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/runs/{runId}/recovery-replays/{replayId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get one persisted failure execution replay */
+        readonly get: operations["getNodeFailureReplay"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/runs/{runId}/recovery/scan": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Detect expired execution deadlines and continue pending compensation */
+        readonly post: operations["scanRunRecovery"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/runs/{runId}/replay-plans": {
         readonly parameters: {
             readonly query?: never;
@@ -2531,6 +2703,14 @@ export type components = {
              */
             readonly evaluator?: string;
         };
+        readonly CreateGovernanceChangeRequest: {
+            readonly action: components["schemas"]["GovernanceProtectedAction"];
+            readonly payload?: {
+                readonly [key: string]: unknown;
+            };
+            readonly reason: string;
+            readonly resource_id: string;
+        };
         readonly CreateReplayPlanRequest: {
             readonly evaluation_id?: string;
             readonly scorecard_id?: string;
@@ -2669,6 +2849,50 @@ export type components = {
             readonly outcome: "improved" | "regressed" | "neutral" | "unavailable";
             readonly previous: number | null;
         };
+        readonly DashboardCostAttributionGroup: {
+            /** @enum {string} */
+            readonly cost_completeness: "complete" | "partial" | "unavailable";
+            /** @enum {string} */
+            readonly cost_source: "provider_reported" | "estimated" | "mixed" | "unavailable";
+            readonly costed_jobs: number;
+            readonly effective_costs: components["schemas"]["DashboardMoneyTotals"];
+            readonly estimated_costs: components["schemas"]["DashboardMoneyTotals"];
+            readonly failed_jobs: number;
+            readonly key: string;
+            readonly label: string;
+            readonly model_jobs: number;
+            readonly provider_reported_costs: components["schemas"]["DashboardMoneyTotals"];
+            readonly retry_attempts: number;
+            readonly run_count: number;
+            readonly total_tokens: number | null;
+            readonly unavailable_jobs: number;
+            readonly usage_records: number;
+        };
+        readonly DashboardCostReport: {
+            /** @constant */
+            readonly basis: "provider_reported_preferred";
+            readonly by_agent: readonly components["schemas"]["DashboardCostAttributionGroup"][];
+            readonly by_provider_model: readonly components["schemas"]["DashboardCostAttributionGroup"][];
+            readonly by_work_package: readonly components["schemas"]["DashboardCostAttributionGroup"][];
+            readonly coverage: {
+                /** @enum {string} */
+                readonly cost_completeness: "complete" | "partial" | "unavailable";
+                readonly costed_jobs: number;
+                readonly estimated_only_jobs: number;
+                readonly model_jobs: number;
+                readonly provider_reported_jobs: number;
+                readonly runs_observed: number;
+                readonly unavailable_jobs: number;
+            };
+            readonly totals: {
+                readonly effective_costs: components["schemas"]["DashboardMoneyTotals"];
+                readonly estimated_costs: components["schemas"]["DashboardMoneyTotals"];
+                readonly provider_reported_costs: components["schemas"]["DashboardMoneyTotals"];
+            };
+        };
+        readonly DashboardMoneyTotals: {
+            readonly [key: string]: string;
+        };
         readonly DashboardObservabilityComparison: {
             /** @enum {string} */
             readonly coverage: "complete" | "partial";
@@ -2695,7 +2919,7 @@ export type components = {
             readonly compare: "none" | "previous";
             readonly correlation_limit: number;
             /** @constant */
-            readonly index_schema_version: 1;
+            readonly index_schema_version: 2;
             readonly indexed_runs: number;
             readonly rebuilt_runs: number;
             /** @enum {string} */
@@ -2733,6 +2957,7 @@ export type components = {
                 readonly correlations: readonly {
                     readonly [key: string]: unknown;
                 }[];
+                readonly cost_report: components["schemas"]["DashboardCostReport"];
                 readonly latency: {
                     readonly [key: string]: unknown;
                 };
@@ -2880,6 +3105,117 @@ export type components = {
             } | null;
             readonly supported: boolean;
         };
+        readonly ExecutionReplayResult: {
+            /** Format: date-time */
+            readonly completed_at: string | null;
+            readonly frozen_input: {
+                readonly allowed_skills: readonly string[];
+                readonly allowed_tools: readonly string[];
+                readonly input_keys: readonly string[];
+                readonly intent: string;
+            };
+            readonly idempotency_key: string;
+            readonly identity_digest: string;
+            readonly last_error: string | null;
+            readonly lineage_event_ids: readonly string[];
+            readonly node_run_id: string;
+            readonly plan_identity: {
+                readonly node_id: string;
+                readonly node_run_id: string;
+                readonly template_id: string;
+                readonly template_version: number;
+            };
+            readonly replay_attempt: number | null;
+            readonly replay_id: string;
+            readonly replay_job_id: string | null;
+            /** Format: date-time */
+            readonly requested_at: string;
+            readonly requested_by: string;
+            readonly run_id: string;
+            readonly runtime_identity: {
+                readonly agent_runtime: string;
+                readonly harness_profile: string | null;
+                readonly runtime_agent_ref: string | null;
+                readonly target_kind: string;
+            };
+            /** @constant */
+            readonly schema_version: 1;
+            readonly source_attempt: number;
+            readonly source_job_id: string;
+            /** @enum {string} */
+            readonly status: "requested" | "dispatching" | "running" | "completed" | "failed" | "cancelled";
+            /** Format: date-time */
+            readonly updated_at: string;
+        };
+        readonly GovernanceApprovalRecord: {
+            readonly comment: string | null;
+            /** Format: date-time */
+            readonly decided_at: string;
+            /** @enum {string} */
+            readonly decision: "approved" | "rejected";
+            readonly principal_id: string;
+        };
+        readonly GovernanceChangeListResponse: {
+            readonly items: readonly components["schemas"]["GovernanceChangeRecord"][];
+            readonly policy: components["schemas"]["GovernancePolicyRecord"];
+        };
+        readonly GovernanceChangeRecord: {
+            readonly action: components["schemas"]["GovernanceProtectedAction"];
+            readonly allow_self_approval: boolean;
+            /** Format: date-time */
+            readonly applied_at: string | null;
+            readonly applied_by: string | null;
+            readonly approvals: readonly components["schemas"]["GovernanceApprovalRecord"][];
+            /** Format: date-time */
+            readonly approved_at: string | null;
+            readonly base_digest: string;
+            readonly change_id: string;
+            readonly conflict_reason: string | null;
+            readonly payload: {
+                readonly [key: string]: unknown;
+            };
+            readonly payload_digest: string;
+            /** Format: date-time */
+            readonly proposed_at: string;
+            readonly proposed_by: string;
+            readonly reason: string;
+            readonly required_approvals: number;
+            readonly resource_id: string;
+            /** @enum {string} */
+            readonly resource_type: "agent_profile" | "skill" | "template";
+            readonly result: {
+                readonly [key: string]: unknown;
+            } | null;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly status: components["schemas"]["GovernanceChangeStatus"];
+            /** Format: date-time */
+            readonly updated_at: string;
+            readonly workspace_id: string;
+        };
+        /** @enum {string} */
+        readonly GovernanceChangeStatus: "pending" | "approved" | "rejected" | "applied" | "conflicted";
+        readonly GovernanceDecisionRequest: {
+            readonly comment?: string;
+        };
+        /** @enum {string} */
+        readonly GovernanceMode: "advisory" | "enforced";
+        readonly GovernancePolicyRecord: {
+            readonly allow_self_approval: boolean;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly mode: components["schemas"]["GovernanceMode"];
+            readonly protected_actions: readonly components["schemas"]["GovernanceProtectedAction"][];
+            readonly required_approvals: number;
+            /** @constant */
+            readonly schema_version: 1;
+            /** Format: date-time */
+            readonly updated_at: string;
+            readonly updated_by: string;
+            readonly workspace_id: string;
+        };
+        /** @enum {string} */
+        readonly GovernanceProtectedAction: "agent_profile.upsert" | "agent_profile.disable" | "skill.upsert" | "skill.disable" | "template.publish" | "template.archive";
         readonly HumanInputRecord: {
             readonly input_request_id: string;
             readonly input_schema: {
@@ -3311,6 +3647,34 @@ export type components = {
             readonly status: string;
             readonly template_id: string;
         };
+        readonly RuntimeCompensationRecord: {
+            readonly capacity_released: boolean;
+            readonly cleanup_attempt_ids: readonly string[];
+            readonly compensation_id: string;
+            /** Format: date-time */
+            readonly completed_at: string | null;
+            /** Format: date-time */
+            readonly deadline_at: string;
+            /** Format: date-time */
+            readonly detected_at: string;
+            readonly evidence_event_ids: readonly string[];
+            readonly job_id: string;
+            readonly last_error: string | null;
+            readonly lease_id: string | null;
+            readonly node_run_id: string;
+            /** @enum {string} */
+            readonly reason: "node_timeout" | "job_timeout" | "lease_expired" | "worker_lost" | "operator_requested";
+            readonly redispatched_job_id: string | null;
+            readonly retry_scheduled: boolean;
+            readonly run_id: string;
+            /** @constant */
+            readonly schema_version: 1;
+            /** @enum {string} */
+            readonly status: "detected" | "cancelling" | "cleanup_pending" | "cleanup_failed" | "completed";
+            /** Format: date-time */
+            readonly updated_at: string;
+            readonly worker_id: string | null;
+        };
         readonly RuntimeGraphNode: {
             readonly agentProfile: string | null;
             readonly approvalKind: string | null;
@@ -3341,6 +3705,29 @@ export type components = {
             readonly workPackageKey: string;
             readonly workPackageLabel: string;
             readonly workPackageOrder: number;
+        };
+        readonly RuntimeRecoveryScanResponse: {
+            readonly completed: number;
+            readonly detected: number;
+            readonly failed: number;
+            readonly records: readonly components["schemas"]["RuntimeCompensationRecord"][];
+            readonly recovery: components["schemas"]["RuntimeRecoveryView"];
+        };
+        readonly RuntimeRecoveryView: {
+            readonly compensations: readonly components["schemas"]["RuntimeCompensationRecord"][];
+            readonly execution_replays: readonly components["schemas"]["ExecutionReplayResult"][];
+            /** Format: date-time */
+            readonly generated_at: string;
+            /** @enum {string} */
+            readonly posture: "healthy" | "recovering" | "degraded";
+            readonly run_id: string;
+            readonly summary: {
+                readonly active_replays: number;
+                readonly cleanup_failures: number;
+                readonly compensations: number;
+                readonly execution_replays: number;
+                readonly pending_compensations: number;
+            };
         };
         readonly RunValidationFailure: components["schemas"]["Error"] & {
             readonly validation: components["schemas"]["PlannerValidationResult"];
@@ -3535,6 +3922,12 @@ export type components = {
         readonly UpdateDagProposalAssignmentsRequest: {
             readonly assignments: readonly components["schemas"]["DagProposalAssignment"][];
         };
+        readonly UpdateGovernancePolicyRequest: {
+            readonly allow_self_approval?: boolean;
+            readonly mode?: components["schemas"]["GovernanceMode"];
+            readonly protected_actions?: readonly components["schemas"]["GovernanceProtectedAction"][];
+            readonly required_approvals?: number;
+        };
         readonly UpdateWorkspaceMemberRequest: {
             readonly display_name?: string;
             /** @enum {string} */
@@ -3589,7 +3982,7 @@ export type components = {
             readonly workspace_name: string;
         };
         /** @enum {string} */
-        readonly WorkspacePermission: "workspace.read" | "workspace.manage_members" | "registry.manage" | "mission.create" | "mission.edit" | "run.create" | "run.control" | "run.evaluate" | "gate.resolve" | "audit.read";
+        readonly WorkspacePermission: "workspace.read" | "workspace.manage_members" | "registry.manage" | "governance.review" | "mission.create" | "mission.edit" | "run.create" | "run.control" | "run.evaluate" | "gate.resolve" | "audit.read";
         readonly WorkspaceRecord: {
             /** Format: date-time */
             readonly created_at: string;
@@ -3622,6 +4015,7 @@ export type SchemaConfirmDagProposalResponse = components['schemas']['ConfirmDag
 export type SchemaCreateDagProposalRequest = components['schemas']['CreateDagProposalRequest'];
 export type SchemaCreateDagProposalResponse = components['schemas']['CreateDagProposalResponse'];
 export type SchemaCreateEvaluationRequest = components['schemas']['CreateEvaluationRequest'];
+export type SchemaCreateGovernanceChangeRequest = components['schemas']['CreateGovernanceChangeRequest'];
 export type SchemaCreateReplayPlanRequest = components['schemas']['CreateReplayPlanRequest'];
 export type SchemaCreateRerunRequest = components['schemas']['CreateRerunRequest'];
 export type SchemaCreateRerunResponse = components['schemas']['CreateRerunResponse'];
@@ -3637,6 +4031,9 @@ export type SchemaDagProposalResponse = components['schemas']['DagProposalRespon
 export type SchemaDagProposalStatus = components['schemas']['DagProposalStatus'];
 export type SchemaDagProposalSummary = components['schemas']['DagProposalSummary'];
 export type SchemaDashboardComparisonMetric = components['schemas']['DashboardComparisonMetric'];
+export type SchemaDashboardCostAttributionGroup = components['schemas']['DashboardCostAttributionGroup'];
+export type SchemaDashboardCostReport = components['schemas']['DashboardCostReport'];
+export type SchemaDashboardMoneyTotals = components['schemas']['DashboardMoneyTotals'];
 export type SchemaDashboardObservabilityComparison = components['schemas']['DashboardObservabilityComparison'];
 export type SchemaDashboardObservabilityQuery = components['schemas']['DashboardObservabilityQuery'];
 export type SchemaDashboardObservabilityRetention = components['schemas']['DashboardObservabilityRetention'];
@@ -3651,6 +4048,15 @@ export type SchemaEvaluationResult = components['schemas']['EvaluationResult'];
 export type SchemaEvaluatorDescriptor = components['schemas']['EvaluatorDescriptor'];
 export type SchemaEvent = components['schemas']['Event'];
 export type SchemaExecutionMaintenanceResult = components['schemas']['ExecutionMaintenanceResult'];
+export type SchemaExecutionReplayResult = components['schemas']['ExecutionReplayResult'];
+export type SchemaGovernanceApprovalRecord = components['schemas']['GovernanceApprovalRecord'];
+export type SchemaGovernanceChangeListResponse = components['schemas']['GovernanceChangeListResponse'];
+export type SchemaGovernanceChangeRecord = components['schemas']['GovernanceChangeRecord'];
+export type SchemaGovernanceChangeStatus = components['schemas']['GovernanceChangeStatus'];
+export type SchemaGovernanceDecisionRequest = components['schemas']['GovernanceDecisionRequest'];
+export type SchemaGovernanceMode = components['schemas']['GovernanceMode'];
+export type SchemaGovernancePolicyRecord = components['schemas']['GovernancePolicyRecord'];
+export type SchemaGovernanceProtectedAction = components['schemas']['GovernanceProtectedAction'];
 export type SchemaHumanInputRecord = components['schemas']['HumanInputRecord'];
 export type SchemaHumanInputSubmitRequest = components['schemas']['HumanInputSubmitRequest'];
 export type SchemaLegacyConfirmDagProposalRequest = components['schemas']['LegacyConfirmDagProposalRequest'];
@@ -3690,7 +4096,10 @@ export type SchemaReplayResult = components['schemas']['ReplayResult'];
 export type SchemaRunDetail = components['schemas']['RunDetail'];
 export type SchemaRunRoute = components['schemas']['RunRoute'];
 export type SchemaRunSummary = components['schemas']['RunSummary'];
+export type SchemaRuntimeCompensationRecord = components['schemas']['RuntimeCompensationRecord'];
 export type SchemaRuntimeGraphNode = components['schemas']['RuntimeGraphNode'];
+export type SchemaRuntimeRecoveryScanResponse = components['schemas']['RuntimeRecoveryScanResponse'];
+export type SchemaRuntimeRecoveryView = components['schemas']['RuntimeRecoveryView'];
 export type SchemaRunValidationFailure = components['schemas']['RunValidationFailure'];
 export type SchemaScorecardFinding = components['schemas']['ScorecardFinding'];
 export type SchemaScorecardResult = components['schemas']['ScorecardResult'];
@@ -3706,6 +4115,7 @@ export type SchemaTraceProjection = components['schemas']['TraceProjection'];
 export type SchemaTraceSpan = components['schemas']['TraceSpan'];
 export type SchemaUpdateAgentHostingRequest = components['schemas']['UpdateAgentHostingRequest'];
 export type SchemaUpdateDagProposalAssignmentsRequest = components['schemas']['UpdateDagProposalAssignmentsRequest'];
+export type SchemaUpdateGovernancePolicyRequest = components['schemas']['UpdateGovernancePolicyRequest'];
 export type SchemaUpdateWorkspaceMemberRequest = components['schemas']['UpdateWorkspaceMemberRequest'];
 export type SchemaUsageSummary = components['schemas']['UsageSummary'];
 export type SchemaWorkerEvidenceSource = components['schemas']['WorkerEvidenceSource'];
@@ -3801,6 +4211,257 @@ export interface operations {
             };
             /** @description Invalid diagnostic mode or runtime */
             readonly 400: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly listGovernanceChanges: {
+        readonly parameters: {
+            readonly query?: {
+                readonly action?: components["schemas"]["GovernanceProtectedAction"];
+                readonly limit?: number;
+                readonly status?: components["schemas"]["GovernanceChangeStatus"];
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Governance change list */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernanceChangeListResponse"];
+                };
+            };
+        };
+    };
+    readonly createGovernanceChange: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["CreateGovernanceChangeRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Pending governance change */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernanceChangeRecord"];
+                };
+            };
+            /** @description Invalid proposal */
+            readonly 400: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly getGovernanceChange: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly changeId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Governance change */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernanceChangeRecord"];
+                };
+            };
+            /** @description Change not found in the selected workspace */
+            readonly 404: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly applyGovernanceChange: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly changeId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Applied governance change */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernanceChangeRecord"];
+                };
+            };
+            /** @description Change is not approved or the resource baseline drifted */
+            readonly 409: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernanceChangeRecord"] | components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly approveGovernanceChange: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly changeId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["GovernanceDecisionRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Updated governance change */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernanceChangeRecord"];
+                };
+            };
+            /** @description Self approval, duplicate decision, or invalid state */
+            readonly 409: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly rejectGovernanceChange: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly changeId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["GovernanceDecisionRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Rejected governance change */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernanceChangeRecord"];
+                };
+            };
+            /** @description Self decision, duplicate decision, or invalid state */
+            readonly 409: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly getGovernancePolicy: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Governance policy */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernancePolicyRecord"];
+                };
+            };
+        };
+    };
+    readonly updateGovernancePolicy: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["UpdateGovernancePolicyRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Updated policy */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["GovernancePolicyRecord"];
+                };
+            };
+            /** @description Invalid policy */
+            readonly 400: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Governance review permission required */
+            readonly 403: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
@@ -3915,6 +4576,134 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly createNodeFailureReplay: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                readonly "Idempotency-Key": string;
+            };
+            readonly path: {
+                readonly nodeRunId: string;
+                readonly runId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Existing replay returned for the Idempotency-Key */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ExecutionReplayResult"];
+                };
+            };
+            /** @description Failure replay persisted and dispatched */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ExecutionReplayResult"];
+                };
+            };
+            /** @description Node is not failed or execution resources are unsettled */
+            readonly 409: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly getRunRecovery: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly runId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Recovery posture and audit records */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RuntimeRecoveryView"];
+                };
+            };
+            /** @description Run not found or outside the selected workspace */
+            readonly 404: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly getNodeFailureReplay: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly replayId: string;
+                readonly runId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Failure replay record */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ExecutionReplayResult"];
+                };
+            };
+            /** @description Failure replay not found */
+            readonly 404: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly scanRunRecovery: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly runId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Bounded recovery scan result */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RuntimeRecoveryScanResponse"];
                 };
             };
         };

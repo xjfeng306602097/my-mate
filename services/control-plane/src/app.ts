@@ -141,6 +141,16 @@ import {
   upsertAgentProfile,
   upsertSkill,
 } from "./registry-store.js";
+import {
+  applyGovernanceChange,
+  createGovernanceChange,
+  decideGovernanceChange,
+  getGovernanceChange,
+  getGovernancePolicy,
+  governanceApprovalRequired,
+  listGovernanceChanges,
+  updateGovernancePolicy,
+} from "./governance-store.js";
 import type {
   AgentProfileRecord,
   AgentHostingSummary,
@@ -155,6 +165,7 @@ import type {
   CreateSessionMessageRequest,
   CreateSessionRequest,
   CreateTemplateRequest,
+  CreateGovernanceChangeRequest,
   DagPatchGraphPreview,
   DagPatchOperation,
   DagPatchOperationOutcome,
@@ -169,6 +180,8 @@ import type {
   MobileRunDetail,
   MobileRunFollowUp,
   MobileRunSummary,
+  GovernanceDecisionRequest,
+  GovernanceProtectedAction,
   MissionDetailResponse,
   MissionListItem,
   MissionRouteSummary,
@@ -216,6 +229,13 @@ import {
 import { buildRouteCompareSummary } from "./route-compare.js";
 import { buildRuntimeGraphSummary } from "./runtime-graph.js";
 import { buildRuntimeRunProjection } from "./runtime/runtime-run-projection.js";
+import type { NodeProvisioner } from "./node-provisioner.js";
+import {
+  buildRuntimeRecoveryView,
+  createOrGetFailureReplay,
+  scanRuntimeTimeouts,
+} from "./runtime/runtime-recovery-service.js";
+import { executionReplayView, getExecutionReplay } from "./runtime/execution-replay-store.js";
 import { buildSupervisionProjection } from "./runtime/supervision-projector.js";
 import { RuntimeEngine } from "./runtime/runtime-engine.js";
 import type { RuntimeDispatcher } from "./runtime-dispatcher.js";
@@ -1284,9 +1304,46 @@ function getAuditResourceSegments(pathname: string): string[] {
   return pathname.replace(/^\/api(?:\/|$)/, "").split("/").filter(Boolean);
 }
 
+function rejectGovernanceProtectedMutation(
+  res: Response,
+  action: GovernanceProtectedAction,
+): boolean {
+  if (!governanceApprovalRequired(action)) return false;
+  res.status(409).json({
+    code: "governance_approval_required",
+    message: `Governance approval is required for ${action}.`,
+    protected_action: action,
+    proposal_endpoint: "/api/governance/changes",
+  });
+  return true;
+}
+
+function sendGovernanceError(res: Response, error: unknown) {
+  const message = error instanceof Error ? error.message : "Governance operation failed.";
+  if (message === "GOVERNANCE_CHANGE_NOT_FOUND" || message === "GOVERNANCE_RESOURCE_NOT_FOUND") {
+    return res.status(404).json({ code: "not_found", message });
+  }
+  if (
+    message === "GOVERNANCE_CHANGE_NOT_PENDING" ||
+    message === "GOVERNANCE_CHANGE_NOT_APPROVED" ||
+    message === "GOVERNANCE_SELF_APPROVAL_FORBIDDEN" ||
+    message === "GOVERNANCE_DUPLICATE_DECISION"
+  ) {
+    return res.status(409).json({
+      code: message.toLowerCase(),
+      message,
+    });
+  }
+  return res.status(400).json({
+    code: "invalid_governance_request",
+    message,
+  });
+}
+
 export function createApp(options?: {
   executionAdapter?: ExecutionAdapter;
   dispatcher?: RuntimeDispatcher;
+  provisioner?: NodeProvisioner | null;
   onRuntimeEngine?: (runtimeEngine: RuntimeEngine) => void;
   doctor?: Omit<DoctorServiceOptions, "runtimeStatus" | "executionAdapterKind">;
   security?: SecurityOptions;
@@ -7476,6 +7533,109 @@ export function createApp(options?: {
     );
   });
 
+  app.get("/api/governance/policy", (_req: Request, res: Response) => {
+    return res.json(getGovernancePolicy());
+  });
+
+  app.post("/api/governance/policy", (req: Request, res: Response) => {
+    try {
+      return res.json(updateGovernancePolicy(req.body || {}));
+    } catch (error) {
+      return sendGovernanceError(res, error);
+    }
+  });
+
+  app.get("/api/governance/changes", (req: Request, res: Response) => {
+    const status = getSingleParam(req.query.status as string | string[] | undefined);
+    const action = getSingleParam(req.query.action as string | string[] | undefined);
+    const limitRaw = getSingleParam(req.query.limit as string | string[] | undefined);
+    const limit = limitRaw ? Number(limitRaw) : undefined;
+    return res.json({
+      items: listGovernanceChanges({
+        status: status || undefined,
+        action: action || undefined,
+        limit,
+      }),
+      policy: getGovernancePolicy(),
+    });
+  });
+
+  app.post("/api/governance/changes", (req: Request, res: Response) => {
+    const body = req.body as Partial<CreateGovernanceChangeRequest>;
+    if (
+      typeof body.action !== "string" ||
+      typeof body.resource_id !== "string" ||
+      typeof body.reason !== "string" ||
+      (body.payload !== undefined && !isPlainObject(body.payload))
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "action, resource_id, and reason are required; payload must be an object.",
+      });
+    }
+    try {
+      return res.status(201).json(createGovernanceChange(body as CreateGovernanceChangeRequest));
+    } catch (error) {
+      return sendGovernanceError(res, error);
+    }
+  });
+
+  app.get("/api/governance/changes/:changeId", (req: Request, res: Response) => {
+    const changeId = getSingleParam(req.params.changeId);
+    if (!changeId) {
+      return res.status(400).json({ code: "invalid_request", message: "changeId is required." });
+    }
+    const change = getGovernanceChange(changeId);
+    return change
+      ? res.json(change)
+      : res.status(404).json({ code: "not_found", message: "Governance change not found." });
+  });
+
+  app.post("/api/governance/changes/:changeId/approve", (req: Request, res: Response) => {
+    const changeId = getSingleParam(req.params.changeId);
+    if (!changeId) {
+      return res.status(400).json({ code: "invalid_request", message: "changeId is required." });
+    }
+    try {
+      return res.json(decideGovernanceChange(
+        changeId,
+        "approved",
+        (isPlainObject(req.body) ? req.body : {}) as GovernanceDecisionRequest,
+      ));
+    } catch (error) {
+      return sendGovernanceError(res, error);
+    }
+  });
+
+  app.post("/api/governance/changes/:changeId/reject", (req: Request, res: Response) => {
+    const changeId = getSingleParam(req.params.changeId);
+    if (!changeId) {
+      return res.status(400).json({ code: "invalid_request", message: "changeId is required." });
+    }
+    try {
+      return res.json(decideGovernanceChange(
+        changeId,
+        "rejected",
+        (isPlainObject(req.body) ? req.body : {}) as GovernanceDecisionRequest,
+      ));
+    } catch (error) {
+      return sendGovernanceError(res, error);
+    }
+  });
+
+  app.post("/api/governance/changes/:changeId/apply", (req: Request, res: Response) => {
+    const changeId = getSingleParam(req.params.changeId);
+    if (!changeId) {
+      return res.status(400).json({ code: "invalid_request", message: "changeId is required." });
+    }
+    try {
+      const change = applyGovernanceChange(changeId);
+      return change.status === "conflicted" ? res.status(409).json(change) : res.json(change);
+    } catch (error) {
+      return sendGovernanceError(res, error);
+    }
+  });
+
   app.get("/api/templates", (_req: Request, res: Response) => {
     const items = listTemplates().map((template) => ({
       template_id: template.template_id,
@@ -7624,6 +7784,7 @@ export function createApp(options?: {
     }
 
     try {
+      if (rejectGovernanceProtectedMutation(res, "template.publish")) return;
       const template = publishTemplate(templateId);
       return res.json({
         template_id: template.template_id,
@@ -7661,6 +7822,7 @@ export function createApp(options?: {
     }
 
     try {
+      if (rejectGovernanceProtectedMutation(res, "template.archive")) return;
       const template = archiveTemplate(templateId);
       return res.json({
         template_id: template.template_id,
@@ -7816,6 +7978,7 @@ export function createApp(options?: {
   });
 
   app.post("/api/registry/agent-profiles", (req: Request, res: Response) => {
+    if (rejectGovernanceProtectedMutation(res, "agent_profile.upsert")) return;
     if (!isAgentProfileBody(req.body)) {
       return res.status(400).json({
         code: "invalid_request",
@@ -7860,6 +8023,7 @@ export function createApp(options?: {
       });
     }
     try {
+      if (rejectGovernanceProtectedMutation(res, "agent_profile.disable")) return;
       return res.json(disableAgentProfile(profileId));
     } catch (error) {
       if (error instanceof Error && error.message === "AGENT_PROFILE_NOT_FOUND") {
@@ -7882,6 +8046,7 @@ export function createApp(options?: {
   });
 
   app.post("/api/registry/skills", (req: Request, res: Response) => {
+    if (rejectGovernanceProtectedMutation(res, "skill.upsert")) return;
     if (!isSkillBody(req.body)) {
       return res.status(400).json({
         code: "invalid_request",
@@ -7925,6 +8090,7 @@ export function createApp(options?: {
         message: "skillId is required.",
       });
     }
+    if (rejectGovernanceProtectedMutation(res, "skill.disable")) return;
     try {
       return res.json(disableSkill(skillId));
     } catch (error) {
@@ -11100,6 +11266,74 @@ export function createApp(options?: {
       });
     }
     return res.json(projection);
+  });
+
+  app.get("/api/runs/:runId/recovery", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    return res.json(buildRuntimeRecoveryView(runId));
+  });
+
+  app.post("/api/runs/:runId/recovery/scan", async (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    if (!runId) return res.status(400).json({ code: "invalid_request", message: "runId is required." });
+    const outcome = await scanRuntimeTimeouts({
+      engine: runtimeEngine,
+      dispatcher: options?.dispatcher,
+      provisioner: options?.provisioner,
+      runId,
+    });
+    return res.json({ ...outcome, recovery: buildRuntimeRecoveryView(runId) });
+  });
+
+  app.post("/api/runs/:runId/nodes/:nodeRunId/recovery-replays", async (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const nodeRunId = getSingleParam(req.params.nodeRunId);
+    if (!runId || !nodeRunId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId and nodeRunId are required." });
+    }
+    const idempotencyKey = req.header("idempotency-key")?.trim();
+    if (!idempotencyKey) {
+      return res.status(400).json({ code: "idempotency_key_required", message: "Idempotency-Key is required." });
+    }
+    try {
+      const outcome = await createOrGetFailureReplay({
+        engine: runtimeEngine,
+        runId,
+        nodeRunId,
+        idempotencyKey,
+        requestedBy: requestActor(req, "operator"),
+      });
+      return res.status(outcome.created ? 201 : 200).json(outcome.result);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "NODE_NOT_FOUND" || code === "FAILED_JOB_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: code === "NODE_NOT_FOUND" ? "Node was not found." : "Failed source job was not found." });
+      }
+      if (code === "NODE_NOT_FAILED" || code === "REPLAY_CONFLICT" || code === "IDEMPOTENCY_CONFLICT") {
+        return res.status(409).json({
+          code: code.toLowerCase(),
+          message: code === "NODE_NOT_FAILED"
+            ? "Failure replay requires a failed or cancelled node."
+            : code === "IDEMPOTENCY_CONFLICT"
+              ? "Idempotency-Key is already bound to another node replay."
+              : "Failure replay is blocked while an execution or Runtime Worker lease is unsettled.",
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/runs/:runId/recovery-replays/:replayId", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const replayId = getSingleParam(req.params.replayId);
+    if (!runId || !replayId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId and replayId are required." });
+    }
+    const replay = getExecutionReplay(runId, replayId);
+    return replay
+      ? res.json(executionReplayView(replay))
+      : res.status(404).json({ code: "not_found", message: "Failure replay was not found." });
   });
 
   app.get("/api/runs/:runId/nodes", (req: Request, res: Response) => {
