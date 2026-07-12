@@ -114,6 +114,7 @@
         "recovery.replay_dispatched",
         "recovery.replay_completed",
         "recovery.replay_failed",
+        "recovery.failure_routed",
         "scorecard.completed",
         "evaluation.completed"
       ]

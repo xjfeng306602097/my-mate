@@ -13,6 +13,8 @@ import type {
 } from "./types.js";
 import { isPlainObject, nowIso } from "./utils.js";
 import { normalizeCompiledWorkPackage } from "./work-package.js";
+import type { NodeHandoffRecord } from "./runtime/node-handoff-store.js";
+import { isFailureRoutingPort } from "./runtime/edge-condition.js";
 
 const NODE_STATUSES: NodeStatus[] = [
   "pending",
@@ -78,6 +80,7 @@ function buildNodeMarkers(input: {
   node: CompiledNodeRecord;
   status: NodeStatus;
   frontier: Set<string>;
+  recoveredFailures: Set<string>;
 }): RuntimeGraphMarker[] {
   const markers: RuntimeGraphMarker[] = [];
   if (input.frontier.has(input.node.node_run_id)) {
@@ -95,13 +98,19 @@ function buildNodeMarkers(input: {
   if (input.node.human_input_schema || input.node.type === "human_input") {
     markers.push("human_input_gate");
   }
-  if (input.status === "failed" || input.status === "cancelled") {
+  if (input.status === "failed" && input.recoveredFailures.has(input.node.node_run_id)) {
+    markers.push("recovered_failure");
+  } else if (input.status === "failed" || input.status === "cancelled") {
     markers.push("blocked");
   }
   if (input.status === "skipped") {
     markers.push("skipped");
   }
-  if (isDoneStatus(input.status) || input.status === "cancelled") {
+  if (
+    isDoneStatus(input.status) ||
+    input.status === "cancelled" ||
+    input.recoveredFailures.has(input.node.node_run_id)
+  ) {
     markers.push("terminal");
   }
   return [...new Set(markers)];
@@ -111,6 +120,7 @@ function buildGraphNodes(input: {
   plan: RunPlanRecord;
   nodeRuns: NodeRunRecord[];
   generatedAt: string;
+  recoveredFailures: Set<string>;
 }): RuntimeGraphNode[] {
   const nodeRunById = new Map(input.nodeRuns.map((nodeRun) => [nodeRun.node_run_id, nodeRun]));
   const frontier = new Set(input.plan.frontier);
@@ -143,6 +153,7 @@ function buildGraphNodes(input: {
         node,
         status,
         frontier,
+        recoveredFailures: input.recoveredFailures,
       }),
     };
   });
@@ -151,17 +162,40 @@ function buildGraphNodes(input: {
 function buildGraphEdges(input: {
   plan: RunPlanRecord;
   graphNodes: RuntimeGraphNode[];
+  handoffs: NodeHandoffRecord[];
 }): RuntimeGraphEdge[] {
   const nodeByNodeId = new Map(input.graphNodes.map((node) => [node.nodeId, node]));
 
-  return input.plan.edges.map((edge) => {
+  return input.plan.edges.map((edge, index) => {
     const fromNode = nodeByNodeId.get(edge.from) || null;
     const toNode = nodeByNodeId.get(edge.to) || null;
-    const fromDone = !!fromNode && isDoneStatus(fromNode.status);
+    const fromDone = !!fromNode && (
+      isDoneStatus(fromNode.status) || fromNode.markers.includes("recovered_failure")
+    );
     const toReadyOrActive = !!toNode && ["ready", "running", "waiting_human"].includes(toNode.status);
     const toBlocked = !!toNode && isBlockedStatus(toNode.status);
-    const status: RuntimeGraphEdge["status"] = fromDone
-      ? "satisfied"
+    const edgeKey = `${edge.from}:${index}:${edge.to}`;
+    const sourceHandoffs = input.handoffs.filter(
+      (handoff) => handoff.node_run_id === fromNode?.nodeRunId,
+    );
+    const evaluated = sourceHandoffs.some((handoff) =>
+      handoff.routing_decisions?.some((decision) => decision.edge_key === edgeKey),
+    );
+    const routed = sourceHandoffs.some((handoff) =>
+      handoff.routing_decisions?.some(
+        (decision) => decision.edge_key === edgeKey && decision.matched,
+      ) || (
+        !handoff.routing_decisions?.length &&
+        !!toNode &&
+        handoff.routed_node_run_ids.includes(toNode.nodeRunId)
+      ),
+    );
+    const status: RuntimeGraphEdge["status"] = routed
+      ? toReadyOrActive ? "active" : "satisfied"
+      : evaluated
+        ? "blocked"
+        : fromDone
+          ? "satisfied"
       : toBlocked
         ? "blocked"
         : toReadyOrActive
@@ -200,9 +234,13 @@ function buildWorkPackages(nodes: RuntimeGraphNode[]): RuntimeGraphWorkPackage[]
     const label = groupNodes[0]?.workPackageLabel || key;
     const readyCount = groupNodes.filter((node) => node.status === "ready").length;
     const activeCount = groupNodes.filter((node) => node.status === "running" || node.status === "waiting_human").length;
-    const completedCount = groupNodes.filter((node) => isDoneStatus(node.status)).length;
-    const blockedCount = groupNodes.filter((node) => isBlockedStatus(node.status)).length;
-    const allDone = groupNodes.length > 0 && groupNodes.every((node) => isDoneStatus(node.status));
+    const completedCount = groupNodes.filter(
+      (node) => isDoneStatus(node.status) || node.markers.includes("recovered_failure"),
+    ).length;
+    const blockedCount = groupNodes.filter((node) => node.markers.includes("blocked")).length;
+    const allDone = groupNodes.length > 0 && groupNodes.every(
+      (node) => isDoneStatus(node.status) || node.markers.includes("recovered_failure"),
+    );
     const status: RuntimeGraphWorkPackage["status"] =
       blockedCount > 0
         ? "blocked"
@@ -246,7 +284,8 @@ function buildSummaryLines(input: {
   monitoring: RuntimeMonitoringSummary;
 }): string[] {
   const waitingCount = input.nodes.filter((node) => node.status === "waiting_human").length;
-  const blockedCount = input.nodes.filter((node) => node.status === "failed" || node.status === "cancelled").length;
+  const blockedCount = input.nodes.filter((node) => node.markers.includes("blocked")).length;
+  const recoveredCount = input.nodes.filter((node) => node.markers.includes("recovered_failure")).length;
   const skippedCount = input.nodes.filter((node) => node.status === "skipped").length;
   const completedCount = input.nodes.filter((node) => node.status === "completed").length;
   const lines = [
@@ -263,6 +302,9 @@ function buildSummaryLines(input: {
   }
   if (blockedCount > 0) {
     lines.push(`${blockedCount} node(s) are blocked by failure or cancellation.`);
+  }
+  if (recoveredCount > 0) {
+    lines.push(`${recoveredCount} failed node(s) were recovered by downstream routing.`);
   }
   if (skippedCount > 0) {
     lines.push(`${skippedCount} node(s) have been skipped.`);
@@ -282,10 +324,11 @@ function buildRuntimeMonitoringSummary(input: {
   const totalNodes = input.nodes.length;
   const completedNodes = input.nodes.filter((node) => node.status === "completed").length;
   const skippedNodes = input.nodes.filter((node) => node.status === "skipped").length;
+  const recoveredNodes = input.nodes.filter((node) => node.markers.includes("recovered_failure")).length;
   const readyNodes = input.nodes.filter((node) => node.status === "ready").length;
   const runningNodes = input.nodes.filter((node) => node.status === "running").length;
   const waitingNodes = input.nodes.filter((node) => node.status === "waiting_human").length;
-  const blockedNodes = input.nodes.filter((node) => node.status === "failed" || node.status === "cancelled").length;
+  const blockedNodes = input.nodes.filter((node) => node.markers.includes("blocked")).length;
   const activeNodes = runningNodes + waitingNodes;
   const progressValues = input.nodes.map((node) =>
     typeof node.progress?.percent === "number" && Number.isFinite(node.progress.percent)
@@ -299,7 +342,9 @@ function buildRuntimeMonitoringSummary(input: {
       ? progressValues.reduce((sum, value) => sum + value, 0) / progressValues.length
       : 0,
   );
-  const percentComplete = clampPercent(totalNodes ? ((completedNodes + skippedNodes) / totalNodes) * 100 : 0);
+  const percentComplete = clampPercent(
+    totalNodes ? ((completedNodes + skippedNodes + recoveredNodes) / totalNodes) * 100 : 0,
+  );
   const progressTone: RuntimeMonitoringSummary["progress"]["tone"] =
     blockedNodes > 0
       ? "danger"
@@ -377,7 +422,7 @@ function buildRuntimeMonitoringSummary(input: {
               : activeNodes > 0
                 ? "Runtime active"
                 : "Runtime ready",
-      detail: `${completedNodes + skippedNodes}/${totalNodes} node(s) terminal, ${activeNodes} active, ${readyNodes} ready, ${blockedNodes} blocked.`,
+      detail: `${completedNodes + skippedNodes + recoveredNodes}/${totalNodes} node(s) terminal, ${activeNodes} active, ${readyNodes} ready, ${blockedNodes} blocked.`,
       tone: progressTone,
     },
     checkpoints: {
@@ -425,16 +470,28 @@ export function buildRuntimeGraphSummary(input: {
   run: RunRecord;
   plan: RunPlanRecord;
   nodeRuns: NodeRunRecord[];
+  handoffs?: NodeHandoffRecord[];
 }): RuntimeGraphSummary {
   const generatedAt = nowIso();
+  const handoffs = input.handoffs || [];
+  const recoveredFailures = new Set(
+    handoffs
+      .filter((handoff) =>
+        handoff.routed_node_run_ids.length > 0 &&
+        (handoff.source_outcome === "failed" || isFailureRoutingPort(handoff.port))
+      )
+      .map((handoff) => handoff.node_run_id),
+  );
   const nodes = buildGraphNodes({
     plan: input.plan,
     nodeRuns: input.nodeRuns,
     generatedAt,
+    recoveredFailures,
   });
   const edges = buildGraphEdges({
     plan: input.plan,
     graphNodes: nodes,
+    handoffs,
   });
   const frontier = uniqueStrings(
     input.plan.frontier.filter((nodeRunId) => nodes.some((node) => node.nodeRunId === nodeRunId)),

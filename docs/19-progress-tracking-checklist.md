@@ -1039,7 +1039,7 @@ This also means the following may land incrementally:
 | `REL-01` | Release Engineering | Done | P1 | Replace mutable Runtime Worker image defaults with immutable version/tag/digest resolution and build provenance. | Version-derived defaults, override policy, OCI labels, Worker health/registration provenance, Doctor identity, image verification, and real Docker acceptance pass. |
 | `REL-02` | Release Engineering | Done | P1 | Add CI release gates for generated-contract drift, checks, tests, Runtime Worker image build, and deterministic Docker smoke. | PR/main and tag/manual workflows separate full deterministic checks from image build, provenance, Docker operator, and restart-recovery gates; actionlint passes. |
 | `REL-03` | Release Engineering | Done | P2 | Add SBOM, image signing and vulnerability policy, plus documented upgrade and rollback procedures. | Pinned Syft/Grype local evidence, CycloneDX/SARIF artifacts, Critical blocking, Alpine stock image, GHCR BuildKit attestations, keyless cosign signing, and digest rollback policy are implemented. |
-| `RT-04` | Runtime Semantics | Todo | P1 | Evaluate structured edge conditions and route matching failure ports to recovery nodes without premature terminal Run failure. | Follow-up to the completed handoff/port-routing baseline. |
+| `RT-04` | Runtime Semantics | Done | P1 | Evaluate structured edge conditions and route matching failure ports to recovery nodes without premature terminal Run failure. | Safe bounded AST, persisted per-edge decisions, retry-first recovery, recovered-failure completion, Runtime Graph/Trace/Scorecard projection, and focused acceptance coverage landed. |
 | `RT-05` | Runtime Semantics | Todo | P1 | Add Worker-native human-gate suspend/resume with persisted gate and control protocol state. | Manager-side approval and node requeue remain the compatibility behavior. |
 | `RT-06` | Runtime Semantics | Todo | P2 | Add dynamic fanout cardinality and complete harness/control-during-provisioning guarantees. | Keep bounded capacity and recovery invariants intact. |
 | `STU-04` | Studio Authoring | Todo | P2 | Add direct-manipulation DAG editing with node drag, edge/port editing, validation, undo/redo, and patch preview. | Retain the form-backed editor as the deterministic and accessible fallback. |
@@ -1463,9 +1463,9 @@ Completed in order:
 
 Then continue the runtime semantics track:
 
-1. `RT-04`
-2. `RT-05`
-3. `RT-06`
+- [x] `RT-04`
+- [ ] `RT-05`
+- [ ] `RT-06`
 
 Exit condition:
 

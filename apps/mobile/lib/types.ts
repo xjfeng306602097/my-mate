@@ -394,6 +394,7 @@ export type RuntimeGraphMarker =
   | "approval_gate"
   | "human_input_gate"
   | "blocked"
+  | "recovered_failure"
   | "skipped"
   | "terminal"
   | "ready";

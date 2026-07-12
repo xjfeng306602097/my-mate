@@ -54,7 +54,7 @@ longer the product runtime architecture or the canonical product vocabulary.
 | `HRR-2` | Done | New dispatch mainline emits persisted `RuntimeWorkerJob` records instead of directly invoking the legacy adapter. |
 | `HRR-3` | Done | Runtime Worker executes local, command, bridge, and provider-normalized harness jobs. |
 | `HRR-4` | Done | Docker Worker provisioning, capacity, queueing, isolation, health gating, cleanup, and real daemon smoke coverage. |
-| `HRR-5` | Baseline Done | Handoff ports, branch selection, skipped untaken branches, and evidence projection are implemented. Structured expression evaluation and failure-port recovery remain advanced follow-up semantics. |
+| `HRR-5` | Done | Handoff ports, bounded structured conditions, branch selection, skipped untaken branches, failure recovery routing, and evidence projection are implemented. |
 | `HRR-6` | Done | OpenClaw is a selectable harness/legacy bridge behind provider-neutral contracts. |
 | `HRR-7` | Done | Studio and Mobile expose graph state, Worker identity, evidence, artifacts, human gates, trace, replay, and evaluation. |
 
@@ -120,8 +120,8 @@ HomeRail P0/P1 baseline.
 
 ### Advanced Runtime Semantics
 
-- [ ] Evaluate structured edge-condition expressions.
-- [ ] Route matching failure ports to recovery nodes without terminal Run
+- [x] Evaluate structured edge-condition expressions.
+- [x] Route matching failure ports to recovery nodes without terminal Run
   failure.
 - [ ] Add Worker-native human-gate suspend/resume.
 - [ ] Add dynamic fanout cardinality.

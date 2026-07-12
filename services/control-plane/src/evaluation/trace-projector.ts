@@ -291,6 +291,9 @@ export function projectTraceSpans(runId: string): {
         port: handoff.port,
         routed_nodes: handoff.routed_node_run_ids.length,
         skipped_nodes: handoff.skipped_node_run_ids.length,
+        source_outcome: handoff.source_outcome || null,
+        synthetic: handoff.synthetic === true,
+        matched_conditions: (handoff.routing_decisions || []).filter((decision) => decision.matched).length,
       },
     });
   }

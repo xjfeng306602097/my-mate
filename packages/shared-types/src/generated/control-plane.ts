@@ -3398,9 +3398,24 @@ export type components = {
             readonly node_run_id: string;
             readonly port: string;
             readonly routed_node_run_ids: readonly string[];
+            readonly routing_decisions?: readonly {
+                readonly condition_matched: boolean;
+                readonly condition_valid: boolean;
+                readonly edge_key: string;
+                readonly from_node_id: string;
+                readonly from_port: string | null;
+                readonly matched: boolean;
+                readonly port_matched: boolean;
+                readonly reason: string;
+                readonly to_node_id: string;
+                readonly to_port: string | null;
+            }[];
             readonly run_id: string;
             readonly skipped_node_run_ids: readonly string[];
+            /** @enum {string} */
+            readonly source_outcome?: "completed" | "failed" | "cancelled" | "handoff";
             readonly summary: string | null;
+            readonly synthetic?: boolean;
             /** @constant */
             readonly type: "node_handoff";
         };

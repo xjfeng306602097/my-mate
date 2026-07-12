@@ -3,6 +3,7 @@ import type {
   RunEvidenceSnapshot,
   ScorecardFinding,
 } from "../types.js";
+import { isFailureRoutingPort } from "../../runtime/edge-condition.js";
 
 const TERMINAL_RUN = new Set(["completed", "failed", "cancelled"]);
 const TERMINAL_NODE = new Set(["completed", "failed", "skipped", "cancelled"]);
@@ -133,9 +134,21 @@ export function evaluatePipelineChecks(snapshot: RunEvidenceSnapshot): Scorecard
     ]),
   );
   const terminalConsistency = !TERMINAL_RUN.has(snapshot.run.status) || activeNodes.length === 0;
+  const recoveredFailedNodeRunIds = new Set(
+    snapshot.handoffs
+      .filter((handoff) =>
+        handoff.routed_node_run_ids.length > 0 &&
+        (handoff.source_outcome === "failed" || isFailureRoutingPort(handoff.port))
+      )
+      .map((handoff) => handoff.node_run_id),
+  );
   const completedConsistency =
     snapshot.run.status !== "completed" ||
-    snapshot.node_runs.every((node) => node.status === "completed" || node.status === "skipped");
+    snapshot.node_runs.every((node) =>
+      node.status === "completed" ||
+      node.status === "skipped" ||
+      (node.status === "failed" && recoveredFailedNodeRunIds.has(node.node_run_id)),
+    );
   const failedConsistency =
     snapshot.run.status !== "failed" || snapshot.node_runs.some((node) => node.status === "failed");
   const statusConsistent = terminalConsistency && completedConsistency && failedConsistency;
@@ -173,6 +186,12 @@ export function evaluatePipelineChecks(snapshot: RunEvidenceSnapshot): Scorecard
     const source = compiledByNodeId.get(edge.from);
     const target = compiledByNodeId.get(edge.to);
     if (!source || !target) return false;
+    const routed = snapshot.handoffs.some(
+      (handoff) =>
+        handoff.node_run_id === source.node_run_id &&
+        handoff.routed_node_run_ids.includes(target.node_run_id),
+    );
+    if (routed) return true;
     return nodeRunById.get(source.node_run_id)?.status === "completed" &&
       nodeRunById.get(target.node_run_id)?.status !== "pending";
   });

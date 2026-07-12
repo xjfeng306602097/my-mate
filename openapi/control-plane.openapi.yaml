@@ -1071,6 +1071,26 @@ components:
         skipped_node_run_ids:
           type: array
           items: { type: string }
+        source_outcome:
+          type: string
+          enum: [completed, failed, cancelled, handoff]
+        synthetic: { type: boolean }
+        routing_decisions:
+          type: array
+          items:
+            type: object
+            properties:
+              edge_key: { type: string }
+              from_node_id: { type: string }
+              to_node_id: { type: string }
+              from_port: { type: [string, "null"] }
+              to_port: { type: [string, "null"] }
+              port_matched: { type: boolean }
+              condition_matched: { type: boolean }
+              condition_valid: { type: boolean }
+              matched: { type: boolean }
+              reason: { type: string }
+            required: [edge_key, from_node_id, to_node_id, from_port, to_port, port_matched, condition_matched, condition_valid, matched, reason]
       required: [type, handoff_id, job_id, run_id, node_run_id, node_id, port, content, summary, created_at, routed_node_run_ids, skipped_node_run_ids]
     SuperviseRunResponse:
       type: object

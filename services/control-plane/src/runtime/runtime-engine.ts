@@ -23,7 +23,6 @@ import {
 } from "../human-input-store.js";
 import {
   applyNodeStatus,
-  areAllNodesCompleted,
   getCompiledNode,
   getMutableNodeRun,
   getReadyNodeRuns,
@@ -66,9 +65,19 @@ import {
   type RuntimeEventDecision,
 } from "./runtime-event-cursor-store.js";
 import {
-  findLatestNodeHandoff,
+  listNodeHandoffRecords,
   saveNodeHandoffRecord,
+  type NodeHandoffRoutingDecision,
 } from "./node-handoff-store.js";
+import {
+  evaluateEdgeCondition,
+  isFailureRoutingPort,
+  normalizeRoutingPort,
+  outcomeFromHandoffPort,
+  routingPortsMatch,
+  type EdgeConditionContext,
+  type EdgeOutcomeStatus,
+} from "./edge-condition.js";
 import {
   findDispatchableExecutionReplayForNode,
   findExecutionReplayByJobId,
@@ -118,6 +127,75 @@ function resolveMaxParallelNodes(plan: RunPlanRecord): number {
     return Math.max(1, Math.floor(raw));
   }
   return 1;
+}
+
+function recoveredFailureNodeRunIds(runId: string): string[] {
+  return [...new Set(
+    listNodeHandoffRecords(runId)
+      .filter((handoff) =>
+        handoff.routed_node_run_ids.length > 0 &&
+        (handoff.source_outcome === "failed" || isFailureRoutingPort(handoff.port))
+      )
+      .map((handoff) => handoff.node_run_id),
+  )];
+}
+
+function findLatestNodeHandoffForJob(
+  runId: string,
+  nodeRunId: string,
+  jobId?: string | null,
+) {
+  return listNodeHandoffRecords(runId)
+    .filter((handoff) =>
+      handoff.node_run_id === nodeRunId && (!jobId || handoff.job_id === jobId)
+    )
+    .at(-1) || null;
+}
+
+function areAllNodesCompletedOrRecovered(runId: string, nodeRuns: NodeRunRecord[]): {
+  completed: boolean;
+  recovered_failed_node_run_ids: string[];
+} {
+  const recovered = recoveredFailureNodeRunIds(runId);
+  const recoveredSet = new Set(recovered);
+  return {
+    completed:
+      nodeRuns.length > 0 &&
+      nodeRuns.every((nodeRun) =>
+        ["completed", "skipped", "cancelled"].includes(nodeRun.status) ||
+        (nodeRun.status === "failed" && recoveredSet.has(nodeRun.node_run_id)),
+      ),
+    recovered_failed_node_run_ids: recovered,
+  };
+}
+
+interface NodeHandoffRoutingResult {
+  routed_node_run_ids: string[];
+  skipped_node_run_ids: string[];
+  routing_decisions: NodeHandoffRoutingDecision[];
+  source_outcome: EdgeOutcomeStatus;
+}
+
+function isRoutedEdgeSatisfied(
+  runId: string,
+  plan: RunPlanRecord,
+  edge: RunPlanRecord["edges"][number],
+): boolean {
+  const source = plan.compiled_nodes.find((candidate) => candidate.node_id === edge.from);
+  const target = plan.compiled_nodes.find((candidate) => candidate.node_id === edge.to);
+  if (!source || !target) {
+    return false;
+  }
+  const edgeIndex = plan.edges.indexOf(edge);
+  const edgeKey = `${edge.from}:${edgeIndex}:${edge.to}`;
+  return listNodeHandoffRecords(runId).some((handoff) =>
+    handoff.node_run_id === source.node_run_id &&
+    handoff.routed_node_run_ids.includes(target.node_run_id) &&
+    (
+      !handoff.routing_decisions?.length ||
+      handoff.routing_decisions.some((decision) => decision.edge_key === edgeKey && decision.matched)
+    )
+  );
 }
 
 export class RuntimeEngine {
@@ -266,7 +344,12 @@ export class RuntimeEngine {
 
   private async applyNodeHandoff(
     event: Extract<WorkerEvent, { kind: "worker.handoff" }>,
-  ): Promise<void> {
+    options?: {
+      sourceOutcome?: EdgeOutcomeStatus;
+      error?: Record<string, unknown> | null;
+      synthetic?: boolean;
+    },
+  ): Promise<NodeHandoffRoutingResult> {
     const run = getRun(event.run_id);
     const plan = getRunPlan(event.run_id);
     const nodeRuns = listNodeRuns(event.run_id);
@@ -278,34 +361,75 @@ export class RuntimeEngine {
       throw new Error("NODE_NOT_FOUND");
     }
 
-    const normalizePort = (value: string | null | undefined): string =>
-      (value || "success").trim().toLowerCase();
-    const portsMatch = (edgePortValue: string | null | undefined, handoffPortValue: string): boolean => {
-      const edgePort = normalizePort(edgePortValue);
-      const handoffPort = normalizePort(handoffPortValue);
-      if (edgePort === handoffPort) {
-        return true;
-      }
-      const successPorts = new Set(["success", "completed", "complete", "done", "default"]);
-      const failurePorts = new Set(["failure", "failed", "error", "rejected"]);
-      return (
-        (successPorts.has(edgePort) && successPorts.has(handoffPort)) ||
-        (failurePorts.has(edgePort) && failurePorts.has(handoffPort))
-      );
-    };
-
     const outgoing = plan.edges.filter((edge) => edge.from === source.node_id);
     const hasExplicitPorts = outgoing.some(
       (edge) => typeof edge.from_port === "string" && !!edge.from_port.trim(),
     );
-    const matchingEdges = outgoing.filter((edge) =>
-      hasExplicitPorts ? portsMatch(edge.from_port, event.handoff.port) : true,
-    );
+    const sourceOutcome = options?.sourceOutcome || outcomeFromHandoffPort(event.handoff.port);
+    const sourceNodeRun = getMutableNodeRun(nodeRuns, source.node_run_id);
+    const deferFailureRouting =
+      sourceOutcome === "failed" &&
+      options?.synthetic !== true &&
+      !!sourceNodeRun &&
+      this.canRetryNode(source, sourceNodeRun);
+    const conditionContext: EdgeConditionContext = {
+      outcome: { status: sourceOutcome },
+      handoff: {
+        port: normalizeRoutingPort(event.handoff.port),
+        content: event.handoff.content,
+        content_ref: event.handoff.content_ref || null,
+        summary: event.handoff.summary,
+      },
+      error: options?.error || null,
+      source: {
+        node_id: source.node_id,
+        node_run_id: source.node_run_id,
+        name: source.name,
+        attempt: getMutableNodeRun(nodeRuns, source.node_run_id)?.attempt || 0,
+      },
+      run: {
+        run_id: run.run_id,
+        status: run.status,
+      },
+    };
+    const evaluatedEdges = outgoing.map((edge, index) => {
+      const portMatched = hasExplicitPorts
+        ? routingPortsMatch(edge.from_port, event.handoff.port)
+        : true;
+      const evaluated =
+        !edge.condition && sourceOutcome === "failed" && isFailureRoutingPort(edge.from_port)
+          ? {
+              matched: true,
+              valid: true,
+              reason: "default_on_failure_port",
+              observed_path: "outcome.status",
+              observed_value: sourceOutcome,
+            }
+          : evaluateEdgeCondition(edge.condition, conditionContext);
+      const decision: NodeHandoffRoutingDecision = {
+        edge_key: `${source.node_id}:${index}:${edge.to}`,
+        from_node_id: edge.from,
+        to_node_id: edge.to,
+        from_port: edge.from_port || null,
+        to_port: edge.to_port || null,
+        port_matched: portMatched,
+        condition_matched: evaluated.matched,
+        condition_valid: evaluated.valid,
+        matched: portMatched && evaluated.valid && evaluated.matched,
+        reason: !portMatched ? "port_mismatch" : evaluated.reason,
+      };
+      return { edge, decision };
+    });
+    const matchingEdges = evaluatedEdges
+      .filter((entry) => entry.decision.matched)
+      .map((entry) => entry.edge);
+    const activatedEdges = deferFailureRouting ? [] : matchingEdges;
+    const routingDecisions = evaluatedEdges.map((entry) => entry.decision);
     const routedNodeRunIds: string[] = [];
     const skippedNodeRunIds: string[] = [];
     const timestamp = event.handoff.created_at || event.created_at || this.getNow();
 
-    for (const edge of matchingEdges) {
+    for (const edge of activatedEdges) {
       const target = plan.compiled_nodes.find((candidate) => candidate.node_id === edge.to);
       if (!target) {
         continue;
@@ -321,7 +445,18 @@ export class RuntimeEngine {
           const dependencyRun = dependency
             ? getMutableNodeRun(nodeRuns, dependency.node_run_id)
             : null;
-          return dependencyRun ? ["completed", "skipped"].includes(dependencyRun.status) : false;
+          if (!dependency || !dependencyRun) {
+            return false;
+          }
+          if (["completed", "skipped"].includes(dependencyRun.status)) {
+            return !candidate.from_port && !candidate.condition
+              ? true
+              : isRoutedEdgeSatisfied(run.run_id, plan, candidate);
+          }
+          if (dependencyRun.status !== "failed") {
+            return false;
+          }
+          return isRoutedEdgeSatisfied(run.run_id, plan, candidate);
         });
       if (!otherDependenciesReady) {
         continue;
@@ -340,6 +475,8 @@ export class RuntimeEngine {
             content: event.handoff.content,
             content_ref: event.handoff.content_ref,
             summary: event.handoff.summary,
+            source_outcome: sourceOutcome,
+            synthetic: options?.synthetic === true,
           },
         ],
       };
@@ -368,7 +505,10 @@ export class RuntimeEngine {
       });
     }
 
-    if (hasExplicitPorts) {
+    if (
+      !deferFailureRouting &&
+      (hasExplicitPorts || outgoing.some((edge) => !!edge.condition) || sourceOutcome === "failed")
+    ) {
       const matchedTargets = new Set(matchingEdges.map((edge) => edge.to));
       for (const edge of outgoing) {
         if (matchedTargets.has(edge.to)) {
@@ -415,6 +555,9 @@ export class RuntimeEngine {
       job_id: event.job_id,
       routed_node_run_ids: routedNodeRunIds,
       skipped_node_run_ids: skippedNodeRunIds,
+      source_outcome: sourceOutcome,
+      synthetic: options?.synthetic === true,
+      routing_decisions: routingDecisions,
     });
     const recordedHandoffEvent = appendRunEvent({
       run_id: run.run_id,
@@ -426,30 +569,37 @@ export class RuntimeEngine {
         handoff_id: event.handoff.handoff_id || `handoff:${event.event_id}`,
         job_id: event.job_id,
         port: event.handoff.port,
+        source_outcome: sourceOutcome,
+        synthetic: options?.synthetic === true,
         routed_node_run_ids: routedNodeRunIds,
         skipped_node_run_ids: skippedNodeRunIds,
+        routing_decisions: routingDecisions,
       },
       created_at: timestamp,
       causation_id: event.event_id,
       idempotency_key: `handoff:${event.event_id}`,
     });
-    const handoffEvent = appendRunEvent({
-      run_id: run.run_id,
-      node_run_id: source.node_run_id,
-      type: "node.progress",
-      actor_type: "agent",
-      actor_id: event.worker_id ? `runtime-worker:${event.worker_id}` : "runtime-worker",
-      payload: {
-        kind: "node_handoff",
-        port: event.handoff.port,
-        summary: event.handoff.summary,
-        job_id: event.job_id,
-        routed_node_run_ids: routedNodeRunIds,
-        skipped_node_run_ids: skippedNodeRunIds,
-      },
-      created_at: timestamp,
-      causation_id: recordedHandoffEvent.event_id,
-    });
+    const handoffEvent = sourceNodeRun && ["completed", "failed", "skipped", "cancelled"].includes(sourceNodeRun.status)
+      ? recordedHandoffEvent
+      : appendRunEvent({
+          run_id: run.run_id,
+          node_run_id: source.node_run_id,
+          type: "node.progress",
+          actor_type: "agent",
+          actor_id: event.worker_id ? `runtime-worker:${event.worker_id}` : "runtime-worker",
+          payload: {
+            kind: "node_handoff",
+            port: event.handoff.port,
+            summary: event.handoff.summary,
+            job_id: event.job_id,
+            source_outcome: sourceOutcome,
+            synthetic: options?.synthetic === true,
+            routed_node_run_ids: routedNodeRunIds,
+            skipped_node_run_ids: skippedNodeRunIds,
+          },
+          created_at: timestamp,
+          causation_id: recordedHandoffEvent.event_id,
+        });
     run.last_event_id = handoffEvent.event_id;
     run.updated_at = timestamp;
     run.current_summary =
@@ -459,6 +609,12 @@ export class RuntimeEngine {
     saveRunPlan(plan);
     saveNodeRuns(run.run_id, nodeRuns);
     this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
+    return {
+      routed_node_run_ids: routedNodeRunIds,
+      skipped_node_run_ids: skippedNodeRunIds,
+      routing_decisions: routingDecisions,
+      source_outcome: sourceOutcome,
+    };
   }
 
   async applyWorkerEvent(event: WorkerEvent): Promise<RuntimeEventDecision> {
@@ -686,6 +842,8 @@ export class RuntimeEngine {
           : report.status === "accepted"
             ? 0
             : 50;
+    const routingJobId =
+      context?.jobId || `${run.run_id}:${node.node_run_id}:attempt-${nodeRun.attempt}`;
 
     if (report.raw_ref) {
       node.execution_ref = createExecutionRefFromRawRef(report.raw_ref, node.execution_ref);
@@ -928,12 +1086,190 @@ export class RuntimeEngine {
         });
         return;
       }
+
+      if (report.status === "failed") {
+        const outgoing = plan.edges.filter((edge) => edge.from === node.node_id);
+        const latestHandoff = findLatestNodeHandoffForJob(
+          run.run_id,
+          node.node_run_id,
+          routingJobId,
+        );
+        let recoveryRouting: NodeHandoffRoutingResult | null =
+          latestHandoff &&
+          latestHandoff.routed_node_run_ids.length > 0 &&
+          (latestHandoff.source_outcome === "failed" || isFailureRoutingPort(latestHandoff.port))
+            ? {
+                routed_node_run_ids: latestHandoff.routed_node_run_ids,
+                skipped_node_run_ids: latestHandoff.skipped_node_run_ids,
+                routing_decisions: latestHandoff.routing_decisions || [],
+                source_outcome: "failed" as const,
+              }
+            : null;
+
+        if (
+          !recoveryRouting &&
+          outgoing.some((edge) => isFailureRoutingPort(edge.from_port) || !!edge.condition)
+        ) {
+          const stableSource = routingJobId;
+          const handoffId = `handoff:failure:${stableSource}`;
+          const errorContent = report.error || {
+            code: "runtime_node_failed",
+            message: normalizedMessage,
+          };
+          recoveryRouting = await this.applyNodeHandoff(
+            {
+              event_id: `${context?.workerEventId || handoffId}:failure-routing`,
+              idempotency_key: `failure-routing:${stableSource}`,
+              sequence: 0,
+              kind: "worker.handoff",
+              job_id: context?.jobId || stableSource,
+              run_id: run.run_id,
+              node_run_id: node.node_run_id,
+              worker_id: null,
+              created_at: timestamp,
+              handoff: {
+                type: "node_handoff",
+                handoff_id: handoffId,
+                job_id: context?.jobId || stableSource,
+                run_id: run.run_id,
+                node_run_id: node.node_run_id,
+                node_id: node.node_id,
+                port: "failure",
+                content: {
+                  outcome: "failed",
+                  error: errorContent,
+                },
+                content_ref: null,
+                summary: `Failure routed from ${node.name}: ${normalizedMessage}`,
+                created_at: timestamp,
+              },
+            },
+            {
+              sourceOutcome: "failed",
+              error: errorContent,
+              synthetic: true,
+            },
+          );
+        }
+
+        if (recoveryRouting && recoveryRouting.routed_node_run_ids.length > 0) {
+          const recoveredRun = getRun(run.run_id);
+          const recoveredPlan = getRunPlan(run.run_id);
+          if (!recoveredRun || !recoveredPlan) {
+            throw new Error("RUN_NOT_FOUND");
+          }
+          const recoveryEvent = appendRunEvent({
+            run_id: run.run_id,
+            node_run_id: node.node_run_id,
+            type: "recovery.failure_routed",
+            actor_type: "system",
+            actor_id: "runtime-failure-router",
+            payload: {
+              kind: "failure_recovery_routed",
+              job_id: context?.jobId || null,
+              failed_node_run_id: node.node_run_id,
+              recovery_node_run_ids: recoveryRouting.routed_node_run_ids,
+            },
+            created_at: timestamp,
+            causation_id: event.event_id,
+            idempotency_key: `failure-recovery-routed:${context?.jobId || node.node_run_id}:${nodeRun.attempt}`,
+          });
+          recoveredRun.status = "running";
+          recoveredRun.current_summary =
+            `Failure recovery routed to ${recoveryRouting.routed_node_run_ids.length} node(s)`;
+          recoveredRun.blocked_reason = null;
+          recoveredRun.finished_at = null;
+          recoveredRun.updated_at = timestamp;
+          recoveredRun.last_event_id = recoveryEvent.event_id;
+          recoveredPlan.status = "running";
+          saveRun(recoveredRun);
+          saveRunPlan(recoveredPlan);
+          this.refreshSessionsLinkedToRun?.(run.run_id, recoveredRun.status);
+          void this.queueReadyNodes(run.run_id, "failure_recovery");
+          return;
+        }
+      }
       this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
       return;
     }
 
     if (report.status !== "completed") {
       throw new Error("INVALID_REPORT_STATUS");
+    }
+
+    const outgoing = plan.edges.filter((edge) => edge.from === node.node_id);
+    let currentHandoff = findLatestNodeHandoffForJob(
+      run.run_id,
+      node.node_run_id,
+      routingJobId,
+    );
+    if (
+      !currentHandoff &&
+      outgoing.some((edge) => !!edge.from_port || !!edge.condition)
+    ) {
+      const stableSource = routingJobId;
+      const handoffId = `handoff:success:${stableSource}`;
+      await this.applyNodeHandoff(
+        {
+          event_id: `${context?.workerEventId || handoffId}:success-routing`,
+          idempotency_key: `success-routing:${stableSource}`,
+          sequence: 0,
+          kind: "worker.handoff",
+          job_id: context?.jobId || stableSource,
+          run_id: run.run_id,
+          node_run_id: node.node_run_id,
+          worker_id: null,
+          created_at: timestamp,
+          handoff: {
+            type: "node_handoff",
+            handoff_id: handoffId,
+            job_id: context?.jobId || stableSource,
+            run_id: run.run_id,
+            node_run_id: node.node_run_id,
+            node_id: node.node_id,
+            port: "success",
+            content: {
+              outcome: "completed",
+              progress: report.progress,
+              artifacts: report.artifacts || [],
+            },
+            content_ref: null,
+            summary: `Success routed from ${node.name}: ${normalizedMessage}`,
+            created_at: timestamp,
+          },
+        },
+        {
+          sourceOutcome: "completed",
+          synthetic: true,
+        },
+      );
+      await this.applyExecutionReport(report, context);
+      return;
+    }
+
+    const terminalFailureHandoff = currentHandoff;
+    if (
+      terminalFailureHandoff &&
+      terminalFailureHandoff.routed_node_run_ids.length === 0 &&
+      (terminalFailureHandoff.source_outcome === "failed" ||
+        isFailureRoutingPort(terminalFailureHandoff.port))
+    ) {
+      await this.applyExecutionReport(
+        {
+          ...report,
+          status: "failed",
+          progress: {
+            percent: 100,
+            message: `Failure handoff ${terminalFailureHandoff.port} has no matching recovery edge`,
+          },
+          error: {
+            code: "unrouted_failure_handoff",
+            message: `Failure handoff ${terminalFailureHandoff.port} has no matching recovery edge`,
+          },
+        },
+        context,
+      );
+      return;
     }
 
     applyNodeStatus(
@@ -1009,20 +1345,10 @@ export class RuntimeEngine {
 
     const unlockedNodes = unlockReadyNodeRuns(plan, nodeRuns, timestamp, {
       isInboundEdgeSatisfied: (edge) => {
-        const edgePort =
-          typeof edge.from_port === "string" && edge.from_port.trim()
-            ? edge.from_port.trim()
-            : null;
-        if (!edgePort) {
+        if (!edge.from_port && !edge.condition) {
           return true;
         }
-        const source = plan.compiled_nodes.find((candidate) => candidate.node_id === edge.from);
-        const target = plan.compiled_nodes.find((candidate) => candidate.node_id === edge.to);
-        if (!source || !target) {
-          return false;
-        }
-        const handoff = findLatestNodeHandoff(run.run_id, source.node_run_id);
-        return handoff?.routed_node_run_ids.includes(target.node_run_id) === true;
+        return isRoutedEdgeSatisfied(run.run_id, plan, edge);
       },
     });
     for (const unlockedNode of unlockedNodes) {
@@ -1042,7 +1368,8 @@ export class RuntimeEngine {
       lastEventId = readyEvent.event_id;
     }
 
-    if (areAllNodesCompleted(nodeRuns)) {
+    const completion = areAllNodesCompletedOrRecovered(run.run_id, nodeRuns);
+    if (completion.completed) {
       const completedEvent = appendRunEvent({
         run_id: run.run_id,
         type: "run.completed",
@@ -1050,11 +1377,14 @@ export class RuntimeEngine {
         actor_id: "control-plane",
         payload: {
           completed_nodes: nodeRuns.length,
+          recovered_failed_node_run_ids: completion.recovered_failed_node_run_ids,
         },
         created_at: timestamp,
       });
       run.status = "completed";
-      run.current_summary = "Run completed";
+      run.current_summary = completion.recovered_failed_node_run_ids.length > 0
+        ? `Run completed with ${completion.recovered_failed_node_run_ids.length} recovered failure(s)`
+        : "Run completed";
       run.finished_at = timestamp;
       run.updated_at = timestamp;
       run.last_event_id = completedEvent.event_id;
@@ -1200,7 +1530,8 @@ export class RuntimeEngine {
         lastEventId = completedEvent.event_id;
         run.current_summary = "Workflow completed";
 
-        if (areAllNodesCompleted(nodeRuns)) {
+        const completion = areAllNodesCompletedOrRecovered(runId, nodeRuns);
+        if (completion.completed) {
           const runCompletedEvent = appendRunEvent({
             run_id: runId,
             type: "run.completed",
@@ -1208,11 +1539,14 @@ export class RuntimeEngine {
             actor_id: "control-plane",
             payload: {
               completed_nodes: nodeRuns.length,
+              recovered_failed_node_run_ids: completion.recovered_failed_node_run_ids,
             },
             created_at: dispatchTime,
           });
           run.status = "completed";
-          run.current_summary = "Run completed";
+          run.current_summary = completion.recovered_failed_node_run_ids.length > 0
+            ? `Run completed with ${completion.recovered_failed_node_run_ids.length} recovered failure(s)`
+            : "Run completed";
           run.finished_at = dispatchTime;
           run.updated_at = dispatchTime;
           run.last_event_id = runCompletedEvent.event_id;

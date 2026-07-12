@@ -21,12 +21,82 @@
       "minLength": 1
     },
     "condition": {
-      "type": ["object", "null"]
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/edgeCondition" }
+      ]
     },
     "label": {
       "type": ["string", "null"]
     }
   },
   "required": ["from", "to", "condition", "label"],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "edgeCondition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["always", "on_success", "on_failure"]
+            }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_-]*(\\.[A-Za-z_][A-Za-z0-9_-]*)*$"
+            },
+            "op": {
+              "type": "string",
+              "enum": ["exists", "not_exists", "eq", "neq", "in", "not_in", "contains", "gt", "gte", "lt", "lte"]
+            },
+            "value": true
+          },
+          "required": ["path", "op"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": { "$ref": "#/$defs/edgeCondition" }
+            }
+          },
+          "required": ["all"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": { "$ref": "#/$defs/edgeCondition" }
+            }
+          },
+          "required": ["any"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "not": { "$ref": "#/$defs/edgeCondition" }
+          },
+          "required": ["not"],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
 }

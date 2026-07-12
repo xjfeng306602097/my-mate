@@ -40,6 +40,7 @@ export function buildRuntimeRunProjection(runId: string) {
       run,
       plan,
       nodeRuns,
+      handoffs,
     }),
     jobs,
     leases,

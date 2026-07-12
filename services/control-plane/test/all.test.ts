@@ -5,6 +5,7 @@ import "./planner-llm.test.ts";
 import "./runtime-protocol.test.ts";
 import "./runtime-dispatcher.test.ts";
 import "./runtime-engine.test.ts";
+import "./edge-condition.test.ts";
 import "./runtime-worker-hub.test.ts";
 import "./runtime-recovery-oc02.test.ts";
 import "./storage-backend.test.ts";

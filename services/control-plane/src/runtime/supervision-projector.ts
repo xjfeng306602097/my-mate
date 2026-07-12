@@ -71,14 +71,14 @@ export function buildSupervisionProjection(input: {
     return null;
   }
   const nodeRuns = listNodeRuns(input.runId);
-  const graph = buildRuntimeGraphSummary({ run, plan, nodeRuns });
+  const handoffs = listNodeHandoffRecords(input.runId);
+  const graph = buildRuntimeGraphSummary({ run, plan, nodeRuns, handoffs });
   const jobs = listRuntimeJobRecords(input.runId);
   const leases = listWorkerLeaseRecords(input.runId);
   const workerIds = new Set(leases.map((lease) => lease.worker_id));
   const workers = listRuntimeWorkerRecords().filter((worker) => workerIds.has(worker.worker_id));
   const events = listRunEvents(input.runId);
   const evidence = listWorkerEvidence(input.runId);
-  const handoffs = listNodeHandoffRecords(input.runId);
   const artifacts = listArtifacts(input.runId);
   const position = input.cursor
     ? decodeSupervisionCursor(input.cursor, input.runId)

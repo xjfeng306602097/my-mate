@@ -71,7 +71,20 @@ The repository supports these end-to-end flows:
 
 ## Latest Closure
 
-Production Release Engineering (`REL-01`, `REL-02`, and `REL-03`) is complete:
+`RT-04` structured edge conditions and failure recovery are complete:
+
+- A bounded declarative AST evaluates lifecycle conditions, structured
+  predicates, and `all`/`any`/`not` composition without script execution.
+- Port and condition matching persist per-edge routing decisions for Trace,
+  Replay, Runtime Graph, and scorecard evidence.
+- Retry remains higher priority than recovery; a matched failure route keeps
+  the Run active while preserving the source node as failed.
+- A Run may complete with recovered failed nodes, while unmatched failure
+  handoffs still terminate the Run.
+- Runtime Graph distinguishes recovered failures and evaluated untaken edges.
+
+Production Release Engineering (`REL-01`, `REL-02`, and `REL-03`) remains
+complete:
 
 - Runtime Worker defaults use the repository semantic version instead of
   `latest`, while explicit local and digest overrides remain supported.
@@ -91,10 +104,6 @@ continuation of the original P0/P1 HomeRail closure.
 
 ### 1. Deeper Runtime Semantics
 
-- Evaluate structured edge conditions rather than treating conditions mainly
-  as labels and branch metadata.
-- Route failure ports to recovery nodes without terminally failing the Run when
-  a matching recovery path exists.
 - Add Worker-native human-gate suspend/resume instead of relying primarily on
   Manager-side approval followed by node requeue.
 - Support dynamic fanout cardinality derived during execution.
@@ -140,12 +149,11 @@ These items remain explicitly deferred in the authoritative tracking board:
 
 ## Recommended Execution Order
 
-1. Implement `RT-04` structured conditions and failure-port recovery.
-2. Implement `RT-05` Worker-native human-gate suspend/resume.
-3. Implement `RT-06` dynamic fanout and remaining control guarantees.
-4. Build the full Studio DAG editor or the Mobile productization track based on
+1. Implement `RT-05` Worker-native human-gate suspend/resume.
+2. Implement `RT-06` dynamic fanout and remaining control guarantees.
+3. Build the full Studio DAG editor or the Mobile productization track based on
    the next product priority; do not start both as one delivery slice.
-5. Introduce the evented Mission materializer after its event/version contract
+4. Introduce the evented Mission materializer after its event/version contract
    is fixed.
 
 ## Verification Snapshot
@@ -176,3 +184,4 @@ explicit opt-in environment is configured.
 - `docs/30-obs-02-cost-attribution.md`
 - `docs/31-oc-02-timeout-compensation-failure-replay.md`
 - `docs/32-runtime-worker-release-engineering.md`
+- `docs/33-rt-04-structured-edge-conditions-and-failure-recovery.md`

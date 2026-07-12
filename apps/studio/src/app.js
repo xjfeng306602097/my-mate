@@ -4041,6 +4041,7 @@ function renderExecutionCockpit(detail) {
 function formatRuntimeMarker(marker) {
   if (marker === "active_frontier") return "Frontier";
   if (marker === "waiting_human") return "Human wait";
+  if (marker === "recovered_failure") return "Recovered failure";
   if (marker === "approval_gate") return "Approval";
   if (marker === "human_input_gate") return "Input";
   if (marker === "blocked") return "Blocked";
@@ -4053,7 +4054,7 @@ function formatRuntimeMarker(marker) {
 function runtimeMarkerTone(marker) {
   if (marker === "blocked") return "danger";
   if (marker === "waiting_human" || marker === "approval_gate" || marker === "human_input_gate") return "warn";
-  if (marker === "active_frontier" || marker === "ready" || marker === "terminal") return "success";
+  if (marker === "active_frontier" || marker === "ready" || marker === "terminal" || marker === "recovered_failure") return "success";
   return "neutral";
 }
 

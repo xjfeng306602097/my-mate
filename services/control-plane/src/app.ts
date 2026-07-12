@@ -229,6 +229,7 @@ import {
 import { buildRouteCompareSummary } from "./route-compare.js";
 import { buildRuntimeGraphSummary } from "./runtime-graph.js";
 import { buildRuntimeRunProjection } from "./runtime/runtime-run-projection.js";
+import { listNodeHandoffRecords } from "./runtime/node-handoff-store.js";
 import type { NodeProvisioner } from "./node-provisioner.js";
 import {
   buildRuntimeRecoveryView,
@@ -11246,6 +11247,7 @@ export function createApp(options?: {
         run,
         plan,
         nodeRuns: listNodeRuns(runId),
+        handoffs: listNodeHandoffRecords(runId),
       }),
     );
   });

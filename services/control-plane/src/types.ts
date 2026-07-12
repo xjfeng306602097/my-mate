@@ -112,6 +112,7 @@ export type EventType =
   | "recovery.replay_dispatched"
   | "recovery.replay_completed"
   | "recovery.replay_failed"
+  | "recovery.failure_routed"
   | "scorecard.completed"
   | "evaluation.completed";
 
@@ -1409,6 +1410,7 @@ export type RuntimeGraphMarker =
   | "approval_gate"
   | "human_input_gate"
   | "blocked"
+  | "recovered_failure"
   | "skipped"
   | "terminal"
   | "ready";

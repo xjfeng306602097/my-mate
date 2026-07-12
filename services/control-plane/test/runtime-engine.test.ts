@@ -14,6 +14,9 @@ import type {
 import { listRuntimeJobRecords } from "../src/runtime/runtime-job-store.js";
 import { getRuntimeEventCursor } from "../src/runtime/runtime-event-cursor-store.js";
 import { RuntimeEngine } from "../src/runtime/runtime-engine.js";
+import { buildRuntimeRunProjection } from "../src/runtime/runtime-run-projection.js";
+import { buildRunEvidenceSnapshot } from "../src/evaluation/run-evidence-snapshot.js";
+import { evaluatePipelineChecks } from "../src/evaluation/checks/pipeline.js";
 import { recoverRuntimeState } from "../src/runtime/runtime-recovery.js";
 import {
   getWorkerLeaseRecord,
@@ -1013,6 +1016,8 @@ test("RuntimeEngine routes handoff ports and skips untaken branches", async () =
       content: { result: "ok" },
       content_ref: null,
       summary: "Routed through success",
+      source_outcome: "completed",
+      synthetic: false,
     },
   ]);
 
@@ -1052,6 +1057,327 @@ test("RuntimeEngine routes handoff ports and skips untaken branches", async () =
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(dispatcher.jobs[0]?.node_run_id, successNodeRunId);
+});
+
+test("RuntimeEngine evaluates conditions independently for edges sharing a handoff port", async () => {
+  resetTestRoot();
+  const sourceNodeRunId = "node-run-conditioned-source";
+  const acceptedNodeRunId = "node-run-conditioned-accepted";
+  const rejectedNodeRunId = "node-run-conditioned-rejected";
+  const run = persistRuntimeRun({
+    intent: "Route by structured handoff content",
+    compiledNodes: [
+      compiledNode({ nodeRunId: sourceNodeRunId, nodeId: "source", name: "Source", status: "running" }),
+      compiledNode({ nodeRunId: acceptedNodeRunId, nodeId: "accepted", name: "Accepted", status: "pending" }),
+      compiledNode({ nodeRunId: rejectedNodeRunId, nodeId: "rejected", name: "Rejected", status: "pending" }),
+    ],
+    nodeRuns: [
+      { node_run_id: sourceNodeRunId, run_id: "placeholder", status: "running", progress: { percent: 60, message: "Running", updated_at: timestamp }, attempt: 1, started_at: timestamp, finished_at: null },
+      { node_run_id: acceptedNodeRunId, run_id: "placeholder", status: "pending", progress: { percent: 0, message: "Pending", updated_at: timestamp }, attempt: 0, started_at: null, finished_at: null },
+      { node_run_id: rejectedNodeRunId, run_id: "placeholder", status: "pending", progress: { percent: 0, message: "Pending", updated_at: timestamp }, attempt: 0, started_at: null, finished_at: null },
+    ],
+    edges: [
+      { from: "source", to: "accepted", from_port: "result", to_port: null, label: "accepted", condition: { path: "handoff.content.score", op: "gte", value: 90 } },
+      { from: "source", to: "rejected", from_port: "result", to_port: null, label: "rejected", condition: { path: "handoff.content.score", op: "lt", value: 90 } },
+    ],
+    frontier: [sourceNodeRunId],
+  });
+  const engine = new RuntimeEngine({ dispatcher: new CapturingRuntimeDispatcher(), now: () => timestamp });
+
+  await engine.applyWorkerEvent({
+    event_id: "event-conditioned-handoff",
+    idempotency_key: "event-conditioned-handoff",
+    sequence: 1,
+    kind: "worker.handoff",
+    job_id: "job-conditioned-handoff",
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    worker_id: "worker-conditioned",
+    created_at: timestamp,
+    handoff: {
+      type: "node_handoff",
+      handoff_id: "handoff-conditioned",
+      job_id: "job-conditioned-handoff",
+      run_id: run.run_id,
+      node_run_id: sourceNodeRunId,
+      node_id: "source",
+      port: "result",
+      content: { score: 94 },
+      content_ref: null,
+      summary: "Scored result",
+      created_at: timestamp,
+    },
+  });
+
+  const nodeRuns = listNodeRuns(run.run_id);
+  assert.equal(nodeRuns.find((node) => node.node_run_id === acceptedNodeRunId)?.status, "ready");
+  assert.equal(nodeRuns.find((node) => node.node_run_id === rejectedNodeRunId)?.status, "skipped");
+  const handoff = listNodeHandoffRecords(run.run_id)[0];
+  assert.deepEqual(handoff?.routing_decisions?.map((decision) => decision.matched), [true, false]);
+});
+
+test("RuntimeEngine routes terminal failure to recovery and completes with failed source evidence", async () => {
+  resetTestRoot();
+  const sourceNodeRunId = "node-run-failure-source";
+  const recoveryNodeRunId = "node-run-failure-recovery";
+  const run = persistRuntimeRun({
+    intent: "Recover a terminal node failure",
+    compiledNodes: [
+      compiledNode({ nodeRunId: sourceNodeRunId, nodeId: "source", name: "Source", status: "running", maxAttempts: 1 }),
+      compiledNode({ nodeRunId: recoveryNodeRunId, nodeId: "recovery", name: "Recovery", status: "pending" }),
+    ],
+    nodeRuns: [
+      { node_run_id: sourceNodeRunId, run_id: "placeholder", status: "running", progress: { percent: 50, message: "Running", updated_at: timestamp }, attempt: 1, started_at: timestamp, finished_at: null },
+      { node_run_id: recoveryNodeRunId, run_id: "placeholder", status: "pending", progress: { percent: 0, message: "Pending", updated_at: timestamp }, attempt: 0, started_at: null, finished_at: null },
+    ],
+    edges: [
+      { from: "source", to: "recovery", from_port: "failure", to_port: null, label: "recover", condition: { kind: "on_failure" } },
+    ],
+    frontier: [sourceNodeRunId],
+  });
+  const dispatcher = new CapturingRuntimeDispatcher();
+  const engine = new RuntimeEngine({ dispatcher, now: () => timestamp });
+
+  await engine.applyExecutionReport({
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    status: "failed",
+    progress: { percent: 100, message: "Provider failed" },
+    artifacts: [],
+    error: { code: "provider_failed", message: "Provider failed" },
+    raw_ref: { dispatch_id: "dispatch-failure-source", openclaw_task_id: null, openclaw_session_id: null },
+    created_at: timestamp,
+  }, { workerEventId: "event-failure-source", jobId: "job-failure-source" });
+
+  assert.equal(getRun(run.run_id)?.status, "running");
+  assert.equal(listNodeRuns(run.run_id).find((node) => node.node_run_id === sourceNodeRunId)?.status, "failed");
+  assert.ok(["ready", "running"].includes(
+    listNodeRuns(run.run_id).find((node) => node.node_run_id === recoveryNodeRunId)?.status || "",
+  ));
+  assert.equal(listNodeHandoffRecords(run.run_id)[0]?.synthetic, true);
+  const recoveryDispatchDeadline = Date.now() + 1000;
+  while (
+    !dispatcher.jobs.some((job) => job.node_run_id === recoveryNodeRunId) &&
+    Date.now() < recoveryDispatchDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(dispatcher.jobs.some((job) => job.node_run_id === recoveryNodeRunId));
+  await flushAsyncDispatch();
+
+  await engine.applyExecutionReport({
+    run_id: run.run_id,
+    node_run_id: recoveryNodeRunId,
+    status: "completed",
+    progress: { percent: 100, message: "Recovery completed" },
+    artifacts: [],
+    error: null,
+    raw_ref: { dispatch_id: "dispatch-failure-recovery", openclaw_task_id: null, openclaw_session_id: null },
+    created_at: timestamp,
+  }, { workerEventId: "event-failure-recovery", jobId: "job-failure-recovery" });
+
+  assert.equal(getRun(run.run_id)?.status, "completed");
+  assert.equal(listNodeRuns(run.run_id).find((node) => node.node_run_id === sourceNodeRunId)?.status, "failed");
+  const completedEvent = listRunEvents(run.run_id).find((event) => event.type === "run.completed");
+  assert.deepEqual(completedEvent?.payload.recovered_failed_node_run_ids, [sourceNodeRunId]);
+  const graph = buildRuntimeRunProjection(run.run_id)?.graph;
+  assert.ok(graph?.nodes.find((node) => node.nodeRunId === sourceNodeRunId)?.markers.includes("recovered_failure"));
+  assert.equal(graph?.edges[0]?.status, "satisfied");
+  assert.equal(graph?.runtimeMonitoring.progress.blockedNodes, 0);
+  const findings = evaluatePipelineChecks(buildRunEvidenceSnapshot(run.run_id, {
+    allowIncomplete: true,
+    generatedAt: "2026-07-10T00:01:00.000Z",
+  }));
+  assert.equal(
+    findings.find((finding) => finding.check_id === "pipeline.terminal_projection_consistency")?.passed,
+    true,
+  );
+  assert.equal(
+    findings.find((finding) => finding.check_id === "pipeline.required_handoffs")?.passed,
+    true,
+  );
+  const terminalRegressionFinding = findings.find(
+    (finding) => finding.check_id === "pipeline.no_terminal_regression",
+  );
+  assert.equal(terminalRegressionFinding?.passed, true, terminalRegressionFinding?.detail);
+});
+
+test("RuntimeEngine fails closed when failure conditions do not match", async () => {
+  resetTestRoot();
+  const sourceNodeRunId = "node-run-mismatch-source";
+  const recoveryNodeRunId = "node-run-mismatch-recovery";
+  const run = persistRuntimeRun({
+    intent: "Reject unmatched failure recovery",
+    compiledNodes: [
+      compiledNode({ nodeRunId: sourceNodeRunId, nodeId: "source", name: "Source", status: "running", maxAttempts: 1 }),
+      compiledNode({ nodeRunId: recoveryNodeRunId, nodeId: "recovery", name: "Recovery", status: "pending" }),
+    ],
+    nodeRuns: [
+      { node_run_id: sourceNodeRunId, run_id: "placeholder", status: "running", progress: { percent: 50, message: "Running", updated_at: timestamp }, attempt: 1, started_at: timestamp, finished_at: null },
+      { node_run_id: recoveryNodeRunId, run_id: "placeholder", status: "pending", progress: { percent: 0, message: "Pending", updated_at: timestamp }, attempt: 0, started_at: null, finished_at: null },
+    ],
+    edges: [
+      { from: "source", to: "recovery", from_port: "failure", to_port: null, label: "quota only", condition: { path: "error.code", op: "eq", value: "quota" } },
+    ],
+    frontier: [sourceNodeRunId],
+  });
+  const engine = new RuntimeEngine({ dispatcher: new CapturingRuntimeDispatcher(), now: () => timestamp });
+
+  await engine.applyExecutionReport({
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    status: "failed",
+    progress: { percent: 100, message: "Authentication failed" },
+    artifacts: [],
+    error: { code: "auth", message: "Authentication failed" },
+    raw_ref: { dispatch_id: "dispatch-mismatch", openclaw_task_id: null, openclaw_session_id: null },
+    created_at: timestamp,
+  }, { workerEventId: "event-mismatch", jobId: "job-mismatch" });
+
+  assert.equal(getRun(run.run_id)?.status, "failed");
+  assert.equal(listNodeRuns(run.run_id).find((node) => node.node_run_id === recoveryNodeRunId)?.status, "skipped");
+  assert.deepEqual(listNodeHandoffRecords(run.run_id)[0]?.routed_node_run_ids, []);
+});
+
+test("RuntimeEngine leaves the run failed for an explicit unrouted failure handoff", async () => {
+  resetTestRoot();
+  const sourceNodeRunId = "node-run-explicit-failure-source";
+  const recoveryNodeRunId = "node-run-explicit-failure-target";
+  const run = persistRuntimeRun({
+    intent: "Reject an unrouted explicit failure",
+    compiledNodes: [
+      compiledNode({ nodeRunId: sourceNodeRunId, nodeId: "source", name: "Source", status: "running", maxAttempts: 1 }),
+      compiledNode({ nodeRunId: recoveryNodeRunId, nodeId: "recovery", name: "Recovery", status: "pending" }),
+    ],
+    nodeRuns: [
+      { node_run_id: sourceNodeRunId, run_id: "placeholder", status: "running", progress: { percent: 50, message: "Running", updated_at: timestamp }, attempt: 1, started_at: timestamp, finished_at: null },
+      { node_run_id: recoveryNodeRunId, run_id: "placeholder", status: "pending", progress: { percent: 0, message: "Pending", updated_at: timestamp }, attempt: 0, started_at: null, finished_at: null },
+    ],
+    edges: [
+      { from: "source", to: "recovery", from_port: "failure", to_port: null, label: "quota only", condition: { path: "handoff.content.code", op: "eq", value: "quota" } },
+    ],
+    frontier: [sourceNodeRunId],
+  });
+  const engine = new RuntimeEngine({ dispatcher: new CapturingRuntimeDispatcher(), now: () => timestamp });
+  await engine.applyWorkerEvent({
+    event_id: "event-explicit-failure-handoff",
+    idempotency_key: "event-explicit-failure-handoff",
+    sequence: 1,
+    kind: "worker.handoff",
+    job_id: "job-explicit-failure",
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    worker_id: "worker-explicit-failure",
+    created_at: timestamp,
+    handoff: {
+      type: "node_handoff",
+      handoff_id: "handoff-explicit-failure",
+      job_id: "job-explicit-failure",
+      run_id: run.run_id,
+      node_run_id: sourceNodeRunId,
+      node_id: "source",
+      port: "failure",
+      content: { code: "auth" },
+      content_ref: null,
+      summary: "Authentication failure",
+      created_at: timestamp,
+    },
+  });
+  await engine.applyExecutionReport({
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    status: "failed",
+    progress: { percent: 100, message: "Authentication failure" },
+    artifacts: [],
+    error: { code: "auth", message: "Authentication failure" },
+    raw_ref: { dispatch_id: "dispatch-explicit-failure", openclaw_task_id: null, openclaw_session_id: null },
+    created_at: timestamp,
+  }, { workerEventId: "event-explicit-failure-report", jobId: "job-explicit-failure" });
+
+  assert.equal(getRun(run.run_id)?.status, "failed");
+  assert.ok(listNodeHandoffRecords(run.run_id).every((handoff) => handoff.routed_node_run_ids.length === 0));
+});
+
+test("RuntimeEngine exhausts retry before evaluating failure recovery", async () => {
+  resetTestRoot();
+  const sourceNodeRunId = "node-run-retry-before-recovery-source";
+  const recoveryNodeRunId = "node-run-retry-before-recovery-target";
+  const run = persistRuntimeRun({
+    intent: "Retry before recovery",
+    compiledNodes: [
+      compiledNode({ nodeRunId: sourceNodeRunId, nodeId: "source", name: "Source", status: "running", maxAttempts: 2 }),
+      compiledNode({ nodeRunId: recoveryNodeRunId, nodeId: "recovery", name: "Recovery", status: "pending" }),
+    ],
+    nodeRuns: [
+      { node_run_id: sourceNodeRunId, run_id: "placeholder", status: "running", progress: { percent: 50, message: "Running", updated_at: timestamp }, attempt: 1, started_at: timestamp, finished_at: null },
+      { node_run_id: recoveryNodeRunId, run_id: "placeholder", status: "pending", progress: { percent: 0, message: "Pending", updated_at: timestamp }, attempt: 0, started_at: null, finished_at: null },
+    ],
+    edges: [
+      { from: "source", to: "recovery", from_port: "failure", to_port: null, label: "recover", condition: { kind: "on_failure" } },
+    ],
+    frontier: [sourceNodeRunId],
+  });
+  const engine = new RuntimeEngine({ dispatcher: new CapturingRuntimeDispatcher(), now: () => timestamp, retryDelayMs: 60000 });
+  await engine.applyWorkerEvent({
+    event_id: "event-retry-before-recovery-handoff",
+    idempotency_key: "event-retry-before-recovery-handoff",
+    sequence: 1,
+    kind: "worker.handoff",
+    job_id: "job-retry-before-recovery",
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    worker_id: "worker-retry-before-recovery",
+    created_at: timestamp,
+    handoff: {
+      type: "node_handoff",
+      handoff_id: "handoff-retry-before-recovery",
+      job_id: "job-retry-before-recovery",
+      run_id: run.run_id,
+      node_run_id: sourceNodeRunId,
+      node_id: "source",
+      port: "failure",
+      content: { code: "transient" },
+      content_ref: null,
+      summary: "Transient failure",
+      created_at: timestamp,
+    },
+  });
+  assert.deepEqual(listNodeHandoffRecords(run.run_id)[0]?.routed_node_run_ids, []);
+  await engine.applyExecutionReport({
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    status: "failed",
+    progress: { percent: 100, message: "Transient failure" },
+    artifacts: [],
+    error: { code: "transient", message: "Transient failure" },
+    raw_ref: { dispatch_id: "dispatch-retry-before-recovery", openclaw_task_id: null, openclaw_session_id: null },
+    created_at: timestamp,
+  }, { workerEventId: "event-retry-before-recovery", jobId: "job-retry-before-recovery" });
+
+  assert.equal(getRun(run.run_id)?.status, "running");
+  assert.equal(listNodeRuns(run.run_id).find((node) => node.node_run_id === sourceNodeRunId)?.status, "ready");
+  assert.equal(listNodeRuns(run.run_id).find((node) => node.node_run_id === recoveryNodeRunId)?.status, "pending");
+  assert.equal(listNodeHandoffRecords(run.run_id).length, 1);
+
+  await engine.applyExecutionReport({
+    run_id: run.run_id,
+    node_run_id: sourceNodeRunId,
+    status: "completed",
+    progress: { percent: 100, message: "Retry succeeded" },
+    artifacts: [],
+    error: null,
+    raw_ref: { dispatch_id: "dispatch-retry-success", openclaw_task_id: null, openclaw_session_id: null },
+    created_at: timestamp,
+  }, { workerEventId: "event-retry-success", jobId: "job-retry-success" });
+  assert.equal(getRun(run.run_id)?.status, "completed");
+  assert.equal(listNodeRuns(run.run_id).find((node) => node.node_run_id === sourceNodeRunId)?.status, "completed");
+  assert.equal(listNodeRuns(run.run_id).find((node) => node.node_run_id === recoveryNodeRunId)?.status, "skipped");
+  assert.equal(
+    listNodeHandoffRecords(run.run_id).find(
+      (handoff) => handoff.job_id === "job-retry-success",
+    )?.source_outcome,
+    "completed",
+  );
 });
 
 test("RuntimeEngine retries a failed worker node while retry budget remains", async () => {
