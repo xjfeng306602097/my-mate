@@ -1,6 +1,7 @@
 import http from "node:http";
 import { runRuntimeWorkerJob } from "./worker-runtime.js";
 import { getSupportedHarnesses } from "./harness/factory.js";
+import { getRuntimeWorkerBuildInfo } from "./build-info.js";
 import type { RuntimeWorkerJob } from "./types.js";
 
 function isRuntimeWorkerJob(value: unknown): value is RuntimeWorkerJob {
@@ -38,6 +39,7 @@ export function createRuntimeWorkerServer(): http.Server {
       writeJson(res, 200, {
         status: "ok",
         worker_kind: "runtime-worker",
+        build: getRuntimeWorkerBuildInfo(),
         supported_harnesses: getSupportedHarnesses(),
       });
       return;

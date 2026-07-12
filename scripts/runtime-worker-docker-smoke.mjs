@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRuntimeWorkerImage } from "./runtime-worker-release.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
@@ -11,7 +12,7 @@ const gatewayPort = Number(process.env.MY_MATE_DOCKER_SMOKE_GATEWAY_PORT || 4230
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "my-mate-docker-runtime-"));
 const baseUrl = `http://127.0.0.1:${port}`;
 const gatewayBaseUrl = `http://127.0.0.1:${gatewayPort}`;
-const image = process.env.MY_MATE_RUNTIME_WORKER_IMAGE || "my-mate-runtime-worker:latest";
+const image = resolveRuntimeWorkerImage();
 const keepData = process.env.MY_MATE_DOCKER_SMOKE_KEEP_DATA === "true";
 const superviseTimeoutSeconds = Number(process.env.MY_MATE_DOCKER_SMOKE_TIMEOUT_SECONDS || 90);
 
@@ -88,8 +89,11 @@ async function stopProcess(process) {
   await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
 }
 
-run("docker", ["version", "--format", "{{.Server.Version}}");
-run("docker", ["build", "-t", image, "-f", "services/runtime-worker/Dockerfile", "."]);
+run("docker", ["version", "--format", "{{.Server.Version}}"]);
+if (process.env.MY_MATE_RUNTIME_WORKER_BUILD_BEFORE_SMOKE === "true") {
+  run(process.execPath, [path.join(repoRoot, "scripts", "build-runtime-worker-image.mjs")]);
+}
+run("docker", ["image", "inspect", image, "--format", "{{.Id}}"]);
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error("npm_execpath is required to build the CLI for smoke testing.");
 run(process.execPath, [npmCli, "--prefix", "apps/cli", "run", "build"]);

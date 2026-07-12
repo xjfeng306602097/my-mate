@@ -3,12 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRuntimeWorkerImage } from "./runtime-worker-release.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
 const port = Number(process.env.MY_MATE_DOCKER_RECOVERY_SMOKE_PORT || 4311);
 const baseUrl = `http://127.0.0.1:${port}`;
-const image = process.env.MY_MATE_RUNTIME_WORKER_IMAGE || "my-mate-runtime-worker:latest";
+const image = resolveRuntimeWorkerImage();
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "my-mate-worker-recovery-"));
 const suffix = `${process.pid}-${Date.now()}`;
 const matchedContainerName = `my-mate-recovery-matched-${suffix}`;
@@ -134,9 +135,10 @@ function startLabeledContainer(name, labels) {
 }
 
 run("docker", ["version", "--format", "{{.Server.Version}}"]).trim();
-if (process.env.MY_MATE_SKIP_RUNTIME_WORKER_BUILD !== "true") {
-  run("docker", ["build", "-t", image, "-f", "services/runtime-worker/Dockerfile", "."]);
+if (process.env.MY_MATE_RUNTIME_WORKER_BUILD_BEFORE_SMOKE === "true") {
+  run(process.execPath, [path.join(repoRoot, "scripts", "build-runtime-worker-image.mjs")]);
 }
+run("docker", ["image", "inspect", image, "--format", "{{.Id}}"]).trim();
 
 let first = null;
 let second = null;

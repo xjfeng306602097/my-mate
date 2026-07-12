@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRuntimeWorkerImage } from "./runtime-worker-release.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
@@ -18,8 +19,7 @@ const child = spawn(command, args, {
     ...process.env,
     MY_MATE_RUNTIME_DISPATCHER: "docker-worker",
     MY_MATE_RUNTIME_DEFAULT_TARGET_KIND: "docker-worker",
-    MY_MATE_RUNTIME_WORKER_IMAGE:
-      process.env.MY_MATE_RUNTIME_WORKER_IMAGE || "my-mate-runtime-worker:latest",
+    MY_MATE_RUNTIME_WORKER_IMAGE: resolveRuntimeWorkerImage(),
   },
 });
 

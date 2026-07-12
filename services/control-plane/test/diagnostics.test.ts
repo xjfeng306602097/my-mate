@@ -117,10 +117,36 @@ test("doctor docker mode verifies client, daemon, image, mount, and Worker regis
   assert.equal(report.model_ready, false);
   assert.ok(report.checks.filter((check) => check.status === "fail").length === 0);
   assert.equal(report.checks.find((check) => check.id === "worker.capacity")?.status, "pass");
+  assert.equal(report.checks.find((check) => check.id === "worker.image_identity")?.status, "pass");
   assert.equal(report.checks.find((check) => check.id === "docker.image_healthcheck")?.status, "pass");
   assert.ok(calls.some((args) => args[0] === "run" && args.includes("--mount")));
   assert.ok(calls.some((args) => args[0] === "run" && args.includes("-d")));
   assert.deepEqual(workerCalls.map((value) => value.split(":")[0]), ["expect", "wait", "release"]);
+});
+
+test("doctor warns about a mutable Runtime Worker image without breaking local readiness", async () => {
+  resetTestRoot();
+  const report = await runDoctor(
+    { mode: "quick", runtime: "docker-worker" },
+    {
+      storage: createJsonStorageBackend("file-json"),
+      runtimeStatus: runtimeStatus({
+        dispatcher_kind: "docker-runtime-worker",
+        node_provisioner_kind: "docker",
+        worker_hub_kind: "websocket-worker-hub",
+      }),
+      executionAdapterKind: "local",
+      workerImage: "my-mate-runtime-worker:latest",
+      env: {},
+    },
+  );
+
+  assert.equal(report.runtime_ready, true);
+  assert.equal(report.checks.find((check) => check.id === "worker.image_identity")?.status, "warn");
+  assert.match(
+    report.checks.find((check) => check.id === "worker.image_identity")?.detail || "",
+    /kind=latest/,
+  );
 });
 
 test("doctor docker mode fails deterministic readiness when the image healthcheck is missing", async () => {

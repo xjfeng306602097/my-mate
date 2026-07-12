@@ -4,8 +4,10 @@ import {
   DATA_DIR,
   RUNTIME_DOCKER_BIN,
   RUNTIME_WORKER_IMAGE,
+  RUNTIME_WORKER_RELEASE_VERSION,
   RUNTIME_WORKSPACES_DIR,
 } from "../config.js";
+import { describeRuntimeWorkerImage } from "../runtime-worker-image.js";
 import {
   getJsonStorageBackend,
   getJsonStorageBackendKind,
@@ -163,6 +165,21 @@ export async function runDoctor(
   });
 
   if (workerRuntime || request.mode === "docker") {
+    const imageIdentity = describeRuntimeWorkerImage(image, RUNTIME_WORKER_RELEASE_VERSION);
+    add({
+      id: "worker.image_identity",
+      category: "worker",
+      status: imageIdentity.release_ready ? "pass" : "warn",
+      required_for: [],
+      summary: "Runtime Worker image has an explicit release identity.",
+      detail:
+        `image=${imageIdentity.reference}; kind=${imageIdentity.kind}; ` +
+        `expected_version=${imageIdentity.expected_version}`,
+      remediation: imageIdentity.release_ready
+        ? null
+        : `Use my-mate-runtime-worker:${RUNTIME_WORKER_RELEASE_VERSION} or an image digest for release execution.`,
+      duration_ms: 0,
+    });
     const hubReady = !!status.worker_hub_kind && status.node_provisioner_status === "ready";
     add({
       id: "worker.hub",

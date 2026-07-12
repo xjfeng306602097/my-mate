@@ -1,0 +1,149 @@
+name: Runtime Worker Release Gate
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: runtime-worker-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            packages/shared-types/package-lock.json
+            services/runtime-worker/package-lock.json
+            services/control-plane/package-lock.json
+            services/api-gateway/package-lock.json
+            apps/cli/package-lock.json
+      - name: Install release-gate dependencies
+        run: |
+          npm ci --prefix packages/shared-types
+          npm ci --prefix services/runtime-worker
+          npm ci --prefix services/control-plane
+          npm ci --prefix services/api-gateway
+          npm ci --prefix apps/cli
+      - name: Resolve local release metadata
+        id: local-release
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./services/runtime-worker/package.json').version")"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image=my-mate-runtime-worker:${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Verify release tag matches package version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          test "v${{ steps.local-release.outputs.version }}" = "${GITHUB_REF_NAME}"
+      - name: Run release script checks
+        run: npm run check:release
+      - name: Build versioned Runtime Worker image
+        run: npm run runtime-worker:image
+      - name: Verify image provenance
+        run: npm run runtime-worker:verify-image
+      - name: Prepare release evidence directory
+        run: mkdir -p "tmp/release/runtime-worker/${{ steps.local-release.outputs.version }}"
+      - name: Generate Runtime Worker SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.local-release.outputs.image }}
+          format: cyclonedx-json
+          output-file: tmp/release/runtime-worker/${{ steps.local-release.outputs.version }}/sbom.cdx.json
+      - name: Digest Runtime Worker SBOM
+        working-directory: tmp/release/runtime-worker/${{ steps.local-release.outputs.version }}
+        run: sha256sum sbom.cdx.json > sbom.cdx.json.sha256
+      - name: Block Critical Runtime Worker vulnerabilities
+        uses: anchore/scan-action@v7
+        with:
+          image: ${{ steps.local-release.outputs.image }}
+          fail-build: true
+          severity-cutoff: critical
+          output-format: sarif
+          output-file: tmp/release/runtime-worker/${{ steps.local-release.outputs.version }}/vulnerabilities.sarif.json
+      - name: Run deterministic Docker operator smoke
+        run: npm run runtime-worker:smoke
+      - name: Run Docker restart recovery smoke
+        run: npm run runtime-worker:recovery-smoke
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-worker-release-evidence
+          path: tmp/release/runtime-worker/**
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          {
+            echo "version=${VERSION}"
+            echo "image=ghcr.io/${OWNER}/my-mate-runtime-worker"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish signed release candidate
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/runtime-worker/Dockerfile
+          push: true
+          tags: ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            MY_MATE_RUNTIME_WORKER_VERSION=${{ steps.release.outputs.version }}
+            MY_MATE_RUNTIME_WORKER_IMAGE=${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
+            MY_MATE_BUILD_REVISION=${{ github.sha }}
+            MY_MATE_BUILD_DATE=${{ steps.release.outputs.created }}
+            MY_MATE_BUILD_SOURCE=https://github.com/${{ github.repository }}
+      - uses: sigstore/cosign-installer@v3.8.2
+      - name: Sign published digest with GitHub OIDC
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Verify published digest signature
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/runtime-worker-release.yml@refs/tags/v.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${IMAGE}@${DIGEST}"

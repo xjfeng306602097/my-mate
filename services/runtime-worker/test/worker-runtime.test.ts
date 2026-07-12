@@ -182,6 +182,21 @@ test("runtime worker server runs a RuntimeWorkerJob over HTTP", async () => {
   });
 
   try {
+    const healthResponse = await fetch(`${server.baseUrl}/health`);
+    const health = (await healthResponse.json()) as {
+      status: string;
+      build: {
+        version: string;
+        image_reference: string | null;
+        revision: string | null;
+      };
+    };
+    assert.equal(healthResponse.status, 200);
+    assert.equal(health.status, "ok");
+    assert.equal(health.build.version, "0.1.0");
+    assert.equal(health.build.image_reference, null);
+    assert.equal(health.build.revision, null);
+
     const response = await fetch(`${server.baseUrl}/api/runtime-worker/jobs/run`, {
       method: "POST",
       headers: {

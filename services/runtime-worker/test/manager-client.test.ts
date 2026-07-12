@@ -68,6 +68,14 @@ test("manager hub and runtime worker client complete the websocket job lifecycle
     client.start();
     const worker = await hub.waitForWorker(workerId, 3000);
     assert.equal(worker.status, "connected");
+    assert.equal(worker.version, "0.1.0");
+    assert.deepEqual(worker.metadata.build, {
+      version: "0.1.0",
+      image_reference: null,
+      revision: null,
+      built_at: null,
+      source: null,
+    });
     assert.ok(worker.supported_harnesses.includes("local"));
 
     const job = buildJob();

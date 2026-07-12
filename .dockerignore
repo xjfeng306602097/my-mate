@@ -8,7 +8,8 @@ tmp
 *.png
 apps
 docs
-openapi
+openapi/*
+!openapi/control-plane.openapi.yaml
 schemas
 services/api-gateway
 services/control-plane

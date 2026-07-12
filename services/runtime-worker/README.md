@@ -5,6 +5,13 @@ runtime. It connects to the Manager over WebSocket, registers capabilities,
 acknowledges jobs, executes a harness, emits ordered worker events and evidence,
 and exits when its lease is released.
 
+The stock image is built with a semantic-version tag rather than `latest` and
+publishes version, image reference, Git revision, build time, and source through
+`GET /health` and Worker registration metadata. The same values are stored as
+OCI image labels. It uses the official Node 22 Alpine base and prunes build-only
+dependencies before the runtime stage; custom provider images must pass the
+same SBOM and Critical vulnerability gate.
+
 ## Harnesses
 
 - `local`: deterministic workspace artifact and success handoff.
@@ -53,6 +60,11 @@ second redaction pass before persistence.
 - `MY_MATE_WORKER_LEASE_ID`
 - `MY_MATE_WORKSPACE` (defaults to `/workspace`)
 - `MY_MATE_WORKER_CAPABILITIES` (comma-separated additions)
+- `MY_MATE_RUNTIME_WORKER_VERSION`
+- `MY_MATE_RUNTIME_WORKER_IMAGE`
+- `MY_MATE_BUILD_REVISION`
+- `MY_MATE_BUILD_DATE`
+- `MY_MATE_BUILD_SOURCE`
 
 Recorded adapter fixtures run with the normal test suite. A real provider call
 is disabled by default. To enable it, set

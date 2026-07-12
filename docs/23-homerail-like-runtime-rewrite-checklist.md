@@ -112,11 +112,11 @@ HomeRail P0/P1 baseline.
 
 ### Production Release Engineering
 
-- [ ] Replace `my-mate-runtime-worker:latest` defaults with immutable release
+- [x] Replace `my-mate-runtime-worker:latest` defaults with immutable release
   tags/digests and expose build provenance.
-- [ ] Add CI release gates for generated-contract drift, checks, tests, image
+- [x] Add CI release gates for generated-contract drift, checks, tests, image
   build, deterministic Docker smoke, and runtime-mode readiness.
-- [ ] Add SBOM, signing, vulnerability policy, upgrade, and rollback procedures.
+- [x] Add SBOM, signing, vulnerability policy, upgrade, and rollback procedures.
 
 ### Advanced Runtime Semantics
 

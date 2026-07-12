@@ -69,25 +69,27 @@ The repository supports these end-to-end flows:
 7. Govern protected Registry changes through proposal, independent review,
    drift-safe apply, and audit evidence.
 
+## Latest Closure
+
+Production Release Engineering (`REL-01`, `REL-02`, and `REL-03`) is complete:
+
+- Runtime Worker defaults use the repository semantic version instead of
+  `latest`, while explicit local and digest overrides remain supported.
+- OCI labels, Worker health/registration metadata, and Doctor expose image and
+  build provenance.
+- PR/main CI and tag/manual release gates cover generated drift, checks, tests,
+  image verification, Docker operator smoke, and restart recovery.
+- The stock Worker uses `node:22-alpine`; pinned Syft/Grype produce CycloneDX
+  and SARIF evidence and block Critical vulnerabilities.
+- Version tags publish a provenance/SBOM-attested GHCR digest and sign it with
+  GitHub OIDC/cosign; upgrade and rollback operate on digests.
+
 ## Remaining Work
 
 The remaining work is productization and deeper runtime semantics. It is not a
 continuation of the original P0/P1 HomeRail closure.
 
-### 1. Production Release Engineering
-
-- Replace the default `my-mate-runtime-worker:latest` convention with immutable
-  release tags and digests.
-- Record build provenance and expose the selected Worker image/version in
-  runtime diagnostics.
-- Add CI release gates for type checks, tests, generated-contract drift,
-  Runtime Worker image build, and deterministic Docker smoke.
-- Add SBOM generation, image signing policy, vulnerability policy, and
-  documented upgrade/rollback procedures.
-- Define release gates per runtime mode instead of treating local development
-  readiness as production readiness.
-
-### 2. Deeper Runtime Semantics
+### 1. Deeper Runtime Semantics
 
 - Evaluate structured edge conditions rather than treating conditions mainly
   as labels and branch metadata.
@@ -99,7 +101,7 @@ continuation of the original P0/P1 HomeRail closure.
 - Complete harness-specific pause/resume/cancel guarantees and
   control-during-provisioning coverage.
 
-### 3. Full Studio DAG Editing
+### 2. Full Studio DAG Editing
 
 - Add direct node dragging with persisted coordinates or deterministic
   constraint reconciliation.
@@ -109,7 +111,7 @@ continuation of the original P0/P1 HomeRail closure.
   patch preview before save or publish.
 - Keep the current form-backed editor as an accessible deterministic fallback.
 
-### 4. Evented Mission Materialization
+### 3. Evented Mission Materialization
 
 - Replace read-time-only Mission/Session projection with an independently
   rebuildable evented materializer.
@@ -118,7 +120,7 @@ continuation of the original P0/P1 HomeRail closure.
 - Preserve the current Mission Workspace contract so Mobile and Studio do not
   depend on storage implementation details.
 
-### 5. Live Provider Release Acceptance
+### 4. Live Provider Release Acceptance
 
 - Add credential-aware, explicitly enabled live acceptance jobs for Codex,
   Claude, Kimi, and OpenClaw.
@@ -126,7 +128,7 @@ continuation of the original P0/P1 HomeRail closure.
   output a blocking default unit-test dependency.
 - Store provider/version/environment evidence with release results.
 
-### 6. Mobile Productization
+### 5. Mobile Productization
 
 These items remain explicitly deferred in the authoritative tracking board:
 
@@ -138,22 +140,27 @@ These items remain explicitly deferred in the authoritative tracking board:
 
 ## Recommended Execution Order
 
-1. Close the current source-control batch for DATA-03, OBS-02, and OC-02.
-2. Keep this document and the runtime rewrite record synchronized with
-   `docs/19`.
-3. Implement immutable Runtime Worker releases and CI release gates.
-4. Complete advanced runtime routing and Worker-native human gates.
-5. Build the full Studio DAG editor or the Mobile productization track based on
+1. Implement `RT-04` structured conditions and failure-port recovery.
+2. Implement `RT-05` Worker-native human-gate suspend/resume.
+3. Implement `RT-06` dynamic fanout and remaining control guarantees.
+4. Build the full Studio DAG editor or the Mobile productization track based on
    the next product priority; do not start both as one delivery slice.
-6. Introduce the evented Mission materializer after its event/version contract
+5. Introduce the evented Mission materializer after its event/version contract
    is fixed.
 
 ## Verification Snapshot
 
-Verified on 2026-07-11:
+Verified on 2026-07-12:
 
 - `npm run check`
 - `npm test`
+- `npm run runtime-worker:image`
+- `npm run runtime-worker:verify-image`
+- `npm run runtime-worker:sbom`
+- `npm run runtime-worker:scan`
+- `npm run runtime-worker:smoke`
+- `npm run runtime-worker:recovery-smoke`
+- actionlint over `.github/workflows`
 
 The default Runtime Worker live-provider test remains skipped unless its
 explicit opt-in environment is configured.
@@ -168,3 +175,4 @@ explicit opt-in environment is configured.
 - `docs/29-data-03-registry-governance.md`
 - `docs/30-obs-02-cost-attribution.md`
 - `docs/31-oc-02-timeout-compensation-failure-replay.md`
+- `docs/32-runtime-worker-release-engineering.md`

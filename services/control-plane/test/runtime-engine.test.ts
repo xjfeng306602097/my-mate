@@ -582,7 +582,7 @@ test("RuntimeEngine queueReadyNodes dispatches RuntimeWorkerJob through dispatch
         harnessProfile: "coding",
         openClawAgentId: null,
         nodeConfig: {
-          worker_image: "my-mate-runtime-worker:latest",
+          worker_image: "my-mate-runtime-worker:0.1.0",
         },
       }),
     ],

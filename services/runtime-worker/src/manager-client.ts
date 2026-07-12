@@ -1,5 +1,6 @@
 import WebSocket, { type RawData } from "ws";
 import { getSupportedHarnesses } from "./harness/factory.js";
+import { getRuntimeWorkerBuildInfo } from "./build-info.js";
 import { buildWorkerEvidenceV2 } from "./evidence-normalizer.js";
 import { runRuntimeWorkerJob } from "./worker-runtime.js";
 import {
@@ -121,12 +122,13 @@ export class RuntimeWorkerManagerClient {
   }
 
   private register(): void {
+    const build = getRuntimeWorkerBuildInfo();
     this.send({
       ...createRuntimeMessageBase(),
       kind: "worker.register",
       worker_id: this.options.workerId,
       token: this.options.token,
-      version: this.options.version || "0.1.0",
+      version: this.options.version || build.version,
       capabilities: configuredWorkerCapabilities(),
       supported_harnesses: getSupportedHarnesses(),
       metadata: {
@@ -135,6 +137,7 @@ export class RuntimeWorkerManagerClient {
         arch: process.arch,
         lease_id: process.env.MY_MATE_WORKER_LEASE_ID || null,
         workspace: process.env.MY_MATE_WORKSPACE || null,
+        build,
         ...(this.options.metadata || {}),
       },
     });

@@ -112,8 +112,21 @@ Build and smoke-test the default deterministic worker image:
 
 ```bash
 npm run runtime-worker:image
+npm run runtime-worker:verify-image
+npm run runtime-worker:sbom
+npm run runtime-worker:scan
 npm run runtime-worker:smoke
 ```
+
+The default image is versioned from `services/runtime-worker/package.json`
+(`my-mate-runtime-worker:0.1.0` for the current repository). The build command
+rejects `latest`, untagged, and custom mutable tags unless
+`MY_MATE_ALLOW_MUTABLE_WORKER_IMAGE=true` is set for an explicit local-only
+build. A registry digest is also accepted.
+
+The image records OCI version, Git revision, build time, and source labels. The
+same provenance is exposed by the Worker `/health` endpoint and Worker Manager
+registration metadata.
 
 Run the Control Plane with Docker workers:
 
@@ -123,7 +136,18 @@ npm run dev:docker-runtime
 
 Important runtime settings:
 
-- `MY_MATE_RUNTIME_WORKER_IMAGE`: default Worker image.
+- `MY_MATE_RUNTIME_WORKER_IMAGE`: explicit Worker image tag or digest.
+- `MY_MATE_RUNTIME_WORKER_IMAGE_REPOSITORY`: repository used with the project
+  version when an explicit image is not provided.
+- `MY_MATE_RUNTIME_WORKER_RELEASE_VERSION`: packaged Control Plane fallback
+  when the Runtime Worker package manifest is not present.
+- `MY_MATE_ALLOW_MUTABLE_WORKER_IMAGE`: permits a non-release image reference
+  only for an explicit local build.
+- `MY_MATE_BUILD_REVISION`, `MY_MATE_BUILD_DATE`, `MY_MATE_BUILD_SOURCE`:
+  optional reproducible provenance overrides for image builds.
+- `MY_MATE_RUNTIME_WORKER_BUILD_BEFORE_SMOKE`: explicitly rebuild before a
+  standalone smoke; by default smoke commands consume the already verified
+  image and do not perform hidden network builds.
 - `MY_MATE_RUNTIME_WORKER_MANAGER_WS_URL`: externally reachable Manager URL when auto-detection is not sufficient.
 - `MY_MATE_RUNTIME_WORKER_PASSTHROUGH_ENV`: comma-separated host env names passed to Worker containers without embedding values in Docker arguments.
 - `MY_MATE_CODEX_COMMAND`, `MY_MATE_CLAUDE_SDK_COMMAND`, `MY_MATE_KIMI_COMMAND`: command harness entry points available inside the selected Worker image.
@@ -132,6 +156,14 @@ Important runtime settings:
 The stock image always supports the deterministic `local` harness. Codex,
 Claude SDK, and Kimi require a Worker image that contains the corresponding
 command and configures its command environment variable.
+
+Pull requests and `main` pushes run `.github/workflows/ci.yml`. Version tags and
+manual release validation run `.github/workflows/runtime-worker-release.yml`,
+which checks tag/package alignment, builds and verifies the versioned image,
+generates SBOM/vulnerability evidence, then runs the deterministic operator and
+restart-recovery Docker smokes. Version tags publish a provenance-attested GHCR
+digest and sign it with GitHub OIDC/cosign. Upgrade and rollback policy is in
+`docs/32-runtime-worker-release-engineering.md`.
 
 ## P0 Operator Loop
 

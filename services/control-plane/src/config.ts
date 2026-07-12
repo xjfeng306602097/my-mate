@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,20 @@ function resolveServiceRoot(currentDir: string): string {
 
 export const SERVICE_ROOT = resolveServiceRoot(__dirname);
 export const REPO_ROOT = path.resolve(SERVICE_ROOT, "..", "..");
+
+function readRuntimeWorkerReleaseVersion(): string {
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, "services", "runtime-worker", "package.json"), "utf-8"),
+    ) as { version?: unknown };
+    if (typeof packageJson.version === "string" && packageJson.version.trim()) {
+      return packageJson.version.trim();
+    }
+  } catch {
+    // Packaged deployments can provide the release version explicitly.
+  }
+  return "0.1.0";
+}
 
 function resolveDataDir(): string {
   return process.env.MY_MATE_DATA_DIR || path.join(SERVICE_ROOT, "data");
@@ -161,8 +176,11 @@ export const OPENCLAW_CONTAINER_NAME =
 export const RUNTIME_DISPATCHER_KIND = (
   process.env.MY_MATE_RUNTIME_DISPATCHER || "legacy"
 ).toLowerCase();
+export const RUNTIME_WORKER_RELEASE_VERSION =
+  process.env.MY_MATE_RUNTIME_WORKER_RELEASE_VERSION || readRuntimeWorkerReleaseVersion();
 export const RUNTIME_WORKER_IMAGE =
-  process.env.MY_MATE_RUNTIME_WORKER_IMAGE || "my-mate-runtime-worker:latest";
+  process.env.MY_MATE_RUNTIME_WORKER_IMAGE ||
+  `${process.env.MY_MATE_RUNTIME_WORKER_IMAGE_REPOSITORY || "my-mate-runtime-worker"}:${RUNTIME_WORKER_RELEASE_VERSION}`;
 export const RUNTIME_DOCKER_BIN = process.env.MY_MATE_RUNTIME_DOCKER_BIN || "docker";
 export const RUNTIME_WORKER_MANAGER_WS_URL = trimTrailingSlash(
   process.env.MY_MATE_RUNTIME_WORKER_MANAGER_WS_URL || "",
