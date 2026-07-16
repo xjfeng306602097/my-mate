@@ -1213,6 +1213,115 @@ export interface MemoryOperationsStatus {
   last_integrity: MemoryIntegrityReport | null;
 }
 
+export interface MemoryCollection {
+  schema_version: 1;
+  collection_id: string;
+  kind: "team" | "organization";
+  name: string;
+  owner_workspace_id: string;
+  member_workspace_ids: string[];
+  status: "active" | "archived";
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryShareGrant {
+  schema_version: 1;
+  share_id: string;
+  collection_id: string;
+  source_workspace_id: string;
+  source_memory_id: string;
+  source_memory_version: number;
+  target_workspace_ids: string[];
+  mode: "read_only" | "suggest_changes";
+  version_policy: "pinned" | "follow_latest";
+  status: "active" | "revoked";
+  published_content: string;
+  published_digest: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+}
+
+export interface SharedMemoryView {
+  share: Omit<MemoryShareGrant, "published_content">;
+  collection: MemoryCollection;
+  projected_memory: MemoryRecord;
+  freshness: "current" | "stale" | "source_unavailable";
+}
+
+export interface MemoryConflictRecord {
+  schema_version: 1;
+  conflict_id: string;
+  workspace_id: string;
+  kind: "shared_suggestion" | "external_update";
+  status: "pending" | "resolved" | "dismissed";
+  target_memory_id: string;
+  share_id: string | null;
+  source_id: string | null;
+  external_id: string | null;
+  external_version: string | null;
+  base_memory_version: number;
+  current_content: string;
+  proposed_content: string;
+  proposed_deleted: boolean;
+  proposed_kind: MemoryKind;
+  proposed_tags: string[];
+  proposed_by: string;
+  resolution: "accept_proposed" | "keep_current" | "merge" | "dismiss" | null;
+  resolved_memory_version: number | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+export interface MemoryExternalSource {
+  schema_version: 1;
+  source_id: string;
+  workspace_id: string;
+  name: string;
+  provider: "mcp" | "push";
+  server_id: string | null;
+  tool_name: string | null;
+  tool_arguments: Record<string, unknown>;
+  collection_id: string | null;
+  status: "active" | "disabled" | "degraded";
+  last_cursor: string | null;
+  last_sync_at: string | null;
+  last_error: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryExternalItem {
+  external_id: string;
+  external_version: string;
+  content: string;
+  kind: MemoryKind;
+  tags: string[];
+  deleted?: boolean;
+}
+
+export interface MemorySyncRun {
+  schema_version: 1;
+  sync_id: string;
+  workspace_id: string;
+  source_id: string;
+  status: "completed" | "partial" | "failed";
+  received: number;
+  created: number;
+  updated: number;
+  deleted: number;
+  conflicts: number;
+  skipped: number;
+  cursor: string | null;
+  error: string | null;
+  completed_at: string;
+}
+
 export interface MemoryEmbeddingProviderStatus {
   provider_id: string;
   state: "disabled" | "ready" | "degraded";

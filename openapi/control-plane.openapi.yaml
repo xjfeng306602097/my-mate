@@ -895,6 +895,112 @@ components:
             - { $ref: "#/components/schemas/MemoryIntegrityReport" }
             - { type: "null" }
       required: [schema_version, workspace_id, key, retention, backups, last_integrity]
+    MemoryCollection:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        collection_id: { type: string }
+        kind: { type: string, enum: [team, organization] }
+        name: { type: string }
+        owner_workspace_id: { type: string }
+        member_workspace_ids: { type: array, items: { type: string } }
+        status: { type: string, enum: [active, archived] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [schema_version, collection_id, kind, name, owner_workspace_id, member_workspace_ids, status, created_by, created_at, updated_at]
+    MemoryShareGrant:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        share_id: { type: string }
+        collection_id: { type: string }
+        source_workspace_id: { type: string }
+        source_memory_id: { type: string }
+        source_memory_version: { type: integer, minimum: 1 }
+        target_workspace_ids: { type: array, items: { type: string } }
+        mode: { type: string, enum: [read_only, suggest_changes] }
+        version_policy: { type: string, enum: [pinned, follow_latest] }
+        status: { type: string, enum: [active, revoked] }
+        published_content: { type: string }
+        published_digest: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+      required: [schema_version, share_id, collection_id, source_workspace_id, source_memory_id, source_memory_version, target_workspace_ids, mode, version_policy, status, published_content, published_digest, created_by, created_at, updated_at, revoked_at]
+    SharedMemoryView:
+      type: object
+      properties:
+        share: { type: object, additionalProperties: true }
+        collection: { $ref: "#/components/schemas/MemoryCollection" }
+        projected_memory: { $ref: "#/components/schemas/MemoryRecord" }
+        freshness: { type: string, enum: [current, stale, source_unavailable] }
+      required: [share, collection, projected_memory, freshness]
+    MemoryConflictRecord:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        conflict_id: { type: string }
+        workspace_id: { type: string }
+        kind: { type: string, enum: [shared_suggestion, external_update] }
+        status: { type: string, enum: [pending, resolved, dismissed] }
+        target_memory_id: { type: string }
+        share_id: { type: [string, "null"] }
+        source_id: { type: [string, "null"] }
+        external_id: { type: [string, "null"] }
+        external_version: { type: [string, "null"] }
+        base_memory_version: { type: integer, minimum: 1 }
+        current_content: { type: string }
+        proposed_content: { type: string }
+        proposed_deleted: { type: boolean }
+        proposed_kind: { $ref: "#/components/schemas/MemoryKind" }
+        proposed_tags: { type: array, items: { type: string } }
+        proposed_by: { type: string }
+        resolution: { type: [string, "null"], enum: [accept_proposed, keep_current, merge, dismiss, null] }
+        resolved_memory_version: { type: [integer, "null"], minimum: 1 }
+        resolved_by: { type: [string, "null"] }
+        resolved_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, conflict_id, workspace_id, kind, status, target_memory_id, share_id, source_id, external_id, external_version, base_memory_version, current_content, proposed_content, proposed_deleted, proposed_kind, proposed_tags, proposed_by, resolution, resolved_memory_version, resolved_by, resolved_at, created_at]
+    MemoryExternalSource:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        source_id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        provider: { type: string, enum: [mcp, push] }
+        server_id: { type: [string, "null"] }
+        tool_name: { type: [string, "null"] }
+        tool_arguments: { type: object, additionalProperties: true }
+        collection_id: { type: [string, "null"] }
+        status: { type: string, enum: [active, disabled, degraded] }
+        last_cursor: { type: [string, "null"] }
+        last_sync_at: { type: [string, "null"], format: date-time }
+        last_error: { type: [string, "null"] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [schema_version, source_id, workspace_id, name, provider, server_id, tool_name, tool_arguments, collection_id, status, last_cursor, last_sync_at, last_error, created_by, created_at, updated_at]
+    MemorySyncRun:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        sync_id: { type: string }
+        workspace_id: { type: string }
+        source_id: { type: string }
+        status: { type: string, enum: [completed, partial, failed] }
+        received: { type: integer, minimum: 0 }
+        created: { type: integer, minimum: 0 }
+        updated: { type: integer, minimum: 0 }
+        deleted: { type: integer, minimum: 0 }
+        conflicts: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        cursor: { type: [string, "null"] }
+        error: { type: [string, "null"] }
+        completed_at: { type: string, format: date-time }
+      required: [schema_version, sync_id, workspace_id, source_id, status, received, created, updated, deleted, conflicts, skipped, cursor, error, completed_at]
     MemoryRetrievalRequest:
       type: object
       properties:
@@ -6341,6 +6447,209 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MemoryRestoreResult" }
+
+  /api/memory-collections:
+    get:
+      operationId: listMemoryCollections
+      tags: [Memory]
+      responses:
+        "200":
+          description: Team and Organization Memory collections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { items: { type: array, items: { $ref: "#/components/schemas/MemoryCollection" } } }
+                required: [items]
+    post:
+      operationId: createMemoryCollection
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                kind: { type: string, enum: [team, organization] }
+                member_workspace_ids: { type: array, items: { type: string } }
+              required: [name, kind, member_workspace_ids]
+      responses:
+        "201":
+          description: Collection created
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemoryCollection" } } }
+
+  /api/memory-collections/{collectionId}:
+    patch:
+      operationId: updateMemoryCollection
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: collectionId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        "200":
+          description: Collection updated
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemoryCollection" } } }
+
+  /api/memory-shares:
+    get:
+      operationId: listMemoryShares
+      tags: [Memory]
+      responses:
+        "200":
+          description: Outgoing grants and incoming projections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/MemoryShareGrant" } }
+                  views: { type: array, items: { $ref: "#/components/schemas/SharedMemoryView" } }
+                required: [items, views]
+    post:
+      operationId: createMemoryShare
+      tags: [Memory]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        "201":
+          description: Share created
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemoryShareGrant" } } }
+
+  /api/memory-shares/{shareId}/revoke:
+    post:
+      operationId: revokeMemoryShare
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: shareId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Share revoked
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemoryShareGrant" } } }
+
+  /api/memory-shares/{shareId}/suggest:
+    post:
+      operationId: suggestSharedMemoryChange
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: shareId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { proposed_content: { type: string, maxLength: 4000 } }
+              required: [proposed_content]
+      responses:
+        "201":
+          description: Conflict proposal created in source Workspace
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemoryConflictRecord" } } }
+
+  /api/memory-conflicts:
+    get:
+      operationId: listMemoryConflicts
+      tags: [Memory]
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, resolved, dismissed, all], default: pending }
+      responses:
+        "200":
+          description: Memory conflicts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { items: { type: array, items: { $ref: "#/components/schemas/MemoryConflictRecord" } } }
+                required: [items]
+
+  /api/memory-conflicts/{conflictId}/resolve:
+    post:
+      operationId: resolveMemoryConflict
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: conflictId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        "200":
+          description: Resolved conflict and canonical Memory
+          content: { application/json: { schema: { type: object, additionalProperties: true } } }
+
+  /api/memory-external-sources:
+    get:
+      operationId: listMemoryExternalSources
+      tags: [Memory]
+      responses:
+        "200":
+          description: External sources and sync runs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/MemoryExternalSource" } }
+                  runs: { type: array, items: { $ref: "#/components/schemas/MemorySyncRun" } }
+                required: [items, runs]
+    post:
+      operationId: createMemoryExternalSource
+      tags: [Memory]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        "201":
+          description: External source created
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemoryExternalSource" } } }
+
+  /api/memory-external-sources/{sourceId}/ingest:
+    post:
+      operationId: ingestExternalMemoryBatch
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: sourceId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        "200":
+          description: Sync result
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemorySyncRun" } } }
+
+  /api/memory-external-sources/{sourceId}/sync:
+    post:
+      operationId: syncExternalMemorySource
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: sourceId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: MCP pull sync result
+          content: { application/json: { schema: { $ref: "#/components/schemas/MemorySyncRun" } } }
 
   /api/session-recall/search:
     post:

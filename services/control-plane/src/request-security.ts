@@ -153,6 +153,12 @@ export function requiredPermission(req: Request): WorkspacePermission {
   }
   if (path.startsWith("/memory-backups")) return method === "GET" ? "memory.read" : "memory.manage";
   if (path === "/memory-operations") return "memory.read";
+  if (path.startsWith("/memory-collections") || path.startsWith("/memory-conflicts") || path.startsWith("/memory-external-sources")) {
+    return method === "GET" ? "memory.read" : "memory.manage";
+  }
+  if (path.startsWith("/memory-shares")) {
+    return method === "GET" || path.endsWith("/suggest") ? (method === "GET" ? "memory.read" : "memory.write") : "memory.manage";
+  }
   if (path.startsWith("/memory-candidates")) {
     if (method === "GET" || /\/(approve|reject)$/.test(path)) return "memory.review";
     return "memory.propose";

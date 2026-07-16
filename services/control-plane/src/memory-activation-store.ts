@@ -12,6 +12,7 @@ import {
   serializeTurnMemoryContext,
 } from "./memory-encryption.js";
 import { getMemory } from "./memory-store.js";
+import { getSharedProjectedMemory } from "./memory-sharing-store.js";
 import { listEvaluations } from "./evaluation/evaluation-store.js";
 import { listScorecards } from "./evaluation/scorecard-store.js";
 import { getActivePrincipalId, getActiveWorkspaceId } from "./request-security.js";
@@ -130,7 +131,7 @@ export function createMemoryOverlay(input: {
   mode: MemoryOverlayMode;
   createdBy?: string;
 }): MemoryOverlayRecord {
-  const memory = getMemory(input.memoryId);
+  const memory = getMemory(input.memoryId) || getSharedProjectedMemory(input.memoryId, workspaceId(input.session));
   if (!memory || memory.status !== "active" || memory.sensitivity === "restricted") {
     throw Object.assign(new Error("Memory is not available for this Task."), { code: "memory_not_found", status: 404 });
   }

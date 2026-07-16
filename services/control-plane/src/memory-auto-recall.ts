@@ -5,6 +5,7 @@ import { recordAutomaticMemoryRecall } from "./memory-observability.js";
 import { searchMemoryRetrievalCached } from "./memory-retrieval-index.js";
 import { getActivePrincipalId } from "./request-security.js";
 import { getTaskWorkspace } from "./task-workspace-store.js";
+import { listSharedMemoryViews } from "./memory-sharing-store.js";
 import type { SessionMessageRecord, SessionRecord, TurnMemoryContextEntry } from "./types.js";
 
 export interface AutomaticMemoryRecallContext {
@@ -24,6 +25,15 @@ function currentAgentId(session: SessionRecord): string {
   return typeof session.metadata.agent_profile_id === "string" && session.metadata.agent_profile_id.trim()
     ? session.metadata.agent_profile_id.trim()
     : "default-agent";
+}
+
+function searchTerms(value: string): Set<string> {
+  const normalized = value.toLowerCase().replace(/\s+/gu, " ").trim();
+  const terms = new Set(normalized.split(/[^\p{L}\p{N}]+/u).filter((item) => item.length >= 2));
+  for (const segment of normalized.match(/\p{Script=Han}+/gu) || []) {
+    for (let index = 0; index < segment.length - 1; index += 1) terms.add(segment.slice(index, index + 2));
+  }
+  return terms;
 }
 
 export async function buildAutomaticMemoryRecallContext(
@@ -50,7 +60,18 @@ export async function buildAutomaticMemoryRecallContext(
       settings.automatic_recall.cache_ttl_seconds,
     );
     const result = cached.result;
-    const visible = result.hits
+    const queryTerms = searchTerms(query);
+    const sharedHits = listSharedMemoryViews(workspaceId).flatMap((item) => {
+      const memory = item.projected_memory;
+      if (memory.status !== "active") return [];
+      const terms = searchTerms(`${memory.content} ${memory.tags.join(" ")}`);
+      let matches = 0;
+      for (const term of queryTerms) if (terms.has(term)) matches += 1;
+      if (!matches) return [];
+      const score = Number((matches / Math.max(1, queryTerms.size)).toFixed(8));
+      return [{ memory, evidence: { fused_score: score } }];
+    });
+    const visible = [...result.hits, ...sharedHits]
       .filter(({ memory }) => {
         if (memory.scope_kind === "workspace") return memory.scope_id === workspaceId;
         if (memory.scope_kind === "user") return memory.scope_id === principalId;

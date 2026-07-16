@@ -1593,3 +1593,13 @@ Suggested maintenance rhythm:
 - [x] M10.3 passphrase-encrypted logical backup, dry-run verification, and recovery
 - [x] M10.4 explicit retention and content-free integrity reporting
 - [x] M10.5 Gateway/OpenAPI/generated types/Studio and desktop/mobile acceptance
+
+# M11 Collaborative Memory completion (2026-07-17)
+
+- [x] M11.1 Team and Organization collections with controlled Workspace membership
+- [x] M11.2 normal-only pinned and follow-latest shared Memory projections
+- [x] M11.3 read-only and suggest-changes governance with explicit conflict resolution
+- [x] M11.4 Push ingestion and MCP pull sync with durable cursors and source bindings
+- [x] M11.5 local-edit and external-deletion conflict protection
+- [x] M11.6 backup, restore, integrity, purge, Gateway, OpenAPI, generated types, and Studio integration
+- [x] M11.7 focused tests, full regression, and desktop/mobile browser acceptance

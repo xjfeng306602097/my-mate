@@ -13,6 +13,7 @@ import type {
 import { nowIso } from "./utils.js";
 import { getMemorySettings } from "./memory-settings-store.js";
 import { deserializeCoreMemorySnapshot, serializeCoreMemorySnapshot } from "./memory-encryption.js";
+import { listSharedMemoryViews } from "./memory-sharing-store.js";
 
 const DEFAULT_CHARACTER_BUDGET = 12_000;
 const DEFAULT_TOKEN_BUDGET = 3_000;
@@ -73,7 +74,10 @@ function toEntry(record: MemoryRecord): CoreMemorySnapshotEntry {
 
 function selectEntries(session: SessionRecord, principalId: string, createdAt: string): CoreMemorySnapshotEntry[] {
   const agentMemoryEnabled = getMemorySettings(session.workspace_id || "default").scope_policy.agent_memory_enabled;
-  const records = listMemories({ status: "active", limit: 500 })
+  const records = [
+    ...listMemories({ status: "active", limit: 500 }),
+    ...listSharedMemoryViews(session.workspace_id || "default").map((item) => item.projected_memory),
+  ]
     .filter((record) => isCurrentlyValid(record, createdAt))
     .filter((record) => visibleToSession(record, session, principalId, agentMemoryEnabled))
     .sort((left, right) =>

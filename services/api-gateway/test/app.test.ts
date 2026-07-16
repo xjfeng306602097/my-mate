@@ -90,7 +90,7 @@ async function startUpstreamServer() {
     idempotencyKey?: string | undefined;
   }> = [];
 
-  app.all(/^\/api\/(?:memory-settings|memory-observability|memory-effectiveness|memory-onboarding(?:\/.*)?|memory-maintenance|memory-operations|memory-keys(?:\/.*)?|memory-integrity(?:\/.*)?|memory-retention(?:\/.*)?|memory-backups(?:\/.*)?|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-(?:review|recommendations(?:\/.*)?|overlay(?:\/.*)?|contexts(?:\/.*)?))$/u, (req, res) => {
+  app.all(/^\/api\/(?:memory-settings|memory-observability|memory-effectiveness|memory-onboarding(?:\/.*)?|memory-maintenance|memory-operations|memory-keys(?:\/.*)?|memory-integrity(?:\/.*)?|memory-retention(?:\/.*)?|memory-backups(?:\/.*)?|memory-collections(?:\/.*)?|memory-shares(?:\/.*)?|memory-conflicts(?:\/.*)?|memory-external-sources(?:\/.*)?|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-(?:review|recommendations(?:\/.*)?|overlay(?:\/.*)?|contexts(?:\/.*)?))$/u, (req, res) => {
     requests.push({
       method: req.method,
       path: req.path,
@@ -2832,6 +2832,47 @@ test("proxies the complete M10 Memory operations surface", async () => {
       "POST /api/memory-backups",
       `POST /api/memory-backups/${backupId}/restore`,
       `POST /api/memories/${memoryId}/purge`,
+    ].sort());
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies the complete M11 Memory collaboration and external sync surface", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const requests = await Promise.all([
+      getJson(`${server.baseUrl}/api/memory-collections`),
+      postJson(`${server.baseUrl}/api/memory-collections`, { name: "Team", kind: "team", member_workspace_ids: [] }),
+      fetch(`${server.baseUrl}/api/memory-collections/memcol_gateway`, { method: "PATCH", headers: { "content-type": "application/json" }, body: "{}" }),
+      getJson(`${server.baseUrl}/api/memory-shares`),
+      postJson(`${server.baseUrl}/api/memory-shares`, {}),
+      postJson(`${server.baseUrl}/api/memory-shares/memshare_gateway/revoke`, {}),
+      postJson(`${server.baseUrl}/api/memory-shares/memshare_gateway/suggest`, { proposed_content: "proposal" }),
+      getJson(`${server.baseUrl}/api/memory-conflicts`),
+      postJson(`${server.baseUrl}/api/memory-conflicts/memconf_gateway/resolve`, { resolution: "keep_current" }),
+      getJson(`${server.baseUrl}/api/memory-external-sources`),
+      postJson(`${server.baseUrl}/api/memory-external-sources`, { name: "Push", provider: "push" }),
+      postJson(`${server.baseUrl}/api/memory-external-sources/memsrc_gateway/ingest`, { items: [] }),
+      postJson(`${server.baseUrl}/api/memory-external-sources/memsrc_gateway/sync`, {}),
+    ]);
+    assert.ok(requests.every((response) => response.status === 200));
+    assert.deepEqual(upstream.requests.slice(-13).map((request) => `${request.method} ${request.path}`).sort(), [
+      "GET /api/memory-collections",
+      "POST /api/memory-collections",
+      "PATCH /api/memory-collections/memcol_gateway",
+      "GET /api/memory-shares",
+      "POST /api/memory-shares",
+      "POST /api/memory-shares/memshare_gateway/revoke",
+      "POST /api/memory-shares/memshare_gateway/suggest",
+      "GET /api/memory-conflicts",
+      "POST /api/memory-conflicts/memconf_gateway/resolve",
+      "GET /api/memory-external-sources",
+      "POST /api/memory-external-sources",
+      "POST /api/memory-external-sources/memsrc_gateway/ingest",
+      "POST /api/memory-external-sources/memsrc_gateway/sync",
     ].sort());
   } finally {
     await server.close();

@@ -307,3 +307,7 @@ M9 completes the Memory activation and feedback milestone: immutable encrypted p
 # M10 completion update (2026-07-17)
 
 M10 completes Memory operational security and recovery: envelope encryption with Workspace data keys, full Private surface rotation, hard purge and cryptographic erasure, passphrase-encrypted logical backup/restore, explicit retention execution, integrity scanning, managed API permissions, and Studio controls. See `docs/61-m10-memory-operational-security-and-recovery.md`.
+
+# M11 completion update (2026-07-17)
+
+M11 completes controlled collaborative Memory and external knowledge synchronization: Team and Organization collections, pinned or follow-latest cross-Workspace projections, read-only or suggest-changes governance, explicit conflict resolution, Push ingestion, MCP pull sync, source cursors and bindings, and Studio collaboration controls. Private and restricted Memory remains unshareable, receiving Workspaces never gain a second canonical copy, and local edits are never overwritten silently. See `docs/62-m11-collaborative-memory-and-external-sync.md`.

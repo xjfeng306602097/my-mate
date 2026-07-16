@@ -10616,6 +10616,44 @@ button.dashboard-correlation-row:hover {
   font-size: 12px;
 }
 
+.memory-collaboration-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.memory-collaboration-grid > section,
+.memory-collaboration-grid > label {
+  min-width: 0;
+}
+
+.memory-collaboration-grid > section {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #dbe3ec;
+  border-radius: 6px;
+}
+
+.memory-collaboration-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.memory-collaboration-grid label > span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.memory-collaboration-grid input,
+.memory-collaboration-grid select,
+.memory-collaboration-grid textarea {
+  width: 100%;
+  min-width: 0;
+}
+
 .memory-toolbar,
 .memory-record-list,
 .memory-review-section,
@@ -10931,6 +10969,10 @@ button.dashboard-correlation-row:hover {
   }
 
   .memory-backup-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .memory-collaboration-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 

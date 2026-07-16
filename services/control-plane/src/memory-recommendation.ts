@@ -7,6 +7,7 @@ import {
 import { getMemorySettings } from "./memory-settings-store.js";
 import { getCoreMemorySnapshot } from "./memory-snapshot-store.js";
 import { listMemories } from "./memory-store.js";
+import { listSharedMemoryViews } from "./memory-sharing-store.js";
 import { getActivePrincipalId } from "./request-security.js";
 import { listSessionMessages } from "./session-message-store.js";
 import { getTaskWorkspace } from "./task-workspace-store.js";
@@ -103,7 +104,10 @@ export function listSessionMemoryRecommendations(
   const overlays = listMemoryOverlays(session.session_id, workspaceId);
   const contexts = listTurnMemoryContexts(session.session_id, workspaceId);
 
-  return listMemories({ status: "active", limit: 500 })
+  return [
+    ...listMemories({ status: "active", limit: 500 }),
+    ...listSharedMemoryViews(workspaceId).map((item) => item.projected_memory),
+  ]
     .filter((memory) => currentlyValid(memory, timestamp))
     .filter((memory) => visibleToSession(memory, session, principalId))
     .filter((memory) => !feedback.some((item) =>
@@ -160,8 +164,7 @@ export function listSessionMemoryRecommendations(
           "keep_for_session",
           "dismiss_for_session",
           "not_relevant",
-          "edit_requested",
-          "forget_requested",
+          ...(memory.source.provider_id === "memory-sharing" ? [] : ["edit_requested", "forget_requested"] as const),
         ],
       };
     });

@@ -144,6 +144,26 @@ import {
   runMemoryRetention,
   scanMemoryIntegrity,
 } from "./memory-operations.js";
+import {
+  createMemoryCollection,
+  createMemoryShare,
+  listMemoryCollections,
+  listMemoryConflicts,
+  listMemoryShares,
+  listSharedMemoryViews,
+  resolveMemoryConflict,
+  revokeMemoryShare,
+  suggestSharedMemoryChange,
+  updateMemoryCollection,
+} from "./memory-sharing-store.js";
+import {
+  acknowledgeExternalConflict,
+  createMemoryExternalSource,
+  ingestExternalMemoryBatch,
+  listMemoryExternalSources,
+  listMemorySyncRuns,
+  syncExternalMemorySource,
+} from "./memory-external-sync.js";
 import { recallSessions } from "./session-recall-store.js";
 import {
   getMemoryRetrievalIndexStatus,
@@ -10904,6 +10924,112 @@ export function createApp(options?: {
     }
     try {
       return res.json(hardPurgeMemory(memoryId));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.get("/api/memory-collections", (_req: Request, res: Response) => {
+    return res.json({ items: listMemoryCollections() });
+  });
+
+  app.post("/api/memory-collections", (req: Request, res: Response) => {
+    try {
+      return res.status(201).json(createMemoryCollection(isPlainObject(req.body) ? req.body : {}));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.patch("/api/memory-collections/:collectionId", (req: Request, res: Response) => {
+    const collectionId = getSingleParam(req.params.collectionId);
+    if (!collectionId) return res.status(400).json({ code: "invalid_request", message: "collectionId is required." });
+    try {
+      const collection = updateMemoryCollection(collectionId, isPlainObject(req.body) ? req.body : {});
+      return collection ? res.json(collection) : res.status(404).json({ code: "not_found", message: "Memory collection not found." });
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.get("/api/memory-shares", (_req: Request, res: Response) => {
+    return res.json({ items: listMemoryShares(), views: listSharedMemoryViews() });
+  });
+
+  app.post("/api/memory-shares", (req: Request, res: Response) => {
+    try {
+      return res.status(201).json(createMemoryShare(isPlainObject(req.body) ? req.body : {}));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-shares/:shareId/revoke", (req: Request, res: Response) => {
+    const shareId = getSingleParam(req.params.shareId);
+    try {
+      const share = shareId ? revokeMemoryShare(shareId) : null;
+      return share ? res.json(share) : res.status(404).json({ code: "not_found", message: "Memory share not found." });
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-shares/:shareId/suggest", (req: Request, res: Response) => {
+    const shareId = getSingleParam(req.params.shareId);
+    if (!shareId) return res.status(400).json({ code: "invalid_request", message: "shareId is required." });
+    try {
+      return res.status(201).json(suggestSharedMemoryChange(shareId, req.body?.proposed_content));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.get("/api/memory-conflicts", (req: Request, res: Response) => {
+    const status = getSingleParam(req.query.status) || "pending";
+    const items = listMemoryConflicts().filter((item) => status === "all" || item.status === status);
+    return res.json({ items });
+  });
+
+  app.post("/api/memory-conflicts/:conflictId/resolve", (req: Request, res: Response) => {
+    const conflictId = getSingleParam(req.params.conflictId);
+    if (!conflictId) return res.status(400).json({ code: "invalid_request", message: "conflictId is required." });
+    try {
+      const result = resolveMemoryConflict(conflictId, isPlainObject(req.body) ? req.body : {});
+      if (!result) return res.status(404).json({ code: "not_found", message: "Memory conflict not found." });
+      acknowledgeExternalConflict(result.conflict, result.memory);
+      return res.json(result);
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.get("/api/memory-external-sources", (_req: Request, res: Response) => {
+    return res.json({ items: listMemoryExternalSources(), runs: listMemorySyncRuns() });
+  });
+
+  app.post("/api/memory-external-sources", (req: Request, res: Response) => {
+    try {
+      return res.status(201).json(createMemoryExternalSource(isPlainObject(req.body) ? req.body : {}));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-external-sources/:sourceId/ingest", (req: Request, res: Response) => {
+    const sourceId = getSingleParam(req.params.sourceId);
+    if (!sourceId) return res.status(400).json({ code: "invalid_request", message: "sourceId is required." });
+    try {
+      return res.json(ingestExternalMemoryBatch({ sourceId, items: req.body?.items, cursor: req.body?.cursor }));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-external-sources/:sourceId/sync", async (req: Request, res: Response) => {
+    const sourceId = getSingleParam(req.params.sourceId);
+    if (!sourceId) return res.status(400).json({ code: "invalid_request", message: "sourceId is required." });
+    try {
+      return res.json(await syncExternalMemorySource(sourceId));
     } catch (error) {
       return sendMemoryStoreError(res, error);
     }

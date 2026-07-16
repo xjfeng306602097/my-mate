@@ -4,12 +4,18 @@ import {
   MEMORIES_DIR,
   MEMORY_BACKUPS_DIR,
   MEMORY_CANDIDATES_DIR,
+  MEMORY_COLLECTIONS_DIR,
+  MEMORY_CONFLICTS_DIR,
+  MEMORY_EXTERNAL_BINDINGS_DIR,
+  MEMORY_EXTERNAL_SOURCES_DIR,
   MEMORY_FEEDBACK_DIR,
   MEMORY_ONBOARDING_DIR,
   MEMORY_OPERATIONS_DIR,
   MEMORY_OVERLAYS_DIR,
   MEMORY_SETTINGS_DIR,
+  MEMORY_SHARES_DIR,
   MEMORY_SNAPSHOTS_DIR,
+  MEMORY_SYNC_RUNS_DIR,
   MEMORY_TURN_CONTEXTS_DIR,
 } from "./config.js";
 import {
@@ -39,6 +45,9 @@ import type {
   CoreMemorySnapshot,
   MemoryBackupMetadata,
   MemoryCandidateRecord,
+  MemoryCollection,
+  MemoryConflictRecord,
+  MemoryExternalSource,
   MemoryIntegrityReport,
   MemoryOnboardingRecord,
   MemoryOperationsStatus,
@@ -49,11 +58,15 @@ import type {
   MemoryRestoreResult,
   MemoryRetentionRunResult,
   MemorySettings,
+  MemoryShareGrant,
+  MemorySyncRun,
   TurnMemoryContextSnapshot,
 } from "./types.js";
 import { nowIso } from "./utils.js";
+import { purgeMemorySharingReferences } from "./memory-sharing-store.js";
+import { purgeExternalMemoryBinding } from "./memory-external-sync.js";
 
-type BackupRecordType = "memory" | "candidate" | "snapshot" | "context" | "overlay" | "feedback" | "onboarding" | "settings";
+type BackupRecordType = "memory" | "candidate" | "snapshot" | "context" | "overlay" | "feedback" | "onboarding" | "settings" | "collection" | "share" | "conflict" | "external_source" | "external_binding" | "sync_run";
 
 interface LogicalBackup {
   schema_version: 1;
@@ -235,6 +248,11 @@ export function hardPurgeMemory(memoryId: string): MemoryPurgeResult {
     (raw as MemoryRecommendationFeedback).memory_id === memoryId, removed);
   removeMatching(workspaceFiles(MEMORY_ONBOARDING_DIR, targetWorkspaceId), "onboarding", (raw) =>
     deserializeMemoryOnboarding(raw).record.committed_memory_ids.includes(memoryId), removed);
+  const sharingRemoved = purgeMemorySharingReferences(targetWorkspaceId, memoryId);
+  if (sharingRemoved.shares) removed.share = sharingRemoved.shares;
+  if (sharingRemoved.conflicts) removed.conflict = sharingRemoved.conflicts;
+  const bindingsRemoved = purgeExternalMemoryBinding(memoryId);
+  if (bindingsRemoved) removed.external_binding = bindingsRemoved;
 
   rebuildMemoryRetrievalIndex();
   const knowledge = rebuildMemoryKnowledgeGraph(listAllMemories({ status: "all" }));
@@ -274,6 +292,15 @@ function backupRecords(targetWorkspaceId: string): LogicalBackup["records"] {
   for (const file of workspaceFiles(MEMORY_ONBOARDING_DIR, targetWorkspaceId)) records.push({ type: "onboarding", value: deserializeMemoryOnboarding(storage.readJson(file)).record });
   const settingsFile = path.join(MEMORY_SETTINGS_DIR, `${encodeURIComponent(targetWorkspaceId)}.json`);
   if (storage.exists(settingsFile)) records.push({ type: "settings", value: storage.readJson(settingsFile) });
+  for (const file of storage.listJsonFiles(MEMORY_COLLECTIONS_DIR)) {
+    const value = storage.readJson<MemoryCollection>(file);
+    if (value.owner_workspace_id === targetWorkspaceId) records.push({ type: "collection", value });
+  }
+  for (const file of workspaceFiles(MEMORY_SHARES_DIR, targetWorkspaceId)) records.push({ type: "share", value: storage.readJson(file) });
+  for (const file of workspaceFiles(MEMORY_CONFLICTS_DIR, targetWorkspaceId)) records.push({ type: "conflict", value: storage.readJson(file) });
+  for (const file of workspaceFiles(MEMORY_EXTERNAL_SOURCES_DIR, targetWorkspaceId)) records.push({ type: "external_source", value: storage.readJson(file) });
+  for (const file of workspaceFiles(MEMORY_EXTERNAL_BINDINGS_DIR, targetWorkspaceId)) records.push({ type: "external_binding", value: storage.readJson(file) });
+  for (const file of workspaceFiles(MEMORY_SYNC_RUNS_DIR, targetWorkspaceId)) records.push({ type: "sync_run", value: storage.readJson(file) });
   return records;
 }
 
@@ -380,6 +407,24 @@ function restoreRecord(record: LogicalBackup["records"][number], targetWorkspace
     storage.writeJson(path.join(workspaceDir(MEMORY_ONBOARDING_DIR, targetWorkspaceId), `${encodeURIComponent(value.principal_id)}.json`), serializeMemoryOnboarding(value));
   } else if (record.type === "settings") {
     storage.writeJson(path.join(MEMORY_SETTINGS_DIR, `${encodeURIComponent(targetWorkspaceId)}.json`), record.value);
+  } else if (record.type === "collection") {
+    const value = record.value as MemoryCollection;
+    storage.writeJson(path.join(MEMORY_COLLECTIONS_DIR, `${encodeURIComponent(value.collection_id)}.json`), value);
+  } else if (record.type === "share") {
+    const value = record.value as MemoryShareGrant;
+    storage.writeJson(path.join(workspaceDir(MEMORY_SHARES_DIR, targetWorkspaceId), `${encodeURIComponent(value.share_id)}.json`), value);
+  } else if (record.type === "conflict") {
+    const value = record.value as MemoryConflictRecord;
+    storage.writeJson(path.join(workspaceDir(MEMORY_CONFLICTS_DIR, targetWorkspaceId), `${encodeURIComponent(value.conflict_id)}.json`), value);
+  } else if (record.type === "external_source") {
+    const value = record.value as MemoryExternalSource;
+    storage.writeJson(path.join(workspaceDir(MEMORY_EXTERNAL_SOURCES_DIR, targetWorkspaceId), `${encodeURIComponent(value.source_id)}.json`), value);
+  } else if (record.type === "external_binding") {
+    const value = record.value as { source_id: string; external_id: string };
+    storage.writeJson(path.join(workspaceDir(MEMORY_EXTERNAL_BINDINGS_DIR, targetWorkspaceId), encodeURIComponent(value.source_id), `${encodeURIComponent(value.external_id)}.json`), value);
+  } else if (record.type === "sync_run") {
+    const value = record.value as MemorySyncRun;
+    storage.writeJson(path.join(workspaceDir(MEMORY_SYNC_RUNS_DIR, targetWorkspaceId), `${encodeURIComponent(value.sync_id)}.json`), value);
   }
 }
 
@@ -462,6 +507,31 @@ export function scanMemoryIntegrity(targetWorkspaceId = workspaceId()): MemoryIn
     const value = deserializeMemoryOnboarding(raw).record;
     for (const memoryId of value.committed_memory_ids) if (!canonicalIds.has(memoryId)) issues.push({ code: "orphan_memory_reference", record_type: "onboarding", record_id: value.principal_id });
     return { value, id: value.principal_id, workspace: value.workspace_id, encrypted: value.draft_entries.some((entry) => entry.sensitivity === "private") };
+  });
+  for (const file of storage.listJsonFiles(MEMORY_COLLECTIONS_DIR)) {
+    const value = storage.readJson<MemoryCollection>(file);
+    if (value.owner_workspace_id !== targetWorkspaceId) continue;
+    checked += 1;
+    if (!value.member_workspace_ids.includes(targetWorkspaceId)) issues.push({ code: "collection_owner_not_member", record_type: "collection", record_id: value.collection_id });
+  }
+  inspect("share", workspaceFiles(MEMORY_SHARES_DIR, targetWorkspaceId), (raw) => {
+    const value = raw as MemoryShareGrant;
+    if (!canonicalIds.has(value.source_memory_id)) issues.push({ code: "orphan_memory_reference", record_type: "share", record_id: value.share_id });
+    return { value, id: value.share_id, workspace: value.source_workspace_id, encrypted: false };
+  });
+  inspect("conflict", workspaceFiles(MEMORY_CONFLICTS_DIR, targetWorkspaceId), (raw) => {
+    const value = raw as MemoryConflictRecord;
+    if (!canonicalIds.has(value.target_memory_id)) issues.push({ code: "orphan_memory_reference", record_type: "conflict", record_id: value.conflict_id });
+    return { value, id: value.conflict_id, workspace: value.workspace_id, encrypted: false };
+  });
+  inspect("external_source", workspaceFiles(MEMORY_EXTERNAL_SOURCES_DIR, targetWorkspaceId), (raw) => {
+    const value = raw as MemoryExternalSource;
+    return { value, id: value.source_id, workspace: value.workspace_id, encrypted: false };
+  });
+  inspect("external_binding", workspaceFiles(MEMORY_EXTERNAL_BINDINGS_DIR, targetWorkspaceId), (raw) => {
+    const value = raw as { memory_id?: string; workspace_id?: string; external_id?: string };
+    if (!value.memory_id || !canonicalIds.has(value.memory_id)) issues.push({ code: "orphan_memory_reference", record_type: "external_binding", record_id: value.external_id || null });
+    return { value, id: value.external_id || null, workspace: value.workspace_id || "", encrypted: false };
   });
   const report: MemoryIntegrityReport = {
     schema_version: 1,

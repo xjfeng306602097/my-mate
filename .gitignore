@@ -124,6 +124,12 @@ services/control-plane/data/memory-feedback/
 services/control-plane/data/memory-onboarding/
 services/control-plane/data/memory-operations/
 services/control-plane/data/memory-backups/
+services/control-plane/data/memory-collections/
+services/control-plane/data/memory-shares/
+services/control-plane/data/memory-conflicts/
+services/control-plane/data/memory-external-sources/
+services/control-plane/data/memory-external-bindings/
+services/control-plane/data/memory-sync-runs/
 services/control-plane/data/mission-materializer-checkpoints/
 services/control-plane/data/mission-materializer-events/
 services/control-plane/data/mission-materializer-projections/

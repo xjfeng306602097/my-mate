@@ -332,6 +332,17 @@ const state = {
     operationResult: null,
     backupPassphrase: "",
     purgeConfirmId: "",
+    collections: [],
+    shares: [],
+    sharedViews: [],
+    conflicts: [],
+    externalSources: [],
+    syncRuns: [],
+    collectionDraft: { name: "", kind: "team", members: "" },
+    shareDraft: { collectionId: "", memoryId: "", targets: "", mode: "read_only", versionPolicy: "pinned" },
+    externalDraft: { name: "", provider: "push", serverId: "", toolName: "", argumentsText: "{}", collectionId: "" },
+    suggestionShareId: "",
+    suggestionContent: "",
     onboardingDraft: {
       responsePreferences: "",
       validationConventions: "",
@@ -7144,7 +7155,7 @@ async function loadMemoryStatus(shouldRender = true) {
     if (state.memory.kindFilter !== "all") params.set("kind", state.memory.kindFilter);
     if (state.memory.query.trim()) params.set("query", state.memory.query.trim());
     const recommendationSessionId = state.selectedSessionId || state.workspaceDetail?.session?.session_id || "";
-    const [retrievalStatus, knowledgeStatus, memories, candidates, settings, observability, maintenance, intelligenceEvaluation, recommendations, overlays, contexts, onboarding, effectiveness, operations] = await Promise.all([
+    const [retrievalStatus, knowledgeStatus, memories, candidates, settings, observability, maintenance, intelligenceEvaluation, recommendations, overlays, contexts, onboarding, effectiveness, operations, collections, shares, conflicts, externalSources] = await Promise.all([
       request("/api/memory-retrieval/status"),
       request("/api/memory-knowledge/status"),
       request(`/api/memories?${params.toString()}`),
@@ -7165,6 +7176,10 @@ async function loadMemoryStatus(shouldRender = true) {
       request("/api/memory-onboarding"),
       request("/api/memory-effectiveness"),
       request("/api/memory-operations"),
+      request("/api/memory-collections"),
+      request("/api/memory-shares"),
+      request("/api/memory-conflicts?status=pending"),
+      request("/api/memory-external-sources"),
     ]);
     state.memory.retrievalStatus = retrievalStatus;
     state.memory.knowledgeStatus = knowledgeStatus;
@@ -7180,6 +7195,12 @@ async function loadMemoryStatus(shouldRender = true) {
     state.memory.onboarding = onboarding;
     state.memory.effectiveness = effectiveness;
     state.memory.operations = operations;
+    state.memory.collections = collections.items || [];
+    state.memory.shares = shares.items || [];
+    state.memory.sharedViews = shares.views || [];
+    state.memory.conflicts = conflicts.items || [];
+    state.memory.externalSources = externalSources.items || [];
+    state.memory.syncRuns = externalSources.runs || [];
   } catch (error) {
     state.error = error.message || "Failed to load memory status.";
   } finally {
@@ -7569,6 +7590,149 @@ async function hardPurgeMemoryFromStudio(memoryId) {
     state.error = error.message || "Memory purge failed.";
   } finally {
     state.memory.saving = false;
+    render();
+  }
+}
+
+function commaSeparatedIds(value) {
+  return [...new Set(String(value || "").split(",").map((item) => item.trim()).filter(Boolean))];
+}
+
+async function createMemoryCollectionFromStudio() {
+  const draft = state.memory.collectionDraft;
+  if (!draft.name.trim() || state.memory.saving) return;
+  state.memory.saving = true;
+  try {
+    await request("/api/memory-collections", {
+      method: "POST",
+      body: JSON.stringify({ name: draft.name.trim(), kind: draft.kind, member_workspace_ids: commaSeparatedIds(draft.members) }),
+    });
+    state.memory.collectionDraft = { name: "", kind: "team", members: "" };
+    await loadMemoryStatus(false);
+    state.notice = "Memory collection created.";
+  } catch (error) {
+    state.error = error.message || "Memory collection could not be created.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function createMemoryShareFromStudio() {
+  const draft = state.memory.shareDraft;
+  if (!draft.collectionId || !draft.memoryId || state.memory.saving) return;
+  state.memory.saving = true;
+  try {
+    await request("/api/memory-shares", {
+      method: "POST",
+      body: JSON.stringify({
+        collection_id: draft.collectionId,
+        memory_id: draft.memoryId,
+        target_workspace_ids: commaSeparatedIds(draft.targets),
+        mode: draft.mode,
+        version_policy: draft.versionPolicy,
+      }),
+    });
+    state.memory.shareDraft = { collectionId: "", memoryId: "", targets: "", mode: "read_only", versionPolicy: "pinned" };
+    await loadMemoryStatus(false);
+    state.notice = "Memory shared with collection members.";
+  } catch (error) {
+    state.error = error.message || "Memory share could not be created.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function suggestSharedMemoryFromStudio() {
+  const shareId = state.memory.suggestionShareId;
+  const content = state.memory.suggestionContent.trim();
+  if (!shareId || !content || state.memory.saving) return;
+  state.memory.saving = true;
+  try {
+    await request(`/api/memory-shares/${encodeURIComponent(shareId)}/suggest`, {
+      method: "POST",
+      body: JSON.stringify({ proposed_content: content }),
+    });
+    state.memory.suggestionShareId = "";
+    state.memory.suggestionContent = "";
+    await loadMemoryStatus(false);
+    state.notice = "Shared Memory change sent to the source Workspace for review.";
+  } catch (error) {
+    state.error = error.message || "Shared Memory suggestion failed.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function resolveMemoryConflictFromStudio(conflictId, resolution) {
+  if (!conflictId || state.memory.saving) return;
+  state.memory.saving = true;
+  try {
+    await request(`/api/memory-conflicts/${encodeURIComponent(conflictId)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ resolution }),
+    });
+    await loadMemoryStatus(false);
+    state.notice = resolution === "accept_proposed" ? "Proposed Memory change accepted." : "Current Memory kept.";
+  } catch (error) {
+    state.error = error.message || "Memory conflict could not be resolved.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function createExternalMemorySourceFromStudio() {
+  const draft = state.memory.externalDraft;
+  if (!draft.name.trim() || state.memory.saving) return;
+  let toolArguments = {};
+  try {
+    toolArguments = JSON.parse(draft.argumentsText || "{}");
+  } catch {
+    state.error = "External source arguments must be valid JSON.";
+    render();
+    return;
+  }
+  state.memory.saving = true;
+  try {
+    await request("/api/memory-external-sources", {
+      method: "POST",
+      body: JSON.stringify({
+        name: draft.name.trim(),
+        provider: draft.provider,
+        server_id: draft.provider === "mcp" ? draft.serverId : null,
+        tool_name: draft.provider === "mcp" ? draft.toolName : null,
+        tool_arguments: toolArguments,
+        collection_id: draft.collectionId || null,
+      }),
+    });
+    state.memory.externalDraft = { name: "", provider: "push", serverId: "", toolName: "", argumentsText: "{}", collectionId: "" };
+    await loadMemoryStatus(false);
+    state.notice = "External Memory source created.";
+  } catch (error) {
+    state.error = error.message || "External Memory source could not be created.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function syncExternalMemorySourceFromStudio(sourceId) {
+  if (!sourceId || state.memory.rebuilding) return;
+  state.memory.rebuilding = true;
+  try {
+    state.memory.operationResult = await request(`/api/memory-external-sources/${encodeURIComponent(sourceId)}/sync`, {
+      method: "POST",
+      body: "{}",
+    });
+    await loadMemoryStatus(false);
+    state.notice = "External Memory source synchronized.";
+  } catch (error) {
+    state.error = error.message || "External Memory sync failed.";
+  } finally {
+    state.memory.rebuilding = false;
     render();
   }
 }
@@ -15411,6 +15575,12 @@ function renderMemoryWorkspace() {
     : [];
   const records = state.memory.records || [];
   const candidates = state.memory.candidates || [];
+  const collections = state.memory.collections || [];
+  const sharedViews = state.memory.sharedViews || [];
+  const conflicts = state.memory.conflicts || [];
+  const externalSources = state.memory.externalSources || [];
+  const currentMemoryWorkspaceId = retrieval?.workspace_id || state.security.workspaceId || "default";
+  const ownedCollections = collections.filter((item) => item.owner_workspace_id === currentMemoryWorkspaceId && item.status === "active");
   return `
     <section class="product-surface memory-workspace">
       <div class="product-surface-heading">
@@ -15464,6 +15634,23 @@ function renderMemoryWorkspace() {
           </article>`;
         }).join("") || '<div class="product-empty"><strong>No memories in this view</strong><span>Change the filters or complete a task that contains durable preferences or decisions.</span></div>'}
       </div>
+      <section class="memory-recommendation-section">
+        <div class="memory-results-heading"><strong>Shared Memory</strong><small>${sharedViews.length} available from Team or Organization collections</small></div>
+        ${sharedViews.map((view) => {
+          const memory = view.projected_memory;
+          const editingSuggestion = state.memory.suggestionShareId === view.share.share_id;
+          return `<article class="memory-recommendation-row"><div><div class="memory-record-meta"><span class="badge neutral">${escapeHtml(view.collection.kind)}</span><small>${escapeHtml(`${view.collection.name} / ${view.share.source_workspace_id} / v${memory.version}`)}</small></div><p>${escapeHtml(memory.content)}</p><small>${escapeHtml(`Sharing: ${view.share.mode} / ${view.share.version_policy} / ${view.freshness}`)}</small>${editingSuggestion ? `<textarea rows="3" data-field="memory.suggestionContent">${escapeHtml(state.memory.suggestionContent)}</textarea>` : ""}</div><div class="memory-record-actions"><span class="badge ${view.freshness === "current" ? "success" : "warn"}">${escapeHtml(view.freshness)}</span>${view.share.mode === "suggest_changes" ? editingSuggestion ? `<button class="secondary" data-action="cancel-memory-suggestion">Cancel</button><button class="primary" data-action="submit-memory-suggestion" ${!state.memory.suggestionContent.trim() ? "disabled" : ""}>Send</button>` : `<button class="secondary" data-action="prepare-memory-suggestion" data-share-id="${escapeHtml(view.share.share_id)}" data-content="${escapeHtml(memory.content)}">Suggest change</button>` : ""}</div></article>`;
+        }).join("") || '<p class="muted">No Memory has been shared into this Workspace.</p>'}
+      </section>
+      <details class="memory-advanced-section" open>
+        <summary>Team, Organization, and external knowledge</summary>
+        <div class="memory-collaboration-grid">
+          <section><div class="memory-results-heading"><strong>Collections</strong><small>${collections.length}</small></div>${collections.map((item) => `<p><span class="badge neutral">${escapeHtml(item.kind)}</span> <strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(` ${item.member_workspace_ids.length} Workspaces / owner ${item.owner_workspace_id}`)}</small></p>`).join("") || '<p class="muted">No collection yet.</p>'}<label><span>Name</span><input data-field="memory.collection.name" value="${escapeHtml(state.memory.collectionDraft.name)}" /></label><label><span>Kind</span><select data-field="memory.collection.kind"><option value="team" ${state.memory.collectionDraft.kind === "team" ? "selected" : ""}>Team</option><option value="organization" ${state.memory.collectionDraft.kind === "organization" ? "selected" : ""}>Organization</option></select></label><label><span>Member Workspace IDs</span><input data-field="memory.collection.members" value="${escapeHtml(state.memory.collectionDraft.members)}" placeholder="workspace-a, workspace-b" /></label><button class="primary" data-action="create-memory-collection" ${!state.memory.collectionDraft.name.trim() ? "disabled" : ""}>Create collection</button></section>
+          <section><div class="memory-results-heading"><strong>Publish Memory</strong><small>Normal sensitivity only</small></div><label><span>Collection</span><select data-field="memory.share.collectionId"><option value="">Select</option>${ownedCollections.map((item) => `<option value="${escapeHtml(item.collection_id)}" ${state.memory.shareDraft.collectionId === item.collection_id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label><span>Memory</span><select data-field="memory.share.memoryId"><option value="">Select</option>${records.filter((item) => item.status === "active" && item.sensitivity === "normal").map((item) => `<option value="${escapeHtml(item.memory_id)}" ${state.memory.shareDraft.memoryId === item.memory_id ? "selected" : ""}>${escapeHtml(item.content.slice(0, 80))}</option>`).join("")}</select></label><label><span>Target Workspace IDs</span><input data-field="memory.share.targets" value="${escapeHtml(state.memory.shareDraft.targets)}" /></label><label><span>Mode</span><select data-field="memory.share.mode"><option value="read_only" ${state.memory.shareDraft.mode === "read_only" ? "selected" : ""}>Read only</option><option value="suggest_changes" ${state.memory.shareDraft.mode === "suggest_changes" ? "selected" : ""}>Suggest changes</option></select></label><label><span>Version</span><select data-field="memory.share.versionPolicy"><option value="pinned" ${state.memory.shareDraft.versionPolicy === "pinned" ? "selected" : ""}>Pinned</option><option value="follow_latest" ${state.memory.shareDraft.versionPolicy === "follow_latest" ? "selected" : ""}>Follow latest</option></select></label><button class="primary" data-action="create-memory-share" ${!state.memory.shareDraft.collectionId || !state.memory.shareDraft.memoryId || !state.memory.shareDraft.targets.trim() ? "disabled" : ""}>Publish</button></section>
+        </div>
+        <div class="memory-review-section"><div class="memory-results-heading"><strong>Conflict review</strong><small>${conflicts.length} pending</small></div>${conflicts.map((conflict) => `<article class="memory-candidate-row"><div><div class="memory-record-meta"><span class="badge warn">${escapeHtml(conflict.kind)}</span><small>${escapeHtml(conflict.target_memory_id)}</small></div><p><strong>Current:</strong> ${escapeHtml(conflict.current_content)}</p><p><strong>Proposed:</strong> ${escapeHtml(conflict.proposed_deleted ? "Delete this Memory" : conflict.proposed_content)}</p></div><div class="memory-record-actions"><button class="secondary" data-action="resolve-memory-conflict" data-conflict-id="${escapeHtml(conflict.conflict_id)}" data-resolution="keep_current">Keep current</button><button class="primary" data-action="resolve-memory-conflict" data-conflict-id="${escapeHtml(conflict.conflict_id)}" data-resolution="accept_proposed">Accept</button></div></article>`).join("") || '<p class="muted">No shared or external update needs review.</p>'}</div>
+        <div class="memory-review-section"><div class="memory-results-heading"><strong>External sources</strong><small>${externalSources.length}</small></div>${externalSources.map((source) => `<article class="memory-context-row"><div><span><strong>${escapeHtml(source.name)}</strong><small>${escapeHtml(`${source.provider} / ${source.status} / cursor ${source.last_cursor || "-"}`)}</small></span>${source.provider === "mcp" ? `<button class="secondary" data-action="sync-memory-source" data-source-id="${escapeHtml(source.source_id)}" ${state.memory.rebuilding ? "disabled" : ""}>Sync</button>` : '<span class="badge neutral">Push API</span>'}</div>${source.last_error ? `<p class="muted">${escapeHtml(source.last_error)}</p>` : ""}</article>`).join("") || '<p class="muted">No external source configured.</p>'}<div class="memory-collaboration-grid"><label><span>Name</span><input data-field="memory.external.name" value="${escapeHtml(state.memory.externalDraft.name)}" /></label><label><span>Provider</span><select data-field="memory.external.provider"><option value="push" ${state.memory.externalDraft.provider === "push" ? "selected" : ""}>Push API</option><option value="mcp" ${state.memory.externalDraft.provider === "mcp" ? "selected" : ""}>MCP</option></select></label>${state.memory.externalDraft.provider === "mcp" ? `<label><span>MCP server</span><select data-field="memory.external.serverId"><option value="">Select</option>${state.mcpServers.filter((item) => item.enabled).map((item) => `<option value="${escapeHtml(item.server_id)}" ${state.memory.externalDraft.serverId === item.server_id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label><span>Tool name</span><input data-field="memory.external.toolName" value="${escapeHtml(state.memory.externalDraft.toolName)}" /></label><label class="memory-settings-wide"><span>Tool arguments JSON</span><textarea rows="3" data-field="memory.external.argumentsText">${escapeHtml(state.memory.externalDraft.argumentsText)}</textarea></label>` : ""}<label><span>Auto-share collection</span><select data-field="memory.external.collectionId"><option value="">None</option>${ownedCollections.map((item) => `<option value="${escapeHtml(item.collection_id)}" ${state.memory.externalDraft.collectionId === item.collection_id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><button class="primary" data-action="create-memory-source" ${!state.memory.externalDraft.name.trim() || state.memory.externalDraft.provider === "mcp" && (!state.memory.externalDraft.serverId || !state.memory.externalDraft.toolName.trim()) ? "disabled" : ""}>Create source</button></div></div>
+      </details>
       <section class="memory-review-section">
         <div class="memory-results-heading"><strong>Pending review</strong><small>${candidates.length} candidate${candidates.length === 1 ? "" : "s"}</small></div>
         ${candidates.map((candidate) => `<article class="memory-candidate-row">
@@ -15739,6 +15926,7 @@ function restoreTaskWorkspaceScroll(snapshot) {
 }
 
 function renderTaskWorkspaceSurface() {
+  if (state.activeNav !== "orchestrator") return;
   studioPerformance.taskSurfaceRenderCount += 1;
   publishStudioPerformance();
   const workspaceSession = state.workspaceDetail?.session || null;
@@ -15746,7 +15934,7 @@ function renderTaskWorkspaceSurface() {
   const workspace = shell?.querySelector(":scope > .workspace");
   const desktopGrid = workspace?.querySelector(".desktop-grid");
   const center = desktopGrid?.querySelector(":scope > .desktop-center");
-  if (state.activeNav !== "orchestrator" || !workspaceSession || !shell || !workspace || !desktopGrid || !center) {
+  if (!workspaceSession || !shell || !workspace || !desktopGrid || !center) {
     render();
     return;
   }
@@ -16093,6 +16281,35 @@ function handleChange(target) {
     state.memory.backupPassphrase = value;
     const createButton = document.querySelector('[data-action="create-memory-backup"]');
     if (createButton) createButton.disabled = state.memory.rebuilding || value.length < 12;
+    return;
+  }
+  if (field === "memory.suggestionContent") {
+    state.memory.suggestionContent = value;
+    const submitButton = document.querySelector('[data-action="submit-memory-suggestion"]');
+    if (submitButton) submitButton.disabled = !value.trim();
+    return;
+  }
+  if (field.startsWith("memory.collection.")) {
+    state.memory.collectionDraft[field.split(".").at(-1)] = value;
+    const createButton = document.querySelector('[data-action="create-memory-collection"]');
+    if (createButton) createButton.disabled = !state.memory.collectionDraft.name.trim();
+    return;
+  }
+  if (field.startsWith("memory.share.")) {
+    const key = field.split(".").at(-1);
+    state.memory.shareDraft[key] = value;
+    const createButton = document.querySelector('[data-action="create-memory-share"]');
+    if (createButton) createButton.disabled = !state.memory.shareDraft.collectionId || !state.memory.shareDraft.memoryId || !state.memory.shareDraft.targets.trim();
+    return;
+  }
+  if (field.startsWith("memory.external.")) {
+    const key = field.split(".").at(-1);
+    state.memory.externalDraft[key] = value;
+    if (key === "provider") render();
+    else {
+      const createButton = document.querySelector('[data-action="create-memory-source"]');
+      if (createButton) createButton.disabled = !state.memory.externalDraft.name.trim() || state.memory.externalDraft.provider === "mcp" && (!state.memory.externalDraft.serverId || !state.memory.externalDraft.toolName.trim());
+    }
     return;
   }
   if (field === "memory.onboarding.responsePreferences") {
@@ -16533,7 +16750,12 @@ function syncTextareaState(target) {
   const value = target.value;
   const index = Number(target.dataset.index);
 
-  if (field === "memory.editContent" || field === "memory.importText") {
+  if (
+    field === "memory.editContent" ||
+    field === "memory.importText" ||
+    field === "memory.suggestionContent" ||
+    field === "memory.external.argumentsText"
+  ) {
     handleChange(target);
     return;
   }
@@ -17036,6 +17258,22 @@ document.addEventListener("click", (event) => {
   if (action === "create-memory-backup") void runMemoryOperationFromStudio("backup");
   if (action === "verify-memory-backup") void restoreMemoryBackupFromStudio(button.dataset.backupId || "", true);
   if (action === "restore-memory-backup") void restoreMemoryBackupFromStudio(button.dataset.backupId || "", false);
+  if (action === "create-memory-collection") void createMemoryCollectionFromStudio();
+  if (action === "create-memory-share") void createMemoryShareFromStudio();
+  if (action === "prepare-memory-suggestion") {
+    state.memory.suggestionShareId = button.dataset.shareId || "";
+    state.memory.suggestionContent = button.dataset.content || "";
+    render();
+  }
+  if (action === "cancel-memory-suggestion") {
+    state.memory.suggestionShareId = "";
+    state.memory.suggestionContent = "";
+    render();
+  }
+  if (action === "submit-memory-suggestion") void suggestSharedMemoryFromStudio();
+  if (action === "resolve-memory-conflict") void resolveMemoryConflictFromStudio(button.dataset.conflictId || "", button.dataset.resolution || "keep_current");
+  if (action === "create-memory-source") void createExternalMemorySourceFromStudio();
+  if (action === "sync-memory-source") void syncExternalMemorySourceFromStudio(button.dataset.sourceId || "");
   if (action === "import-memory") void importMemoryFromStudio();
   if (action === "export-memory") void exportMemoryFromStudio(button.dataset.format || "json");
   if (action === "set-dashboard-cost-group") {
@@ -17282,7 +17520,7 @@ document.addEventListener("change", (event) => handleChange(event.target));
 document.addEventListener("input", (event) => {
   if (event.target.matches("textarea[data-field]")) syncTextareaState(event.target);
   if (event.target.matches("input[data-field^='proposal.']")) syncProposalOverrideField(event.target);
-  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='command.query'], input[data-field='memory.query'], input[data-field^='memory.settings.'], input[data-field^='attachment.'], input[data-field^='desktop.'], input[data-field^='orchestrator.'], input[data-field^='agent.'], input[data-field^='connection.'], input[data-field^='mcp.'], input[data-field^='setup.'], input[data-field^='skill.'], textarea[data-field='execution.interventionText']")) {
+  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='command.query'], input[data-field='memory.query'], input[data-field^='memory.settings.'], input[data-field^='memory.collection.'], input[data-field^='memory.share.'], input[data-field^='memory.external.'], input[data-field^='attachment.'], input[data-field^='desktop.'], input[data-field^='orchestrator.'], input[data-field^='agent.'], input[data-field^='connection.'], input[data-field^='mcp.'], input[data-field^='setup.'], input[data-field^='skill.'], textarea[data-field='execution.interventionText']")) {
     handleChange(event.target);
   }
 });
