@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "id": "browser.core",
+  "name": "Browser Automation",
+  "version": "1.0.0",
+  "description": "Typed browser automation through an isolated browser or a visible My Mate Chrome/Edge profile.",
+  "runtime": "browser",
+  "enabled_by_default": true,
+  "capabilities": [
+    {
+      "id": "browser_navigate",
+      "kind": "tool",
+      "name": "Open a webpage in a browser",
+      "description": "Navigate to a public HTTP or HTTPS page. Use isolated mode for clean temporary browsing, or chrome/edge for a visible persistent My Mate browser profile that the user can sign into.",
+      "risk_level": "T1",
+      "permission_scopes": ["browser.public.navigate"],
+      "executor": "browser",
+      "timeout_ms": 60000,
+      "progress_label": "Opening webpage",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "minLength": 8, "maxLength": 2048 },
+          "mode": { "type": "string", "enum": ["isolated", "chrome", "edge"], "default": "isolated" },
+          "browser_session_id": { "type": "string", "minLength": 8, "maxLength": 120 }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "browser_snapshot",
+      "kind": "tool",
+      "name": "Read the current browser page",
+      "description": "Return a bounded accessibility-oriented page snapshot with stable element references such as @e1 for later browser actions.",
+      "risk_level": "T0",
+      "permission_scopes": ["browser.page.read"],
+      "executor": "browser",
+      "timeout_ms": 30000,
+      "progress_label": "Reading browser page",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "browser_session_id": { "type": "string", "minLength": 8, "maxLength": 120 },
+          "max_chars": { "type": "integer", "minimum": 1000, "maximum": 50000, "default": 20000 }
+        },
+        "required": ["browser_session_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "browser_click",
+      "kind": "tool",
+      "name": "Click a referenced browser element",
+      "description": "Click one element reference returned by browser_snapshot. User Chrome/Edge interactions require Desktop confirmation.",
+      "risk_level": "T2",
+      "permission_scopes": ["browser.page.interact"],
+      "executor": "browser",
+      "timeout_ms": 30000,
+      "progress_label": "Clicking browser element",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "browser_session_id": { "type": "string", "minLength": 8, "maxLength": 120 },
+          "ref": { "type": "string", "pattern": "^@e[1-9][0-9]{0,3}$" }
+        },
+        "required": ["browser_session_id", "ref"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "browser_type",
+      "kind": "tool",
+      "name": "Type into a referenced browser field",
+      "description": "Replace the value of a referenced input, textarea, or editable element without submitting the form. Desktop confirmation is required because text is sent to a webpage.",
+      "risk_level": "T2",
+      "permission_scopes": ["browser.page.input"],
+      "executor": "browser",
+      "timeout_ms": 30000,
+      "progress_label": "Typing into browser field",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "browser_session_id": { "type": "string", "minLength": 8, "maxLength": 120 },
+          "ref": { "type": "string", "pattern": "^@e[1-9][0-9]{0,3}$" },
+          "text": { "type": "string", "maxLength": 4000 }
+        },
+        "required": ["browser_session_id", "ref", "text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "browser_back",
+      "kind": "tool",
+      "name": "Go back in browser history",
+      "description": "Navigate one step back in the selected browser session.",
+      "risk_level": "T1",
+      "permission_scopes": ["browser.public.navigate"],
+      "executor": "browser",
+      "timeout_ms": 30000,
+      "progress_label": "Going back in browser",
+      "input_schema": {
+        "type": "object",
+        "properties": { "browser_session_id": { "type": "string", "minLength": 8, "maxLength": 120 } },
+        "required": ["browser_session_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "browser_close",
+      "kind": "tool",
+      "name": "Close a browser session",
+      "description": "Close the selected isolated or user-visible browser session and release its task-scoped automation connection.",
+      "risk_level": "T0",
+      "permission_scopes": ["browser.session.close"],
+      "executor": "browser",
+      "timeout_ms": 30000,
+      "progress_label": "Closing browser session",
+      "input_schema": {
+        "type": "object",
+        "properties": { "browser_session_id": { "type": "string", "minLength": 8, "maxLength": 120 } },
+        "required": ["browser_session_id"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "metadata": {
+    "session_isolation": "per-task",
+    "user_browser_profile": "my-mate-dedicated",
+    "raw_cdp_exposed": false
+  }
+}

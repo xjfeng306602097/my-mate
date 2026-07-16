@@ -1,4 +1,5 @@
 import type { DoctorRuntime } from "./types.js";
+import { providerFetch } from "../provider-fetch.js";
 
 interface ProviderConfiguration {
   harnessEnv: string | null;
@@ -8,8 +9,6 @@ interface ProviderConfiguration {
 }
 
 const HARNESS_ENV: Partial<Record<DoctorRuntime, string>> = {
-  codex: "MY_MATE_CODEX_COMMAND",
-  "claude-sdk": "MY_MATE_CLAUDE_SDK_COMMAND",
   kimi: "MY_MATE_KIMI_COMMAND",
 };
 
@@ -18,6 +17,7 @@ const CREDENTIAL_ENVS: Partial<Record<DoctorRuntime, string[]>> = {
   "claude-sdk": ["ANTHROPIC_API_KEY", "MY_MATE_CLAUDE_CREDENTIAL_REF"],
   kimi: ["KIMI_API_KEY", "MOONSHOT_API_KEY", "MY_MATE_KIMI_CREDENTIAL_REF"],
   openclaw: ["MY_MATE_OPENCLAW_BRIDGE_API_KEY", "MY_MATE_OPENCLAW_CREDENTIAL_REF"],
+  glm: ["GLM_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY"],
 };
 
 export function inspectProviderConfiguration(
@@ -40,6 +40,28 @@ export function inspectProviderConfiguration(
       harnessConfigured: bridgeConfigured,
       credentialConfigured: bridgeConfigured && (!!credentialSource || !env.MY_MATE_OPENCLAW_BRIDGE_API_KEY),
       credentialSource: credentialSource || (bridgeConfigured ? "bridge_no_auth" : null),
+    };
+  }
+  if (runtime === "codex" || runtime === "claude-sdk") {
+    const credentialSource = (CREDENTIAL_ENVS[runtime] || []).find(
+      (name) => !!env[name]?.trim(),
+    );
+    return {
+      harnessEnv: null,
+      harnessConfigured: true,
+      credentialConfigured: !!credentialSource,
+      credentialSource: credentialSource || null,
+    };
+  }
+  if (runtime === "glm") {
+    const credentialSource = (CREDENTIAL_ENVS.glm || []).find(
+      (name) => !!env[name]?.trim(),
+    );
+    return {
+      harnessEnv: "MY_MATE_GLM_ANTHROPIC_BASE_URL",
+      harnessConfigured: !!env.MY_MATE_GLM_ANTHROPIC_BASE_URL?.trim(),
+      credentialConfigured: !!credentialSource,
+      credentialSource: credentialSource || null,
     };
   }
   const harnessEnv = HARNESS_ENV[runtime] || null;
@@ -71,7 +93,7 @@ export async function runLiveProviderProbe(input: {
   env: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
 }): Promise<void> {
-  const fetchImpl = input.fetchImpl || fetch;
+  const fetchImpl = input.fetchImpl || providerFetch;
   if (input.runtime === "codex") {
     const key = input.env.OPENAI_API_KEY || input.env.CODEX_API_KEY;
     if (!key) throw new Error("No OpenAI API credential is available for a live probe.");
@@ -105,6 +127,30 @@ export async function runLiveProviderProbe(input: {
       },
       body: JSON.stringify({
         model: input.env.MY_MATE_CLAUDE_MODEL || "claude-haiku-4-5",
+        max_tokens: 1,
+        messages: [{ role: "user", content: "Reply OK" }],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    return;
+  }
+  if (input.runtime === "glm") {
+    const key = input.env.GLM_API_KEY || input.env.ZAI_API_KEY || input.env.ZHIPU_API_KEY;
+    if (!key) throw new Error("No GLM API credential is available for a live probe.");
+    const configuredBase = input.env.MY_MATE_GLM_ANTHROPIC_BASE_URL;
+    if (!configuredBase) {
+      throw new Error("MY_MATE_GLM_ANTHROPIC_BASE_URL is required for a live GLM probe.");
+    }
+    const base = configuredBase.replace(/\/$/, "");
+    await fetchOk(fetchImpl, `${base}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: input.env.MY_MATE_GLM_MODEL || "glm-5.2",
         max_tokens: 1,
         messages: [{ role: "user", content: "Reply OK" }],
       }),

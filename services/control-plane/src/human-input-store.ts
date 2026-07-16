@@ -15,6 +15,7 @@ export function createHumanInputRecord(input: {
   summary: string;
   inputSchema: Record<string, unknown>;
   requestedAt?: string;
+  gateId?: string | null;
 }): HumanInputRecord {
   return {
     input_request_id: generateHumanInputId(),
@@ -25,6 +26,7 @@ export function createHumanInputRecord(input: {
     input_schema: input.inputSchema,
     requested_at: input.requestedAt || nowIso(),
     submitted_at: null,
+    gate_id: input.gateId ?? null,
   };
 }
 

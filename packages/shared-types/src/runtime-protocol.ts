@@ -8,6 +8,7 @@ export type RuntimeAgentRuntime =
   | "codex"
   | "claude-sdk"
   | "kimi"
+  | "glm"
   | (string & {});
 
 export type WorkerTargetKind =
@@ -15,6 +16,17 @@ export type WorkerTargetKind =
   | "external-bridge"
   | "docker-worker"
   | "node-worker";
+
+export type RuntimeRiskLevel = "low" | "elevated" | "high";
+
+export interface RuntimeExecutionPolicy {
+  risk_level: RuntimeRiskLevel;
+  workspace_access: "none" | "snapshot-read" | "sandbox-write";
+  requires_change_approval: boolean;
+  requested_target_kind: WorkerTargetKind | null;
+  resolved_target_kind: WorkerTargetKind;
+  reasons: string[];
+}
 
 export type WorkerEventKind =
   | "worker.accepted"
@@ -98,8 +110,38 @@ export interface RuntimeHarnessSpec {
   agent_runtime: RuntimeAgentRuntime;
   runtime_agent_ref: string | null;
   harness_profile: string | null;
+  provider_connection?: {
+    connection_id: string;
+    agent_runtime: string;
+    provider: string;
+    protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible" | "openclaw-bridge";
+    base_url: string | null;
+    model: string | null;
+    credential_source: "managed" | "environment";
+    credential_env: string;
+  } | null;
   allowed_skills: string[];
   allowed_tools: string[];
+}
+
+export interface WorkerWorkspaceContextFile {
+  attachment_id: string;
+  name: string;
+  relative_path: string;
+  mime_type: string | null;
+  size_bytes: number;
+  content_sha256: string;
+  content: string;
+}
+
+export interface WorkerWorkspaceContext {
+  schema_version: 1;
+  mode: "snapshot";
+  source_session_id: string;
+  created_at: string;
+  manifest_sha256: string;
+  total_size_bytes: number;
+  files: WorkerWorkspaceContextFile[];
 }
 
 export interface WorkerWorkspaceSpec {
@@ -108,12 +150,14 @@ export interface WorkerWorkspaceSpec {
   project_slug: string | null;
   project_local_repo: string | null;
   container_path?: string | null;
+  context?: WorkerWorkspaceContext | null;
   metadata: Record<string, unknown>;
 }
 
 export interface WorkerProvisionSpec {
   required: boolean;
   target_kind: WorkerTargetKind;
+  execution_policy: RuntimeExecutionPolicy;
   image: string | null;
   container_group: string | null;
   required_capabilities: string[];
@@ -186,7 +230,16 @@ export interface NormalizedExecutionReport {
     message: string;
   } | null;
   raw_ref: ProviderNeutralExecutionRef;
+  human_gate?: RuntimeHumanGate | null;
   created_at: string;
+}
+
+export interface RuntimeHumanGate {
+  gate_id: string;
+  kind: "approval" | "human_input";
+  summary: string;
+  input_schema: Record<string, unknown> | null;
+  requested_at: string;
 }
 
 export interface WorkerLease {
@@ -319,6 +372,10 @@ export interface WorkerRegisterMessage extends RuntimeSocketMessageBase {
   version: string;
   capabilities: string[];
   supported_harnesses: RuntimeAgentRuntime[];
+  harness_capabilities: Record<string, {
+    controls: RuntimeControlAction[];
+    native_human_gate: boolean;
+  }>;
   metadata: Record<string, unknown>;
 }
 
@@ -353,6 +410,7 @@ export type WorkerToManagerMessage =
   | WorkerRegisterMessage
   | WorkerHeartbeatMessage
   | JobAckMessage
+  | JobControlAckMessage
   | WorkerEventMessage
   | WorkerEvidenceMessage;
 
@@ -371,8 +429,22 @@ export interface JobDispatchMessage<TEnvelope = Record<string, unknown>>
 
 export interface JobControlMessage extends RuntimeSocketMessageBase {
   kind: "job.control";
+  control_id: string;
   job_id: string;
   action: RuntimeControlAction;
+  gate_id: string | null;
+  payload: Record<string, unknown> | null;
+  reason: string | null;
+}
+
+export interface JobControlAckMessage extends RuntimeSocketMessageBase {
+  kind: "job.control_ack";
+  worker_id: string;
+  control_id: string;
+  job_id: string;
+  action: RuntimeControlAction;
+  gate_id: string | null;
+  status: "applied" | "rejected";
   reason: string | null;
 }
 

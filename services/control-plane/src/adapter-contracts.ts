@@ -43,6 +43,7 @@ export function buildDispatchEnvelope(
     runtime_agent_ref: node.runtime_agent_ref ?? node.openclaw_agent_id ?? null,
     agent_runtime: node.agent_runtime ?? null,
     harness_profile: node.harness_profile ?? null,
+    provider_connection: node.provider_connection ?? null,
     openclaw_agent_id: node.openclaw_agent_id,
     allowed_skills: node.allowed_skills,
     allowed_tools: node.allowed_tools,

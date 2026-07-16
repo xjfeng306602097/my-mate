@@ -51,7 +51,12 @@ test("doctor quick mode separates deterministic and model readiness", async () =
       storageBackendKind: "file-json",
       runtimeStatus: runtimeStatus(),
       executionAdapterKind: "local",
-      env: {},
+      env: { MY_MATE_HOST_SHELL: "test-host-shell" },
+      commandRunner: async (command) => ({
+        exitCode: command === "test-host-shell" ? 0 : 1,
+        stdout: command === "test-host-shell" ? "host-shell-ready" : "",
+        stderr: "",
+      }),
       now: () => new Date("2026-07-10T03:00:00.000Z"),
     },
   );
@@ -66,6 +71,7 @@ test("doctor quick mode separates deterministic and model readiness", async () =
     report.checks.find((check) => check.id === "provider.credential")?.status,
     "skipped",
   );
+  assert.equal(report.checks.find((check) => check.id === "host.shell")?.status, "pass");
 });
 
 test("doctor docker mode verifies client, daemon, image, mount, and Worker registration", async () => {
@@ -224,7 +230,6 @@ test("doctor model mode reports configured separately from live verification wit
       runtimeStatus: runtimeStatus(),
       executionAdapterKind: "claude-sdk",
       env: {
-        MY_MATE_CLAUDE_SDK_COMMAND: "claude-worker",
         ANTHROPIC_API_KEY: secret,
       },
     },
@@ -233,6 +238,60 @@ test("doctor model mode reports configured separately from live verification wit
   assert.equal(report.runtime_ready, true);
   assert.equal(report.model_ready, true);
   assert.equal(report.model_verified, null);
+  assert.equal(report.checks.find((check) => check.id === "provider.credential")?.status, "pass");
+  assert.equal(JSON.stringify(report).includes(secret), false);
+});
+
+test("doctor GLM live probe uses the Anthropic-compatible messages endpoint", async () => {
+  resetTestRoot();
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const report = await runDoctor(
+    { mode: "model", runtime: "glm", model_probe: true },
+    {
+      storage: createJsonStorageBackend("file-json"),
+      runtimeStatus: runtimeStatus(),
+      executionAdapterKind: "glm",
+      env: {
+        MY_MATE_GLM_ANTHROPIC_BASE_URL: "https://glm.example.test/anthropic/",
+        GLM_API_KEY: "glm-secret-value",
+        MY_MATE_GLM_MODEL: "glm-5.2",
+      },
+      fetchImpl: (async (input, init = {}) => {
+        requests.push({ url: String(input), init });
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch,
+    },
+  );
+
+  assert.equal(report.model_verified, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.url, "https://glm.example.test/anthropic/v1/messages");
+  assert.equal((requests[0]?.init.headers as Record<string, string>)["x-api-key"], "glm-secret-value");
+  assert.match(String(requests[0]?.init.body), /"model":"glm-5.2"/);
+  assert.equal(JSON.stringify(report).includes("glm-secret-value"), false);
+});
+
+test("doctor recognizes the GLM Agent Harness and Anthropic-compatible endpoint", async () => {
+  resetTestRoot();
+  const secret = "glm-secret-value";
+  const report = await runDoctor(
+    { mode: "model", runtime: "glm", model_probe: false },
+    {
+      storage: createJsonStorageBackend("file-json"),
+      runtimeStatus: runtimeStatus(),
+      executionAdapterKind: "glm",
+      env: {
+        MY_MATE_GLM_ANTHROPIC_BASE_URL: "https://glm.example.test/anthropic",
+        GLM_API_KEY: secret,
+        MY_MATE_GLM_MODEL: "glm-5.2",
+      },
+    },
+  );
+
+  assert.equal(report.runtime_ready, true);
+  assert.equal(report.model_ready, true);
+  assert.equal(report.model_verified, null);
+  assert.equal(report.checks.find((check) => check.id === "harness.configuration")?.status, "pass");
   assert.equal(report.checks.find((check) => check.id === "provider.credential")?.status, "pass");
   assert.equal(JSON.stringify(report).includes(secret), false);
 });
@@ -258,5 +317,62 @@ test("doctor API validates mode and exposes the readiness contract", async () =>
     assert.equal(quick.body.model_ready, false);
   } finally {
     await server.close();
+  }
+});
+
+test("doctor resolves a Provider Connection without returning its credential value", async () => {
+  resetTestRoot();
+  const previous = process.env.GLM_API_KEY;
+  const secret = "doctor-provider-connection-secret";
+  delete process.env.GLM_API_KEY;
+  const server = await startTestServer({ executionAdapter: createStubExecutionAdapter() });
+  try {
+    const connection = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      connection_id: "doctor-glm",
+      name: "Doctor GLM",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      protocol: "anthropic-messages",
+      base_url: "https://glm.example.test/anthropic",
+      models: ["glm-5.2"],
+      default_model: "glm-5.2",
+      credential_source: "managed",
+      api_key: secret,
+    });
+    assert.equal(connection.status, 201);
+
+    const report = await postJson(`${server.baseUrl}/api/diagnostics/doctor`, {
+      mode: "model",
+      runtime: "glm",
+      provider_connection_id: "doctor-glm",
+      model_probe: false,
+    });
+    assert.equal(report.status, 200);
+    assert.equal(report.body.model_ready, true);
+    assert.equal(
+      report.body.checks.find((check: { id: string }) => check.id === "provider.connection")?.status,
+      "pass",
+    );
+    assert.equal(
+      report.body.checks.find((check: { id: string }) => check.id === "provider.credential")?.status,
+      "pass",
+    );
+    assert.equal(JSON.stringify(report.body).includes(secret), false);
+
+    const missing = await postJson(`${server.baseUrl}/api/diagnostics/doctor`, {
+      mode: "model",
+      runtime: "glm",
+      provider_connection_id: "missing-connection",
+    });
+    assert.equal(missing.status, 200);
+    assert.equal(missing.body.model_ready, false);
+    assert.equal(
+      missing.body.checks.find((check: { id: string }) => check.id === "provider.connection")?.status,
+      "fail",
+    );
+  } finally {
+    await server.close();
+    if (previous === undefined) delete process.env.GLM_API_KEY;
+    else process.env.GLM_API_KEY = previous;
   }
 });

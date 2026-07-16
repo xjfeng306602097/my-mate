@@ -1,0 +1,126 @@
+name: Live Provider Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: "Comma-separated providers or auto"
+        required: true
+        default: "auto"
+        type: string
+      run_judge:
+        description: "Run the Anthropic model judge"
+        required: true
+        default: true
+        type: boolean
+      require_configured:
+        description: "Fail when no selected lane is configured"
+        required: true
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      providers:
+        required: false
+        default: "auto"
+        type: string
+      run_judge:
+        required: false
+        default: true
+        type: boolean
+      require_configured:
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+      CODEX_API_KEY:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      KIMI_API_KEY:
+        required: false
+      MOONSHOT_API_KEY:
+        required: false
+      GLM_API_KEY:
+        required: false
+      ZAI_API_KEY:
+        required: false
+      ZHIPU_API_KEY:
+        required: false
+      MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY:
+        required: false
+
+concurrency:
+  group: live-provider-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      MY_MATE_LIVE_PROVIDERS: ${{ inputs.providers }}
+      MY_MATE_LIVE_JUDGE: ${{ inputs.run_judge && 'anthropic' || '' }}
+      MY_MATE_CODEX_COMMAND: ${{ vars.MY_MATE_CODEX_COMMAND }}
+      MY_MATE_CLAUDE_SDK_COMMAND: ${{ vars.MY_MATE_CLAUDE_SDK_COMMAND }}
+      MY_MATE_KIMI_COMMAND: ${{ vars.MY_MATE_KIMI_COMMAND }}
+      MY_MATE_OPENCLAW_WORKER_BRIDGE_URL: ${{ vars.MY_MATE_OPENCLAW_WORKER_BRIDGE_URL }}
+      MY_MATE_CODEX_MODEL: ${{ vars.MY_MATE_CODEX_MODEL }}
+      MY_MATE_CLAUDE_MODEL: ${{ vars.MY_MATE_CLAUDE_MODEL }}
+      MY_MATE_KIMI_MODEL: ${{ vars.MY_MATE_KIMI_MODEL }}
+      MY_MATE_OPENCLAW_MODEL: ${{ vars.MY_MATE_OPENCLAW_MODEL }}
+      MY_MATE_GLM_ANTHROPIC_BASE_URL: ${{ vars.MY_MATE_GLM_ANTHROPIC_BASE_URL }}
+      MY_MATE_GLM_MODEL: ${{ vars.MY_MATE_GLM_MODEL }}
+      MY_MATE_EVALUATOR_MODEL: ${{ vars.MY_MATE_EVALUATOR_MODEL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+      MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+      MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY: ${{ secrets.MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            packages/shared-types/package-lock.json
+            services/runtime-worker/package-lock.json
+            services/control-plane/package-lock.json
+      - name: Install live acceptance dependencies
+        run: |
+          npm ci --prefix packages/shared-types
+          npm ci --prefix services/runtime-worker
+          npm ci --prefix services/control-plane
+      - name: Run credential-aware live acceptance
+        shell: bash
+        run: |
+          args=(--output=tmp/live-acceptance/result.json)
+          if [[ "${{ inputs.require_configured }}" == "true" ]]; then
+            args+=(--require-configured)
+          fi
+          npm run live:acceptance -- "${args[@]}"
+      - name: Build Runtime Worker Agent Harness image
+        run: npm run runtime-worker:image
+      - name: Run Docker Agent Harness acceptance
+        env:
+          MY_MATE_DOCKER_AGENT_HARNESS_REQUIRE_CONFIGURED: "false"
+        run: npm run runtime-worker:agent-harness-smoke
+      - name: Upload live acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-provider-acceptance-${{ github.run_id }}
+          path: |
+            tmp/live-acceptance/result.json
+            tmp/live-acceptance/docker-agent-harness.json
+          if-no-files-found: error
+          retention-days: 30

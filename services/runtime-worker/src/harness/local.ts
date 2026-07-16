@@ -97,6 +97,9 @@ export async function runLocalHarness(job: RuntimeWorkerJob): Promise<LocalHarne
   const completedAt = nowIso();
 
   const { artifacts, output } = buildArtifacts(job);
+  const inputPayload = asRecord(job.envelope.input_payload);
+  const nodeConfig = asRecord(inputPayload?.node_config);
+  const gateConfig = asRecord(nodeConfig?.deterministic_human_gate);
   const handoff: NodeHandoff = {
     type: "node_handoff",
     handoff_id: `handoff:${job.job_id}:success`,
@@ -114,8 +117,7 @@ export async function runLocalHarness(job: RuntimeWorkerJob): Promise<LocalHarne
     created_at: completedAt,
   };
 
-  return {
-    reports: [
+  const reports: NormalizedExecutionReport[] = [
       {
         run_id: job.run_id,
         node_run_id: job.node_run_id,
@@ -142,6 +144,42 @@ export async function runLocalHarness(job: RuntimeWorkerJob): Promise<LocalHarne
         raw_ref: buildRawRef(job),
         created_at: runningAt,
       },
+    ];
+  if (gateConfig) {
+    const requestedAt = nowIso();
+    const kind = gateConfig.kind === "human_input" ? "human_input" : "approval";
+    reports.push({
+      run_id: job.run_id,
+      node_run_id: job.node_run_id,
+      status: "waiting_human",
+      progress: {
+        percent: 75,
+        message:
+          typeof gateConfig.summary === "string"
+            ? gateConfig.summary
+            : `Human confirmation required for ${job.node_name}`,
+      },
+      artifacts: [],
+      error: null,
+      raw_ref: buildRawRef(job),
+      human_gate: {
+        gate_id:
+          typeof gateConfig.gate_id === "string" && gateConfig.gate_id.trim()
+            ? gateConfig.gate_id
+            : `gate:${job.job_id}:1`,
+        kind,
+        summary:
+          typeof gateConfig.summary === "string"
+            ? gateConfig.summary
+            : `Human confirmation required for ${job.node_name}`,
+        input_schema:
+          kind === "human_input" ? asRecord(gateConfig.input_schema) || {} : null,
+        requested_at: requestedAt,
+      },
+      created_at: requestedAt,
+    });
+  }
+  reports.push(
       {
         run_id: job.run_id,
         node_run_id: job.node_run_id,
@@ -155,7 +193,9 @@ export async function runLocalHarness(job: RuntimeWorkerJob): Promise<LocalHarne
         raw_ref: buildRawRef(job),
         created_at: completedAt,
       },
-    ],
+  );
+  return {
+    reports,
     handoffs: [handoff],
   };
 }

@@ -1,5 +1,6 @@
 .git
 .codex-logs
+.codex-tmp
 .claude
 **/node_modules
 **/dist

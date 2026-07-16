@@ -63,6 +63,23 @@
           "harness_profile": {
             "type": ["string", "null"]
           },
+          "provider_connection": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "properties": {
+              "connection_id": { "type": "string" },
+              "agent_runtime": { "type": "string" },
+              "provider": { "type": "string" },
+              "protocol": {
+                "enum": ["codex-appserver", "anthropic-messages", "openai-compatible", "openclaw-bridge"]
+              },
+              "base_url": { "type": ["string", "null"] },
+              "model": { "type": ["string", "null"] },
+              "credential_source": { "enum": ["managed", "environment"] },
+              "credential_env": { "type": "string" }
+            },
+            "required": ["connection_id", "agent_runtime", "provider", "protocol", "base_url", "model", "credential_source", "credential_env"]
+          },
           "openclaw_agent_id": {
             "type": ["string", "null"]
           },

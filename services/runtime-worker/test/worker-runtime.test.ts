@@ -72,6 +72,14 @@ export function buildJob(): RuntimeWorkerJob {
     provision: {
       required: false,
       target_kind: "local",
+      execution_policy: {
+        risk_level: "low",
+        workspace_access: "none",
+        requires_change_approval: false,
+        requested_target_kind: "local",
+        resolved_target_kind: "local",
+        reasons: ["Runtime Worker test fixture."],
+      },
       image: null,
       container_group: null,
       required_capabilities: [],
@@ -208,11 +216,14 @@ test("runtime worker server runs a RuntimeWorkerJob over HTTP", async () => {
     const body = (await response.json()) as {
       worker_id: string;
       events: Array<{ kind: string }>;
+      evidence: Array<{ evidence_schema_version: number; kind: string }>;
     };
     assert.equal(body.worker_id, "runtime-worker-local");
     assert.equal(body.events.length, 4);
     assert.equal(body.events[2]?.kind, "worker.handoff");
     assert.equal(body.events[3]?.kind, "worker.completed");
+    assert.equal(body.evidence.length, 5);
+    assert.ok(body.evidence.every((item) => item.evidence_schema_version === 2));
   } finally {
     await server.close();
   }
@@ -235,8 +246,10 @@ test("runtime worker command harness executes configured backend and writes outp
   );
   const previousWorkspace = process.env.MY_MATE_WORKSPACE;
   const previousCommand = process.env.MY_MATE_CODEX_COMMAND;
+  const previousHarness = process.env.MY_MATE_CODEX_HARNESS;
   process.env.MY_MATE_WORKSPACE = tempRoot;
   process.env.MY_MATE_CODEX_COMMAND = `"${process.execPath}" "${scriptPath}"`;
+  process.env.MY_MATE_CODEX_HARNESS = "command";
 
   try {
     const job = buildJob();
@@ -280,6 +293,8 @@ test("runtime worker command harness executes configured backend and writes outp
     } else {
       process.env.MY_MATE_CODEX_COMMAND = previousCommand;
     }
+    if (previousHarness === undefined) delete process.env.MY_MATE_CODEX_HARNESS;
+    else process.env.MY_MATE_CODEX_HARNESS = previousHarness;
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
@@ -301,8 +316,10 @@ test("runtime worker command harness streams recognized provider JSONL as native
   );
   const previousWorkspace = process.env.MY_MATE_WORKSPACE;
   const previousCommand = process.env.MY_MATE_CODEX_COMMAND;
+  const previousHarness = process.env.MY_MATE_CODEX_HARNESS;
   process.env.MY_MATE_WORKSPACE = tempRoot;
   process.env.MY_MATE_CODEX_COMMAND = `"${process.execPath}" "${scriptPath}"`;
+  process.env.MY_MATE_CODEX_HARNESS = "command";
 
   try {
     const job = buildJob();
@@ -322,6 +339,8 @@ test("runtime worker command harness streams recognized provider JSONL as native
     else process.env.MY_MATE_WORKSPACE = previousWorkspace;
     if (previousCommand === undefined) delete process.env.MY_MATE_CODEX_COMMAND;
     else process.env.MY_MATE_CODEX_COMMAND = previousCommand;
+    if (previousHarness === undefined) delete process.env.MY_MATE_CODEX_HARNESS;
+    else process.env.MY_MATE_CODEX_HARNESS = previousHarness;
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });

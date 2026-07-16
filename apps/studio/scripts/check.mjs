@@ -5,13 +5,21 @@ const files = [
   "server.mjs",
   "src/app.js",
   "src/dag-layout.js",
+  "src/graph-editor-model.js",
   "src/runtime-graph-model.js",
   "src/runtime-graph-view.js",
+  "src/setup-connection-model.js",
   "src/runtime-evaluation-view.js",
   "src/runtime-node-drawer.js",
+  "src/task-guidance-model.js",
+  "src/task-intelligence-model.js",
+  "src/workspace-change-diff-model.js",
+  "src/workspace-task-tree-model.js",
   "src/runtime-graph-fixtures.js",
   "src/runtime-graph-fixture.js",
   "scripts/visual-check.mjs",
+  "scripts/conversation-ui-regression.mjs",
+  "scripts/authoring-graph-visual-check.mjs",
   "scripts/runtime-graph-visual-check.mjs",
   "scripts/openclaw-visual-acceptance.mjs",
 ];
@@ -24,6 +32,36 @@ for (const file of files) {
     process.exit(result.status || 1);
   }
 }
+
+const graphEditorTests = spawnSync(process.execPath, ["--test", "test/graph-editor-model.test.mjs"], {
+  stdio: "inherit",
+});
+if (graphEditorTests.status !== 0) process.exit(graphEditorTests.status || 1);
+
+const taskGuidanceTests = spawnSync(process.execPath, ["--test", "test/task-guidance-model.test.mjs"], {
+  stdio: "inherit",
+});
+if (taskGuidanceTests.status !== 0) process.exit(taskGuidanceTests.status || 1);
+
+const taskIntelligenceTests = spawnSync(process.execPath, ["--test", "test/task-intelligence-model.test.mjs"], {
+  stdio: "inherit",
+});
+if (taskIntelligenceTests.status !== 0) process.exit(taskIntelligenceTests.status || 1);
+
+const setupConnectionTests = spawnSync(process.execPath, ["--test", "test/setup-connection-model.test.mjs"], {
+  stdio: "inherit",
+});
+if (setupConnectionTests.status !== 0) process.exit(setupConnectionTests.status || 1);
+
+const workspaceChangeDiffTests = spawnSync(process.execPath, ["--test", "test/workspace-change-diff-model.test.mjs"], {
+  stdio: "inherit",
+});
+if (workspaceChangeDiffTests.status !== 0) process.exit(workspaceChangeDiffTests.status || 1);
+
+const workspaceTaskTreeTests = spawnSync(process.execPath, ["--test", "test/workspace-task-tree-model.test.mjs"], {
+  stdio: "inherit",
+});
+if (workspaceTaskTreeTests.status !== 0) process.exit(workspaceTaskTreeTests.status || 1);
 
 const appSource = readFileSync("src/app.js", "utf8");
 const styleSource = readFileSync("src/styles.css", "utf8");
@@ -46,9 +84,62 @@ const smokeMarkers = [
   ["attachment file picker handler", appSource, "createWorkspaceAttachmentsFromFiles"],
   ["workspace context browser", appSource, "function renderWorkspaceContextBrowser"],
   ["workspace context browser action", appSource, 'data-action="attach-workspace-context-reference"'],
+  ["desktop workspace bridge", appSource, "globalThis.myMateDesktop"],
+  ["workspace-first sidebar tree", appSource, "function renderDesktopWorkspaceTree"],
+  ["workspace task grouping model", appSource, "groupWorkspaceTasks"],
+  ["workspace task startup session hydration", appSource, "loadSessions(false)"],
+  ["workspace creator modal", appSource, "function renderWorkspaceCreator"],
+  ["workspace modal global overlay", appSource, "${renderWorkspaceCreator()}"],
+  ["workspace task drag source", appSource, "data-workspace-task-drag-session-id"],
+  ["workspace task drop target", appSource, "data-workspace-drop-project-id"],
+  ["workspace task durable reassignment", appSource, "async function moveTaskToDesktopProject"],
+  ["workspace task local tree refresh", appSource, "function renderDesktopWorkspaceTreeSurface"],
+  ["workspace task move performance metric", appSource, "fullRenderDelta"],
+  ["Task and Advanced navigation tabs", appSource, 'data-action="switch-navigation-tab"'],
+  ["Task navigation default", appSource, 'navigationTab: "task"'],
+  ["workspace-scoped new task", appSource, "beginNewTaskInProject"],
+  ["new task automatic workspace binding", appSource, 'await ensureDesktopWorkspaceBinding(sessionId, "snapshot-read")'],
+  ["desktop workspace picker", appSource, 'data-action="choose-desktop-workspace"'],
+  ["desktop workspace browser fallback", appSource, 'class="task-desktop-required"'],
+  ["desktop workspace file context", appSource, "desktop_text_content"],
   ["runtime evidence timestamp formatter", appSource, "formatWorkspaceTimestamp(item.created_at)"],
-  ["mission workspace default route", appSource, 'activeNav: "missions"'],
-  ["dashboard nav item", appSource, '{ id: "dashboard", label: "Dashboard" }'],
+  ["task workspace default route", appSource, 'activeNav: "orchestrator"'],
+  ["dashboard advanced nav item", appSource, '{ id: "dashboard", label: "Runtime dashboard" }'],
+  ["memory advanced nav item", appSource, '{ id: "memory", label: "Memory" }'],
+  ["memory status loader", appSource, "async function loadMemoryStatus"],
+  ["memory retrieval search", appSource, 'request("/api/memory-retrieval/search"'],
+  ["memory workspace renderer", appSource, "function renderMemoryWorkspace"],
+  ["human-side primary navigation", appSource, '{ id: "inbox", label: "Inbox"'],
+  ["task one-action entry", appSource, 'data-action="orchestrator-send-message"'],
+  ["adaptive task guidance", appSource, "function renderTaskGuidance"],
+  ["task recommended advance", appSource, 'data-action="${escapeHtml(guidance.primaryAction)}"'],
+  ["task proactive decision action", appSource, 'action === "open-task-inbox"'],
+  ["task results first surface", appSource, "function renderTaskResults"],
+  ["compact task result row", appSource, 'class="task-result-file"'],
+  ["task result preview action", appSource, 'data-action="open-artifact-preview"'],
+  ["session artifact download", appSource, 'class="task-result-download'],
+  ["artifact syntax highlighting", appSource, "hljs.highlight"],
+  ["artifact Mermaid rendering", appSource, "hydrateArtifactMermaidDiagrams"],
+  ["artifact Mermaid source fallback", appSource, 'action: "toggle-artifact-mermaid-source"'],
+  ["human autonomy settings", appSource, "function saveProductAutonomyMode"],
+  ["autonomy controls update in place", appSource, "function syncAutonomyControlState"],
+  ["autonomy selected mode no-op", appSource, "persistedMode === nextMode"],
+  ["autopilot guarded advance", appSource, "function maybeAutoAdvanceTask"],
+  ["task repair guidance", appSource, "deriveRepairGuidance"],
+  ["result quality guidance", appSource, "function renderTaskQuality"],
+  ["result quality action", appSource, 'action === "check-task-quality"'],
+  ["AI-01 durable autopilot API", appSource, "/autopilot/resume"],
+  ["AI-01 operator controls", appSource, "function controlTaskAutopilot"],
+  ["GENUI-01 component registry", appSource, "function renderGeneratedMissionWorkspace"],
+  ["GENUI-01 server plan", appSource, "experience.uiPlan?.blocks"],
+  ["SUP-01 alert inbox", appSource, "resolveSupervisionAlert"],
+  ["SUP-01 generated repair", appSource, "function renderGeneratedRepair"],
+  ["attention inbox loader", appSource, "async function loadInbox"],
+  ["workspace change set loader", appSource, "/api/runtime/workspace-change-sets"],
+  ["workspace visual diff renderer", appSource, "function renderWorkspaceDiff"],
+  ["workspace change review surface", appSource, "function renderWorkspaceChangeReview"],
+  ["workspace change apply action", appSource, "async function resolveWorkspaceChangeSet"],
+  ["product settings renderer", appSource, "function renderProductSettingsPanel"],
   ["dashboard renderer", appSource, "function renderDashboardWorkspace"],
   ["dashboard API call", appSource, 'request(`/api/dashboard/summary?${params.toString()}`)'],
   ["dashboard refresh action", appSource, 'data-action="refresh-dashboard"'],
@@ -74,6 +165,24 @@ const smokeMarkers = [
   ["workspace security refresh reload", appSource, "async function refreshStudioSecurityAndWorkspace"],
   ["workspace security scoped reset", appSource, "function resetWorkspaceScopedState"],
   ["registry governance loader", appSource, "async function loadGovernance"],
+  ["provider connection loader", appSource, 'request("/api/registry/provider-connections")'],
+  ["provider connection renderer", appSource, "function renderProviderConnectionManager"],
+  ["provider connection modal", appSource, "function renderProviderConnectionModal"],
+  ["first-run setup modal", appSource, "function renderStudioSetupModal"],
+  ["setup environment runner", appSource, "async function runSetupEnvironmentChecks"],
+  ["setup default agent creation", appSource, 'profile_id: "default-agent"'],
+  ["setup save and verify copy", appSource, "Save & verify"],
+  ["setup existing connection selector", appSource, 'data-field="setup.connectionId"'],
+  ["setup registry hydration", appSource, "syncSetupConnectionFromRegistry"],
+  ["setup entry action", appSource, 'data-action="open-studio-setup"'],
+  ["provider multi-model editor", appSource, 'data-action="add-provider-model"'],
+  ["provider API key input", appSource, 'data-field="connection.apiKey"'],
+  ["provider connection save action", appSource, 'data-action="save-provider-connection"'],
+  ["provider connection test action", appSource, 'data-action="test-provider-connection"'],
+  ["provider connection test API", appSource, "/test`"],
+  ["agent provider connection binding", appSource, 'data-field="agent.providerConnectionId"'],
+  ["registry section tabs", appSource, 'data-action="select-registry-section"'],
+  ["registry section state", appSource, 'registrySection: "connections"'],
   ["registry governance renderer", appSource, "function renderGovernancePanel"],
   ["registry governance proposal", appSource, "async function submitGovernanceProposal"],
   ["registry governance approval", appSource, 'data-action="approve-governance-change"'],
@@ -93,6 +202,11 @@ const smokeMarkers = [
   ["workspace location session restore", appSource, "function restoreWorkspaceSessionFromLocation"],
   ["workspace drilldown reset", appSource, "function resetWorkspaceDrilldownState"],
   ["workspace session change preparation", appSource, "function prepareWorkspaceSessionChange"],
+  ["task switch request cancellation", appSource, "workspaceLoadController.abort()"],
+  ["task workspace short-lived cache", appSource, "SESSION_WORKSPACE_CACHE_TTL_MS"],
+  ["task workspace scoped renderer", appSource, "function renderTaskWorkspaceSurface"],
+  ["task workspace progressive hydration", appSource, "function hydrateSessionWorkspaceSecondary"],
+  ["task switch render metrics", appSource, "data-my-mate-performance"],
   ["workspace restored focus resolver", appSource, "function getWorkspaceFocusForLocationState"],
   ["workspace restored focus queue", appSource, "function queueRestoredWorkspaceFocusFromLocation"],
   ["workspace selection url type", appSource, 'params.set("ws", selection.type)'],
@@ -151,6 +265,20 @@ const smokeMarkers = [
   ["orchestrator renderer", appSource, "function renderOrchestratorWorkbench"],
   ["orchestrator send action", appSource, 'data-action="orchestrator-send-message"'],
   ["orchestrator composer clears after send", appSource, 'state.planner.intent = ""'],
+  ["task workspace split layout", appSource, "task-workspace-grid"],
+  ["task workboard surface", appSource, "task-workboard-panel"],
+  ["task conversation right rail", appSource, "task-conversation-rail"],
+  ["task conversation visibility control", appSource, 'data-action="hide-task-conversation"'],
+  ["task conversation WebSocket transport", appSource, "sendConversationSocketTurn"],
+  ["task conversation streaming delta", appSource, 'payload.type === "conversation.delta"'],
+  ["task conversation plain message composer", appSource, 'placeholder="Message My Mate"'],
+  ["task scroll preservation", appSource, "captureTaskWorkspaceScroll"],
+  ["session stream alert debounce", appSource, "sessionStreamErrorTimer"],
+  ["session stream unchanged snapshot guard", appSource, "getWorkspaceRenderSignature"],
+  ["provider-backed conversation evidence", appSource, "message.content?.response_source"],
+  ["new task invalidates stale workspace loads", appSource, "workspaceLoadSeq += 1;\n  closeSessionStream();\n  resetWorkspaceDrilldownState();"],
+  ["session stream rejects stale events", appSource, "const isCurrentStream = () =>"],
+  ["conversation model source badge", styleSource, ".conversation-source"],
   ["completed runs are not labelled live", appSource, '`${formatWorkspaceLabel(runStatus)} run`'],
   ["conversation excludes structural cards", appSource, 'message.role === "user" || message.role === "orchestrator"'],
   ["runtime label follows dispatcher", appSource, "function getRuntimeExecutionLabel"],
@@ -166,6 +294,10 @@ const smokeMarkers = [
   ["authoring graph canvas", appSource, "function renderAuthoringGraphCanvas"],
   ["authoring graph node selection", appSource, 'data-action="select-authoring-node"'],
   ["authoring graph edge selection", appSource, 'data-action="select-authoring-edge"'],
+  ["authoring graph drag", appSource, 'document.addEventListener("pointermove"'],
+  ["authoring graph ports", appSource, 'data-action="authoring-port-out"'],
+  ["authoring graph undo", appSource, "undoAuthoringGraph"],
+  ["authoring graph patch preview", appSource, "buildGraphPatchPreview"],
   ["route compare diff browser", appSource, "function buildRouteCompareDiffBrowser"],
   ["route compare refresh action", appSource, 'data-action="refresh-route-compare"'],
   ["route compare history picker", appSource, 'data-action="pick-route-compare-history"'],
@@ -180,7 +312,12 @@ const smokeMarkers = [
   ["attachment styles", styleSource, ".attachment-context-panel"],
   ["attachment drop styles", styleSource, ".attachment-drop-zone"],
   ["workspace context browser styles", styleSource, ".attachment-browser"],
+  ["desktop workspace browser styles", styleSource, ".desktop-local-browser"],
   ["orchestrator styles", styleSource, ".orchestrator-workbench"],
+  ["task workspace split styles", styleSource, ".task-workspace-grid"],
+  ["task workboard styles", styleSource, ".task-workboard-panel"],
+  ["task conversation rail styles", styleSource, ".task-conversation-rail"],
+  ["task conversation hidden scrollbar", styleSource, "scrollbar-width: none"],
   ["runtime overlay styles", styleSource, ".runtime-inspector-overlay {"],
   ["shared DAG layout", layoutSource, "export function buildDagLayout"],
   ["shared DAG barycenter", layoutSource, "sortColumnByBarycenter"],
@@ -200,6 +337,11 @@ const smokeMarkers = [
   ["dashboard comparison styles", styleSource, ".dashboard-comparison-strip"],
   ["workspace security styles", styleSource, ".security-member-row"],
   ["registry governance styles", styleSource, ".governance-workbench"],
+  ["provider connection styles", styleSource, ".provider-modal-backdrop"],
+  ["first-run setup styles", styleSource, ".setup-modal-backdrop"],
+  ["setup environment styles", styleSource, ".setup-environment-card"],
+  ["registry section tab styles", styleSource, ".registry-section-tabs"],
+  ["provider connection status layout", styleSource, ".provider-connection-status"],
   ["mission workspace support styles", styleSource, ".mission-support-panel"],
   ["mission delivery trace styles", styleSource, ".mission-delivery-trace-panel"],
   ["mission output history styles", styleSource, ".mission-output-history-panel"],
@@ -208,11 +350,82 @@ const smokeMarkers = [
   ["workspace focus styles", styleSource, ".workspace-focus-highlight"],
 ];
 
+if (appSource.includes('state.activeNav === "sessions" ? loadSessions(false)')) {
+  console.error("Workspace task startup must not gate Session hydration on the legacy Sessions navigation.");
+  process.exit(1);
+}
+
+if (appSource.includes("function renderTaskProjectWorkspace")) {
+  console.error("Per-task Project configuration must not return to the primary task workboard.");
+  process.exit(1);
+}
+
+const workspaceTreeStart = appSource.indexOf("function renderDesktopWorkspaceTree()");
+const workspaceTreeEnd = appSource.indexOf("function renderOrchestratorSidebarContent", workspaceTreeStart);
+const workspaceTreeSource = appSource.slice(workspaceTreeStart, workspaceTreeEnd);
+if (workspaceTreeStart < 0 || workspaceTreeEnd < 0 || workspaceTreeSource.includes("renderWorkspaceCreator()")) {
+  console.error("Workspace creation must remain a global modal and must not expand inside the sidebar tree.");
+  process.exit(1);
+}
+
+const productSettingsStart = appSource.indexOf("function renderProductSettingsPanel");
+const productSettingsEnd = appSource.indexOf("function renderDesktopCenter", productSettingsStart);
+const productSettingsSource = appSource.slice(productSettingsStart, productSettingsEnd);
+if (
+  productSettingsStart < 0 ||
+  productSettingsEnd < 0 ||
+  productSettingsSource.includes("renderDesktopWorkspaceBrowser()") ||
+  productSettingsSource.includes("Workspace details") ||
+  productSettingsSource.includes("Local workspace")
+) {
+  console.error("Workspace selection and folder configuration belong in the sidebar, not Settings.");
+  process.exit(1);
+}
+
+const taskMoveStart = appSource.indexOf("async function moveTaskToDesktopProject");
+const taskMoveEnd = appSource.indexOf("async function archiveDesktopProject", taskMoveStart);
+const taskMoveSource = appSource.slice(taskMoveStart, taskMoveEnd);
+const taskMoveForbiddenWork = [
+  "loadSessionWorkspace(",
+  "loadMissions(",
+  "loadSessions(",
+  "desktopHost.workspace.projects",
+  "desktopHost.workspace.get",
+  "\n  render();",
+];
+if (
+  taskMoveStart < 0 ||
+  taskMoveEnd < 0 ||
+  taskMoveForbiddenWork.some((marker) => taskMoveSource.includes(marker))
+) {
+  console.error("Task reassignment must not reload Session data or trigger a full Studio render.");
+  process.exit(1);
+}
+
+if (appSource.includes("toggle-advanced-navigation") || styleSource.includes(".desktop-nav-toggle")) {
+  console.error("Advanced navigation must use the Task / Advanced tab control, not a disclosure toggle.");
+  process.exit(1);
+}
+
+if (
+  !styleSource.includes(".workspace-modal-backdrop") ||
+  !styleSource.includes("width: min(520px, 100%)") ||
+  !styleSource.includes(".workspace-tree-project.is-drop-target")
+) {
+  console.error("Workspace modal sizing and drag target feedback styles are required.");
+  process.exit(1);
+}
+
 for (const [label, source, marker] of smokeMarkers) {
   if (!source.includes(marker)) {
     console.error(`Studio smoke check failed: missing ${label} marker (${marker}).`);
     process.exit(1);
   }
+}
+
+if (appSource.includes("Use as target") || appSource.includes("target_artifact_id")) {
+  console.error("Studio smoke check failed: file mutation targets must be resolved automatically.");
+  process.exit(1);
 }
 
 const workspaceRendererStart = appSource.indexOf("function renderMissionWorkspace()");
@@ -226,6 +439,14 @@ if (workspaceRendererStart < 0 || surfacesRenderIndex < 0 || contextStripIndex <
 
 if (surfacesRenderIndex > contextStripIndex) {
   console.error("Studio smoke check failed: workspace surfaces must render before the context strip.");
+  process.exit(1);
+}
+
+const autonomySaveStart = appSource.indexOf("async function saveProductAutonomyMode");
+const autonomySaveEnd = appSource.indexOf("async function loadGovernance", autonomySaveStart);
+const autonomySaveSource = appSource.slice(autonomySaveStart, autonomySaveEnd);
+if (autonomySaveStart < 0 || autonomySaveEnd < 0 || autonomySaveSource.includes("/autopilot")) {
+  console.error("Studio smoke check failed: global autonomy settings must not mutate a selected Session controller.");
   process.exit(1);
 }
 

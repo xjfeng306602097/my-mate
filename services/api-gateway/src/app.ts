@@ -6,7 +6,7 @@ import { encodeSignedIdentity, resolveRequestIdentity } from "./identity.js";
 import type { RequestAuthContext } from "@my-mate/shared-types/identity";
 
 type RouteRule = {
-  method: "GET" | "POST" | "PUT" | "PATCH";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   pattern: RegExp;
 };
 
@@ -39,6 +39,16 @@ const PROXY_RULES: RouteRule[] = [
   { method: "POST", pattern: /^\/api\/registry\/agent-profiles$/ },
   { method: "GET", pattern: /^\/api\/registry\/agent-profiles\/[^/]+$/ },
   { method: "POST", pattern: /^\/api\/registry\/agent-profiles\/[^/]+\/disable$/ },
+  { method: "GET", pattern: /^\/api\/registry\/provider-connections$/ },
+  { method: "POST", pattern: /^\/api\/registry\/provider-connections$/ },
+  { method: "GET", pattern: /^\/api\/registry\/provider-connections\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/registry\/provider-connections\/[^/]+\/test$/ },
+  { method: "POST", pattern: /^\/api\/registry\/provider-connections\/[^/]+\/disable$/ },
+  { method: "GET", pattern: /^\/api\/registry\/mcp-connector-presets$/ },
+  { method: "GET", pattern: /^\/api\/registry\/mcp-servers$/ },
+  { method: "POST", pattern: /^\/api\/registry\/mcp-servers$/ },
+  { method: "POST", pattern: /^\/api\/registry\/mcp-servers\/reload$/ },
+  { method: "POST", pattern: /^\/api\/registry\/mcp-servers\/[^/]+\/(?:test|enable|disable)$/ },
   { method: "GET", pattern: /^\/api\/registry\/skills$/ },
   { method: "POST", pattern: /^\/api\/registry\/skills$/ },
   { method: "GET", pattern: /^\/api\/registry\/skills\/[^/]+$/ },
@@ -48,6 +58,8 @@ const PROXY_RULES: RouteRule[] = [
   { method: "POST", pattern: /^\/api\/planner\/candidate-plan$/ },
   { method: "GET", pattern: /^\/api\/missions$/ },
   { method: "GET", pattern: /^\/api\/missions\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/missions\/[^/]+\/materializer$/ },
+  { method: "POST", pattern: /^\/api\/missions\/[^/]+\/materializer\/(?:rebuild|verify)$/ },
   { method: "GET", pattern: /^\/api\/runtime\/summary$/ },
   { method: "GET", pattern: /^\/api\/dashboard\/summary$/ },
   { method: "GET", pattern: /^\/api\/agents\/hosting$/ },
@@ -55,13 +67,47 @@ const PROXY_RULES: RouteRule[] = [
   { method: "GET", pattern: /^\/api\/sessions$/ },
   { method: "POST", pattern: /^\/api\/sessions$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/autopilot$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/workspace-binding$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/task-workspace$/ },
+  { method: "PUT", pattern: /^\/api\/sessions\/[^/]+\/autopilot$/ },
+  { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/autopilot\/(?:tick|pause|resume)$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/(?:archive|unarchive|hide|unhide)$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/attachments$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/attachments$/ },
+  { method: "DELETE", pattern: /^\/api\/sessions\/[^/]+\/attachments\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/artifacts\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/artifacts\/[^/]+\/compare$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/artifacts\/[^/]+\/download$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/compare$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/stream$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/messages$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/messages$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/memory-snapshot$/ },
+  { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/memory-review$/ },
+  { method: "GET", pattern: /^\/api\/memory-settings$/ },
+  { method: "PUT", pattern: /^\/api\/memory-settings$/ },
+  { method: "GET", pattern: /^\/api\/memory-observability$/ },
+  { method: "GET", pattern: /^\/api\/memory-intelligence\/evaluation$/ },
+  { method: "GET", pattern: /^\/api\/memory-maintenance$/ },
+  { method: "POST", pattern: /^\/api\/memory-maintenance$/ },
+  { method: "POST", pattern: /^\/api\/memory-maintenance\/sweep$/ },
+  { method: "GET", pattern: /^\/api\/memories(?:\/export|\/[^/]+)?$/ },
+  { method: "POST", pattern: /^\/api\/memories(?:\/import|\/[^/]+\/restore)?$/ },
+  { method: "PATCH", pattern: /^\/api\/memories\/[^/]+$/ },
+  { method: "DELETE", pattern: /^\/api\/memories\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/memory-candidates(?:\/[^/]+)?$/ },
+  { method: "POST", pattern: /^\/api\/memory-candidates(?:\/[^/]+\/(?:approve|reject))?$/ },
+  { method: "POST", pattern: /^\/api\/session-recall\/search$/ },
+  { method: "POST", pattern: /^\/api\/memory-retrieval\/search$/ },
+  { method: "GET", pattern: /^\/api\/memory-retrieval\/status$/ },
+  { method: "POST", pattern: /^\/api\/memory-retrieval\/rebuild$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/memory-recommendations$/ },
+  { method: "GET", pattern: /^\/api\/memory-knowledge\/status$/ },
+  { method: "POST", pattern: /^\/api\/memory-knowledge\/(?:query|rebuild)$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/checkpoints$/ },
+  { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/checkpoints\/latest$/ },
+  { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/checkpoints\/[^/]+\/resume$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/interventions$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/patches\/[^/]+\/(?:confirm|reject)$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/dag-draft$/ },
@@ -74,6 +120,7 @@ const PROXY_RULES: RouteRule[] = [
   { method: "PATCH", pattern: /^\/api\/sessions\/[^/]+\/dag-proposals\/[^/]+\/assignments$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/dag-proposals\/[^/]+\/(?:confirm|reject|supersede)$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/runs$/ },
+  { method: "GET", pattern: /^\/api\/projects$/ },
   { method: "POST", pattern: /^\/api\/diagnostics\/doctor$/ },
   { method: "GET", pattern: /^\/api\/runs$/ },
   { method: "POST", pattern: /^\/api\/runs$/ },
@@ -94,6 +141,8 @@ const PROXY_RULES: RouteRule[] = [
   { method: "POST", pattern: /^\/api\/runs\/[^/]+\/reruns$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/events$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/artifacts$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/artifacts\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/runs\/[^/]+\/artifacts\/[^/]+\/download$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/plan$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/graph$/ },
   { method: "GET", pattern: /^\/api\/runs\/[^/]+\/runtime$/ },
@@ -111,8 +160,13 @@ const PROXY_RULES: RouteRule[] = [
   { method: "GET", pattern: /^\/api\/mobile\/runs\/[^/]+\/follow-up$/ },
   { method: "GET", pattern: /^\/api\/approvals$/ },
   { method: "POST", pattern: /^\/api\/approvals\/[^/]+\/(?:approve|reject)$/ },
+  { method: "GET", pattern: /^\/api\/runtime\/workspace-change-sets(?:\/[^/]+)?$/ },
+  { method: "POST", pattern: /^\/api\/runtime\/workspace-change-sets\/[^/]+\/(?:apply|reject)$/ },
   { method: "GET", pattern: /^\/api\/human-inputs$/ },
   { method: "POST", pattern: /^\/api\/human-inputs\/[^/]+\/submit$/ },
+  { method: "GET", pattern: /^\/api\/supervision\/alerts$/ },
+  { method: "POST", pattern: /^\/api\/supervision\/scan$/ },
+  { method: "POST", pattern: /^\/api\/supervision\/alerts\/[^/]+\/resolve$/ },
 ];
 
 function isAllowedProxyRequest(req: Request): boolean {
@@ -178,6 +232,16 @@ function isSseRequest(req: Request): boolean {
   return /^\/api\/sessions\/[^/]+\/stream$/.test(getOriginalPath(req));
 }
 
+function proxyTimeoutMs(req: Request, config: GatewayConfig): number {
+  if (
+    req.method.toUpperCase() === "POST" &&
+    /^\/api\/sessions\/[^/]+\/messages$/.test(getOriginalPath(req))
+  ) {
+    return Math.max(config.requestTimeoutMs, 600_000);
+  }
+  return config.requestTimeoutMs;
+}
+
 async function proxyToControlPlane(
   req: Request,
   res: Response,
@@ -198,7 +262,7 @@ async function proxyToControlPlane(
   }
 
   const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), config.requestTimeoutMs);
+  const timeout = setTimeout(() => abortController.abort(), proxyTimeoutMs(req, config));
 
   try {
     const hasBody = !["GET", "HEAD"].includes(req.method.toUpperCase());
@@ -213,6 +277,10 @@ async function proxyToControlPlane(
 
     res.status(upstream.status);
     res.setHeader("content-type", contentType);
+    const contentDisposition = upstream.headers.get("content-disposition");
+    if (contentDisposition) res.setHeader("content-disposition", contentDisposition);
+    const cacheControl = upstream.headers.get("cache-control");
+    if (cacheControl) res.setHeader("cache-control", cacheControl);
 
     if (isSseRequest(req)) {
       res.setHeader("cache-control", upstream.headers.get("cache-control") || "no-cache");
@@ -235,8 +303,8 @@ async function proxyToControlPlane(
       return;
     }
 
-    const text = await upstream.text();
-    res.send(text);
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.send(body);
   } catch (error) {
     const aborted = error instanceof Error && error.name === "AbortError";
     res.status(aborted ? 504 : 502).json({
@@ -261,7 +329,7 @@ export function createApp(overrides: Partial<GatewayConfig> = {}) {
       "Access-Control-Allow-Headers",
       "Content-Type, Authorization, X-Request-Id, X-My-Mate-Workspace-Id",
     );
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     if (req.method.toUpperCase() === "OPTIONS") {
       res.status(204).send();
       return;

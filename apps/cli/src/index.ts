@@ -22,6 +22,7 @@ import {
   executeGovernancePropose,
 } from "./commands/governance.js";
 import { executeCostReport } from "./commands/cost-report.js";
+import { executeMissionMaterializer } from "./commands/mission-materializer.js";
 import { processIo } from "./output.js";
 
 function clientFor(command: Command): ApiClient {
@@ -129,7 +130,8 @@ export function buildProgram(): Command {
   program
     .command("doctor")
     .addOption(new Option("--mode <mode>").choices(["quick", "docker", "model"]).default("quick"))
-    .addOption(new Option("--runtime <runtime>").choices(["local", "docker-worker", "openclaw", "codex", "claude-sdk", "kimi"]))
+    .addOption(new Option("--runtime <runtime>").choices(["local", "docker-worker", "openclaw", "codex", "claude-sdk", "kimi", "glm"]))
+    .option("--provider-connection <id>", "Verify a workspace Provider Connection")
     .option("--model-probe", "Perform an opt-in live provider request")
     .option("--json", "Print the API response as JSON")
     .action(async (options, command) => {
@@ -225,6 +227,22 @@ export function buildProgram(): Command {
     .option("--json", "Print the recovery contract as JSON")
     .action(async (runId, options, command) => {
       const outcome = await executeRecovery(clientFor(command), runId, options, processIo);
+      process.exitCode = outcome.exitCode;
+    });
+
+  program
+    .command("mission-materializer")
+    .argument("<session_id>")
+    .option("--rebuild", "Rebuild the Mission projection from its event log")
+    .option("--verify", "Compare materialized and direct Mission projections")
+    .option("--json", "Print the materializer contract as JSON")
+    .action(async (sessionId, options, command) => {
+      const outcome = await executeMissionMaterializer(
+        clientFor(command),
+        sessionId,
+        options,
+        processIo,
+      );
       process.exitCode = outcome.exitCode;
     });
 

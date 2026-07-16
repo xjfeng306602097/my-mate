@@ -1,5 +1,5 @@
 import WebSocket, { type RawData } from "ws";
-import { getSupportedHarnesses } from "./harness/factory.js";
+import { getHarnessCapabilities, getSupportedHarnesses } from "./harness/factory.js";
 import { getRuntimeWorkerBuildInfo } from "./build-info.js";
 import { buildWorkerEvidenceV2 } from "./evidence-normalizer.js";
 import { runRuntimeWorkerJob } from "./worker-runtime.js";
@@ -8,6 +8,8 @@ import {
   isRuntimeProtocolMessage,
   runtimeEventIdempotencyKey,
   type JobAckMessage,
+  type JobControlAckMessage,
+  type JobControlMessage,
   type ManagerToWorkerMessage,
   type NormalizedExecutionReport,
   type RuntimeWorkerJob,
@@ -62,6 +64,8 @@ function configuredWorkerCapabilities(): string[] {
       "handoff",
       "evidence",
       "control.cancel",
+      "control.resume",
+      "human-gate.native",
       ...configured,
     ]),
   ];
@@ -76,6 +80,11 @@ export class RuntimeWorkerManagerClient {
   private heartbeatIntervalMs = 10000;
   private activeJobId: string | null = null;
   private activeAbortController: AbortController | null = null;
+  private activeHumanGate: {
+    gateId: string;
+    resolve: (payload: Record<string, unknown> | null) => void;
+    reject: (error: Error) => void;
+  } | null = null;
   private readonly completedJobs = new Set<string>();
   private messageChain: Promise<void> = Promise.resolve();
 
@@ -131,6 +140,7 @@ export class RuntimeWorkerManagerClient {
       version: this.options.version || build.version,
       capabilities: configuredWorkerCapabilities(),
       supported_harnesses: getSupportedHarnesses(),
+      harness_capabilities: getHarnessCapabilities(),
       metadata: {
         pid: process.pid,
         platform: process.platform,
@@ -161,16 +171,11 @@ export class RuntimeWorkerManagerClient {
       return;
     }
     if (message.kind === "job.dispatch") {
-      await this.handleJob(message.job);
+      void this.handleJob(message.job);
       return;
     }
     if (message.kind === "job.control") {
-      if (message.job_id !== this.activeJobId) {
-        return;
-      }
-      if (message.action === "cancel") {
-        this.activeAbortController?.abort(message.reason || "cancelled by manager");
-      }
+      this.handleControl(message);
       return;
     }
     if (message.kind === "worker.release") {
@@ -235,6 +240,19 @@ export class RuntimeWorkerManagerClient {
           );
         }
         lastSequence = event.sequence;
+        if (event.kind === "worker.waiting_human") {
+          const gate = event.report.human_gate;
+          if (!gate) {
+            throw new Error("Worker waiting_human report is missing human_gate metadata.");
+          }
+          const resumed = new Promise<Record<string, unknown> | null>((resolve, reject) => {
+            this.activeHumanGate = { gateId: gate.gate_id, resolve, reject };
+          });
+          this.sendEvent(event);
+          await resumed;
+          this.activeHumanGate = null;
+          continue;
+        }
         this.sendEvent(event);
       }
       this.completedJobs.add(job.job_id);
@@ -303,10 +321,57 @@ export class RuntimeWorkerManagerClient {
       this.sendEvidence(errorEvidence);
       this.sendEvent(event);
     } finally {
+      this.activeHumanGate = null;
       this.activeJobId = null;
       this.activeAbortController = null;
       this.sendHeartbeat();
     }
+  }
+
+  private handleControl(message: JobControlMessage): void {
+    if (message.job_id !== this.activeJobId) {
+      this.sendControlAck(message, "rejected", "Job is not active on this worker.");
+      return;
+    }
+    if (message.action === "cancel") {
+      this.activeAbortController?.abort(message.reason || "cancelled by manager");
+      this.activeHumanGate?.reject(new Error(message.reason || "cancelled by manager"));
+      this.sendControlAck(message, "applied", null);
+      return;
+    }
+    if (message.action === "resume") {
+      const gate = this.activeHumanGate;
+      if (!gate) {
+        this.sendControlAck(message, "rejected", "Job is not suspended at a human gate.");
+        return;
+      }
+      if (!message.gate_id || message.gate_id !== gate.gateId) {
+        this.sendControlAck(message, "rejected", "Human gate identity does not match.");
+        return;
+      }
+      gate.resolve(message.payload);
+      this.sendControlAck(message, "applied", null);
+      return;
+    }
+    this.sendControlAck(message, "rejected", "Pause is not supported by the active harness.");
+  }
+
+  private sendControlAck(
+    message: JobControlMessage,
+    status: JobControlAckMessage["status"],
+    reason: string | null,
+  ): void {
+    this.send({
+      ...createRuntimeMessageBase(),
+      kind: "job.control_ack",
+      worker_id: this.options.workerId,
+      control_id: message.control_id,
+      job_id: message.job_id,
+      action: message.action,
+      gate_id: message.gate_id,
+      status,
+      reason,
+    });
   }
 
   private sendAck(input: {

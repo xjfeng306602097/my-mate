@@ -32,6 +32,13 @@ export interface RuntimeDispatcher {
   enqueueRun(runId: string): void;
   notifyRunAction(runId: string, action: RunAction): void;
   notifyNodeAction(runId: string, nodeRunId: string, action: NodeAction): void;
+  resumeHumanGate?(input: {
+    runId: string;
+    nodeRunId: string;
+    gateId: string;
+    decision: "resume" | "reject";
+    payload: Record<string, unknown>;
+  }): { delivered: boolean; controlId: string | null };
   dispatchJob(job: RuntimeWorkerJob): Promise<RuntimeDispatchResult>;
   handleWorkerEvent(event: WorkerEvent): Promise<void>;
   handleReport(report: NormalizedExecutionReport): Promise<void>;

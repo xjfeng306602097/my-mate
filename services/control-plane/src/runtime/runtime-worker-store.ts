@@ -17,6 +17,10 @@ export interface RuntimeWorkerRecord {
   version: string;
   capabilities: string[];
   supported_harnesses: string[];
+  harness_capabilities?: Record<string, {
+    controls: Array<"pause" | "resume" | "cancel">;
+    native_human_gate: boolean;
+  }>;
   active_job_id: string | null;
   expected_at: string | null;
   registered_at: string | null;

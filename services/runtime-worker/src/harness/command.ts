@@ -8,6 +8,8 @@ import type {
   RuntimeWorkerJob,
 } from "../types.js";
 import type { LocalHarnessResult } from "./local.js";
+import { workspaceContextPrompt } from "../workspace-context.js";
+import { artifactOutputPrompt } from "../artifact-collector.js";
 
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 
@@ -35,7 +37,9 @@ function buildPrompt(job: RuntimeWorkerJob): string {
     `Allowed tools: ${job.harness.allowed_tools.join(", ") || "none declared"}`,
     "Output contract:",
     outputContract,
-  ].join("\n");
+    workspaceContextPrompt(job) || "",
+    artifactOutputPrompt(job),
+  ].filter(Boolean).join("\n");
 }
 
 function buildRawRef(job: RuntimeWorkerJob, command: string) {
@@ -155,6 +159,7 @@ export async function runCommandHarness(
       MY_MATE_NODE_RUN_ID: job.node_run_id,
       MY_MATE_AGENT_RUNTIME: job.harness.agent_runtime,
       MY_MATE_RUNTIME_AGENT_REF: job.harness.runtime_agent_ref || "",
+      MY_MATE_OUTPUT_DIR: job.provision.env.MY_MATE_OUTPUT_DIR || artifactDir,
     },
   });
   await options?.afterStdout?.();

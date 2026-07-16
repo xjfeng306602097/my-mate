@@ -15,6 +15,7 @@ export function createApprovalRecord(input: {
   kind: string;
   summary: string;
   requestedAt?: string;
+  gateId?: string | null;
 }): ApprovalRecord {
   return {
     approval_id: generateApprovalId(),
@@ -25,6 +26,7 @@ export function createApprovalRecord(input: {
     summary: input.summary,
     requested_at: input.requestedAt || nowIso(),
     resolved_at: null,
+    gate_id: input.gateId ?? null,
   };
 }
 

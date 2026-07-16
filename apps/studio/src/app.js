@@ -1,6 +1,37 @@
+import DOMPurify from "/node_modules/dompurify/dist/purify.es.mjs";
+import hljs from "/node_modules/@highlightjs/cdn-assets/es/highlight.min.js";
+import { marked } from "/node_modules/marked/lib/marked.esm.js";
+import mermaid from "/node_modules/mermaid/dist/mermaid.esm.min.mjs";
 import { buildDagLayout } from "./dag-layout.js";
 import { buildRuntimeGraphModel, findRuntimeNeighbor } from "./runtime-graph-model.js";
 import { renderRuntimeGraphView } from "./runtime-graph-view.js";
+import { deriveTaskGuidance, taskGuidanceDirective } from "./task-guidance-model.js";
+import {
+  AUTONOMY_MODES,
+  autonomyModeCopy,
+  deriveRepairGuidance,
+  deriveResultQuality,
+  normalizeAutonomyMode,
+} from "./task-intelligence-model.js";
+import {
+  buildGraphPatchPreview,
+  commitGraphHistory,
+  createGraphHistory,
+  redoGraphHistory,
+  undoGraphHistory,
+  validateGraphTopology,
+} from "./graph-editor-model.js";
+import { NEW_SETUP_CONNECTION_ID, selectSetupConnection } from "./setup-connection-model.js";
+import {
+  countWorkspaceChangeKinds,
+  formatWorkspaceBytes,
+  openWorkspaceChangeSets,
+  selectWorkspaceChangeSet,
+  selectWorkspaceFile,
+  workspaceChangeKindSymbol,
+  workspaceChangeTone,
+} from "./workspace-change-diff-model.js";
+import { groupWorkspaceTasks, reassignSessionProjectMetadata } from "./workspace-task-tree-model.js";
 
 const NODE_TYPES = [
   "agent_task",
@@ -14,6 +45,26 @@ const NODE_TYPES = [
   "planner",
   "end",
 ];
+
+const CONVERSATION_UPLOAD_MAX_BYTES = 512 * 1024;
+const CONVERSATION_TEXT_EXTENSIONS = new Set([
+  ".c", ".cc", ".conf", ".cpp", ".cs", ".css", ".csv", ".go", ".graphql", ".h", ".hpp",
+  ".html", ".ini", ".java", ".js", ".json", ".jsx", ".log", ".md", ".mjs", ".php", ".properties",
+  ".py", ".rb", ".rs", ".sh", ".sql", ".svg", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
+]);
+const CONVERSATION_SENSITIVE_FILE_PATTERN = /(^|[.])(env|key|pem|p12|pfx|crt|cer|der|keystore)$/i;
+
+marked.setOptions({ gfm: true, breaks: true });
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: "strict",
+  theme: "neutral",
+  fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
+  flowchart: { htmlLabels: false, useMaxWidth: false },
+  sequence: { useMaxWidth: false },
+});
+
+let artifactMermaidRenderSequence = 0;
 
 const APPROVAL_KINDS = [
   "human_review",
@@ -41,10 +92,147 @@ const DEFAULT_POLICY = {
 };
 
 const DEFAULT_REGISTRY_METADATA = {};
+const DEFAULT_PROVIDER_MAX_INPUT_TOKENS = 524288;
+const DEFAULT_PROVIDER_MAX_OUTPUT_TOKENS = 65536;
+const DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT = 75;
+const DEFAULT_MAX_CONTINUATION_ROUNDS = 8;
+const PROVIDER_CREDENTIAL_ENVS = {
+  codex: ["OPENAI_API_KEY", "CODEX_API_KEY"],
+  "claude-sdk": ["ANTHROPIC_API_KEY"],
+  glm: ["GLM_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY"],
+  kimi: ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
+  openclaw: ["MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY", "MY_MATE_OPENCLAW_BRIDGE_API_KEY"],
+};
+const PROVIDER_DEFAULTS = {
+  codex: {
+    label: "OpenAI Codex",
+    provider: "openai",
+    credentialEnv: "OPENAI_API_KEY",
+    modelPlaceholder: "gpt-5.3-codex",
+    endpointPlaceholder: "Default OpenAI endpoint",
+  },
+  "claude-sdk": {
+    label: "Anthropic Claude",
+    provider: "anthropic",
+    credentialEnv: "ANTHROPIC_API_KEY",
+    modelPlaceholder: "claude-sonnet-4-5",
+    endpointPlaceholder: "Default Anthropic endpoint",
+  },
+  glm: {
+    label: "GLM 5.2",
+    provider: "anthropic-compatible",
+    credentialEnv: "GLM_API_KEY",
+    modelPlaceholder: "glm-5.2",
+    endpointPlaceholder: "https://provider.example/anthropic",
+  },
+  kimi: {
+    label: "Kimi",
+    provider: "moonshot",
+    credentialEnv: "KIMI_API_KEY",
+    modelPlaceholder: "moonshot model id",
+    endpointPlaceholder: "Default Moonshot endpoint",
+  },
+  openclaw: {
+    label: "OpenClaw",
+    provider: "openclaw",
+    credentialEnv: "MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY",
+    modelPlaceholder: "OpenClaw agent id",
+    endpointPlaceholder: "OpenClaw bridge URL",
+  },
+};
+const AGENT_RUNTIMES = Object.keys(PROVIDER_CREDENTIAL_ENVS);
+const PROVIDER_PROTOCOLS = {
+  "codex-appserver": "Codex App Server",
+  "anthropic-messages": "Anthropic Messages",
+  "openai-compatible": "OpenAI compatible",
+  "openclaw-bridge": "OpenClaw bridge",
+};
+const PROVIDER_PRESETS = {
+  openai: { label: "OpenAI", runtime: "codex", protocol: "codex-appserver", provider: "openai", model: "gpt-5.3-codex" },
+  anthropic: { label: "Anthropic", runtime: "claude-sdk", protocol: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5" },
+  glm: { label: "GLM", runtime: "glm", protocol: "anthropic-messages", provider: "anthropic-compatible", model: "glm-5.2" },
+  kimi: { label: "Kimi", runtime: "kimi", protocol: "openai-compatible", provider: "moonshot", model: "kimi-k2.5" },
+  openclaw: { label: "OpenClaw", runtime: "openclaw", protocol: "openclaw-bridge", provider: "openclaw", model: "" },
+  custom: { label: "Custom", runtime: "codex", protocol: "openai-compatible", provider: "custom", model: "" },
+};
+
+function providerRuntimeLabel(runtime) {
+  return PROVIDER_DEFAULTS[runtime]?.label || runtime;
+}
+
+function renderProviderRuntimeOptions(selectedRuntime) {
+  return AGENT_RUNTIMES.map(
+    (runtime) => `<option value="${runtime}" ${selectedRuntime === runtime ? "selected" : ""}>${escapeHtml(providerRuntimeLabel(runtime))}</option>`,
+  ).join("");
+}
+
+const CREDENTIAL_ENV_LABELS = {
+  OPENAI_API_KEY: "OpenAI API key",
+  CODEX_API_KEY: "Codex API key",
+  ANTHROPIC_API_KEY: "Anthropic API key",
+  GLM_API_KEY: "GLM API key",
+  ZAI_API_KEY: "Z.AI API key",
+  ZHIPU_API_KEY: "Zhipu API key",
+  KIMI_API_KEY: "Kimi API key",
+  MOONSHOT_API_KEY: "Moonshot API key",
+  MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY: "OpenClaw Worker key",
+  MY_MATE_OPENCLAW_BRIDGE_API_KEY: "OpenClaw bridge key",
+};
+
+function credentialEnvLabel(name) {
+  return `${CREDENTIAL_ENV_LABELS[name] || "Credential"} / ${name}`;
+}
 const DEFAULT_SKILL_SCHEMA = { type: "object" };
 const DEFAULT_SKILL_OUTPUT_CONTRACT = {};
 const STUDIO_API_KEY_STORAGE = "my-mate.studio.api-key";
 const STUDIO_WORKSPACE_STORAGE = "my-mate.studio.workspace-id";
+const STUDIO_SETUP_DISMISSED_STORAGE = "my-mate.studio.setup-dismissed";
+const STUDIO_AUTONOMY_STORAGE = "my-mate.studio.autonomy-mode";
+const SESSION_WORKSPACE_CACHE_TTL_MS = 120_000;
+const desktopHost = globalThis.myMateDesktop || null;
+const studioPerformance = {
+  fullRenderCount: 0,
+  taskSurfaceRenderCount: 0,
+  taskSwitch: null,
+  taskMove: null,
+};
+globalThis.__MY_MATE_PERFORMANCE__ = studioPerformance;
+
+function performanceNow() {
+  return globalThis.performance?.now?.() || Date.now();
+}
+
+function publishStudioPerformance() {
+  document.documentElement?.setAttribute(
+    "data-my-mate-performance",
+    JSON.stringify(studioPerformance),
+  );
+}
+
+function beginTaskSwitchMeasurement(sessionId, cached) {
+  studioPerformance.taskSwitch = {
+    sessionId,
+    cached,
+    startedAt: performanceNow(),
+    mainVisibleMs: null,
+    hydratedMs: null,
+  };
+  publishStudioPerformance();
+}
+
+function markTaskSwitchMainVisible(sessionId) {
+  const measurement = studioPerformance.taskSwitch;
+  if (!measurement || measurement.sessionId !== sessionId || measurement.mainVisibleMs !== null) return;
+  measurement.mainVisibleMs = Math.round(performanceNow() - measurement.startedAt);
+  publishStudioPerformance();
+}
+
+function markTaskSwitchHydrated(sessionId) {
+  const measurement = studioPerformance.taskSwitch;
+  if (!measurement || measurement.sessionId !== sessionId) return;
+  measurement.hydratedMs = Math.round(performanceNow() - measurement.startedAt);
+  publishStudioPerformance();
+}
 
 function emptyHumanInputDrafts() {
   return {};
@@ -84,12 +272,16 @@ const state = {
   sessions: [],
   orchestratorProfiles: [],
   agentProfiles: [],
+  providerConnections: [],
+  mcpConnectorPresets: [],
+  mcpServers: [],
   skills: [],
   activeView: "plan",
-  activeNav: "missions",
+  activeNav: "orchestrator",
   lineage: null,
   selectedId: null,
   selectedSessionId: null,
+  workspaceLoadingSessionId: "",
   loading: false,
   registryLoading: false,
   orchestratorProfilesLoading: false,
@@ -98,6 +290,7 @@ const state = {
   sessionVisibilitySaving: false,
   runtimeLoading: false,
   dashboardLoading: false,
+  memoryLoading: false,
   routeCompareLoading: false,
   saving: false,
   publishing: false,
@@ -112,10 +305,53 @@ const state = {
   proposalDispatching: false,
   registrySaving: false,
   registryDisabling: false,
+  providerConnectionTestingId: "",
+  mcpServerTestingId: "",
+  product: {
+    autonomyMode: normalizeAutonomyMode(globalThis.localStorage?.getItem(STUDIO_AUTONOMY_STORAGE)),
+    autonomySaving: false,
+  },
   error: null,
   notice: null,
   runtimeSummary: null,
   dashboardSummary: null,
+  memory: {
+    retrievalStatus: null,
+    knowledgeStatus: null,
+    settings: null,
+    observability: null,
+    intelligenceEvaluation: null,
+    maintenance: null,
+    maintenanceSweep: null,
+    recommendations: null,
+    records: [],
+    candidates: [],
+    query: "",
+    statusFilter: "active",
+    scopeFilter: "all",
+    kindFilter: "all",
+    searchResult: null,
+    rebuilding: false,
+    saving: false,
+    editingId: "",
+    editContent: "",
+    importText: "",
+    importStrategy: "skip",
+    importDryRun: true,
+    importResult: null,
+  },
+  inbox: {
+    approvals: [],
+    humanInputs: [],
+    alerts: [],
+    memoryCandidates: [],
+    workspaceChanges: [],
+    selectedWorkspaceChangeId: "",
+    selectedWorkspaceFile: "",
+    confirmWorkspaceChangeAction: "",
+    loading: false,
+    error: null,
+  },
   security: {
     identity: null,
     members: [],
@@ -124,6 +360,21 @@ const state = {
     loading: false,
     apiKey: globalThis.localStorage?.getItem(STUDIO_API_KEY_STORAGE) || "",
     workspaceId: globalThis.localStorage?.getItem(STUDIO_WORKSPACE_STORAGE) || "",
+  },
+  desktop: {
+    available: Boolean(desktopHost),
+    loading: false,
+    hostInfo: null,
+    services: [],
+    workspace: null,
+    projects: [],
+    listing: null,
+    projectDraft: {
+      name: "",
+      description: "",
+      outputRelativePath: "outputs",
+    },
+    error: null,
   },
   governance: emptyGovernanceState(),
   dashboardFilters: {
@@ -141,9 +392,22 @@ const state = {
   commandPaletteQuery: "",
   commandPaletteIndex: 0,
   attachmentSaving: false,
+  artifactPreview: {
+    open: false,
+    loading: false,
+    compareLoading: false,
+    error: null,
+    tab: "preview",
+    artifactId: "",
+    detail: null,
+    compare: null,
+  },
   streamStatus: "idle",
   streamError: null,
   streamSource: null,
+  conversationSocketStatus: "idle",
+  conversationSocketError: null,
+  conversationStream: null,
   actionLoading: {},
   humanInputDrafts: emptyHumanInputDrafts(),
   preview: {
@@ -156,13 +420,37 @@ const state = {
   },
   registryEditor: {
     profile: emptyAgentProfileEditor(),
+    connection: emptyProviderConnectionEditor(),
+    mcpServer: emptyMcpServerEditor(),
     skill: emptySkillEditor(),
+  },
+  setup: {
+    open: false,
+    tab: "model",
+    dismissed: globalThis.localStorage?.getItem(STUDIO_SETUP_DISMISSED_STORAGE) === "1",
+    initialized: false,
+    modelSaving: false,
+    environmentLoading: false,
+    hostReport: null,
+    dockerReport: null,
+    error: null,
+    editorTouched: false,
   },
   orchestrator: emptyOrchestratorEditor(),
   ui: {
     orchestratorSetupExpanded: false,
+    navigationTab: "task",
     workspaceFeedFilter: "all",
     workspaceFeedExpanded: false,
+    taskConversationVisible: true,
+    taskConversationExpanded: false,
+    taskRuntimeExpanded: false,
+    taskPlanExpanded: false,
+    workspaceCreatorOpen: false,
+    workspaceCreatorStartTask: false,
+    taskMoveSessionId: "",
+    taskMoveProjectId: "",
+    taskSidebarQuery: "",
     runtimeOverlayOpen: false,
     runtimeNodeRunId: "",
     runtimeDrawerOpen: false,
@@ -177,6 +465,9 @@ const state = {
       leftKey: "",
       rightKey: "",
     },
+    registrySection: "connections",
+    providerConnectionModalOpen: false,
+    mcpServerModalOpen: false,
   },
   attachmentEditor: {
     name: "",
@@ -191,6 +482,8 @@ const state = {
   },
   planner: {
     intent: "",
+    conversationProviderConnectionId: "",
+    conversationModel: "",
     templateId: "",
     inputsText: prettyJson({}),
     maxAgentNodes: "1",
@@ -214,25 +507,55 @@ let pendingCommandPaletteFocus = null;
 let pendingWorkspaceFocus = null;
 let pendingSessionInventoryScroll = false;
 let pendingWorkspaceFeedEntryKey = null;
+let draggedWorkspaceTaskSessionId = "";
 let pendingAuthoringGraphFocus = null;
+let authoringGraphHistory = createGraphHistory({ nodes: [], edges: [], metadataText: "{}" });
+let authoringGraphSavedSnapshot = { nodes: [], edges: [], metadataText: "{}" };
+let authoringGraphConnection = null;
+let authoringNodeDrag = null;
 let restoreWorkspaceFocusFromLocation = false;
 let workspaceLoadSeq = 0;
+let workspaceLoadController = null;
 let missionSearchTimer = null;
 let sessionSearchTimer = null;
+let taskSidebarSearchTimer = null;
 let runtimeSupervisionTimer = null;
 let runtimeSupervisionRunId = "";
 let runtimeSupervisionCursor = "";
+let sessionStreamErrorTimer = null;
 let pendingRuntimeNodeFocus = false;
+let conversationSocket = null;
+let conversationSocketSessionId = "";
+let conversationSocketOpenPromise = null;
+const conversationSocketRequests = new Map();
+const autopilotAdvanceAttempts = new Set();
+const pendingTaskMoveStreamSessions = new Set();
+const sessionWorkspaceCache = new Map();
 
 const DESKTOP_NAV_ITEMS = new Set([
   "orchestrator",
+  "inbox",
+  "library",
   "missions",
   "sessions",
   "dashboard",
+  "memory",
   "agents",
   "templates",
   "registry",
   "settings",
+  "operations",
+]);
+const TASK_NAV_IDS = new Set(["orchestrator", "inbox", "library", "settings"]);
+const ADVANCED_NAV_IDS = new Set([
+  "missions",
+  "sessions",
+  "dashboard",
+  "memory",
+  "agents",
+  "templates",
+  "registry",
+  "operations",
 ]);
 const WORKSPACE_SELECTION_TYPES = new Set(["checkpoint", "output-history"]);
 const WORKSPACE_FEED_FILTERS = new Set(["all", "evidence", "context", "outputs", "patches"]);
@@ -244,6 +567,9 @@ function emptyAgentProfileEditor() {
     status: "active",
     name: "",
     description: "",
+    agentRuntime: "codex",
+    harnessProfile: "agent-harness-v1",
+    providerConnectionId: "",
     openclawAgentId: "",
     openclawProvider: "",
     openclawModel: "",
@@ -253,6 +579,59 @@ function emptyAgentProfileEditor() {
     disallowedSkillsText: "",
     policyTagsText: "",
     metadataText: prettyJson(DEFAULT_REGISTRY_METADATA),
+  };
+}
+
+function emptyProviderConnectionEditor() {
+  return {
+    mode: "new",
+    connectionId: "",
+    status: "active",
+    name: "",
+    preset: "openai",
+    agentRuntime: "codex",
+    provider: "openai",
+    protocol: "codex-appserver",
+    baseUrl: "",
+    models: ["gpt-5.3-codex"],
+    defaultModel: "gpt-5.3-codex",
+    maxInputTokens: DEFAULT_PROVIDER_MAX_INPUT_TOKENS,
+    maxOutputTokens: DEFAULT_PROVIDER_MAX_OUTPUT_TOKENS,
+    contextCompressionEnabled: true,
+    contextCompressionThresholdPercent: DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT,
+    maxContinuationRounds: DEFAULT_MAX_CONTINUATION_ROUNDS,
+    credentialSource: "managed",
+    credentialEnv: "OPENAI_API_KEY",
+    apiKey: "",
+    credentialConfigured: false,
+    metadataText: prettyJson(DEFAULT_REGISTRY_METADATA),
+  };
+}
+
+function emptyMcpServerEditor() {
+  return {
+    mode: "new",
+    presetId: "custom",
+    presetSecretValues: {},
+    serverId: "",
+    name: "",
+    description: "",
+    transport: desktopHost?.mcp?.configure ? "stdio" : "streamable-http",
+    command: "",
+    argsText: "",
+    url: "",
+    headersText: "{}",
+    environmentText: "{}",
+    secretsText: "{}",
+    includeToolsText: "",
+    excludeToolsText: "",
+    defaultRiskLevel: "",
+    riskOverridesText: "{}",
+    connectTimeoutMs: 30000,
+    toolTimeoutMs: 60000,
+    enabled: true,
+    status: "disconnected",
+    secretConfigured: false,
   };
 }
 
@@ -283,6 +662,9 @@ function editorFromAgentProfile(profile) {
     status: profile.status || "active",
     name: profile.name || profile.profile_id,
     description: profile.description || "",
+    agentRuntime: profile.agent_runtime || "openclaw",
+    harnessProfile: profile.harness_profile || "",
+    providerConnectionId: profile.provider_connection_id || "",
     openclawAgentId: profile.runtime_agent_ref || profile.openclaw_agent_id || "",
     openclawProvider: openclaw.provider || metadata.openclaw_provider || "",
     openclawModel: openclaw.model || metadata.openclaw_model || "",
@@ -292,6 +674,92 @@ function editorFromAgentProfile(profile) {
     disallowedSkillsText: (profile.disallowed_skills || []).join(", "),
     policyTagsText: (profile.policy_tags || []).join(", "),
     metadataText: prettyJson(metadata),
+  };
+}
+
+function editorFromProviderConnection(connection) {
+  const preset = Object.entries(PROVIDER_PRESETS).find(([, item]) =>
+    item.runtime === connection.agent_runtime && item.provider === connection.provider
+  )?.[0] || "custom";
+  return {
+    mode: "edit",
+    connectionId: connection.connection_id,
+    status: connection.status || "active",
+    name: connection.name || connection.connection_id,
+    preset,
+    agentRuntime: connection.agent_runtime || "codex",
+    provider: connection.provider || "",
+    protocol: connection.protocol || PROVIDER_PRESETS[preset]?.protocol || "openai-compatible",
+    baseUrl: connection.base_url || "",
+    models: connection.models?.length ? [...connection.models] : [connection.default_model || ""],
+    defaultModel: connection.default_model || "",
+    maxInputTokens: connection.max_input_tokens || DEFAULT_PROVIDER_MAX_INPUT_TOKENS,
+    maxOutputTokens: connection.max_output_tokens || DEFAULT_PROVIDER_MAX_OUTPUT_TOKENS,
+    contextCompressionEnabled: connection.context_compression_enabled !== false,
+    contextCompressionThresholdPercent: connection.context_compression_threshold_percent || DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT,
+    maxContinuationRounds: Number.isInteger(connection.max_continuation_rounds)
+      ? connection.max_continuation_rounds
+      : DEFAULT_MAX_CONTINUATION_ROUNDS,
+    credentialSource: connection.credential_source || "environment",
+    credentialEnv: connection.credential_env || "",
+    apiKey: "",
+    credentialConfigured: connection.credential_configured === true,
+    metadataText: prettyJson(connection.metadata || {}),
+  };
+}
+
+function editorFromMcpServer(server) {
+  const preset = state.mcpConnectorPresets.find((item) =>
+    item.transport === server.transport && item.server?.url && item.server.url === server.url
+  );
+  return {
+    mode: "edit",
+    presetId: preset?.preset_id || "custom",
+    presetSecretValues: {},
+    serverId: server.server_id || "",
+    name: server.name || server.server_id || "",
+    description: server.description || "",
+    transport: server.transport || "streamable-http",
+    command: server.command || "",
+    argsText: (server.args || []).join("\n"),
+    url: server.url || "",
+    headersText: prettyJson(server.headers || {}),
+    environmentText: prettyJson(server.environment || {}),
+    secretsText: "{}",
+    includeToolsText: (server.tool_filter?.include || []).join(", "),
+    excludeToolsText: (server.tool_filter?.exclude || []).join(", "),
+    defaultRiskLevel: server.default_risk_level || "",
+    riskOverridesText: prettyJson(server.tool_risk_overrides || {}),
+    connectTimeoutMs: server.connect_timeout_ms || 30000,
+    toolTimeoutMs: server.tool_timeout_ms || 60000,
+    enabled: server.enabled !== false,
+    status: server.status || "disconnected",
+    secretConfigured: server.secret_configured === true,
+  };
+}
+
+function editorFromMcpConnectorPreset(preset) {
+  const server = preset?.server || {};
+  return {
+    ...emptyMcpServerEditor(),
+    presetId: preset?.preset_id || "custom",
+    presetSecretValues: Object.fromEntries((preset?.secrets || []).map((secret) => [secret.name, ""])),
+    serverId: server.server_id || "",
+    name: server.name || preset?.name || "",
+    description: server.description || preset?.description || "",
+    transport: preset?.transport || server.transport || "streamable-http",
+    command: server.command || "",
+    argsText: (server.args || []).join("\n"),
+    url: server.url || "",
+    headersText: prettyJson(server.headers || {}),
+    environmentText: prettyJson(server.environment || {}),
+    includeToolsText: (server.tool_filter?.include || []).join(", "),
+    excludeToolsText: (server.tool_filter?.exclude || []).join(", "),
+    defaultRiskLevel: server.default_risk_level || "",
+    riskOverridesText: prettyJson(server.tool_risk_overrides || {}),
+    connectTimeoutMs: server.connect_timeout_ms || 30000,
+    toolTimeoutMs: server.tool_timeout_ms || 60000,
+    enabled: server.enabled === true,
   };
 }
 
@@ -758,6 +1226,148 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function renderMarkdown(value) {
+  const dirty = marked.parse(String(value || ""), { async: false });
+  const clean = DOMPurify.sanitize(dirty, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ["audio", "button", "embed", "form", "iframe", "img", "input", "object", "select", "source", "style", "textarea", "video"],
+    FORBID_ATTR: ["style", "srcset"],
+  });
+  const template = document.createElement("template");
+  template.innerHTML = clean;
+  template.content.querySelectorAll("a").forEach((link) => {
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+  });
+  return template.innerHTML;
+}
+
+function artifactCodeLanguage(code) {
+  const languageClass = [...code.classList].find((name) => name.startsWith("language-"));
+  return languageClass ? languageClass.slice("language-".length).trim().toLowerCase() : "";
+}
+
+function looksLikeMermaidSource(value) {
+  const firstMeaningfulLine = String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean) || "";
+  return /^(?:%%|graph\s+(?:TB|TD|BT|RL|LR)\b|flowchart\s+(?:TB|TD|BT|RL|LR)\b|sequenceDiagram\b|classDiagram\b|stateDiagram(?:-v2)?\b|erDiagram\b|journey\b|gantt\b|pie\b|mindmap\b|timeline\b|gitGraph\b|quadrantChart\b|xychart-beta\b|block-beta\b|architecture-beta\b|packet-beta\b|kanban\b)/i.test(firstMeaningfulLine);
+}
+
+function createArtifactCodeToolbar(label, actions) {
+  const toolbar = document.createElement("div");
+  toolbar.className = "artifact-code-toolbar";
+  const language = document.createElement("span");
+  language.className = "artifact-code-language";
+  language.textContent = label || "Code";
+  const actionGroup = document.createElement("div");
+  actionGroup.className = "artifact-code-actions";
+  for (const action of actions) {
+    const button = document.createElement("button");
+    button.className = "artifact-code-action";
+    button.type = "button";
+    button.dataset.action = action.action;
+    button.textContent = action.label;
+    if (action.title) button.title = action.title;
+    actionGroup.append(button);
+  }
+  toolbar.append(language);
+  if (actions.length) toolbar.append(actionGroup);
+  return toolbar;
+}
+
+function renderArtifactMarkdown(value) {
+  const template = document.createElement("template");
+  template.innerHTML = renderMarkdown(value);
+  template.content.querySelectorAll("pre > code").forEach((code) => {
+    const pre = code.parentElement;
+    if (!pre) return;
+    const source = code.textContent || "";
+    const language = artifactCodeLanguage(code);
+    if (language === "mermaid" || (!language && looksLikeMermaidSource(source))) {
+      const diagram = document.createElement("section");
+      diagram.className = "artifact-mermaid";
+      diagram.dataset.mermaidStatus = "pending";
+      const toolbar = createArtifactCodeToolbar("Mermaid diagram", [
+        { action: "toggle-artifact-mermaid-source", label: "Source", title: "Show Mermaid source" },
+      ]);
+      const canvas = document.createElement("div");
+      canvas.className = "artifact-mermaid-canvas";
+      canvas.dataset.mermaidCanvas = "true";
+      canvas.innerHTML = '<span class="artifact-mermaid-loading">Rendering diagram...</span>';
+      const sourcePre = document.createElement("pre");
+      sourcePre.className = "artifact-mermaid-source";
+      sourcePre.hidden = true;
+      const sourceCode = document.createElement("code");
+      sourceCode.textContent = source;
+      sourcePre.append(sourceCode);
+      diagram.append(toolbar, canvas, sourcePre);
+      pre.replaceWith(diagram);
+      return;
+    }
+
+    let highlighted;
+    try {
+      highlighted = language && hljs.getLanguage(language)
+        ? hljs.highlight(source, { language, ignoreIllegals: true })
+        : hljs.highlightAuto(source);
+    } catch {
+      highlighted = { value: escapeHtml(source), language: language || "text" };
+    }
+    code.className = "hljs";
+    code.innerHTML = highlighted.value;
+    const block = document.createElement("section");
+    block.className = "artifact-code-block";
+    const label = language || highlighted.language || "text";
+    block.append(
+      createArtifactCodeToolbar(label, []),
+    );
+    pre.replaceWith(block);
+    block.append(pre);
+  });
+  return template.innerHTML;
+}
+
+async function hydrateArtifactMermaidDiagrams() {
+  const diagrams = [...document.querySelectorAll('.artifact-mermaid[data-mermaid-status="pending"]')];
+  for (const diagram of diagrams) {
+    diagram.dataset.mermaidStatus = "rendering";
+    const source = diagram.querySelector(".artifact-mermaid-source code")?.textContent || "";
+    const canvas = diagram.querySelector("[data-mermaid-canvas]");
+    if (!canvas || !source.trim()) {
+      diagram.dataset.mermaidStatus = "error";
+      continue;
+    }
+    const renderId = `artifact-mermaid-${++artifactMermaidRenderSequence}`;
+    try {
+      const result = await mermaid.render(renderId, source);
+      if (!diagram.isConnected) continue;
+      canvas.innerHTML = DOMPurify.sanitize(result.svg, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+        ADD_TAGS: ["foreignObject"],
+      });
+      result.bindFunctions?.(canvas);
+      diagram.dataset.mermaidStatus = "ready";
+    } catch (error) {
+      if (!diagram.isConnected) continue;
+      diagram.dataset.mermaidStatus = "error";
+      canvas.innerHTML = `<div class="artifact-mermaid-error"><strong>Diagram could not be rendered.</strong><span>${escapeHtml(error instanceof Error ? error.message : "Invalid Mermaid syntax")}</span></div>`;
+      const sourcePre = diagram.querySelector(".artifact-mermaid-source");
+      if (sourcePre) sourcePre.hidden = false;
+    }
+  }
+}
+
+function toggleArtifactMermaidSource(button) {
+  const diagram = button.closest(".artifact-mermaid");
+  const source = diagram?.querySelector(".artifact-mermaid-source");
+  if (!source) return;
+  source.hidden = !source.hidden;
+  button.textContent = source.hidden ? "Source" : "Hide source";
+  button.setAttribute("aria-expanded", String(!source.hidden));
+}
+
 function slugify(value) {
   return String(value)
     .trim()
@@ -768,6 +1378,17 @@ function slugify(value) {
 
 function isRecord(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isConversationInputAttachment(attachment) {
+  return (
+    attachment?.kind !== "generated_output" &&
+    attachment?.metadata?.source !== "conversation_generated_output"
+  );
+}
+
+function filterConversationInputAttachments(attachments) {
+  return Array.isArray(attachments) ? attachments.filter(isConversationInputAttachment) : [];
 }
 
 function statusTone(status) {
@@ -2123,14 +2744,72 @@ function resetWorkspaceDrilldownState({ resetFeed = true } = {}) {
   state.ui.runtimeGraphTab = "timeline";
   state.ui.runtimeGraphListFallback = false;
   state.ui.runtimeOverlayOpen = false;
+  state.ui.taskConversationExpanded = false;
+  state.ui.taskRuntimeExpanded = false;
+  state.ui.taskPlanExpanded = false;
   document.body.classList.remove("runtime-overlay-active");
 }
 
 function prepareWorkspaceSessionChange(nextSessionId) {
   const currentSessionId = state.selectedSessionId || getWorkspaceSessionId(state.workspaceDetail);
-  if (currentSessionId && nextSessionId && currentSessionId !== nextSessionId) {
-    resetWorkspaceDrilldownState();
+  if (currentSessionId === nextSessionId) return;
+  workspaceLoadSeq += 1;
+  closeSessionStream();
+  resetWorkspaceDrilldownState();
+  if (workspaceLoadController) {
+    workspaceLoadController.abort();
+    workspaceLoadController = null;
   }
+  closeConversationSocket();
+  state.conversationStream = null;
+  state.artifactPreview.open = false;
+}
+
+function getSessionWorkspaceCacheKey(sessionId, runId = "") {
+  return `${sessionId}:${runId || "latest"}`;
+}
+
+function getCachedSessionWorkspace(sessionId, runId = "") {
+  const key = getSessionWorkspaceCacheKey(sessionId, runId);
+  const cached = sessionWorkspaceCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    sessionWorkspaceCache.delete(key);
+    return null;
+  }
+  return cached.detail;
+}
+
+function cacheSessionWorkspace(sessionId, runId, detail) {
+  if (!sessionId || !detail) return;
+  sessionWorkspaceCache.set(getSessionWorkspaceCacheKey(sessionId, runId), {
+    detail,
+    expiresAt: Date.now() + SESSION_WORKSPACE_CACHE_TTL_MS,
+  });
+}
+
+function getSessionInventoryTitle(sessionId) {
+  const item =
+    state.missions.find((candidate) => candidate.session_id === sessionId) ||
+    state.sessions.find((candidate) => candidate.session_id === sessionId);
+  return item?.title || sessionId || "Task";
+}
+
+function updateTaskInventorySelection(sessionId) {
+  for (const button of document.querySelectorAll('[data-action="select-session"]')) {
+    button.classList.toggle("selected", button.dataset.sessionId === sessionId);
+  }
+}
+
+function showTaskWorkspacePending(sessionId) {
+  if (state.activeNav !== "orchestrator") return;
+  updateTaskInventorySelection(sessionId);
+  const workspace = document.querySelector(".app-shell > .workspace");
+  if (!workspace) return;
+  workspace.classList.add("task-switch-pending");
+  workspace.setAttribute("aria-busy", "true");
+  const title = workspace.querySelector(".topbar h2");
+  if (title) title.textContent = getSessionInventoryTitle(sessionId);
 }
 
 function reconcileWorkspaceSelection(detail = state.workspaceDetail) {
@@ -3382,6 +4061,85 @@ function renderWorkspaceContextBrowser(detail) {
   `;
 }
 
+function renderDesktopWorkspaceBrowser() {
+  if (!state.desktop.available) return "";
+  const workspace = state.desktop.workspace;
+  const listing = state.desktop.listing;
+  const entries = Array.isArray(listing?.items) ? listing.items : [];
+  const currentPath = listing?.relativePath || "";
+  const binding = state.workspaceDetail?.workspace_binding || null;
+  const sessionId = state.selectedSessionId || getWorkspaceSessionId(state.workspaceDetail);
+  const projects = Array.isArray(state.desktop.projects) ? state.desktop.projects.filter((item) => !item.archived) : [];
+  const taskWorkspace = state.workspaceDetail?.task_workspace || null;
+  return `
+    <div class="desktop-local-browser">
+      <div class="desktop-project-strip">
+        <div class="desktop-project-list">
+          ${projects.length
+            ? projects.map((project) => `
+                <button class="desktop-project-row ${project.active ? "selected" : ""}" type="button" data-action="select-desktop-project" data-project-id="${escapeHtml(project.projectId)}">
+                  <span><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(project.rootPath)}</small></span>
+                  ${project.registeredProjectId === taskWorkspace?.project?.project_id ? '<span class="badge success">Task</span>' : ""}
+                </button>`).join("")
+            : '<p class="muted">No saved Projects on this Desktop.</p>'}
+        </div>
+        <div class="desktop-project-create">
+          <input data-field="desktop.projectName" value="${escapeHtml(state.desktop.projectDraft.name)}" placeholder="New project folder name" />
+          <input data-field="desktop.projectDescription" value="${escapeHtml(state.desktop.projectDraft.description)}" placeholder="Description (optional)" />
+          <div>
+            <label>Output folder<input data-field="desktop.outputRelativePath" value="${escapeHtml(state.desktop.projectDraft.outputRelativePath)}" /></label>
+            <button class="mini-button" type="button" data-action="create-desktop-project" ${state.desktop.loading || !state.desktop.projectDraft.name.trim() ? "disabled" : ""}>Create Project</button>
+          </div>
+        </div>
+      </div>
+      <div class="desktop-local-browser-head">
+        <div>
+          <span class="desktop-host-label">Desktop workspace</span>
+          <strong>${escapeHtml(workspace?.displayName || workspace?.name || "No folder selected")}</strong>
+          <small>${escapeHtml(workspace ? (currentPath || workspace.rootPath) : "Choose a folder to grant read-only access.")}</small>
+        </div>
+        <div class="desktop-local-browser-actions">
+          ${workspace ? `<button class="mini-button icon-button" type="button" data-action="refresh-desktop-workspace" title="Refresh folder" aria-label="Refresh folder">&#8635;</button>` : ""}
+          ${workspace ? `<button class="mini-button icon-button" type="button" data-action="archive-desktop-project" data-project-id="${escapeHtml(workspace.projectId || "")}" title="Archive Project reference" aria-label="Archive Project reference">&#128451;</button>` : ""}
+          ${workspace && sessionId && binding?.access !== "sandbox-write" ? `<button class="mini-button" type="button" data-action="authorize-desktop-workspace-write" ${state.desktop.loading ? "disabled" : ""}>Allow sandbox edits</button>` : ""}
+          <button class="mini-button" type="button" data-action="choose-desktop-workspace" ${state.desktop.loading ? "disabled" : ""}>${workspace ? "Change Folder" : "Choose Folder"}</button>
+        </div>
+      </div>
+      ${state.desktop.error ? `<p class="desktop-local-error">${escapeHtml(state.desktop.error)}</p>` : ""}
+      ${
+        workspace
+          ? `<div class="desktop-local-pathbar">
+              <button class="mini-button icon-button" type="button" data-action="open-desktop-workspace-directory" data-path="${escapeHtml(listing?.parentRelativePath || "")}" ${listing?.parentRelativePath === null || state.desktop.loading ? "disabled" : ""} title="Parent folder" aria-label="Parent folder">&#8593;</button>
+              <span>${escapeHtml(currentPath || "/")}</span>
+              <span class="badge neutral">Outputs: ${escapeHtml(taskWorkspace?.output_relative_path || workspace.outputRelativePath || "outputs")}</span>
+              <span class="badge ${binding?.access === "sandbox-write" ? "success" : "neutral"}">${binding?.access === "sandbox-write" ? "Sandbox edits allowed" : "Read only"}</span>
+            </div>
+            <div class="desktop-local-entries">
+              ${
+                entries.length
+                  ? entries
+                      .map(
+                        (entry) => `<div class="desktop-local-entry">
+                          <div class="desktop-local-entry-name">
+                            <span class="desktop-entry-icon" aria-hidden="true">${entry.kind === "directory" ? "&#9656;" : "&#183;"}</span>
+                            <div><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.kind === "directory" ? "Folder" : formatFileSize(entry.sizeBytes) || "File")}</small></div>
+                          </div>
+                          <div class="desktop-local-entry-actions">
+                            ${entry.kind === "directory" ? `<button class="mini-button" type="button" data-action="open-desktop-workspace-directory" data-path="${escapeHtml(entry.relativePath)}">Open</button>` : ""}
+                            ${entry.readableText ? `<button class="mini-button" type="button" data-action="attach-desktop-workspace-file" data-path="${escapeHtml(entry.relativePath)}" ${state.attachmentSaving || !state.selectedSessionId ? "disabled" : ""}>Use as context</button>` : ""}
+                          </div>
+                        </div>`,
+                      )
+                      .join("")
+                  : `<p class="muted">${state.desktop.loading ? "Loading folder..." : "This folder has no supported entries."}</p>`
+              }
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 function renderAttachmentContextPanel(attachments, detail = state.workspaceDetail) {
   const values = Array.isArray(attachments) ? attachments : [];
   const editor = state.attachmentEditor;
@@ -3394,13 +4152,14 @@ function renderAttachmentContextPanel(attachments, detail = state.workspaceDetai
       <div class="attachment-drop-zone" data-attachment-drop-zone="true">
         <div>
           <strong>Local References</strong>
-          <small>Files stay local; Studio stores context metadata.</small>
+          <small>${state.desktop.available ? "Desktop reads only the files you explicitly add as context." : "Browser files stay local; Studio stores context metadata."}</small>
         </div>
         <div class="attachment-drop-actions">
           <button class="mini-button" data-action="pick-context-file" ${state.attachmentSaving || !state.selectedSessionId ? "disabled" : ""}>Choose Files</button>
           <input class="hidden-file-input" type="file" multiple data-field="attachment.filePicker" data-key="${escapeHtml(String(state.attachmentFilePickerKey))}" />
         </div>
       </div>
+      ${renderDesktopWorkspaceBrowser()}
       <div class="attachment-form">
         <label>Name<input value="${escapeHtml(editor.name)}" data-field="attachment.name" placeholder="Brief, screenshot, notes" /></label>
         <label>URI<input value="${escapeHtml(editor.storageUri)}" data-field="attachment.storageUri" placeholder="file:///workspace/brief.md or https://..." /></label>
@@ -3628,6 +4387,14 @@ function getExecutionDeliverables(detail) {
   const seen = new Set();
 
   for (const output of missionOutputs) {
+    const artifactMessage = output.latestArtifactMessageId
+      ? (detail?.messages || []).find(
+          (message) =>
+            message.message_id === output.latestArtifactMessageId &&
+            message.kind === "artifact_card",
+        )
+      : null;
+    const artifactContent = artifactMessage?.content || {};
     const title = output.title || output.key || output.name || "Deliverable";
     const key = normalizeWorkspaceKey(title);
     seen.add(key);
@@ -3637,7 +4404,9 @@ function getExecutionDeliverables(detail) {
       status: output.status || "requested",
       summary: output.summary || "Tracked from mission output projection.",
       detail: Array.isArray(output.detailLines) ? output.detailLines[0] || "" : "",
-      uri: output.storage_uri || output.storageUri || "",
+      uri: output.storage_uri || output.storageUri || artifactContent.storage_uri || "",
+      artifactId: artifactContent.artifact_id || output.latestGeneratedArtifactId || "",
+      mimeType: artifactContent.mime_type || "",
       artifactCount: Array.isArray(output.artifacts) ? output.artifacts.length : 0,
       source: "mission-output",
     });
@@ -3663,8 +4432,31 @@ function getExecutionDeliverables(detail) {
       summary: artifact.summary || "Generated output from the latest run.",
       detail: artifact.kind || artifact.type || "",
       uri: artifact.storage_uri || artifact.path || "",
+      artifactId: artifact.artifact_id || "",
+      mimeType: artifact.mime_type || "",
       artifactCount: 1,
       source: "artifact",
+    });
+  }
+
+  for (const message of [...(detail?.messages || [])].reverse()) {
+    if (message.kind !== "artifact_card") continue;
+    const content = message.content || {};
+    const title = content.name || content.artifact_id || "Generated output";
+    const key = normalizeWorkspaceKey(title);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({
+      key,
+      title,
+      status: "returned",
+      summary: content.summary || "Generated output from the task conversation.",
+      detail: content.mime_type || "",
+      uri: content.storage_uri || "",
+      artifactId: content.artifact_id || "",
+      mimeType: content.mime_type || "",
+      artifactCount: 1,
+      source: "artifact-message",
     });
   }
 
@@ -4402,7 +5194,10 @@ async function request(path, options = {}) {
   const text = await response.text();
   const body = text.trim() ? JSON.parse(text) : null;
   if (!response.ok) {
-    throw new Error(body && body.message ? body.message : `Request failed: ${response.status}`);
+    const error = new Error(body && body.message ? body.message : `Request failed: ${response.status}`);
+    error.code = body?.code || "request_failed";
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -4437,6 +5232,8 @@ function resetWorkspaceScopedState() {
   state.sessions = [];
   state.orchestratorProfiles = [];
   state.agentProfiles = [];
+  state.providerConnections = [];
+  state.mcpServers = [];
   state.skills = [];
   state.governance = emptyGovernanceState();
   state.lineage = null;
@@ -4445,11 +5242,54 @@ function resetWorkspaceScopedState() {
   state.workspaceDetail = null;
   state.runtimeSummary = null;
   state.dashboardSummary = null;
+  state.memory = {
+    retrievalStatus: null,
+    knowledgeStatus: null,
+    settings: null,
+    observability: null,
+    maintenance: null,
+    maintenanceSweep: null,
+    recommendations: null,
+    records: [],
+    candidates: [],
+    query: "",
+    statusFilter: "active",
+    scopeFilter: "all",
+    kindFilter: "all",
+    searchResult: null,
+    rebuilding: false,
+    saving: false,
+    editingId: "",
+    editContent: "",
+    importText: "",
+    importStrategy: "skip",
+    importDryRun: true,
+    importResult: null,
+  };
+  state.inbox = {
+    approvals: [],
+    humanInputs: [],
+    alerts: [],
+    memoryCandidates: [],
+    workspaceChanges: [],
+    selectedWorkspaceChangeId: "",
+    selectedWorkspaceFile: "",
+    confirmWorkspaceChangeAction: "",
+    loading: false,
+    error: null,
+  };
   state.preview = { type: "workspace", key: null };
   state.registryEditor = {
     profile: emptyAgentProfileEditor(),
+    connection: emptyProviderConnectionEditor(),
+    mcpServer: emptyMcpServerEditor(),
     skill: emptySkillEditor(),
   };
+  state.setup.open = false;
+  state.setup.initialized = false;
+  state.setup.hostReport = null;
+  state.setup.dockerReport = null;
+  state.setup.error = null;
   state.orchestrator = emptyOrchestratorEditor();
   state.editor = emptyEditor();
   state.planner.templateId = "";
@@ -4872,6 +5712,10 @@ function startRuntimeSupervision(runId) {
 
 function closeSessionStream() {
   stopRuntimeSupervision();
+  if (sessionStreamErrorTimer) {
+    window.clearTimeout(sessionStreamErrorTimer);
+    sessionStreamErrorTimer = null;
+  }
   if (state.streamSource) {
     state.streamSource.close();
     state.streamSource = null;
@@ -4880,8 +5724,269 @@ function closeSessionStream() {
   state.streamError = null;
 }
 
+function closeConversationSocket(reason = "Conversation changed.") {
+  const socket = conversationSocket;
+  conversationSocket = null;
+  conversationSocketSessionId = "";
+  conversationSocketOpenPromise = null;
+  state.conversationSocketStatus = "idle";
+  state.conversationSocketError = null;
+  for (const pending of conversationSocketRequests.values()) {
+    pending.reject(new Error(reason));
+  }
+  conversationSocketRequests.clear();
+  if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, reason);
+}
+
+function updateConversationStreamDom() {
+  const stream = state.conversationStream;
+  if (!stream) return;
+  const textNode = document.querySelector(
+    `[data-conversation-stream-id="${CSS.escape(stream.requestId)}"] [data-conversation-stream-text]`,
+  );
+  if (textNode) textNode.innerHTML = renderMarkdown(stream.text);
+  const toolNode = document.querySelector(
+    `[data-conversation-stream-id="${CSS.escape(stream.requestId)}"] [data-conversation-tool-progress]`,
+  );
+  if (toolNode) {
+    toolNode.innerHTML = (stream.toolProgress || []).map((progress) => `
+      <div class="conversation-tool-progress ${escapeHtml(progress.status || "running")}" title="${escapeHtml(progress.actionId || "")}">
+        <span class="status-dot ${progress.status === "succeeded" ? "success" : progress.status === "failed" ? "danger" : "warn"}"></span>
+        <span>${escapeHtml(progress.summary || progress.toolName || "Running tool")}</span>
+      </div>
+    `).join("");
+  }
+  const feed = document.querySelector(".task-conversation-rail .orchestrator-chat-feed");
+  if (feed) {
+    const distanceFromBottom = Math.max(0, feed.scrollHeight - feed.clientHeight - feed.scrollTop);
+    if (distanceFromBottom <= 72 || stream.text.length < 80) feed.scrollTop = feed.scrollHeight;
+  }
+}
+
+async function handleConversationSocketEvent(event) {
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    state.conversationSocketError = "Conversation stream returned invalid data.";
+    return;
+  }
+  if (payload.type === "conversation.connected") return;
+  const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
+  const pending = conversationSocketRequests.get(requestId);
+  if (!pending) return;
+  if (payload.type === "conversation.started") {
+    pending.started = true;
+    state.conversationSocketStatus = "streaming";
+    if (state.conversationStream?.requestId === requestId) {
+      state.conversationStream.providerConnectionId = payload.provider_connection_id || "";
+      state.conversationStream.model = payload.model || "";
+    }
+    return;
+  }
+  if (payload.type === "conversation.delta") {
+    if (state.conversationStream?.requestId === requestId && typeof payload.delta === "string") {
+      state.conversationStream.text += payload.delta;
+      updateConversationStreamDom();
+    }
+    return;
+  }
+  if (payload.type === "conversation.tool") {
+    if (state.conversationStream?.requestId === requestId) {
+      const progress = {
+        actionId: payload.action_id || "",
+        toolName: payload.tool_name || "",
+        status: payload.status || "running",
+        summary: payload.summary || "Running tool",
+      };
+      const existingIndex = (state.conversationStream.toolProgress || [])
+        .findIndex((item) => item.actionId === progress.actionId);
+      if (existingIndex >= 0) state.conversationStream.toolProgress[existingIndex] = progress;
+      else state.conversationStream.toolProgress.push(progress);
+      updateConversationStreamDom();
+    }
+    return;
+  }
+  if (payload.type === "conversation.desktop_action") {
+    try {
+      if (payload.action_type === "capability.execute") {
+        if (!desktopHost?.capability?.execute) {
+          throw new Error("This capability requires an updated My Mate Desktop.");
+        }
+        await desktopHost.capability.execute({
+          sessionId: payload.session_id || "",
+          actionId: payload.action_id || "",
+          capabilityId: payload.capability_id || "",
+          executor: payload.executor || "",
+          riskLevel: payload.risk_level || "T1",
+          arguments: payload.arguments || {},
+        });
+      } else if (payload.action_type === "capability.approve") {
+        if (!desktopHost?.capability?.approve) {
+          throw new Error("This MCP action requires an updated My Mate Desktop.");
+        }
+        await desktopHost.capability.approve({
+          sessionId: payload.session_id || "",
+          actionId: payload.action_id || "",
+          capabilityId: payload.capability_id || "",
+          executor: payload.executor || "mcp",
+          riskLevel: payload.risk_level || "T2",
+          arguments: payload.arguments || {},
+        });
+      } else {
+        if (!desktopHost?.application?.open) {
+          throw new Error("This action requires My Mate Desktop.");
+        }
+        await desktopHost.application.open({
+          sessionId: payload.session_id || "",
+          actionId: payload.action_id || "",
+          applicationName: payload.application_name || "",
+        });
+      }
+    } catch (error) {
+      state.conversationSocketError = error.message || "Desktop capability action failed.";
+    } finally {
+      if (conversationSocket?.readyState === WebSocket.OPEN) {
+        conversationSocket.send(JSON.stringify({
+          type: "conversation.desktop_result",
+          capability_request_id: payload.capability_request_id || "",
+          action_id: payload.action_id || "",
+        }));
+      }
+    }
+    return;
+  }
+  if (payload.type === "conversation.completed") {
+    conversationSocketRequests.delete(requestId);
+    state.conversationSocketStatus = "open";
+    pending.resolve(payload);
+    return;
+  }
+  if (payload.type === "conversation.error") {
+    conversationSocketRequests.delete(requestId);
+    const error = new Error(payload.message || "Conversation stream failed.");
+    error.code = payload.code || "conversation_failed";
+    error.started = pending.started;
+    pending.reject(error);
+  }
+}
+
+function openConversationSocket(sessionId) {
+  if (
+    conversationSocket &&
+    conversationSocketSessionId === sessionId &&
+    conversationSocket.readyState === WebSocket.OPEN
+  ) {
+    return Promise.resolve(conversationSocket);
+  }
+  if (
+    conversationSocket &&
+    conversationSocketSessionId === sessionId &&
+    conversationSocket.readyState === WebSocket.CONNECTING &&
+    conversationSocketOpenPromise
+  ) {
+    return conversationSocketOpenPromise;
+  }
+
+  closeConversationSocket("Conversation session changed.");
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${protocol}//${window.location.host}/api/sessions/${encodeURIComponent(sessionId)}/conversation`;
+  const socket = new WebSocket(url);
+  conversationSocket = socket;
+  conversationSocketSessionId = sessionId;
+  state.conversationSocketStatus = "connecting";
+  state.conversationSocketError = null;
+  conversationSocketOpenPromise = new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      if (socket.readyState === WebSocket.CONNECTING) socket.close();
+      reject(new Error("Conversation stream connection timed out."));
+    }, 8_000);
+    socket.addEventListener("open", () => {
+      window.clearTimeout(timeout);
+      state.conversationSocketStatus = "open";
+      conversationSocketOpenPromise = null;
+      resolve(socket);
+    }, { once: true });
+    socket.addEventListener("error", () => {
+      window.clearTimeout(timeout);
+      if (socket.readyState !== WebSocket.OPEN) reject(new Error("Conversation stream is unavailable."));
+    }, { once: true });
+  });
+  socket.addEventListener("message", handleConversationSocketEvent);
+  socket.addEventListener("close", () => {
+    if (conversationSocket !== socket) return;
+    conversationSocket = null;
+    conversationSocketSessionId = "";
+    conversationSocketOpenPromise = null;
+    state.conversationSocketStatus = "idle";
+    for (const pending of conversationSocketRequests.values()) {
+      pending.reject(new Error("Conversation stream disconnected."));
+    }
+    conversationSocketRequests.clear();
+  });
+  return conversationSocketOpenPromise;
+}
+
+async function sendConversationSocketTurn(sessionId, input) {
+  const socket = await openConversationSocket(sessionId);
+  return await new Promise((resolve, reject) => {
+    const pending = { resolve, reject, started: false };
+    conversationSocketRequests.set(input.request_id, pending);
+    socket.send(JSON.stringify({
+      type: "conversation.send",
+      ...input,
+      auth: {
+        token: state.security.apiKey || "",
+        workspace_id: state.security.workspaceId || "",
+      },
+    }));
+  });
+}
+
+function getWorkspaceRenderSignature(detail) {
+  if (!detail) return "";
+  return JSON.stringify({
+    session: detail.session || null,
+    messages: detail.messages || [],
+    latest_run: detail.latest_run || null,
+    selected_run_id: detail.selected_run_id || null,
+    workspace_state: detail.workspace_state || {},
+    next_actions: detail.next_actions || [],
+    mission_snapshot: detail.mission_snapshot || null,
+    mission_spec: detail.mission_spec || null,
+    mission_view: detail.mission_view || null,
+    attachments: detail.attachments || [],
+    route_compare: detail.route_compare || null,
+    runtime_graph: detail.runtime_graph || null,
+    runtime_projection: detail.runtime_projection || null,
+    runtime_trace: detail.runtime_trace || null,
+    runtime_scorecards: detail.runtime_scorecards || [],
+    runtime_evaluations: detail.runtime_evaluations || [],
+    runtime_replay: detail.runtime_replay || null,
+    artifacts: detail.artifacts || [],
+    pending_approvals: detail.pending_approvals || [],
+    pending_human_inputs: detail.pending_human_inputs || [],
+    interventions: detail.interventions || [],
+    dag_patches: detail.dag_patches || [],
+    supervision_alerts: detail.supervision_alerts || [],
+    autopilot: detail.autopilot || null,
+    task_checkpoint: detail.task_checkpoint || null,
+    workspace_binding: detail.workspace_binding || null,
+    ui_plan: detail.ui_plan
+      ? {
+          version: detail.ui_plan.version || null,
+          phase: detail.ui_plan.phase || null,
+          primary_action: detail.ui_plan.primary_action || null,
+          blocks: detail.ui_plan.blocks || [],
+          fallback_component: detail.ui_plan.fallback_component || null,
+        }
+      : null,
+  });
+}
+
 function applyWorkspaceSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return;
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const previousSignature = getWorkspaceRenderSignature(state.workspaceDetail);
   const latestRunId = getWorkspaceLatestRunId(snapshot);
   const currentGraph = state.workspaceDetail?.runtime_graph || null;
   const currentRuntimeProjection = state.workspaceDetail?.runtime_projection || null;
@@ -4900,7 +6005,9 @@ function applyWorkspaceSnapshot(snapshot) {
     mission_snapshot: snapshot.mission_snapshot || null,
     mission_spec: snapshot.mission_spec || null,
     mission_view: snapshot.mission_view || snapshot.mission?.mission_view || null,
-    attachments: snapshot.attachments || state.workspaceDetail?.attachments || [],
+    attachments: filterConversationInputAttachments(
+      snapshot.attachments || state.workspaceDetail?.attachments || [],
+    ),
     route_compare: snapshot.route_compare || state.workspaceDetail?.route_compare || null,
     runtime_graph:
       snapshotGraph ||
@@ -4925,8 +6032,13 @@ function applyWorkspaceSnapshot(snapshot) {
     pending_human_inputs: snapshot.pending_human_inputs || [],
     interventions: snapshot.interventions || [],
     dag_patches: snapshot.dag_patches || [],
+    supervision_alerts: snapshot.supervision_alerts || [],
+    autopilot: snapshot.autopilot || null,
+    ui_plan: snapshot.ui_plan || null,
+    workspace_binding: snapshot.workspace_binding || state.workspaceDetail?.workspace_binding || null,
   };
   reconcileWorkspaceSelection(state.workspaceDetail);
+  return previousSignature !== getWorkspaceRenderSignature(state.workspaceDetail);
 }
 
 async function loadRuntimeGraphForWorkspace(shouldRender = true) {
@@ -5055,6 +6167,48 @@ async function runRuntimeEvaluation(evaluator) {
     state.error = error.message || "Failed to run evaluation.";
   } finally {
     setActionLoading("runtime-evaluation", runId, false);
+    render();
+  }
+}
+
+async function checkTaskQuality() {
+  const runId = getWorkspaceSelectedRunId(state.workspaceDetail);
+  if (!runId || !state.workspaceDetail) return;
+  setActionLoading("task-quality", runId, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const scorecard = await request(`/api/runs/${encodeURIComponent(runId)}/scorecards`, {
+      method: "POST",
+      body: JSON.stringify({ profile: "pipeline-v1", allow_incomplete: false }),
+    });
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
+      state.workspaceDetail.runtime_scorecards = upsertRuntimeResult(
+        state.workspaceDetail.runtime_scorecards,
+        scorecard,
+        "scorecard_id",
+      );
+    }
+    let evaluation = await request(`/api/runs/${encodeURIComponent(runId)}/evaluations`, {
+      method: "POST",
+      body: JSON.stringify({ evaluator: "deterministic-v1", allow_incomplete: false }),
+    });
+    if (state.workspaceDetail && getWorkspaceSelectedRunId(state.workspaceDetail) === runId) {
+      state.workspaceDetail.runtime_evaluations = upsertRuntimeResult(
+        state.workspaceDetail.runtime_evaluations,
+        evaluation,
+        "evaluation_id",
+      );
+      render();
+    }
+    evaluation = await pollRuntimeEvaluation(runId, evaluation);
+    const quality = deriveResultQuality(state.workspaceDetail);
+    state.notice = `Quality check: ${quality.label}.`;
+  } catch (error) {
+    state.error = error.message || "Failed to check result quality.";
+  } finally {
+    setActionLoading("task-quality", runId, false);
     render();
   }
 }
@@ -5191,39 +6345,59 @@ function openSessionStream(sessionId, options = {}) {
   const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/stream${streamQuery}`);
   state.streamSource = source;
   startRuntimeSupervision(selectedRunId);
+  const isCurrentStream = () =>
+    state.streamSource === source &&
+    state.selectedSessionId === sessionId &&
+    getWorkspaceSessionId(state.workspaceDetail) === sessionId;
 
   source.addEventListener("open", () => {
+    if (!isCurrentStream()) return;
+    if (sessionStreamErrorTimer) {
+      window.clearTimeout(sessionStreamErrorTimer);
+      sessionStreamErrorTimer = null;
+    }
+    const hadVisibleError = !!state.streamError;
     state.streamStatus = "open";
     state.streamError = null;
-    render();
+    if (hadVisibleError) renderTaskWorkspaceSurface();
   });
 
   const onEvent = (event) => {
+    if (!isCurrentStream()) return;
     try {
       const payload = JSON.parse(event.data);
       if (payload?.data && (payload.type === "snapshot" || payload.type === "workspace.updated")) {
-        applyWorkspaceSnapshot(payload.data);
-        void loadRuntimeGraphForWorkspace(true);
-        render();
+        const workspaceChanged = applyWorkspaceSnapshot(payload.data);
+        if (!workspaceChanged) return;
+        if (pendingTaskMoveStreamSessions.has(sessionId)) return;
+        void loadRuntimeGraphForWorkspace(false).finally(() => {
+          if (isCurrentStream()) renderTaskWorkspaceSurface();
+        });
       }
     } catch (error) {
       state.streamError = error.message || "Failed to parse session stream.";
-      render();
+      renderTaskWorkspaceSurface();
     }
   };
 
   source.addEventListener("snapshot", onEvent);
   source.addEventListener("workspace.updated", onEvent);
   source.addEventListener("heartbeat", () => {
+    if (!isCurrentStream()) return;
     if (state.streamStatus !== "open") {
       state.streamStatus = "open";
-      render();
     }
   });
   source.addEventListener("error", () => {
+    if (!isCurrentStream()) return;
     state.streamStatus = "error";
-    state.streamError = "Session stream disconnected.";
-    render();
+    if (sessionStreamErrorTimer) window.clearTimeout(sessionStreamErrorTimer);
+    sessionStreamErrorTimer = window.setTimeout(() => {
+      sessionStreamErrorTimer = null;
+      if (!isCurrentStream() || state.streamStatus !== "error") return;
+      state.streamError = "Session stream disconnected.";
+      renderTaskWorkspaceSurface();
+    }, 1500);
   });
 }
 
@@ -5303,6 +6477,9 @@ function buildAgentProfilePayload(editor = state.registryEditor.profile) {
       profile_id: editor.profileId.trim() || slugify(editor.name),
       name: editor.name.trim(),
       description: editor.description.trim(),
+      agent_runtime: editor.agentRuntime,
+      harness_profile: editor.harnessProfile.trim() || null,
+      provider_connection_id: editor.providerConnectionId || null,
       runtime_agent_ref: editor.openclawAgentId.trim(),
       openclaw_agent_id: editor.openclawAgentId.trim(),
       default_skills: parseCsv(editor.defaultSkillsText),
@@ -5321,6 +6498,132 @@ function buildAgentProfilePayload(editor = state.registryEditor.profile) {
           runtime_mode: editor.openclawRuntimeMode.trim() || null,
         },
       },
+    },
+  };
+}
+
+function buildProviderConnectionPayload(editor = state.registryEditor.connection) {
+  const metadata = parseJsonObject(editor.metadataText);
+  if (!metadata.ok) return { ok: false, message: `Provider metadata: ${metadata.message}` };
+  if (!editor.name.trim()) return { ok: false, message: "Provider Connection name is required." };
+  if (!AGENT_RUNTIMES.includes(editor.agentRuntime)) {
+    return { ok: false, message: "Select a supported Agent Runtime." };
+  }
+  if (!PROVIDER_PROTOCOLS[editor.protocol]) {
+    return { ok: false, message: "Select a supported provider protocol." };
+  }
+  const models = [...new Set((editor.models || []).map((item) => item.trim()).filter(Boolean))];
+  if (!models.length) return { ok: false, message: "Add at least one model." };
+  const defaultModel = models.includes(editor.defaultModel) ? editor.defaultModel : models[0];
+  if (!(PROVIDER_CREDENTIAL_ENVS[editor.agentRuntime] || []).includes(editor.credentialEnv)) {
+    return { ok: false, message: "Select a credential environment variable allowed for this runtime." };
+  }
+  if (!Number.isInteger(editor.maxInputTokens) || editor.maxInputTokens < 4096 || editor.maxInputTokens > 1048576) {
+    return { ok: false, message: "Maximum input tokens must be an integer between 4,096 and 1,048,576." };
+  }
+  if (!Number.isInteger(editor.maxOutputTokens) || editor.maxOutputTokens < 1024 || editor.maxOutputTokens > 131072) {
+    return { ok: false, message: "Maximum output tokens must be an integer between 1,024 and 131,072." };
+  }
+  if (!Number.isInteger(editor.contextCompressionThresholdPercent) || editor.contextCompressionThresholdPercent < 50 || editor.contextCompressionThresholdPercent > 95) {
+    return { ok: false, message: "Compression threshold must be an integer between 50 and 95 percent." };
+  }
+  if (!Number.isInteger(editor.maxContinuationRounds) || editor.maxContinuationRounds < 0 || editor.maxContinuationRounds > 32) {
+    return { ok: false, message: "Continuation rounds must be an integer between 0 and 32." };
+  }
+  if ((editor.agentRuntime === "glm" || editor.preset === "custom") && !editor.baseUrl.trim()) {
+    return { ok: false, message: "This provider requires an endpoint." };
+  }
+  if (editor.credentialSource === "managed" && !editor.credentialConfigured && !editor.apiKey.trim()) {
+    return { ok: false, message: "API key is required." };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      connection_id: editor.connectionId.trim() || slugify(editor.name),
+      name: editor.name.trim(),
+      agent_runtime: editor.agentRuntime,
+      provider: editor.provider.trim() || PROVIDER_DEFAULTS[editor.agentRuntime]?.provider || editor.agentRuntime,
+      protocol: editor.protocol,
+      base_url: editor.baseUrl.trim() || null,
+      models,
+      default_model: defaultModel || null,
+      max_input_tokens: editor.maxInputTokens,
+      max_output_tokens: editor.maxOutputTokens,
+      context_compression_enabled: editor.contextCompressionEnabled,
+      context_compression_threshold_percent: editor.contextCompressionThresholdPercent,
+      max_continuation_rounds: editor.maxContinuationRounds,
+      credential_source: editor.credentialSource,
+      credential_env: editor.credentialEnv,
+      ...(editor.apiKey.trim() ? { api_key: editor.apiKey.trim() } : {}),
+      status: editor.status === "disabled" ? "disabled" : "active",
+      metadata: metadata.value,
+    },
+  };
+}
+
+function buildMcpServerPayload(editor = state.registryEditor.mcpServer) {
+  const headers = parseJsonObject(editor.headersText);
+  if (!headers.ok) return { ok: false, message: `MCP headers: ${headers.message}` };
+  const environment = parseJsonObject(editor.environmentText);
+  if (!environment.ok) return { ok: false, message: `MCP environment: ${environment.message}` };
+  const secrets = parseJsonObject(editor.secretsText);
+  if (!secrets.ok) return { ok: false, message: `MCP secrets: ${secrets.message}` };
+  const riskOverrides = parseJsonObject(editor.riskOverridesText);
+  if (!riskOverrides.ok) return { ok: false, message: `MCP risk overrides: ${riskOverrides.message}` };
+  if (!editor.name.trim()) return { ok: false, message: "MCP server name is required." };
+  if (!['stdio', 'streamable-http'].includes(editor.transport)) {
+    return { ok: false, message: "Select a supported MCP transport." };
+  }
+  if (editor.transport === "stdio" && !desktopHost?.mcp?.configure) {
+    return { ok: false, message: "Stdio MCP servers require My Mate Desktop." };
+  }
+  if (editor.transport === "stdio" && !editor.command.trim()) {
+    return { ok: false, message: "Stdio MCP server executable is required." };
+  }
+  if (editor.transport === "streamable-http" && !editor.url.trim()) {
+    return { ok: false, message: "Streamable HTTP MCP URL is required." };
+  }
+  const preset = state.mcpConnectorPresets.find((item) => item.preset_id === editor.presetId) || null;
+  const presetSecretValues = Object.fromEntries(
+    Object.entries(editor.presetSecretValues || {}).filter(([, value]) => typeof value === "string" && value.trim()),
+  );
+  const secretValues = {
+    ...Object.fromEntries(
+      Object.entries(secrets.value).filter(([, value]) => typeof value === "string" && value.trim()),
+    ),
+    ...presetSecretValues,
+  };
+  const missingRequiredSecret = (preset?.secrets || []).find((secret) =>
+    secret.required && !editor.secretConfigured && !secretValues[secret.name]
+  );
+  if (editor.enabled && missingRequiredSecret) {
+    return { ok: false, message: `${missingRequiredSecret.label} is required before enabling this connector.` };
+  }
+  return {
+    ok: true,
+    payload: {
+      server_id: editor.serverId.trim() || slugify(editor.name).replaceAll("-", "."),
+      name: editor.name.trim(),
+      description: editor.description.trim() || null,
+      transport: editor.transport,
+      command: editor.transport === "stdio" ? editor.command.trim() : null,
+      args: editor.transport === "stdio"
+        ? editor.argsText.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean)
+        : [],
+      url: editor.transport === "streamable-http" ? editor.url.trim() : null,
+      headers: editor.transport === "streamable-http" ? headers.value : {},
+      environment: editor.transport === "stdio" ? environment.value : {},
+      enabled: editor.enabled,
+      connect_timeout_ms: Number(editor.connectTimeoutMs),
+      tool_timeout_ms: Number(editor.toolTimeoutMs),
+      tool_filter: {
+        include: editor.includeToolsText.split(",").map((item) => item.trim()).filter(Boolean),
+        exclude: editor.excludeToolsText.split(",").map((item) => item.trim()).filter(Boolean),
+      },
+      default_risk_level: editor.defaultRiskLevel || null,
+      tool_risk_overrides: riskOverrides.value,
+      ...(Object.keys(secretValues).length ? { secrets: secretValues } : {}),
     },
   };
 }
@@ -5395,21 +6698,148 @@ async function loadTemplates(nextSelectedId = state.selectedId) {
   }
 }
 
+function getSetupConnection(preferredId = state.registryEditor.connection.connectionId) {
+  const defaultConnectionId = state.agentProfiles.find((profile) => profile.profile_id === "default-agent")
+    ?.provider_connection_id || "";
+  return selectSetupConnection(state.providerConnections, preferredId || defaultConnectionId);
+}
+
+function createSetupConnectionEditor() {
+  const editor = emptyProviderConnectionEditor();
+  editor.name = `${PROVIDER_PRESETS[editor.preset].label} default`;
+  return editor;
+}
+
+function syncSetupConnectionFromRegistry(force = false) {
+  if (!state.setup.open || (!force && state.setup.editorTouched)) return;
+  const connection = getSetupConnection();
+  if (connection) state.registryEditor.connection = editorFromProviderConnection(connection);
+}
+
+function openStudioSetup(tab = "model", shouldRender = true) {
+  const connection = getSetupConnection();
+  if (connection) {
+    state.registryEditor.connection = editorFromProviderConnection(connection);
+  } else {
+    state.registryEditor.connection = createSetupConnectionEditor();
+  }
+  state.setup.open = true;
+  state.setup.tab = tab;
+  state.setup.error = null;
+  state.setup.editorTouched = false;
+  if (shouldRender) render();
+}
+
+function maybeOpenStudioSetup() {
+  if (state.setup.initialized) return;
+  state.setup.initialized = true;
+  if (!getSetupConnection() && !state.setup.dismissed) {
+    openStudioSetup("model", false);
+  }
+}
+
 async function loadRegistry(shouldRender = true) {
   state.registryLoading = true;
   if (shouldRender) render();
   try {
-    const [profiles, skills] = await Promise.all([
+    const [connections, profiles, skills, mcpPresets, mcpServers] = await Promise.all([
+      request("/api/registry/provider-connections"),
       request("/api/registry/agent-profiles"),
       request("/api/registry/skills"),
+      request("/api/registry/mcp-connector-presets"),
+      request("/api/registry/mcp-servers"),
     ]);
+    state.providerConnections = connections.items || [];
     state.agentProfiles = profiles.items || [];
     state.skills = skills.items || [];
+    state.mcpConnectorPresets = mcpPresets.items || [];
+    state.mcpServers = mcpServers.items || [];
+    syncSetupConnectionFromRegistry();
+    const persistedAutonomy = state.agentProfiles.find((profile) => profile.profile_id === "default-agent")
+      ?.metadata?.product_autonomy_mode;
+    if (AUTONOMY_MODES.includes(persistedAutonomy)) {
+      state.product.autonomyMode = persistedAutonomy;
+      globalThis.localStorage?.setItem(STUDIO_AUTONOMY_STORAGE, persistedAutonomy);
+    }
+    maybeOpenStudioSetup();
   } catch (error) {
     state.error = error.message || "Failed to load registry.";
   } finally {
     state.registryLoading = false;
     if (shouldRender) render();
+  }
+}
+
+function syncAutonomyControlState() {
+  const activeMode = state.product.autonomyMode;
+  document.querySelectorAll(".autonomy-option[data-mode]").forEach((button) => {
+    const selected = button.dataset.mode === activeMode;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-checked", String(selected));
+    button.disabled = state.product.autonomySaving;
+  });
+  const badge = document.querySelector(".autonomy-policy-heading .badge");
+  if (badge) badge.textContent = autonomyModeCopy(activeMode).label;
+}
+
+async function saveProductAutonomyMode(mode) {
+  const nextMode = normalizeAutonomyMode(mode);
+  const profile = state.agentProfiles.find((item) => item.profile_id === "default-agent") || null;
+  const persistedMode = profile?.metadata?.product_autonomy_mode;
+  if (!state.product.autonomySaving && nextMode === state.product.autonomyMode && persistedMode === nextMode) {
+    return;
+  }
+  state.product.autonomyMode = nextMode;
+  state.product.autonomySaving = true;
+  state.error = null;
+  state.notice = null;
+  globalThis.localStorage?.setItem(STUDIO_AUTONOMY_STORAGE, nextMode);
+  syncAutonomyControlState();
+  let requiresRender = false;
+  try {
+    if (!profile) {
+      state.notice = `Saved ${autonomyModeCopy(nextMode).label} for this Studio. Model setup will bind it to the default agent.`;
+      requiresRender = true;
+      return;
+    }
+    if (isGovernedAction("agent_profile.upsert")) {
+      state.notice = `Saved ${autonomyModeCopy(nextMode).label} for this Studio. Workspace policy requires a governed Registry change before other clients inherit it.`;
+      requiresRender = true;
+      return;
+    }
+    const saved = await request("/api/registry/agent-profiles", {
+      method: "POST",
+      body: JSON.stringify({
+        profile_id: profile.profile_id,
+        name: profile.name,
+        description: profile.description || "Default task execution profile",
+        runtime_agent_ref: profile.runtime_agent_ref || "",
+        agent_runtime: profile.agent_runtime || "codex",
+        harness_profile: profile.harness_profile || "agent-harness-v1",
+        provider_connection_id: profile.provider_connection_id || null,
+        openclaw_agent_id: profile.openclaw_agent_id || "",
+        default_skills: profile.default_skills || [],
+        allowed_tools: profile.allowed_tools || [],
+        disallowed_skills: profile.disallowed_skills || [],
+        policy_tags: profile.policy_tags || [],
+        status: profile.status || "active",
+        metadata: {
+          ...(profile.metadata || {}),
+          product_autonomy_mode: nextMode,
+        },
+      }),
+    });
+    state.agentProfiles = [
+      ...state.agentProfiles.filter((item) => item.profile_id !== saved.profile_id),
+      saved,
+    ];
+  } catch (error) {
+    state.error = `${error.message || "Failed to save workspace autonomy."} The local Studio preference remains ${autonomyModeCopy(nextMode).label}.`;
+    requiresRender = true;
+  } finally {
+    state.product.autonomySaving = false;
+    if (requiresRender) render();
+    else syncAutonomyControlState();
   }
 }
 
@@ -5474,20 +6904,149 @@ async function loadMissions(shouldRender = true) {
       })}`,
     );
     state.missions = response.items || [];
-    if (state.missions[0]?.session_id) {
-      if (!state.selectedSessionId) {
-        state.selectedSessionId = state.missions[0].session_id;
-      }
-      if (state.activeNav === "orchestrator") {
-        state.activeNav = "missions";
-      }
-    }
     buildStudioLocationState();
   } catch (error) {
     state.error = error.message || "Failed to load missions.";
   } finally {
     state.missionsLoading = false;
     if (shouldRender) render();
+  }
+}
+
+async function loadInbox(shouldRender = true) {
+  state.inbox.loading = true;
+  state.inbox.error = null;
+  if (shouldRender) render();
+  try {
+    const [approvals, humanInputs, alerts, workspaceChanges, memoryCandidates] = await Promise.all([
+      request("/api/approvals"),
+      request("/api/human-inputs"),
+      request("/api/supervision/alerts?status=open"),
+      request("/api/runtime/workspace-change-sets"),
+      request("/api/memory-candidates?status=pending"),
+    ]);
+    state.inbox.approvals = approvals.items || [];
+    state.inbox.humanInputs = humanInputs.items || [];
+    state.inbox.alerts = alerts.items || [];
+    state.inbox.workspaceChanges = workspaceChanges.items || [];
+    state.inbox.memoryCandidates = memoryCandidates.items || [];
+    const selectedChangeSet = selectWorkspaceChangeSet(
+      state.inbox.workspaceChanges,
+      state.inbox.selectedWorkspaceChangeId,
+    );
+    state.inbox.selectedWorkspaceChangeId = selectedChangeSet?.change_set_id || "";
+    state.inbox.selectedWorkspaceFile = selectWorkspaceFile(
+      selectedChangeSet,
+      state.inbox.selectedWorkspaceFile,
+    )?.relative_path || "";
+  } catch (error) {
+    state.inbox.error = error.message || "Failed to load items that need attention.";
+  } finally {
+    state.inbox.loading = false;
+    if (shouldRender) render();
+  }
+}
+
+function selectWorkspaceChangeSetForReview(changeSetId) {
+  const selected = selectWorkspaceChangeSet(state.inbox.workspaceChanges, changeSetId);
+  state.inbox.selectedWorkspaceChangeId = selected?.change_set_id || "";
+  state.inbox.selectedWorkspaceFile = selectWorkspaceFile(selected)?.relative_path || "";
+  state.inbox.confirmWorkspaceChangeAction = "";
+  state.error = null;
+  render();
+}
+
+function selectWorkspaceChangeFileForReview(relativePath) {
+  const selected = selectWorkspaceChangeSet(
+    state.inbox.workspaceChanges,
+    state.inbox.selectedWorkspaceChangeId,
+  );
+  state.inbox.selectedWorkspaceFile = selectWorkspaceFile(selected, relativePath)?.relative_path || "";
+  state.inbox.confirmWorkspaceChangeAction = "";
+  render();
+}
+
+async function resolveWorkspaceChangeSet(mode) {
+  const selected = selectWorkspaceChangeSet(
+    state.inbox.workspaceChanges,
+    state.inbox.selectedWorkspaceChangeId,
+  );
+  if (!selected || !["apply", "reject"].includes(mode)) return;
+  setActionLoading("workspace-change", selected.change_set_id, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    if (mode === "apply" && desktopHost?.workspace?.applyChangeSet && state.desktop.workspace) {
+      await desktopHost.workspace.applyChangeSet({
+        capabilityId: state.desktop.workspace.capabilityId,
+        changeSetId: selected.change_set_id,
+      });
+    } else {
+      await request(
+        `/api/runtime/workspace-change-sets/${encodeURIComponent(selected.change_set_id)}/${mode}`,
+        { method: "POST", body: JSON.stringify({ comment: "Reviewed in My Mate Studio" }) },
+      );
+    }
+    state.inbox.confirmWorkspaceChangeAction = "";
+    state.inbox.selectedWorkspaceChangeId = "";
+    state.inbox.selectedWorkspaceFile = "";
+    await loadInbox(false);
+    state.notice = mode === "apply"
+      ? "Reviewed workspace changes were applied to the source folder."
+      : "Workspace changes were rejected. The source folder was not modified.";
+  } catch (error) {
+    state.error = error.message || `Failed to ${mode} workspace changes.`;
+  } finally {
+    setActionLoading("workspace-change", selected.change_set_id, false);
+    render();
+  }
+}
+
+async function resolveSupervisionAlert(alertId) {
+  if (!alertId) return;
+  setActionLoading("supervision-alert", alertId, true);
+  state.error = null;
+  try {
+    await request(`/api/supervision/alerts/${encodeURIComponent(alertId)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadInbox(false);
+    if (state.workspaceDetail) {
+      state.workspaceDetail.supervision_alerts = (state.workspaceDetail.supervision_alerts || []).filter(
+        (alert) => alert.alert_id !== alertId,
+      );
+    }
+    state.notice = "Supervisor alert dismissed. It will reopen only if the condition remains after the next scan.";
+  } catch (error) {
+    state.error = error.message || "Failed to resolve supervisor alert.";
+  } finally {
+    setActionLoading("supervision-alert", alertId, false);
+    render();
+  }
+}
+
+async function openSupervisionAlertRecommendation(sessionId, action) {
+  if (action === "open-task-settings") {
+    switchDesktopNav("settings");
+    return;
+  }
+  if (action === "open-task-library") {
+    switchDesktopNav("library");
+    return;
+  }
+  if (!sessionId) return;
+  await openSessionFromCommand("orchestrator", sessionId);
+  if (action === "scan-task-recovery") {
+    state.ui.taskRuntimeExpanded = true;
+    await scanRuntimeRecovery();
+  } else if (action === "review-task-plan") {
+    state.ui.taskPlanExpanded = true;
+    pendingWorkspaceFocus = "task-plan";
+    render();
+  } else if (action === "check-task-quality") {
+    await checkTaskQuality();
   }
 }
 
@@ -5549,15 +7108,272 @@ async function loadDashboardSummary(shouldRender = true) {
   }
 }
 
-async function loadDagProposalDetail(sessionId, proposalId) {
+async function loadMemoryStatus(shouldRender = true) {
+  state.memoryLoading = true;
+  if (shouldRender) render();
+  try {
+    const params = new URLSearchParams({
+      status: state.memory.statusFilter || "active",
+      limit: "500",
+    });
+    if (state.memory.scopeFilter !== "all") params.set("scope_kind", state.memory.scopeFilter);
+    if (state.memory.kindFilter !== "all") params.set("kind", state.memory.kindFilter);
+    if (state.memory.query.trim()) params.set("query", state.memory.query.trim());
+    const recommendationSessionId = state.selectedSessionId || state.workspaceDetail?.session?.session_id || "";
+    const [retrievalStatus, knowledgeStatus, memories, candidates, settings, observability, maintenance, intelligenceEvaluation, recommendations] = await Promise.all([
+      request("/api/memory-retrieval/status"),
+      request("/api/memory-knowledge/status"),
+      request(`/api/memories?${params.toString()}`),
+      request("/api/memory-candidates?status=pending"),
+      request("/api/memory-settings"),
+      request("/api/memory-observability"),
+      request("/api/memory-maintenance"),
+      request("/api/memory-intelligence/evaluation"),
+      recommendationSessionId
+        ? request(`/api/sessions/${encodeURIComponent(recommendationSessionId)}/memory-recommendations`)
+        : Promise.resolve(null),
+    ]);
+    state.memory.retrievalStatus = retrievalStatus;
+    state.memory.knowledgeStatus = knowledgeStatus;
+    state.memory.records = memories.items || [];
+    state.memory.candidates = candidates.items || [];
+    state.memory.settings = settings;
+    state.memory.observability = observability;
+    state.memory.maintenance = maintenance.last_run || null;
+    state.memory.intelligenceEvaluation = intelligenceEvaluation;
+    state.memory.recommendations = recommendations;
+  } catch (error) {
+    state.error = error.message || "Failed to load memory status.";
+  } finally {
+    state.memoryLoading = false;
+    if (shouldRender) render();
+  }
+}
+
+async function searchMemoryFromStudio() {
+  const query = state.memory.query.trim();
+  if (!query || state.memoryLoading) return;
+  state.memoryLoading = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.searchResult = await request("/api/memory-retrieval/search", {
+      method: "POST",
+      body: JSON.stringify({ query, limit: 12 }),
+    });
+  } catch (error) {
+    state.error = error.message || "Memory search failed.";
+  } finally {
+    state.memoryLoading = false;
+    render();
+  }
+}
+
+async function rebuildMemoryFromStudio(target) {
+  if (state.memory.rebuilding) return;
+  state.memory.rebuilding = true;
+  state.error = null;
+  render();
+  try {
+    await request(target === "knowledge" ? "/api/memory-knowledge/rebuild" : "/api/memory-retrieval/rebuild", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadMemoryStatus(false);
+    state.notice = target === "knowledge"
+      ? "Knowledge provider sync completed."
+      : "Memory index rebuilt from canonical records.";
+  } catch (error) {
+    state.error = error.message || "Memory rebuild failed.";
+  } finally {
+    state.memory.rebuilding = false;
+    render();
+  }
+}
+
+async function resolveMemoryCandidate(candidateId, decision) {
+  if (!candidateId || !["approve", "reject"].includes(decision)) return;
+  setActionLoading("memory-candidate", candidateId, true);
+  state.error = null;
+  try {
+    await request(`/api/memory-candidates/${encodeURIComponent(candidateId)}/${decision}`, {
+      method: "POST",
+      body: JSON.stringify({ note: `Reviewed in Studio: ${decision}` }),
+    });
+    await Promise.all([loadMemoryStatus(false), loadInbox(false)]);
+    state.notice = decision === "approve" ? "Memory candidate approved." : "Memory candidate rejected.";
+  } catch (error) {
+    state.error = error.message || `Failed to ${decision} memory candidate.`;
+  } finally {
+    setActionLoading("memory-candidate", candidateId, false);
+    render();
+  }
+}
+
+async function saveMemoryEdit(memoryId) {
+  const content = state.memory.editContent.trim();
+  if (!memoryId || !content) return;
+  state.memory.saving = true;
+  state.error = null;
+  render();
+  try {
+    await request(`/api/memories/${encodeURIComponent(memoryId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    });
+    state.memory.editingId = "";
+    state.memory.editContent = "";
+    await loadMemoryStatus(false);
+    state.notice = "Memory updated.";
+  } catch (error) {
+    state.error = error.message || "Failed to update memory.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function changeMemoryStatus(memoryId, mode) {
+  if (!memoryId || !["delete", "restore"].includes(mode)) return;
+  state.memory.saving = true;
+  state.error = null;
+  render();
+  try {
+    await request(`/api/memories/${encodeURIComponent(memoryId)}${mode === "restore" ? "/restore" : ""}`, {
+      method: mode === "restore" ? "POST" : "DELETE",
+      ...(mode === "restore" ? { body: JSON.stringify({}) } : {}),
+    });
+    await loadMemoryStatus(false);
+    state.notice = mode === "restore" ? "Memory restored." : "Memory moved to deleted state.";
+  } catch (error) {
+    state.error = error.message || `Failed to ${mode} memory.`;
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function saveMemorySettings() {
+  if (!state.memory.settings || state.memory.saving) return;
+  state.memory.saving = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.settings = await request("/api/memory-settings", {
+      method: "PUT",
+      body: JSON.stringify(state.memory.settings),
+    });
+    await loadMemoryStatus(false);
+    state.notice = "Memory settings saved.";
+  } catch (error) {
+    state.error = error.message || "Failed to save memory settings.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function runMemoryMaintenanceFromStudio() {
+  if (state.memory.rebuilding) return;
+  state.memory.rebuilding = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.maintenance = await request("/api/memory-maintenance", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadMemoryStatus(false);
+    state.notice = "Memory maintenance completed.";
+  } catch (error) {
+    state.error = error.message || "Memory maintenance failed.";
+  } finally {
+    state.memory.rebuilding = false;
+    render();
+  }
+}
+
+async function runMemoryMaintenanceSweepFromStudio() {
+  if (state.memory.rebuilding) return;
+  state.memory.rebuilding = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.maintenanceSweep = await request("/api/memory-maintenance/sweep", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadMemoryStatus(false);
+    const sweep = state.memory.maintenanceSweep;
+    state.notice = `Memory maintenance completed for ${sweep?.maintained_workspaces || 0} Workspace${sweep?.maintained_workspaces === 1 ? "" : "s"}.`;
+  } catch (error) {
+    state.error = error.message || "Workspace Memory maintenance failed.";
+  } finally {
+    state.memory.rebuilding = false;
+    render();
+  }
+}
+
+async function importMemoryFromStudio() {
+  if (!state.memory.importText.trim() || state.memory.saving) return;
+  state.memory.saving = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.importResult = await request("/api/memories/import", {
+      method: "POST",
+      body: JSON.stringify({
+        payload: state.memory.importText,
+        strategy: state.memory.importStrategy,
+        dry_run: state.memory.importDryRun,
+      }),
+    });
+    if (!state.memory.importDryRun) await loadMemoryStatus(false);
+    state.notice = state.memory.importDryRun ? "Import validation completed." : "Memory import completed.";
+  } catch (error) {
+    state.error = error.message || "Memory import failed.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function exportMemoryFromStudio(format) {
+  try {
+    const headers = {
+      ...(state.security.apiKey ? { authorization: `Bearer ${state.security.apiKey}` } : {}),
+      ...(state.security.workspaceId ? { "x-my-mate-workspace-id": state.security.workspaceId } : {}),
+    };
+    const response = await fetch(`/api/memories/export?format=${format === "jsonl" ? "jsonl" : "json"}&status=all`, { headers });
+    if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `memory-export.${format === "jsonl" ? "jsonl" : "json"}`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    state.notice = "Memory export downloaded.";
+  } catch (error) {
+    state.error = error.message || "Memory export failed.";
+  }
+  render();
+}
+
+async function loadDagProposalDetail(sessionId, proposalId, requestOptions = {}) {
   if (!sessionId || !proposalId) return null;
   const response = await request(
     `/api/sessions/${encodeURIComponent(sessionId)}/dag-proposals/${encodeURIComponent(proposalId)}`,
+    requestOptions,
   );
   return response.proposal || null;
 }
 
-async function loadSessionDagProposals(sessionId, shouldRender = true, workspaceSeq = null) {
+async function loadSessionDagProposals(
+  sessionId,
+  shouldRender = true,
+  workspaceSeq = null,
+  requestOptions = {},
+) {
   if (!sessionId) {
     resetDurableProposalState("");
     if (shouldRender) render();
@@ -5572,7 +7388,10 @@ async function loadSessionDagProposals(sessionId, shouldRender = true, workspace
   state.planner.proposalLoading = true;
   if (shouldRender) render();
   try {
-    const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/dag-proposals`);
+    const response = await request(
+      `/api/sessions/${encodeURIComponent(sessionId)}/dag-proposals`,
+      requestOptions,
+    );
     if (workspaceSeq !== null && workspaceSeq !== workspaceLoadSeq) return null;
     const items = response.items || [];
     state.planner.dagProposals = items;
@@ -5584,11 +7403,14 @@ async function loadSessionDagProposals(sessionId, shouldRender = true, workspace
       state.planner.confirmedProposalId ||
       items[0]?.proposal_id ||
       "";
-    const proposal = preferredId ? await loadDagProposalDetail(sessionId, preferredId) : null;
+    const proposal = preferredId
+      ? await loadDagProposalDetail(sessionId, preferredId, requestOptions)
+      : null;
     if (workspaceSeq !== null && workspaceSeq !== workspaceLoadSeq) return null;
     applyDurableProposalToPlanner(proposal);
     return proposal;
   } catch (error) {
+    if (error?.name === "AbortError") return null;
     if (workspaceSeq === null || workspaceSeq === workspaceLoadSeq) {
       state.planner.error = error.message || "Failed to load DAG proposals.";
     }
@@ -5601,90 +7423,162 @@ async function loadSessionDagProposals(sessionId, shouldRender = true, workspace
   }
 }
 
+async function hydrateSessionWorkspaceSecondary({
+  sessionId,
+  activeRunId,
+  loadSeq,
+  signal,
+  shouldRender,
+}) {
+  const [routeCompare, runtimeTrace, runtimeScorecards, runtimeEvaluations] = await Promise.all([
+    request(`/api/sessions/${encodeURIComponent(sessionId)}/compare`, { signal }).catch(() => null),
+    activeRunId
+      ? request(`/api/runs/${encodeURIComponent(activeRunId)}/trace?limit=500`, { signal }).catch(() => null)
+      : Promise.resolve(null),
+    activeRunId
+      ? request(`/api/runs/${encodeURIComponent(activeRunId)}/scorecards`, { signal }).catch(() => ({ items: [] }))
+      : Promise.resolve({ items: [] }),
+    activeRunId
+      ? request(`/api/runs/${encodeURIComponent(activeRunId)}/evaluations`, { signal }).catch(() => ({ items: [] }))
+      : Promise.resolve({ items: [] }),
+    loadSessionDagProposals(sessionId, false, loadSeq, { signal }),
+  ]);
+  if (signal.aborted || loadSeq !== workspaceLoadSeq) return;
+  if (!state.workspaceDetail || getWorkspaceSessionId(state.workspaceDetail) !== sessionId) return;
+
+  state.workspaceDetail = {
+    ...state.workspaceDetail,
+    route_compare: routeCompare,
+    runtime_trace: runtimeTrace,
+    runtime_scorecards: runtimeScorecards?.items || [],
+    runtime_evaluations: runtimeEvaluations?.items || [],
+  };
+  if (routeCompare?.left || routeCompare?.right) {
+    state.ui.routeCompareSelection = {
+      leftKey: buildRouteCompareSelectionKey(routeCompare.left?.revision, routeCompare.left?.option),
+      rightKey: buildRouteCompareSelectionKey(routeCompare.right?.revision, routeCompare.right?.option),
+    };
+  } else {
+    synchronizeRouteCompareSelection(state.workspaceDetail);
+  }
+  cacheSessionWorkspace(sessionId, "", state.workspaceDetail);
+  if (activeRunId) cacheSessionWorkspace(sessionId, activeRunId, state.workspaceDetail);
+  if (shouldRender) renderTaskWorkspaceSurface();
+  if (shouldRender) markTaskSwitchHydrated(sessionId);
+}
+
 async function loadSessionWorkspace(sessionId, shouldRender = true, options = {}) {
-  const selectedRunId = options?.runId || null;
+  const selectedRunId = options?.runId || "";
   const loadSeq = ++workspaceLoadSeq;
+  if (workspaceLoadController) workspaceLoadController.abort();
+  workspaceLoadController = new AbortController();
+  const { signal } = workspaceLoadController;
   if (!sessionId) {
     state.workspaceDetail = null;
+    state.workspaceLoadingSessionId = "";
     resetWorkspaceDrilldownState();
     resetDurableProposalState("");
     closeSessionStream();
+    closeConversationSocket();
+    state.conversationStream = null;
     if (shouldRender) render();
     return;
   }
+
   const currentSessionId = state.workspaceDetail?.session?.session_id || null;
-  if (currentSessionId && sessionId !== currentSessionId) {
-    resetWorkspaceDrilldownState();
+  const enteringSession = currentSessionId !== sessionId;
+  if (currentSessionId && enteringSession) resetWorkspaceDrilldownState();
+  if (enteringSession) resetDurableProposalState(sessionId);
+  state.workspaceLoadingSessionId = sessionId;
+
+  const cachedDetail = getCachedSessionWorkspace(sessionId, selectedRunId);
+  if (shouldRender) beginTaskSwitchMeasurement(sessionId, Boolean(cachedDetail));
+  if (cachedDetail) {
+    state.workspaceDetail = null;
+    applyWorkspaceSnapshot(cachedDetail);
+    state.selectedSessionId = sessionId;
+    if (shouldRender) {
+      renderTaskWorkspaceSurface();
+      markTaskSwitchMainVisible(sessionId);
+    }
+  } else if (shouldRender) {
+    showTaskWorkspacePending(sessionId);
   }
-  if (shouldRender) {
-    state.loading = true;
-    render();
-  }
+
   try {
     const sessionQuery = selectedRunId ? `?run_id=${encodeURIComponent(selectedRunId)}` : "";
-    const [detail, routeCompare] = await Promise.all([
-      request(`/api/sessions/${encodeURIComponent(sessionId)}${sessionQuery}`),
-      request(`/api/sessions/${encodeURIComponent(sessionId)}/compare`).catch(() => null),
-    ]);
-    if (loadSeq !== workspaceLoadSeq) return;
-    const activeRunId = getWorkspaceSelectedRunId(detail);
-    const runArtifactsPromise = activeRunId
-      ? request(`/api/runs/${encodeURIComponent(activeRunId)}/artifacts`).catch(() => null)
-      : Promise.resolve(null);
-    const [runtimeProjection, runtimeTrace, runtimeScorecards, runtimeEvaluations] = activeRunId
-      ? await Promise.all([
-          request(`/api/runs/${encodeURIComponent(activeRunId)}/runtime`).catch(() => null),
-          request(`/api/runs/${encodeURIComponent(activeRunId)}/trace?limit=500`).catch(() => null),
-          request(`/api/runs/${encodeURIComponent(activeRunId)}/scorecards`).catch(() => ({ items: [] })),
-          request(`/api/runs/${encodeURIComponent(activeRunId)}/evaluations`).catch(() => ({ items: [] })),
-        ])
-      : [null, null, { items: [] }, { items: [] }];
-    if (loadSeq !== workspaceLoadSeq) return;
+    const detail = await request(`/api/sessions/${encodeURIComponent(sessionId)}${sessionQuery}`, { signal });
+    if (signal.aborted || loadSeq !== workspaceLoadSeq) return;
+    if (state.error === "Mission not found." || state.error === "Session not found.") state.error = null;
+
+    if (getWorkspaceSessionId(state.workspaceDetail) !== sessionId) state.workspaceDetail = null;
     applyWorkspaceSnapshot({
       ...detail,
-      route_compare: routeCompare,
-      runtime_graph: runtimeProjection?.graph || detail.runtime_projection?.graph || null,
-      runtime_projection: runtimeProjection || detail.runtime_projection || null,
-      runtime_trace: runtimeTrace,
-      runtime_scorecards: runtimeScorecards?.items || [],
-      runtime_evaluations: runtimeEvaluations?.items || [],
-      runtime_replay: null,
+      route_compare: cachedDetail?.route_compare || null,
+      runtime_graph: detail.runtime_projection?.graph || null,
+      runtime_projection: detail.runtime_projection || null,
+      runtime_trace: cachedDetail?.runtime_trace || null,
+      runtime_scorecards: cachedDetail?.runtime_scorecards || [],
+      runtime_evaluations: cachedDetail?.runtime_evaluations || [],
+      runtime_replay: cachedDetail?.runtime_replay || null,
       artifacts: detail.artifacts || [],
       pending_approvals: detail.pending_approvals || [],
       pending_human_inputs: detail.pending_human_inputs || [],
       interventions: detail.interventions || [],
       dag_patches: detail.dag_patches || [],
     });
-    synchronizeRouteCompareSelection(state.workspaceDetail);
-    if (routeCompare?.left || routeCompare?.right) {
-      state.ui.routeCompareSelection = {
-        leftKey: buildRouteCompareSelectionKey(routeCompare.left?.revision, routeCompare.left?.option),
-        rightKey: buildRouteCompareSelectionKey(routeCompare.right?.revision, routeCompare.right?.option),
-      };
+    void synchronizeDesktopProjectForTask(detail);
+    if (enteringSession && state.workspaceDetail?.workspace_state?.stage === "understand") {
+      state.ui.taskConversationExpanded = true;
     }
+    if (enteringSession) {
+      const conversationTarget = getTaskConversationTarget(state.workspaceDetail);
+      state.planner.conversationProviderConnectionId = conversationTarget?.connection.connection_id || "";
+      state.planner.conversationModel = conversationTarget?.model || "";
+    }
+    synchronizeRouteCompareSelection(state.workspaceDetail);
     state.selectedSessionId = sessionId;
+    state.workspaceLoadingSessionId = "";
     buildStudioLocationState();
-    await loadSessionDagProposals(sessionId, false, loadSeq);
-    if (loadSeq !== workspaceLoadSeq) return;
+    const activeRunId = getWorkspaceSelectedRunId(state.workspaceDetail) || "";
+    cacheSessionWorkspace(sessionId, selectedRunId, state.workspaceDetail);
+    if (activeRunId) cacheSessionWorkspace(sessionId, activeRunId, state.workspaceDetail);
     openSessionStream(sessionId, { runId: activeRunId });
-    void runArtifactsPromise.then((runArtifacts) => {
-      if (loadSeq !== workspaceLoadSeq) return;
-      if (!state.workspaceDetail || getWorkspaceSelectedRunId(state.workspaceDetail) !== activeRunId) return;
-      state.workspaceDetail = {
-        ...state.workspaceDetail,
-        artifacts: runArtifacts?.items || state.workspaceDetail.artifacts || [],
-      };
-      render();
+    queueRestoredWorkspaceFocusFromLocation();
+    if (shouldRender) {
+      renderTaskWorkspaceSurface();
+      markTaskSwitchMainVisible(sessionId);
+    }
+
+    await hydrateSessionWorkspaceSecondary({
+      sessionId,
+      activeRunId,
+      loadSeq,
+      signal,
+      shouldRender,
     });
   } catch (error) {
-    if (loadSeq === workspaceLoadSeq) {
+    if (signal.aborted || error?.name === "AbortError" || loadSeq !== workspaceLoadSeq) return;
+    state.workspaceLoadingSessionId = "";
+    if (error?.status === 404 || error?.code === "not_found") {
+      closeSessionStream();
+      closeConversationSocket();
+      resetWorkspaceDrilldownState();
+      state.selectedSessionId = null;
+      state.workspaceDetail = null;
+      state.conversationStream = null;
+      state.planner.error = null;
+      state.error = null;
+      state.notice = null;
+      buildStudioLocationState();
+      void loadMissions(false);
+    } else {
       state.error = error.message || "Failed to load session workspace.";
     }
+    if (shouldRender) render();
   } finally {
-    if (loadSeq === workspaceLoadSeq) {
-      state.loading = false;
-      queueRestoredWorkspaceFocusFromLocation();
-      if (shouldRender) render();
+    if (loadSeq === workspaceLoadSeq && workspaceLoadController?.signal === signal) {
+      workspaceLoadController = null;
     }
   }
 }
@@ -5698,7 +7592,11 @@ async function loadWorkspaceData(nextSelectedId = state.selectedId) {
     loadGovernance(false),
     loadRuntimeSummary(false),
     loadDashboardSummary(false),
+    loadInbox(false),
   ];
+  if (state.activeNav === "memory") {
+    baseLoads.push(loadMemoryStatus(false));
+  }
 
   if (initialSessionId) {
     await Promise.all([...baseLoads, loadSessionWorkspace(initialSessionId, false)]);
@@ -5706,7 +7604,7 @@ async function loadWorkspaceData(nextSelectedId = state.selectedId) {
     render();
     void Promise.all([
       loadMissions(false),
-      state.activeNav === "sessions" ? loadSessions(false) : Promise.resolve(),
+      loadSessions(false),
     ]).then(() => render());
     return;
   }
@@ -5714,7 +7612,7 @@ async function loadWorkspaceData(nextSelectedId = state.selectedId) {
   await Promise.all([
     ...baseLoads,
     loadMissions(false),
-    state.activeNav === "sessions" ? loadSessions(false) : Promise.resolve(),
+    loadSessions(false),
   ]);
   if (state.selectedSessionId) {
     await loadSessionWorkspace(state.selectedSessionId, false);
@@ -5772,6 +7670,7 @@ async function resolveApproval(approvalId, decision) {
       body: JSON.stringify({ comment }),
     });
     state.notice = `Approval ${response.status || decision}.`;
+    await loadInbox(false);
   });
 }
 
@@ -5908,6 +7807,7 @@ async function selectTemplate(templateId, shouldRender = true) {
     resetAuthoringGraphSelection();
     const template = await request(`/api/templates/${encodeURIComponent(templateId)}`);
     state.editor = editorFromTemplate(template);
+    resetAuthoringEditorState();
     await loadLineage(templateId);
   } catch (error) {
     state.error = error.message || "Failed to load template.";
@@ -5933,6 +7833,13 @@ async function createDraftTemplate(editor, templateId) {
 }
 
 async function saveDraft() {
+  const topology = validateGraphTopology(state.editor);
+  if (!topology.valid) {
+    state.error = topology.errors.map((item) => item.message).join(" ");
+    state.notice = null;
+    render();
+    return;
+  }
   const draft = buildDraftPayload();
   if (!draft.ok) {
     state.error = draft.message;
@@ -6184,20 +8091,46 @@ function buildBrowserFileStorageUri(file) {
   return `browser-file://${encodeURIComponent(fileName)}`;
 }
 
-function buildAttachmentPayloadFromFile(file) {
+function conversationFileExtension(fileName) {
+  const index = String(fileName || "").lastIndexOf(".");
+  return index >= 0 ? String(fileName).slice(index).toLowerCase() : "";
+}
+
+function assertConversationFileSupported(file) {
+  const name = file?.name || "Local file";
+  const extension = conversationFileExtension(name);
+  if (CONVERSATION_SENSITIVE_FILE_PATTERN.test(name)) {
+    throw new Error(`${name} is blocked because credential and certificate files cannot be attached.`);
+  }
+  if (!CONVERSATION_TEXT_EXTENSIONS.has(extension) && !String(file?.type || "").startsWith("text/")) {
+    throw new Error(`${name} is not a supported text file. Upload Markdown, text, JSON, CSV, YAML, source code, or logs.`);
+  }
+  if (Number(file?.size || 0) > CONVERSATION_UPLOAD_MAX_BYTES) {
+    throw new Error(`${name} exceeds the 512 KB conversation attachment limit.`);
+  }
+}
+
+async function buildAttachmentPayloadFromFile(file) {
+  assertConversationFileSupported(file);
   const name = file?.name || "Local file";
   const size = typeof file?.size === "number" && Number.isFinite(file.size) ? Math.max(0, Math.floor(file.size)) : null;
+  const content = await file.text();
+  if (content.includes("\0")) {
+    throw new Error(`${name} appears to be binary and cannot be added as text context.`);
+  }
   return {
     name,
     storage_uri: buildBrowserFileStorageUri(file),
     mime_type: file?.type || undefined,
     size_bytes: size,
-    summary: "Local desktop reference captured from Studio.",
+    summary: "Uploaded text content available to the conversation model.",
     kind: "context",
     created_by: "studio",
     metadata: {
-      source: "studio_file_picker",
+      source: "studio_conversation_upload",
       browser_path_available: false,
+      relative_path: name,
+      uploaded_text_content: content,
       last_modified:
         typeof file?.lastModified === "number" && Number.isFinite(file.lastModified)
           ? new Date(file.lastModified).toISOString()
@@ -6232,20 +8165,519 @@ async function createWorkspaceAttachmentsFromFiles(fileList) {
   state.notice = null;
   render();
   try {
+    const payloads = await Promise.all(files.map((file) => buildAttachmentPayloadFromFile(file)));
     let latestResponse = null;
-    for (const file of files) {
-      latestResponse = await createWorkspaceAttachmentRequest(buildAttachmentPayloadFromFile(file));
+    for (const payload of payloads) {
+      latestResponse = await createWorkspaceAttachmentRequest(payload);
     }
     if (state.workspaceDetail && latestResponse) {
       state.workspaceDetail.attachments = latestResponse.items || [latestResponse.attachment].filter(Boolean);
     }
-    state.notice = `Attached ${files.length} local reference${files.length === 1 ? "" : "s"}.`;
+    state.notice = `Attached ${files.length} file${files.length === 1 ? "" : "s"} as model context.`;
     await Promise.all([loadMissions(false), loadSessions(false)]);
   } catch (error) {
     state.error = error.message || "Failed to attach local file reference.";
   } finally {
     state.attachmentSaving = false;
     state.attachmentFilePickerKey += 1;
+    render();
+  }
+}
+
+async function removeWorkspaceAttachment(attachmentId) {
+  if (!state.selectedSessionId || !attachmentId) return;
+  state.attachmentSaving = true;
+  state.error = null;
+  try {
+    const response = await request(
+      `/api/sessions/${encodeURIComponent(state.selectedSessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: "DELETE" },
+    );
+    if (state.workspaceDetail) state.workspaceDetail.attachments = response.items || [];
+    state.notice = `Removed ${response.attachment?.name || "attachment"} from model context.`;
+  } catch (error) {
+    state.error = error.message || "Failed to remove the attachment.";
+  } finally {
+    state.attachmentSaving = false;
+    render();
+  }
+}
+
+function reconcileDesktopWorkspace(workspace, projectsResponse) {
+  if (!workspace) return null;
+  const projects = Array.isArray(projectsResponse?.items) ? projectsResponse.items : [];
+  const active = projects.find((project) => project.active || project.projectId === workspace.projectId);
+  return active
+    ? {
+        ...workspace,
+        registeredProjectId: active.registeredProjectId || workspace.registeredProjectId || null,
+        displayName: active.name || workspace.displayName || workspace.name,
+        description: active.description ?? workspace.description ?? null,
+        outputRelativePath: active.outputRelativePath || workspace.outputRelativePath || "outputs",
+      }
+    : workspace;
+}
+
+async function initializeDesktopHost() {
+  if (!desktopHost) return;
+  state.desktop.loading = true;
+  state.desktop.error = null;
+  render();
+  try {
+    const [hostInfo, services, workspace, projects] = await Promise.all([
+      desktopHost.getHostInfo(),
+      desktopHost.getServiceStatus(),
+      desktopHost.workspace.get(),
+      desktopHost.workspace.projects?.() || Promise.resolve({ items: [] }),
+    ]);
+    state.desktop.hostInfo = hostInfo;
+    state.desktop.services = services;
+    state.desktop.projects = projects?.items || [];
+    state.desktop.workspace = reconcileDesktopWorkspace(workspace, projects);
+    if (workspace) await loadDesktopWorkspaceDirectory("");
+    desktopHost.onServiceStatus?.((nextServices) => {
+      state.desktop.services = Array.isArray(nextServices) ? nextServices : [];
+    });
+  } catch (error) {
+    state.desktop.error = error.message || "Desktop host is unavailable.";
+  } finally {
+    state.desktop.loading = false;
+    render();
+  }
+}
+
+async function chooseDesktopWorkspace(openNewTask = false) {
+  if (!desktopHost) return;
+  state.desktop.loading = true;
+  state.desktop.error = null;
+  render();
+  try {
+    const workspace = await desktopHost.workspace.choose();
+    const projects = await desktopHost.workspace.projects?.();
+    state.desktop.projects = projects?.items || state.desktop.projects;
+    state.desktop.workspace = reconcileDesktopWorkspace(workspace, projects);
+    state.desktop.listing = null;
+    if (state.desktop.workspace) await loadDesktopWorkspaceDirectory("");
+    state.ui.workspaceCreatorOpen = false;
+    state.ui.workspaceCreatorStartTask = false;
+    if (openNewTask && state.desktop.workspace) resetToNewTaskSurface();
+  } catch (error) {
+    state.desktop.error = error.message || "Failed to select the desktop workspace.";
+  } finally {
+    state.desktop.loading = false;
+    render();
+  }
+}
+
+async function createDesktopProject(openNewTask = false) {
+  if (!desktopHost?.workspace?.create) return;
+  state.desktop.loading = true;
+  state.desktop.error = null;
+  render();
+  try {
+    const workspace = await desktopHost.workspace.create({
+      name: state.desktop.projectDraft.name,
+      description: state.desktop.projectDraft.description,
+      outputRelativePath: state.desktop.projectDraft.outputRelativePath,
+    });
+    const projects = await desktopHost.workspace.projects();
+    state.desktop.projects = projects?.items || [];
+    state.desktop.workspace = reconcileDesktopWorkspace(workspace, projects);
+    state.desktop.projectDraft = { name: "", description: "", outputRelativePath: "outputs" };
+    state.desktop.listing = null;
+    if (state.desktop.workspace) await loadDesktopWorkspaceDirectory("");
+    state.ui.workspaceCreatorOpen = false;
+    state.ui.workspaceCreatorStartTask = false;
+    if (openNewTask && state.desktop.workspace) resetToNewTaskSurface();
+  } catch (error) {
+    state.desktop.error = error.message || "Failed to create the Desktop Project.";
+  } finally {
+    state.desktop.loading = false;
+    render();
+  }
+}
+
+async function selectDesktopProject(projectId, registeredProjectId = "") {
+  if (!desktopHost?.workspace?.select) return;
+  state.desktop.loading = true;
+  state.desktop.error = null;
+  try {
+    const workspace = await desktopHost.workspace.select({ projectId, registeredProjectId });
+    const projects = await desktopHost.workspace.projects();
+    state.desktop.projects = projects?.items || [];
+    state.desktop.workspace = reconcileDesktopWorkspace(workspace, projects);
+    state.desktop.listing = null;
+    if (workspace) await loadDesktopWorkspaceDirectory("");
+  } catch (error) {
+    state.desktop.error = error.message || "Failed to select the Desktop Project.";
+  } finally {
+    state.desktop.loading = false;
+    render();
+  }
+}
+
+function resetToNewTaskSurface() {
+  prepareWorkspaceSessionChange("");
+  state.activeNav = "orchestrator";
+  state.selectedSessionId = null;
+  state.workspaceDetail = null;
+  state.planner.intent = "";
+  state.planner.error = null;
+  buildStudioLocationState();
+}
+
+function openWorkspaceCreator(startTask = false) {
+  state.ui.workspaceCreatorOpen = true;
+  state.ui.workspaceCreatorStartTask = startTask;
+  state.desktop.error = null;
+  render();
+  window.setTimeout(() => {
+    document.querySelector('[data-workspace-creator-initial="true"]')?.focus();
+  }, 0);
+}
+
+function closeWorkspaceCreator() {
+  state.ui.workspaceCreatorOpen = false;
+  state.ui.workspaceCreatorStartTask = false;
+  state.desktop.error = null;
+  render();
+}
+
+async function beginNewTaskInProject(projectId = "") {
+  if (state.desktop.available && !projectId && !state.desktop.workspace) {
+    state.planner.error = "Add or create a Workspace before starting a task.";
+    openWorkspaceCreator(true);
+    return;
+  }
+  if (projectId && state.desktop.workspace?.projectId !== projectId) {
+    await selectDesktopProject(projectId);
+  }
+  state.ui.workspaceCreatorOpen = false;
+  resetToNewTaskSurface();
+  render();
+  document.querySelector('textarea[data-field="planner.intent"]')?.focus();
+}
+
+function sessionRegisteredProjectId(sessionId) {
+  const session = state.sessions.find((item) => item.session_id === sessionId) ||
+    (state.workspaceDetail?.session?.session_id === sessionId ? state.workspaceDetail.session : null);
+  return typeof session?.metadata?.local_project_id === "string"
+    ? session.metadata.local_project_id
+    : "";
+}
+
+function canMoveTaskToProject(sessionId, projectId) {
+  const project = state.desktop.projects.find((item) => item.projectId === projectId && !item.archived);
+  if (!sessionId || !project) return false;
+  return !project.registeredProjectId || sessionRegisteredProjectId(sessionId) !== project.registeredProjectId;
+}
+
+async function moveTaskToDesktopProject(sessionId, projectId) {
+  if (!desktopHost?.workspace?.moveTask || !canMoveTaskToProject(sessionId, projectId)) return;
+  const target = state.desktop.projects.find((item) => item.projectId === projectId && !item.archived);
+  if (!target) return;
+  const startedAt = performanceNow();
+  const fullRenderCountBefore = studioPerformance.fullRenderCount;
+  const taskSurfaceRenderCountBefore = studioPerformance.taskSurfaceRenderCount;
+  const activateTarget = state.selectedSessionId === sessionId;
+  state.ui.taskMoveSessionId = sessionId;
+  state.ui.taskMoveProjectId = projectId;
+  state.desktop.error = null;
+  state.error = null;
+  studioPerformance.taskMove = {
+    sessionId,
+    projectId,
+    status: "moving",
+    startedAt,
+    durationMs: null,
+    fullRenderDelta: 0,
+    taskSurfaceRenderDelta: 0,
+  };
+  publishStudioPerformance();
+  pendingTaskMoveStreamSessions.add(sessionId);
+  updateWorkspaceTaskMoveFeedback(sessionId, projectId);
+  try {
+    const response = await desktopHost.workspace.moveTask({
+      sessionId,
+      projectId,
+      activate: activateTarget,
+    });
+    if (Array.isArray(response?.projects)) state.desktop.projects = response.projects;
+    if (activateTarget && response?.workspace) {
+      state.desktop.workspace = response.workspace;
+      state.desktop.listing = null;
+    }
+    applyTaskProjectReassignment(sessionId, response);
+    const projectName = target.name || response?.project?.name || "the selected Workspace";
+    state.notice = `Moved task to ${projectName}.`;
+    state.ui.taskMoveSessionId = "";
+    state.ui.taskMoveProjectId = "";
+    renderDesktopWorkspaceTreeSurface();
+    if (activateTarget) renderDesktopWorkspaceBrowserSurface();
+    renderTaskMoveAlert("success", state.notice);
+    studioPerformance.taskMove.status = "completed";
+  } catch (error) {
+    state.desktop.error = error.message || "Failed to move the task to this Workspace.";
+    state.error = state.desktop.error;
+    renderTaskMoveAlert("danger", state.error);
+    studioPerformance.taskMove.status = "failed";
+  } finally {
+    state.ui.taskMoveSessionId = "";
+    state.ui.taskMoveProjectId = "";
+    clearWorkspaceTaskMoveFeedback();
+    studioPerformance.taskMove.durationMs = Math.round(performanceNow() - startedAt);
+    studioPerformance.taskMove.fullRenderDelta = studioPerformance.fullRenderCount - fullRenderCountBefore;
+    studioPerformance.taskMove.taskSurfaceRenderDelta =
+      studioPerformance.taskSurfaceRenderCount - taskSurfaceRenderCountBefore;
+    publishStudioPerformance();
+    window.setTimeout(() => pendingTaskMoveStreamSessions.delete(sessionId), 500);
+  }
+}
+
+function updateWorkspaceTaskMoveFeedback(sessionId, projectId) {
+  clearWorkspaceTaskMoveFeedback();
+  const task = document.querySelector(
+    `[data-workspace-task-drag-session-id="${CSS.escape(sessionId)}"]`,
+  );
+  if (task) {
+    task.classList.add("moving");
+    task.setAttribute("aria-busy", "true");
+    const subtitle = task.querySelector("small");
+    if (subtitle) {
+      task.dataset.previousSubtitle = subtitle.textContent || "";
+      subtitle.textContent = "Moving to Workspace...";
+    }
+  }
+  document.querySelector(
+    `[data-workspace-drop-project-id="${CSS.escape(projectId)}"]`,
+  )?.classList.add("receiving-task");
+}
+
+function clearWorkspaceTaskMoveFeedback() {
+  for (const task of document.querySelectorAll(".workspace-task-item.moving")) {
+    task.classList.remove("moving");
+    task.removeAttribute("aria-busy");
+    const subtitle = task.querySelector("small");
+    if (subtitle && task.dataset.previousSubtitle !== undefined) {
+      subtitle.textContent = task.dataset.previousSubtitle;
+      delete task.dataset.previousSubtitle;
+    }
+  }
+  document.querySelectorAll(".workspace-tree-project.receiving-task")
+    .forEach((project) => project.classList.remove("receiving-task"));
+}
+
+function patchWorkspaceDetailProject(detail, response) {
+  if (!detail || !response?.task_workspace) return detail;
+  return {
+    ...detail,
+    session: reassignSessionProjectMetadata(detail.session, response.task_workspace),
+    workspace_binding: response.binding || detail.workspace_binding,
+    task_workspace: response.task_workspace,
+  };
+}
+
+function applyTaskProjectReassignment(sessionId, response) {
+  const taskWorkspace = response?.task_workspace;
+  if (!taskWorkspace) return;
+  state.sessions = state.sessions.map((session) =>
+    session.session_id === sessionId ? reassignSessionProjectMetadata(session, taskWorkspace) : session,
+  );
+  if (state.workspaceDetail?.session?.session_id === sessionId) {
+    state.workspaceDetail = patchWorkspaceDetailProject(state.workspaceDetail, response);
+  }
+  for (const [key, cached] of sessionWorkspaceCache.entries()) {
+    if (!key.startsWith(`${sessionId}:`) || !cached?.detail) continue;
+    sessionWorkspaceCache.set(key, {
+      ...cached,
+      detail: patchWorkspaceDetailProject(cached.detail, response),
+    });
+  }
+}
+
+function renderDesktopWorkspaceTreeSurface() {
+  if (state.activeNav !== "orchestrator" || !state.desktop.available) return false;
+  const sidebar = document.querySelector(".orchestrator-sidebar");
+  if (!sidebar) return false;
+  const listScrollTop = sidebar.querySelector(".workspace-tree-list")?.scrollTop || 0;
+  sidebar.innerHTML = renderDesktopWorkspaceTree();
+  const nextList = sidebar.querySelector(".workspace-tree-list");
+  if (nextList) nextList.scrollTop = listScrollTop;
+  return true;
+}
+
+function renderDesktopWorkspaceBrowserSurface() {
+  const browser = document.querySelector(".desktop-local-browser");
+  if (!browser) return false;
+  browser.outerHTML = renderDesktopWorkspaceBrowser();
+  return true;
+}
+
+function renderTaskMoveAlert(tone, message) {
+  document.querySelector(".task-move-alert")?.remove();
+  const grid = document.querySelector(".app-shell > .workspace > .desktop-grid");
+  if (!grid || !message) return;
+  grid.insertAdjacentHTML(
+    "beforebegin",
+    `<div class="alert ${escapeHtml(tone)} task-move-alert">${escapeHtml(message)}</div>`,
+  );
+}
+
+async function archiveDesktopProject(projectId) {
+  if (!desktopHost?.workspace?.archiveProject || !projectId) return;
+  const archivedActiveProject = state.desktop.workspace?.projectId === projectId;
+  state.desktop.loading = true;
+  state.desktop.error = null;
+  try {
+    const result = await desktopHost.workspace.archiveProject({ projectId });
+    state.desktop.projects = result?.items || [];
+    state.desktop.workspace = reconcileDesktopWorkspace(
+      await desktopHost.workspace.get(),
+      { items: state.desktop.projects },
+    );
+    state.desktop.listing = null;
+    if (state.desktop.workspace) await loadDesktopWorkspaceDirectory("");
+    if (archivedActiveProject) resetToNewTaskSurface();
+  } catch (error) {
+    state.desktop.error = error.message || "Failed to archive the Desktop Project.";
+  } finally {
+    state.desktop.loading = false;
+    render();
+  }
+}
+
+async function synchronizeDesktopProjectForTask(detail) {
+  const registeredProjectId = detail?.task_workspace?.project?.project_id || "";
+  if (!registeredProjectId || !desktopHost?.workspace?.select) return;
+  const project = state.desktop.projects.find((item) => item.registeredProjectId === registeredProjectId && !item.archived);
+  if (!project || project.active) return;
+  await selectDesktopProject(project.projectId, registeredProjectId);
+}
+
+async function ensureDesktopWorkspaceBinding(sessionId, access = "snapshot-read") {
+  const workspace = state.desktop.workspace;
+  if (!desktopHost || !workspace || !sessionId) return null;
+  const currentResponse = await request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/workspace-binding`,
+  );
+  const current = currentResponse.binding || null;
+  if (
+    current?.status === "active" &&
+    (current.access === access || current.access === "sandbox-write")
+  ) {
+    if (state.workspaceDetail?.session?.session_id === sessionId) {
+      state.workspaceDetail.workspace_binding = current;
+    }
+    return current;
+  }
+  const response = await desktopHost.workspace.authorize({
+    capabilityId: workspace.capabilityId,
+    sessionId,
+    access,
+    scope: "session",
+  });
+  const binding = response?.binding || null;
+  const projects = await desktopHost.workspace.projects?.();
+  if (projects?.items) {
+    state.desktop.projects = projects.items;
+    state.desktop.workspace = reconcileDesktopWorkspace(
+      await desktopHost.workspace.get(),
+      projects,
+    );
+  }
+  if (state.workspaceDetail?.session?.session_id === sessionId) {
+    state.workspaceDetail.workspace_binding = binding;
+    state.workspaceDetail.task_workspace = response?.task_workspace || state.workspaceDetail.task_workspace;
+  }
+  return binding;
+}
+
+async function authorizeDesktopWorkspaceWrite() {
+  const sessionId = state.selectedSessionId || getWorkspaceSessionId(state.workspaceDetail);
+  if (!sessionId || !state.desktop.workspace) return;
+  state.desktop.loading = true;
+  state.desktop.error = null;
+  state.error = null;
+  render();
+  try {
+    const binding = await ensureDesktopWorkspaceBinding(sessionId, "sandbox-write");
+    await loadSessionWorkspace(sessionId, false);
+    state.notice = `Sandbox edits are allowed for ${binding?.display_name || state.desktop.workspace.name} in this task.`;
+    if (state.workspaceDetail?.autopilot?.pending_gate === "workspace_authorization") {
+      await request(`/api/sessions/${encodeURIComponent(sessionId)}/autopilot/resume`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      await loadSessionWorkspace(sessionId, false);
+    }
+  } catch (error) {
+    state.desktop.error = error.message || "Workspace authorization failed.";
+    state.error = state.desktop.error;
+  } finally {
+    state.desktop.loading = false;
+    render();
+  }
+}
+
+async function loadDesktopWorkspaceDirectory(relativePath = "") {
+  const workspace = state.desktop.workspace;
+  if (!desktopHost || !workspace) return;
+  state.desktop.loading = true;
+  state.desktop.error = null;
+  render();
+  try {
+    state.desktop.listing = await desktopHost.workspace.list({
+      capabilityId: workspace.capabilityId,
+      relativePath,
+    });
+  } catch (error) {
+    state.desktop.error = error.message || "Failed to read the desktop workspace.";
+  } finally {
+    state.desktop.loading = false;
+    render();
+  }
+}
+
+async function attachDesktopWorkspaceFile(relativePath) {
+  const workspace = state.desktop.workspace;
+  if (!desktopHost || !workspace || !state.selectedSessionId) return;
+  state.attachmentSaving = true;
+  state.desktop.error = null;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const file = await desktopHost.workspace.readText({
+      capabilityId: workspace.capabilityId,
+      relativePath,
+    });
+    const response = await createWorkspaceAttachmentRequest({
+      name: file.name,
+      storage_uri: file.fileUrl,
+      mime_type: file.mimeType,
+      size_bytes: file.sizeBytes,
+      summary: `Read-only desktop context from ${file.relativePath}.`,
+      kind: "context",
+      created_by: "studio-desktop",
+      metadata: {
+        source: "desktop_workspace",
+        workspace_name: workspace.name,
+        relative_path: file.relativePath,
+        modified_at: file.modifiedAt,
+        desktop_path_available: true,
+        desktop_text_content: file.content,
+      },
+    });
+    if (state.workspaceDetail) {
+      state.workspaceDetail.attachments = response.items || [response.attachment].filter(Boolean);
+    }
+    state.notice = `Attached ${file.name} with readable local content.`;
+    await Promise.all([loadMissions(false), loadSessions(false)]);
+  } catch (error) {
+    state.desktop.error = error.message || "Failed to attach the desktop file.";
+    state.error = state.desktop.error;
+  } finally {
+    state.attachmentSaving = false;
     render();
   }
 }
@@ -6322,23 +8754,46 @@ async function sendOrchestratorMessage() {
     return;
   }
 
+  if (state.desktop.available && !state.desktop.workspace) {
+    state.planner.error = "Add or create a Workspace before starting a task.";
+    openWorkspaceCreator(true);
+    return;
+  }
+
+  const conversationTarget = getSelectedConversationTarget();
+  if (!conversationTarget) {
+    state.planner.error = "Choose or verify a conversation model in Settings first.";
+    render();
+    return;
+  }
+  const requestId = globalThis.crypto?.randomUUID?.() || `conversation-${Date.now().toString(36)}`;
+  let sessionId = state.selectedSessionId;
+  let resumeLatestUser = false;
+  let workspaceBound = false;
   state.planning = true;
   state.planner.error = null;
   state.error = null;
   state.notice = null;
+  state.planner.intent = "";
+  state.conversationStream = {
+    requestId,
+    sessionId: sessionId || "",
+    userText: content,
+    text: "",
+    providerConnectionId: conversationTarget.connection.connection_id,
+    model: conversationTarget.model,
+    toolProgress: [],
+  };
   render();
   try {
-    if (state.selectedSessionId) {
-      await request(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ content }),
-      });
-      await loadSessionWorkspace(state.selectedSessionId, false);
-      state.notice = "Orchestrator updated the active mission.";
-    } else {
+    if (!sessionId) {
       const payload = {
         initial_message: content,
         created_by: "studio-orchestrator",
+        provider_connection_id: conversationTarget.connection.connection_id,
+        model: conversationTarget.model,
+        defer_conversation_reply: true,
+        autonomy_mode: state.product.autonomyMode,
       };
       if (state.orchestrator.selectedProfileId) {
         payload.orchestrator_profile_id = state.orchestrator.selectedProfileId;
@@ -6347,18 +8802,188 @@ async function sendOrchestratorMessage() {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      const sessionId = created.session?.session_id || created.session?.id || null;
+      sessionId = created.session?.session_id || created.session?.id || null;
+      resumeLatestUser = created.conversation_deferred === true;
       if (sessionId) {
         state.selectedSessionId = sessionId;
-        await Promise.all([loadMissions(false), loadSessions(false), loadSessionWorkspace(sessionId, false)]);
+        state.conversationStream.sessionId = sessionId;
+        if (state.desktop.workspace && desktopHost) {
+          await ensureDesktopWorkspaceBinding(sessionId, "snapshot-read");
+          workspaceBound = true;
+        }
+        await Promise.all([
+          loadMissions(false),
+          loadSessions(false),
+          loadSessionWorkspace(sessionId, false),
+        ]);
+        render();
       }
-      state.notice = "Started a new orchestrated mission.";
     }
-    state.planner.intent = "";
+
+    if (!sessionId) throw new Error("The new task did not return a Session id.");
+    if (state.desktop.workspace && desktopHost && !workspaceBound) {
+      try {
+        await ensureDesktopWorkspaceBinding(sessionId, "snapshot-read");
+      } catch (error) {
+        state.desktop.error = error.message || "The selected Desktop workspace could not be linked to this task.";
+      }
+    }
+    await sendConversationSocketTurn(sessionId, {
+      request_id: requestId,
+      ...(resumeLatestUser ? { resume_latest_user: true } : { content }),
+      provider_connection_id: conversationTarget.connection.connection_id,
+      model: conversationTarget.model,
+    });
+    await Promise.all([
+      loadSessionWorkspace(sessionId, false),
+      loadMissions(false),
+      loadSessions(false),
+    ]);
   } catch (error) {
-    state.error = error.message || "Failed to send instruction to orchestrator.";
+    if (sessionId && error?.started) await loadSessionWorkspace(sessionId, false);
+    state.planner.error = error.message || "Failed to send message to My Mate.";
   } finally {
     state.planning = false;
+    state.conversationStream = null;
+    render();
+  }
+}
+
+async function resumeTaskCheckpoint() {
+  const sessionId = state.workspaceDetail?.session?.session_id || state.selectedSessionId || "";
+  const checkpoint = state.workspaceDetail?.task_checkpoint || null;
+  if (!sessionId || !checkpoint?.checkpoint_id || checkpoint.status !== "resumable") return;
+  const target = getTaskConversationTarget(state.workspaceDetail) || getSelectedConversationTarget(getConversationTargets());
+  state.planning = true;
+  state.planner.error = null;
+  render();
+  try {
+    await request(
+      `/api/sessions/${encodeURIComponent(sessionId)}/checkpoints/${encodeURIComponent(checkpoint.checkpoint_id)}/resume`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ...(target?.connection?.connection_id
+            ? { provider_connection_id: target.connection.connection_id }
+            : {}),
+          ...(target?.model ? { model: target.model } : {}),
+        }),
+      },
+    );
+    await Promise.all([
+      loadSessionWorkspace(sessionId, false),
+      loadMissions(false),
+      loadSessions(false),
+    ]);
+  } catch (error) {
+    state.planner.error = error.message || "The interrupted task could not be resumed.";
+  } finally {
+    state.planning = false;
+    render();
+  }
+}
+
+async function sendTaskGuidanceDirective(action) {
+  const content = taskGuidanceDirective(action);
+  const sessionId = state.selectedSessionId || getWorkspaceSessionId(state.workspaceDetail);
+  if (!content || !sessionId) return;
+
+  state.planning = true;
+  state.planner.error = null;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    await Promise.all([
+      loadMissions(false),
+      loadSessions(false),
+      loadSessionWorkspace(sessionId, false),
+      loadInbox(false),
+    ]);
+    const guidance = deriveTaskGuidance(state.workspaceDetail);
+    if (action === "refresh-task-plan") {
+      state.notice = guidance.primaryAction === "refresh-task-plan" ? null : "Updated the task plan.";
+    } else {
+      state.notice = ["running", "paused", "decision", "result"].includes(guidance.phase)
+        ? "Started the task."
+        : null;
+    }
+  } catch (error) {
+    state.error = error.message || "My Mate could not advance the task.";
+  } finally {
+    state.planning = false;
+    render();
+  }
+}
+
+async function maybeAutoAdvanceTask(sessionId) {
+  if (
+    state.product.autonomyMode !== "autopilot" ||
+    !sessionId ||
+    state.selectedSessionId !== sessionId ||
+    autopilotAdvanceAttempts.has(sessionId)
+  ) {
+    return;
+  }
+  const experience = buildTaskExperience(state.workspaceDetail);
+  if (!experience.modelVerified || experience.guidance.primaryAction !== "start-task-work") {
+    return;
+  }
+  autopilotAdvanceAttempts.add(sessionId);
+  try {
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/autopilot`, {
+      method: "PUT",
+      body: JSON.stringify({ mode: "autopilot", max_iterations: 12, max_runtime_minutes: 120 }),
+    });
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/autopilot/resume`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadSessionWorkspace(sessionId, false);
+    state.notice = "Autopilot started within the configured policy boundaries.";
+  } catch (error) {
+    state.error = error.message || "Autopilot could not start.";
+    render();
+  }
+}
+
+async function controlTaskAutopilot(action) {
+  const sessionId = state.selectedSessionId || getWorkspaceSessionId(state.workspaceDetail);
+  if (!sessionId) return;
+  setActionLoading("task-autopilot", sessionId, true);
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    if (action === "resume") {
+      await request(`/api/sessions/${encodeURIComponent(sessionId)}/autopilot`, {
+        method: "PUT",
+        body: JSON.stringify({ mode: state.product.autonomyMode }),
+      });
+    }
+    const controller = await request(
+      `/api/sessions/${encodeURIComponent(sessionId)}/autopilot/${encodeURIComponent(action)}`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    if (state.workspaceDetail) state.workspaceDetail.autopilot = controller;
+    await loadSessionWorkspace(sessionId, false);
+    state.notice = controller.status === "blocked" || controller.status === "failed"
+      ? null
+      : controller.status === "waiting_human"
+        ? "Autopilot is waiting for a required human decision."
+        : action === "pause"
+          ? "Autopilot paused."
+          : action === "resume"
+            ? "Autopilot resumed."
+            : "Autopilot checked the task.";
+  } catch (error) {
+    state.error = error.message || `Autopilot ${action} failed.`;
+  } finally {
+    setActionLoading("task-autopilot", sessionId, false);
     render();
   }
 }
@@ -6383,6 +9008,24 @@ function getMissionInventoryLabels(mission) {
   };
 }
 
+function getTaskInventoryLabels(mission) {
+  const snapshot = mission?.mission_snapshot || null;
+  const title =
+    snapshot?.missionTitle ||
+    mission?.mission_view?.title ||
+    mission?.mission_spec?.objective ||
+    mission?.title ||
+    "Untitled task";
+  const status = String(snapshot?.missionStatusLabel || mission?.status || "ready").replaceAll("_", " ");
+  const next = snapshot?.nextActionLabel || mission?.mission_view?.nextActionLabel || "";
+  const subtitle = next && !/route|revision|dag|plan/i.test(next) ? next : status;
+  return {
+    title,
+    subtitle: mission?.archived ? `Archived / ${subtitle}` : subtitle,
+    tone: snapshot?.missionStatusTone || statusTone(mission?.status || "ready"),
+  };
+}
+
 function getSessionInventoryLabels(session) {
   const title = session.title || session.session_id || "Untitled session";
   const subtitle = session.archived
@@ -6397,12 +9040,31 @@ function getActiveSessionInventoryItems() {
 
 function switchDesktopNav(nav) {
   state.activeNav = nav;
+  if (TASK_NAV_IDS.has(nav)) state.ui.navigationTab = "task";
+  if (ADVANCED_NAV_IDS.has(nav)) state.ui.navigationTab = "advanced";
   state.error = null;
   if (nav === "dashboard" && !state.dashboardSummary && !state.dashboardLoading) {
     void loadDashboardSummary(false).then(() => render());
   }
+  if (nav === "inbox" && !state.inbox.loading) {
+    void loadInbox(false).then(() => render());
+  }
+  if (nav === "memory" && !state.memory.retrievalStatus && !state.memoryLoading) {
+    void loadMemoryStatus(false).then(() => render());
+  }
   buildStudioLocationState();
   render();
+}
+
+function switchDesktopNavigationTab(tab) {
+  const nextTab = tab === "advanced" ? "advanced" : "task";
+  const currentTab = ADVANCED_NAV_IDS.has(state.activeNav) ? "advanced" : "task";
+  state.ui.navigationTab = nextTab;
+  if (nextTab === currentTab) {
+    render();
+    return;
+  }
+  switchDesktopNav(nextTab === "advanced" ? "missions" : "orchestrator");
 }
 
 function queueCommandPaletteFocus(mode = "end") {
@@ -6428,7 +9090,7 @@ function closeCommandPalette() {
 async function openSessionFromCommand(nav, sessionId, options = {}) {
   if (!sessionId) return;
   prepareWorkspaceSessionChange(sessionId);
-  state.activeNav = nav === "orchestrator" ? "missions" : nav;
+  state.activeNav = nav;
   state.selectedSessionId = sessionId;
   pendingSessionInventoryScroll = true;
   await loadSessionWorkspace(sessionId, true, options);
@@ -6847,6 +9509,7 @@ function afterRender() {
   applyPendingAuthoringGraphFocus();
   applyPendingSessionInventoryScroll();
   applyPendingRuntimeNodeFocus();
+  void hydrateArtifactMermaidDiagrams();
 }
 
 async function saveOrchestratorProfile() {
@@ -7016,6 +9679,313 @@ async function saveAgentProfile() {
     state.error = error.message || "Failed to save agent profile.";
   } finally {
     state.registrySaving = false;
+    render();
+  }
+}
+
+async function saveProviderConnection() {
+  const draft = buildProviderConnectionPayload();
+  if (!draft.ok) {
+    state.error = draft.message;
+    state.notice = null;
+    render();
+    return;
+  }
+
+  state.registrySaving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const saved = await request("/api/registry/provider-connections", {
+      method: "POST",
+      body: JSON.stringify(draft.payload),
+    });
+    state.notice = `Saved Provider Connection ${saved.connection_id}`;
+    state.registryEditor.connection = editorFromProviderConnection(saved);
+    await loadRegistry(false);
+    if (state.registryEditor.profile.mode === "new" && !state.registryEditor.profile.providerConnectionId) {
+      updateAgentProfileEditor({
+        agentRuntime: saved.agent_runtime,
+        providerConnectionId: saved.connection_id,
+        openclawProvider: saved.provider,
+      });
+    }
+    state.ui.providerConnectionModalOpen = false;
+  } catch (error) {
+    state.error = error.message || "Failed to save Provider Connection.";
+  } finally {
+    state.registrySaving = false;
+    render();
+  }
+}
+
+async function testProviderConnection(connectionId = state.registryEditor.connection.connectionId) {
+  const id = connectionId.trim();
+  if (!id) {
+    state.error = "Save the Provider Connection before testing it.";
+    render();
+    return;
+  }
+
+  state.providerConnectionTestingId = id;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const result = await request(
+      `/api/registry/provider-connections/${encodeURIComponent(id)}/test`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    const updated = result.connection;
+    state.providerConnections = state.providerConnections.map((connection) =>
+      connection.connection_id === updated.connection_id ? updated : connection
+    );
+    state.registryEditor.connection = editorFromProviderConnection(updated);
+    state.notice = result.verification?.status === "verified"
+      ? `Connection verified: ${updated.name}`
+      : `Connection test failed: ${updated.name}`;
+  } catch (error) {
+    state.error = error.code === "route_not_found"
+      ? "The running API Gateway does not expose connection testing yet. Restart the API Gateway and try again."
+      : error.message || "Connection test could not be completed.";
+  } finally {
+    state.providerConnectionTestingId = "";
+    render();
+  }
+}
+
+async function saveMcpServer() {
+  const draft = buildMcpServerPayload();
+  if (!draft.ok) {
+    state.error = draft.message;
+    state.notice = null;
+    render();
+    return;
+  }
+  state.registrySaving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const saved = draft.payload.transport === "stdio"
+      ? await desktopHost.mcp.configure({ operation: "upsert", workspaceId: state.security.workspaceId || "default", config: draft.payload })
+      : await request("/api/registry/mcp-servers", { method: "POST", body: JSON.stringify(draft.payload) });
+    state.registryEditor.mcpServer = editorFromMcpServer(saved);
+    state.ui.mcpServerModalOpen = false;
+    state.notice = saved.status === "error"
+      ? `Saved ${saved.name}, but connection failed: ${saved.last_error || "unknown error"}`
+      : `Saved MCP server ${saved.name}`;
+    await loadRegistry(false);
+  } catch (error) {
+    state.error = error.message || "Failed to save MCP server.";
+  } finally {
+    state.registrySaving = false;
+    render();
+  }
+}
+
+async function testMcpServer(serverId = state.registryEditor.mcpServer.serverId) {
+  const id = serverId.trim();
+  const server = state.mcpServers.find((item) => item.server_id === id);
+  if (!server) {
+    state.error = "Save the MCP server before testing it.";
+    render();
+    return;
+  }
+  state.mcpServerTestingId = id;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const updated = server.transport === "stdio"
+      ? await desktopHost.mcp.configure({ operation: "test", workspaceId: state.security.workspaceId || "default", serverId: id })
+      : await request(`/api/registry/mcp-servers/${encodeURIComponent(id)}/test`, { method: "POST", body: JSON.stringify({}) });
+    state.notice = `${updated.name} discovered ${(updated.discovered_tools || []).length} MCP tool(s).`;
+    state.registryEditor.mcpServer = editorFromMcpServer(updated);
+    await loadRegistry(false);
+  } catch (error) {
+    state.error = error.message || "MCP connection test failed.";
+    await loadRegistry(false);
+  } finally {
+    state.mcpServerTestingId = "";
+    render();
+  }
+}
+
+async function setMcpServerEnabled(serverId, enabled) {
+  const server = state.mcpServers.find((item) => item.server_id === serverId);
+  if (!server) return;
+  state.registryDisabling = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const updated = enabled && server.transport === "stdio"
+      ? await desktopHost.mcp.configure({ operation: "enable", workspaceId: state.security.workspaceId || "default", serverId })
+      : await request(`/api/registry/mcp-servers/${encodeURIComponent(serverId)}/${enabled ? "enable" : "disable"}`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+    state.notice = `${updated.name} is ${updated.enabled ? "enabled" : "disabled"}.`;
+    state.ui.mcpServerModalOpen = false;
+    await loadRegistry(false);
+  } catch (error) {
+    state.error = error.message || `Failed to ${enabled ? "enable" : "disable"} MCP server.`;
+  } finally {
+    state.registryDisabling = false;
+    render();
+  }
+}
+
+async function runSetupEnvironmentChecks() {
+  state.setup.environmentLoading = true;
+  state.setup.error = null;
+  render();
+  try {
+    const [hostResult, dockerResult] = await Promise.allSettled([
+      request("/api/diagnostics/doctor", {
+        method: "POST",
+        body: JSON.stringify({ mode: "quick", runtime: "local" }),
+      }),
+      request("/api/diagnostics/doctor", {
+        method: "POST",
+        body: JSON.stringify({ mode: "docker", runtime: "docker-worker" }),
+      }),
+    ]);
+    state.setup.hostReport = hostResult.status === "fulfilled" ? hostResult.value : null;
+    state.setup.dockerReport = dockerResult.status === "fulfilled" ? dockerResult.value : null;
+    if (hostResult.status === "rejected" && dockerResult.status === "rejected") {
+      throw new Error("Environment checks could not reach Doctor.");
+    }
+    if (hostResult.status === "rejected" || dockerResult.status === "rejected") {
+      state.setup.error = hostResult.status === "rejected"
+        ? "Host environment check failed to run."
+        : "Docker environment check failed to run.";
+    }
+  } catch (error) {
+    state.setup.error = error.message || "Environment checks failed.";
+  } finally {
+    state.setup.environmentLoading = false;
+    render();
+  }
+}
+
+async function saveSetupModel() {
+  const editor = state.registryEditor.connection;
+  if (!editor.name.trim()) {
+    editor.name = `${PROVIDER_PRESETS[editor.preset]?.label || "Model"} default`;
+  }
+  const draft = buildProviderConnectionPayload(editor);
+  if (!draft.ok) {
+    state.setup.error = draft.message;
+    render();
+    return;
+  }
+
+  state.setup.modelSaving = true;
+  state.setup.error = null;
+  render();
+  let savedSuccessfully = false;
+  try {
+    const saved = await request("/api/registry/provider-connections", {
+      method: "POST",
+      body: JSON.stringify(draft.payload),
+    });
+    const currentDefault = state.agentProfiles.find((profile) => profile.profile_id === "default-agent");
+    await request("/api/registry/agent-profiles", {
+      method: "POST",
+      body: JSON.stringify({
+        profile_id: "default-agent",
+        name: currentDefault?.name || "Default Agent",
+        description: currentDefault?.description || "Default task execution profile",
+        agent_runtime: saved.agent_runtime,
+        harness_profile: currentDefault?.harness_profile || "agent-harness-v1",
+        provider_connection_id: saved.connection_id,
+        runtime_agent_ref: currentDefault?.agent_runtime === saved.agent_runtime ? currentDefault?.runtime_agent_ref || "" : "",
+        openclaw_agent_id: currentDefault?.agent_runtime === saved.agent_runtime ? currentDefault?.openclaw_agent_id || "" : "",
+        default_skills: currentDefault?.default_skills || [],
+        allowed_tools: currentDefault?.allowed_tools || [],
+        disallowed_skills: currentDefault?.disallowed_skills || [],
+        policy_tags: currentDefault?.policy_tags || [],
+        status: "active",
+        metadata: {
+          ...(currentDefault?.metadata || {}),
+          setup_managed: true,
+          product_autonomy_mode: state.product.autonomyMode,
+        },
+      }),
+    });
+    await loadRegistry(false);
+    state.registryEditor.connection = editorFromProviderConnection(saved);
+    const tested = await request(
+      `/api/registry/provider-connections/${encodeURIComponent(saved.connection_id)}/test`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    state.providerConnections = state.providerConnections.map((connection) =>
+      connection.connection_id === tested.connection.connection_id ? tested.connection : connection
+    );
+    state.registryEditor.connection = editorFromProviderConnection(tested.connection);
+    state.setup.editorTouched = false;
+    if (tested.verification?.status === "verified") {
+      state.setup.tab = "environment";
+      state.notice = `${saved.name} verified and ready.`;
+      savedSuccessfully = true;
+    } else {
+      state.setup.tab = "model";
+      state.setup.error = `Connection saved, but verification failed: ${tested.verification?.detail || "Provider request failed."}`;
+    }
+  } catch (error) {
+    state.setup.error = error.code === "route_not_found"
+      ? "The running API Gateway is out of date. Restart it, then run Save & verify again."
+      : error.message || "Failed to save and verify the model configuration.";
+  } finally {
+    state.setup.modelSaving = false;
+    render();
+  }
+  if (savedSuccessfully) await runSetupEnvironmentChecks();
+}
+
+function dismissStudioSetup() {
+  state.setup.open = false;
+  state.setup.dismissed = true;
+  globalThis.localStorage?.setItem(STUDIO_SETUP_DISMISSED_STORAGE, "1");
+  render();
+}
+
+function finishStudioSetup() {
+  state.setup.open = false;
+  state.setup.dismissed = false;
+  globalThis.localStorage?.removeItem(STUDIO_SETUP_DISMISSED_STORAGE);
+  state.notice = "Setup complete.";
+  render();
+}
+
+async function disableProviderConnection() {
+  const connectionId = state.registryEditor.connection.connectionId.trim();
+  if (!connectionId) {
+    state.error = "Select a saved Provider Connection before disabling.";
+    render();
+    return;
+  }
+
+  state.registryDisabling = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    const disabled = await request(
+      `/api/registry/provider-connections/${encodeURIComponent(connectionId)}/disable`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    state.notice = `Disabled Provider Connection ${disabled.connection_id}`;
+    state.registryEditor.connection = editorFromProviderConnection(disabled);
+    await loadRegistry(false);
+    state.ui.providerConnectionModalOpen = false;
+  } catch (error) {
+    state.error = error.message || "Failed to disable Provider Connection.";
+  } finally {
+    state.registryDisabling = false;
     render();
   }
 }
@@ -7639,8 +10609,124 @@ function updateEditor(patch) {
   render();
 }
 
+function authoringGraphSnapshot(editor = state.editor) {
+  return {
+    nodes: structuredClone(editor.nodes || []),
+    edges: structuredClone(editor.edges || []),
+    metadataText: editor.metadataText || "{}",
+  };
+}
+
+function resetAuthoringEditorState(saved = true) {
+  const snapshot = authoringGraphSnapshot();
+  authoringGraphHistory = createGraphHistory(snapshot);
+  if (saved) authoringGraphSavedSnapshot = structuredClone(snapshot);
+  authoringGraphConnection = null;
+}
+
+function recordAuthoringMutation() {
+  authoringGraphHistory = commitGraphHistory(authoringGraphHistory, authoringGraphSnapshot());
+}
+
+function restoreAuthoringSnapshot(snapshot) {
+  state.editor = {
+    ...state.editor,
+    nodes: structuredClone(snapshot.nodes),
+    edges: structuredClone(snapshot.edges),
+    metadataText: snapshot.metadataText,
+  };
+  resetAuthoringGraphSelection();
+  render();
+}
+
+function undoAuthoringGraph() {
+  const next = undoGraphHistory(authoringGraphHistory);
+  if (next === authoringGraphHistory) return;
+  authoringGraphHistory = next;
+  restoreAuthoringSnapshot(next.present);
+}
+
+function redoAuthoringGraph() {
+  const next = redoGraphHistory(authoringGraphHistory);
+  if (next === authoringGraphHistory) return;
+  authoringGraphHistory = next;
+  restoreAuthoringSnapshot(next.present);
+}
+
+function getAuthoringPositions(editor = state.editor) {
+  const parsed = parseJsonObject(editor.metadataText || "{}");
+  const positions = parsed.ok && parsed.value.authoring_layout?.positions;
+  return positions && typeof positions === "object" && !Array.isArray(positions) ? positions : {};
+}
+
+function setAuthoringNodePosition(nodeId, position) {
+  const parsed = parseJsonObject(state.editor.metadataText || "{}");
+  const metadata = parsed.ok ? parsed.value : {};
+  state.editor.metadataText = prettyJson({
+    ...metadata,
+    authoring_layout: {
+      ...(metadata.authoring_layout || {}),
+      positions: {
+        ...getAuthoringPositions(),
+        [nodeId]: { x: Math.round(position.x), y: Math.round(position.y) },
+      },
+    },
+  });
+}
+
+resetAuthoringEditorState();
+
+function handleAuthoringPortOut(index) {
+  const node = state.editor.nodes[index];
+  if (!node) return;
+  const selection = state.ui.authoringGraphSelection;
+  if (selection?.type === "edge" && state.editor.edges[selection.index]) {
+    updateEdge(selection.index, { from: node.id, from_port: "success" });
+    return;
+  }
+  authoringGraphConnection = { sourceIndex: index, sourcePort: "success" };
+  selectAuthoringGraphItem("node", index);
+}
+
+function handleAuthoringPortIn(index) {
+  const node = state.editor.nodes[index];
+  if (!node) return;
+  const selection = state.ui.authoringGraphSelection;
+  if (authoringGraphConnection) {
+    const source = state.editor.nodes[authoringGraphConnection.sourceIndex];
+    if (source && source.id !== node.id) {
+      state.editor.edges = [...state.editor.edges, {
+        from: source.id,
+        to: node.id,
+        from_port: authoringGraphConnection.sourcePort,
+        to_port: "input",
+        condition: null,
+        label: null,
+      }];
+      recordAuthoringMutation();
+      state.ui.authoringGraphSelection = { type: "edge", index: state.editor.edges.length - 1 };
+    }
+    authoringGraphConnection = null;
+    render();
+    return;
+  }
+  if (selection?.type === "edge" && state.editor.edges[selection.index]) {
+    updateEdge(selection.index, { to: node.id, to_port: "input" });
+  }
+}
+
+function deleteAuthoringSelection() {
+  const selection = state.ui.authoringGraphSelection;
+  if (selection?.type === "node") removeNode(selection.index);
+  if (selection?.type === "edge") removeEdge(selection.index);
+}
+
 function updateAgentProfileEditor(patch) {
   state.registryEditor.profile = { ...state.registryEditor.profile, ...patch };
+}
+
+function updateProviderConnectionEditor(patch) {
+  state.registryEditor.connection = { ...state.registryEditor.connection, ...patch };
 }
 
 function updateSkillEditor(patch) {
@@ -7651,6 +10737,7 @@ function updateNode(index, patch) {
   state.editor.nodes = state.editor.nodes.map((node, nodeIndex) =>
     nodeIndex === index ? { ...node, ...patch } : node,
   );
+  recordAuthoringMutation();
   render();
 }
 
@@ -7659,11 +10746,13 @@ function removeNode(index) {
   state.editor.nodes = state.editor.nodes.filter((_, nodeIndex) => nodeIndex !== index);
   state.editor.edges = state.editor.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id);
   state.ui.authoringGraphSelection = { type: "none", index: null };
+  recordAuthoringMutation();
   render();
 }
 
 function addNode() {
   state.editor.nodes = [...state.editor.nodes, emptyNode(state.editor.nodes.length + 1)];
+  recordAuthoringMutation();
   render();
 }
 
@@ -7677,6 +10766,7 @@ function addEdge() {
       label: null,
     },
   ];
+  recordAuthoringMutation();
   render();
 }
 
@@ -7684,6 +10774,7 @@ function updateEdge(index, patch) {
   state.editor.edges = state.editor.edges.map((edge, edgeIndex) =>
     edgeIndex === index ? { ...edge, ...patch } : edge,
   );
+  recordAuthoringMutation();
   render();
 }
 
@@ -7696,6 +10787,7 @@ function removeEdge(index) {
         ? { type: "none", index: null }
         : { type: "edge", index: selection.index > index ? selection.index - 1 : selection.index };
   }
+  recordAuthoringMutation();
   render();
 }
 
@@ -7816,27 +10908,43 @@ function renderSessionList() {
 }
 
 function renderDesktopNav() {
-  const items = [
-    { id: "orchestrator", label: "Orchestrator" },
-    { id: "missions", label: "Missions" },
-    { id: "sessions", label: "Sessions" },
-    { id: "dashboard", label: "Dashboard" },
-    { id: "agents", label: "Subagents" },
-    { id: "templates", label: "Templates" },
-    { id: "registry", label: "Registry" },
+  const primaryItems = [
+    { id: "orchestrator", label: "Tasks" },
+    { id: "inbox", label: "Inbox", count: getInboxOpenCount() },
+    { id: "library", label: "Library" },
     { id: "settings", label: "Settings" },
   ];
+  const advancedItems = [
+    { id: "missions", label: "Mission workspace" },
+    { id: "sessions", label: "Sessions" },
+    { id: "dashboard", label: "Runtime dashboard" },
+    { id: "memory", label: "Memory" },
+    { id: "agents", label: "Subagents" },
+    { id: "templates", label: "Workflow editor" },
+    { id: "registry", label: "Registry" },
+    { id: "operations", label: "System details" },
+  ];
+  const activeTab = ADVANCED_NAV_IDS.has(state.activeNav)
+    ? "advanced"
+    : TASK_NAV_IDS.has(state.activeNav)
+      ? "task"
+      : state.ui.navigationTab;
+  const visibleItems = activeTab === "advanced" ? advancedItems : primaryItems;
+  const renderItems = (items) => items.map((item) => `
+    <button class="desktop-nav-item ${state.activeNav === item.id ? "selected" : ""}" data-action="switch-nav" data-nav="${item.id}">
+      <strong>${item.label}</strong>
+      ${Number(item.count || 0) > 0 ? `<span class="desktop-nav-count">${item.count}</span>` : ""}
+    </button>
+  `).join("");
   return `
-    <nav class="desktop-nav">
-      ${items
-        .map(
-          (item) => `
-            <button class="desktop-nav-item ${state.activeNav === item.id ? "selected" : ""}" data-action="switch-nav" data-nav="${item.id}">
-              <strong>${item.label}</strong>
-            </button>
-          `,
-        )
-        .join("")}
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <div class="desktop-nav-tabs" role="tablist" aria-label="Task Workspace navigation">
+        <button class="desktop-nav-tab ${activeTab === "task" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "task"}" data-action="switch-navigation-tab" data-tab="task">Task</button>
+        <button class="desktop-nav-tab ${activeTab === "advanced" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "advanced"}" data-action="switch-navigation-tab" data-tab="advanced">Advanced</button>
+      </div>
+      <div class="desktop-nav-bookmark-panel ${activeTab}" role="tabpanel" aria-label="${activeTab === "advanced" ? "Advanced" : "Task"} navigation">
+        ${renderItems(visibleItems)}
+      </div>
     </nav>
   `;
 }
@@ -8763,7 +11871,7 @@ function renderRegistryPanel() {
                 (profile) => `
                   <div class="registry-item">
                     <strong>${escapeHtml(profile.profile_id)}</strong>
-                    <small>${escapeHtml(runtimeAgentRefOf(profile) || "unbound")} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
+                    <small>${escapeHtml(runtimeAgentRefOf(profile) || profile.provider_connection_id || "unbound")} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
                   </div>
                 `,
               )
@@ -8819,6 +11927,14 @@ function renderLineagePanel(readOnly) {
 function renderAgentProfileManager() {
   const editor = state.registryEditor.profile;
   const selectedId = editor.profileId;
+  const compatibleConnections = state.providerConnections.filter(
+    (connection) => connection.status === "active" || connection.connection_id === editor.providerConnectionId,
+  );
+  const selectedConnection = state.providerConnections.find(
+    (connection) => connection.connection_id === editor.providerConnectionId,
+  );
+  const modelLabel = editor.agentRuntime === "openclaw" ? "Agent ID" : "Model override";
+  const modelPlaceholder = selectedConnection?.default_model || PROVIDER_DEFAULTS[editor.agentRuntime]?.modelPlaceholder || "Optional";
   return `
     <div class="registry-manager-column">
       <div class="registry-manager-header">
@@ -8837,7 +11953,7 @@ function renderAgentProfileManager() {
                     <button class="registry-record ${profile.profile_id === selectedId ? "selected" : ""}" data-action="edit-agent-profile" data-id="${escapeHtml(profile.profile_id)}">
                       <span>
                         <strong>${escapeHtml(profile.profile_id)}</strong>
-                        <small>${escapeHtml(runtimeAgentRefOf(profile) || "unbound")} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
+                        <small>${escapeHtml(providerRuntimeLabel(profile.agent_runtime || "openclaw"))} / ${escapeHtml(profile.provider_connection_id || "no connection")}</small>
                       </span>
                       <span class="badge ${profile.status === "active" ? "success" : "neutral"}">${escapeHtml(profile.status)}</span>
                     </button>
@@ -8848,31 +11964,493 @@ function renderAgentProfileManager() {
         }
       </div>
       <div class="registry-form">
-        <div class="form-grid compact">
-          <label>ID<input value="${escapeHtml(editor.profileId)}" data-field="agent.profileId" ${editor.mode === "edit" ? "disabled" : ""} /></label>
-          <label>Status
-            <select data-field="agent.status">
-              <option value="active" ${editor.status === "active" ? "selected" : ""}>active</option>
-              <option value="disabled" ${editor.status === "disabled" ? "selected" : ""}>disabled</option>
+        <div class="registry-form-title">
+          <strong>${editor.mode === "edit" ? "Edit profile" : "New profile"}</strong>
+          <span>${escapeHtml(providerRuntimeLabel(editor.agentRuntime))}</span>
+        </div>
+        <div class="form-grid compact registry-primary-fields">
+          <label class="span-2">Profile name<input value="${escapeHtml(editor.name)}" data-field="agent.name" placeholder="Research agent" /></label>
+          <label class="span-2">Provider Connection
+            <select data-field="agent.providerConnectionId">
+              <option value="">No connection</option>
+              ${compatibleConnections.map((connection) => `<option value="${escapeHtml(connection.connection_id)}" ${editor.providerConnectionId === connection.connection_id ? "selected" : ""} ${connection.status !== "active" ? "disabled" : ""}>${escapeHtml(connection.name)}${connection.default_model ? ` / ${escapeHtml(connection.default_model)}` : ""}${connection.status !== "active" ? " (disabled)" : ""}</option>`).join("")}
             </select>
           </label>
-          <label>Name<input value="${escapeHtml(editor.name)}" data-field="agent.name" /></label>
-          <label>Runtime agent<input value="${escapeHtml(editor.openclawAgentId)}" data-field="agent.openclawAgentId" /></label>
-          <label>Runtime provider<input value="${escapeHtml(editor.openclawProvider)}" data-field="agent.openclawProvider" placeholder="openai / anthropic / custom" /></label>
-          <label>Runtime model<input value="${escapeHtml(editor.openclawModel)}" data-field="agent.openclawModel" placeholder="runtime model id" /></label>
-          <label>Runtime mode<input value="${escapeHtml(editor.openclawRuntimeMode)}" data-field="agent.openclawRuntimeMode" placeholder="native-agent / bridge / custom" /></label>
+          <label class="span-2">${modelLabel}
+            ${editor.agentRuntime !== "openclaw" && selectedConnection?.models?.length
+              ? `<select data-field="agent.openclawAgentId">
+                  <option value="">Connection default / ${escapeHtml(selectedConnection.default_model || "runtime default")}</option>
+                  ${selectedConnection.models.map((model) => `<option value="${escapeHtml(model)}" ${editor.openclawAgentId === model ? "selected" : ""}>${escapeHtml(model)}</option>`).join("")}
+                </select>`
+              : `<input value="${escapeHtml(editor.openclawAgentId)}" data-field="agent.openclawAgentId" placeholder="${escapeHtml(modelPlaceholder)}" />`
+            }
+          </label>
           <label class="span-2">Description<textarea rows="2" data-field="agent.description">${escapeHtml(editor.description)}</textarea></label>
           <label>Default skills<input value="${escapeHtml(editor.defaultSkillsText)}" list="skill-options" data-field="agent.defaultSkillsText" /></label>
-          <label>Disallowed skills<input value="${escapeHtml(editor.disallowedSkillsText)}" list="skill-options" data-field="agent.disallowedSkillsText" /></label>
           <label>Allowed tools<input value="${escapeHtml(editor.allowedToolsText)}" data-field="agent.allowedToolsText" /></label>
-          <label>Policy tags<input value="${escapeHtml(editor.policyTagsText)}" data-field="agent.policyTagsText" /></label>
-          <label class="span-2">Metadata JSON<textarea class="code" rows="4" data-field="agent.metadataText">${escapeHtml(editor.metadataText)}</textarea></label>
         </div>
+        ${selectedConnection ? `
+          <div class="registry-binding-summary">
+            <span><small>Connection</small><strong>${escapeHtml(selectedConnection.name)}</strong></span>
+            <span><small>Model</small><strong>${escapeHtml(editor.openclawAgentId || selectedConnection.default_model || "runtime default")}</strong></span>
+            <span><small>Credential</small><strong class="${selectedConnection.credential_configured ? "success-text" : "warn-text"}">${selectedConnection.credential_configured ? "available" : "not detected"}</strong></span>
+          </div>
+        ` : ""}
+        <details class="registry-advanced">
+          <summary>Advanced settings</summary>
+          <div class="form-grid compact">
+            <label>ID<input value="${escapeHtml(editor.profileId)}" data-field="agent.profileId" placeholder="generated from name" ${editor.mode === "edit" ? "disabled" : ""} /></label>
+            <label>Status
+              <select data-field="agent.status">
+                <option value="active" ${editor.status === "active" ? "selected" : ""}>active</option>
+                <option value="disabled" ${editor.status === "disabled" ? "selected" : ""}>disabled</option>
+              </select>
+            </label>
+            <label>Agent Runtime<select data-field="agent.agentRuntime">${renderProviderRuntimeOptions(editor.agentRuntime)}</select></label>
+            <label>Harness profile<input value="${escapeHtml(editor.harnessProfile)}" data-field="agent.harnessProfile" placeholder="agent-harness-v1" /></label>
+            <label>Disallowed skills<input value="${escapeHtml(editor.disallowedSkillsText)}" list="skill-options" data-field="agent.disallowedSkillsText" /></label>
+            <label>Policy tags<input value="${escapeHtml(editor.policyTagsText)}" data-field="agent.policyTagsText" /></label>
+            <label>Legacy provider<input value="${escapeHtml(editor.openclawProvider)}" data-field="agent.openclawProvider" /></label>
+            <label>Legacy model<input value="${escapeHtml(editor.openclawModel)}" data-field="agent.openclawModel" /></label>
+            <label>Legacy runtime mode<input value="${escapeHtml(editor.openclawRuntimeMode)}" data-field="agent.openclawRuntimeMode" /></label>
+            <label class="span-2">Metadata JSON<textarea class="code" rows="4" data-field="agent.metadataText">${escapeHtml(editor.metadataText)}</textarea></label>
+          </div>
+        </details>
         <div class="registry-actions">
           <button class="primary" data-action="save-agent-profile" ${state.registrySaving ? "disabled" : ""}>${state.registrySaving ? "Saving..." : "Save profile"}</button>
           <button class="secondary danger-action" data-action="disable-agent-profile" ${state.registryDisabling || editor.mode !== "edit" || editor.status === "disabled" ? "disabled" : ""}>${state.registryDisabling ? "Disabling..." : "Disable"}</button>
         </div>
       </div>
+    </div>
+  `;
+}
+
+function renderMcpServerManager() {
+  return `
+    <div class="provider-connection-manager">
+      <div class="registry-manager-header">
+        <div>
+          <h4>MCP Servers</h4>
+          <p>${state.mcpServers.length} server(s), ${state.mcpServers.reduce((count, server) => count + (server.discovered_tools || []).length, 0)} tool(s)</p>
+        </div>
+        <button class="primary compact-button" data-action="new-mcp-server">New server</button>
+      </div>
+      <div class="mcp-server-list">
+        ${state.mcpServers.length ? state.mcpServers.map((server) => {
+          const statusTone = server.status === "ready" ? "success" : server.status === "error" ? "danger" : server.status === "connecting" ? "warn" : "neutral";
+          const testing = state.mcpServerTestingId === server.server_id;
+          const desktopRequired = server.transport === "stdio" && !desktopHost?.mcp?.configure;
+          return `
+            <article class="mcp-server-row">
+              <button class="mcp-server-main" data-action="edit-mcp-server" data-id="${escapeHtml(server.server_id)}">
+                <span class="mcp-server-identity">
+                  <strong>${escapeHtml(server.name)}</strong>
+                  <small>${escapeHtml(server.transport === "stdio" ? server.command || "stdio" : server.url || "Streamable HTTP")}</small>
+                </span>
+                <span class="mcp-server-tools">
+                  <strong>${(server.discovered_tools || []).length}</strong>
+                  <small>tools</small>
+                </span>
+                <span class="mcp-server-status">
+                  <span class="badge ${statusTone}">${escapeHtml(server.status)}</span>
+                  ${server.secret_configured ? '<span class="badge neutral">secrets</span>' : ""}
+                </span>
+              </button>
+              <div class="mcp-server-actions">
+                <button class="mini-button" data-action="test-mcp-server" data-id="${escapeHtml(server.server_id)}" ${testing || desktopRequired || !server.enabled ? "disabled" : ""}>${testing ? "Testing..." : "Test"}</button>
+                <button class="mini-button ${server.enabled ? "danger-action" : ""}" data-action="toggle-mcp-server" data-id="${escapeHtml(server.server_id)}" data-enabled="${server.enabled ? "false" : "true"}" ${state.registryDisabling || desktopRequired && !server.enabled ? "disabled" : ""}>${server.enabled ? "Disable" : "Enable"}</button>
+              </div>
+              ${server.last_error ? `<p class="mcp-server-error">${escapeHtml(server.last_error)}</p>` : ""}
+            </article>
+          `;
+        }).join("") : '<div class="provider-connection-empty"><strong>No MCP servers</strong><span>Add a local stdio or public Streamable HTTP server.</span></div>'}
+      </div>
+    </div>
+  `;
+}
+
+function renderMcpServerModal() {
+  if (!state.ui.mcpServerModalOpen) return "";
+  const editor = state.registryEditor.mcpServer;
+  const preset = state.mcpConnectorPresets.find((item) => item.preset_id === editor.presetId) || null;
+  const testing = state.mcpServerTestingId === editor.serverId;
+  return `
+    <div class="provider-modal-backdrop">
+      <section class="provider-modal" role="dialog" aria-modal="true" aria-label="${editor.mode === "edit" ? "Edit MCP Server" : "New MCP Server"}">
+        <header class="provider-modal-header">
+          <div><h3>${editor.mode === "edit" ? "Edit MCP Server" : "New MCP Server"}</h3><p>${editor.transport === "stdio" ? "Desktop-authorized local process" : "Public Streamable HTTP endpoint"}</p></div>
+          <button class="icon-button" data-action="close-mcp-server-modal" aria-label="Close">&times;</button>
+        </header>
+        <div class="provider-modal-body">
+          ${state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
+          <div class="form-grid compact provider-modal-grid">
+            <label class="span-2">Connector
+              <select data-field="mcp.presetId" ${editor.mode === "edit" ? "disabled" : ""}>
+                ${state.mcpConnectorPresets.map((item) => `<option value="${escapeHtml(item.preset_id)}" ${editor.presetId === item.preset_id ? "selected" : ""}>${escapeHtml(item.name)} / Official remote</option>`).join("")}
+                <option value="custom" ${editor.presetId === "custom" ? "selected" : ""}>Custom MCP server</option>
+              </select>
+            </label>
+            ${preset ? `<div class="span-2 mcp-preset-summary"><strong>${escapeHtml(preset.provider)}</strong><span>${escapeHtml(preset.description)}</span></div>` : ""}
+            <label class="span-2">Name<input value="${escapeHtml(editor.name)}" data-field="mcp.name" placeholder="GitHub MCP" /></label>
+            <label>Transport<select data-field="mcp.transport" ${editor.mode === "edit" ? "disabled" : ""}><option value="stdio" ${editor.transport === "stdio" ? "selected" : ""} ${desktopHost?.mcp?.configure ? "" : "disabled"}>stdio / Desktop</option><option value="streamable-http" ${editor.transport === "streamable-http" ? "selected" : ""}>Streamable HTTP</option></select></label>
+            <label>Enabled<input type="checkbox" data-field="mcp.enabled" ${editor.enabled ? "checked" : ""} /></label>
+            <label class="span-2">Description<textarea rows="2" data-field="mcp.description">${escapeHtml(editor.description)}</textarea></label>
+            ${editor.transport === "stdio" ? `
+              <label class="span-2">Executable<input value="${escapeHtml(editor.command)}" data-field="mcp.command" placeholder="C:\\path\\to\\mcp-server.exe" /></label>
+              <label class="span-2">Arguments<textarea class="code" rows="3" data-field="mcp.argsText" placeholder="One argument per line">${escapeHtml(editor.argsText)}</textarea></label>
+              <label class="span-2">Environment JSON<textarea class="code" rows="4" data-field="mcp.environmentText">${escapeHtml(editor.environmentText)}</textarea></label>
+            ` : `
+              <label class="span-2">URL<input value="${escapeHtml(editor.url)}" data-field="mcp.url" placeholder="https://mcp.example.com/mcp" /></label>
+              <label class="span-2">Headers JSON<textarea class="code" rows="4" data-field="mcp.headersText">${escapeHtml(editor.headersText)}</textarea></label>
+            `}
+            ${preset ? (preset.secrets || []).map((secret) => {
+              const configured = editor.secretConfigured || Boolean(editor.presetSecretValues?.[secret.name]);
+              return `<label class="span-2">${escapeHtml(secret.label)}${secret.required ? "" : " (optional)"}
+                <input type="password" value="${escapeHtml(editor.presetSecretValues?.[secret.name] || "")}" data-field="mcp.secret.${escapeHtml(secret.name)}" placeholder="${configured ? "Saved secret (leave blank to keep)" : escapeHtml(secret.placeholder)}" autocomplete="new-password" />
+                <small>${escapeHtml(configured ? "Credential configured" : secret.description)}</small>
+              </label>`;
+            }).join("") : `<label class="span-2">Secrets JSON<textarea class="code" rows="3" data-field="mcp.secretsText" placeholder='{"API_TOKEN":"..."}'>${escapeHtml(editor.secretsText)}</textarea></label>`}
+          </div>
+          <details class="provider-modal-advanced">
+            <summary>Advanced settings</summary>
+            <div class="form-grid compact provider-modal-grid">
+              <label>ID<input value="${escapeHtml(editor.serverId)}" data-field="mcp.serverId" placeholder="generated.from.name" ${editor.mode === "edit" ? "disabled" : ""} /></label>
+              <label>Default risk<select data-field="mcp.defaultRiskLevel"><option value="" ${!editor.defaultRiskLevel ? "selected" : ""}>From annotations</option>${["T0", "T1", "T2", "T3"].map((risk) => `<option value="${risk}" ${editor.defaultRiskLevel === risk ? "selected" : ""}>${risk}</option>`).join("")}</select></label>
+              <label>Include tools<input value="${escapeHtml(editor.includeToolsText)}" data-field="mcp.includeToolsText" placeholder="tool_a, tool_b" /></label>
+              <label>Exclude tools<input value="${escapeHtml(editor.excludeToolsText)}" data-field="mcp.excludeToolsText" placeholder="dangerous_tool" /></label>
+              <label>Connect timeout (ms)<input type="number" min="1000" max="120000" step="1000" value="${escapeHtml(String(editor.connectTimeoutMs))}" data-field="mcp.connectTimeoutMs" /></label>
+              <label>Tool timeout (ms)<input type="number" min="1000" max="300000" step="1000" value="${escapeHtml(String(editor.toolTimeoutMs))}" data-field="mcp.toolTimeoutMs" /></label>
+              <label class="span-2">Risk overrides JSON<textarea class="code" rows="3" data-field="mcp.riskOverridesText">${escapeHtml(editor.riskOverridesText)}</textarea></label>
+            </div>
+          </details>
+          ${editor.mode === "edit" && (state.mcpServers.find((server) => server.server_id === editor.serverId)?.discovered_tools || []).length ? `
+            <div class="mcp-tool-preview">
+              ${(state.mcpServers.find((server) => server.server_id === editor.serverId)?.discovered_tools || []).map((tool) => `<span><strong>${escapeHtml(tool.tool_name)}</strong><small>${escapeHtml(tool.risk_level)}</small></span>`).join("")}
+            </div>
+          ` : ""}
+        </div>
+        <footer class="provider-modal-footer">
+          <div>${editor.mode === "edit" ? `<button class="secondary" data-action="test-mcp-server" data-id="${escapeHtml(editor.serverId)}" ${testing || !editor.enabled ? "disabled" : ""}>${testing ? "Testing..." : "Test"}</button>` : ""}</div>
+          <div>
+            <button class="secondary" data-action="close-mcp-server-modal">Cancel</button>
+            <button class="primary" data-action="save-mcp-server" ${state.registrySaving ? "disabled" : ""}>${state.registrySaving ? "Saving..." : "Save server"}</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
+function renderProviderConnectionManager() {
+  return `
+    <div class="provider-connection-manager">
+      <div class="registry-manager-header">
+        <div>
+          <h4>Provider Connections</h4>
+          <p>${state.providerConnections.length} connection(s)</p>
+        </div>
+        <button class="primary compact-button" data-action="new-provider-connection">New connection</button>
+      </div>
+      <div class="provider-connection-list">
+        ${
+          state.providerConnections.length
+            ? state.providerConnections.map((connection) => {
+                const verification = connection.verification;
+                const testStatus = !connection.credential_configured
+                  ? { label: "Key missing", tone: "warn" }
+                  : verification?.status === "verified"
+                    ? { label: "Verified", tone: "success" }
+                    : verification?.status === "failed"
+                      ? { label: "Failed", tone: "danger" }
+                      : { label: "Configured", tone: "neutral" };
+                return `
+                <button class="provider-connection-row" data-action="edit-provider-connection" data-id="${escapeHtml(connection.connection_id)}">
+                  <span class="provider-connection-identity">
+                    <strong>${escapeHtml(connection.name)}</strong>
+                    <small>${escapeHtml(providerRuntimeLabel(connection.agent_runtime))} / ${(connection.models || []).length} model(s)</small>
+                  </span>
+                  <span class="provider-connection-model">
+                    <small>Default model</small>
+                    <strong>${escapeHtml(connection.default_model || "Not selected")}</strong>
+                  </span>
+                  <span class="provider-connection-status">
+                    <span class="badge ${testStatus.tone}">${testStatus.label}</span>
+                    <span class="badge ${connection.status === "active" ? "neutral" : "warn"}">${escapeHtml(connection.status)}</span>
+                  </span>
+                </button>
+              `;
+              }).join("")
+            : '<div class="provider-connection-empty"><strong>No connections</strong><span>Create one to make models available to Agent Profiles.</span></div>'
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderProviderConnectionModal() {
+  if (!state.ui.providerConnectionModalOpen) return "";
+  const editor = state.registryEditor.connection;
+  const credentialOptions = PROVIDER_CREDENTIAL_ENVS[editor.agentRuntime] || [];
+  const runtimeDefaults = PROVIDER_DEFAULTS[editor.agentRuntime] || {};
+  const credentialStatus = editor.credentialSource === "environment"
+    ? editor.credentialConfigured ? "Environment key detected" : "Environment key not detected"
+    : editor.credentialConfigured ? "API key saved" : "API key required";
+  const endpointRequired = editor.agentRuntime === "glm" || editor.preset === "custom";
+  const savedConnection = state.providerConnections.find(
+    (connection) => connection.connection_id === editor.connectionId,
+  );
+  const verification = savedConnection?.verification || null;
+  const testing = state.providerConnectionTestingId === editor.connectionId;
+  const testDisabled = editor.mode !== "edit" || editor.status !== "active" || !editor.credentialConfigured || testing || state.registrySaving;
+  return `
+    <div class="provider-modal-backdrop">
+      <section class="provider-modal" role="dialog" aria-modal="true" aria-label="${editor.mode === "edit" ? "Edit Provider Connection" : "New Provider Connection"}">
+        <header class="provider-modal-header">
+          <div>
+            <h3>${editor.mode === "edit" ? "Edit connection" : "New connection"}</h3>
+            <p>${credentialStatus}</p>
+          </div>
+          <button class="icon-button" data-action="close-provider-connection-modal" title="Close" aria-label="Close">&#10005;</button>
+        </header>
+        <div class="provider-modal-body">
+          ${state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
+          <div class="form-grid compact provider-modal-grid">
+            <label class="span-2">Name<input value="${escapeHtml(editor.name)}" data-field="connection.name" placeholder="Production models" /></label>
+            <label>Provider
+              <select data-field="connection.preset">
+                ${Object.entries(PROVIDER_PRESETS).map(([id, preset]) => `<option value="${id}" ${editor.preset === id ? "selected" : ""}>${escapeHtml(preset.label)}</option>`).join("")}
+              </select>
+            </label>
+            <label>Endpoint${endpointRequired ? "" : " (optional)"}<input value="${escapeHtml(editor.baseUrl)}" data-field="connection.baseUrl" placeholder="${escapeHtml(runtimeDefaults.endpointPlaceholder || "https://provider.example/v1")}" /></label>
+            ${editor.credentialSource === "managed" ? `
+              <label class="span-2">API key
+                <input type="password" value="${escapeHtml(editor.apiKey)}" data-field="connection.apiKey" placeholder="${editor.credentialConfigured ? "Saved key (leave blank to keep)" : "Enter API key"}" autocomplete="new-password" />
+              </label>
+            ` : ""}
+          </div>
+          <div class="provider-model-section">
+            <div class="provider-model-header">
+              <div><strong>Models</strong><span>${(editor.models || []).filter((item) => item.trim()).length} configured</span></div>
+              <button class="mini-button" data-action="add-provider-model">Add model</button>
+            </div>
+            <div class="provider-model-list">
+              ${(editor.models || []).map((model, index) => `
+                <div class="provider-model-row">
+                  <input value="${escapeHtml(model)}" data-field="connection.model" data-index="${index}" placeholder="${escapeHtml(runtimeDefaults.modelPlaceholder || "model id")}" />
+                  <label class="provider-default-model">
+                    <input type="radio" name="provider-default-model" value="${escapeHtml(model)}" data-field="connection.defaultModelChoice" data-index="${index}" ${model && editor.defaultModel === model ? "checked" : ""} />
+                    <span>Default</span>
+                  </label>
+                  <button class="icon-button" data-action="remove-provider-model" data-index="${index}" title="Remove model" aria-label="Remove model">&#10005;</button>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+          <details class="registry-advanced provider-modal-advanced">
+            <summary>Advanced settings</summary>
+            <div class="form-grid compact">
+              <label>Agent Runtime<select data-field="connection.agentRuntime">${renderProviderRuntimeOptions(editor.agentRuntime)}</select></label>
+              <label>Credential storage
+                <select data-field="connection.credentialSource">
+                  <option value="managed" ${editor.credentialSource === "managed" ? "selected" : ""}>Managed encrypted key</option>
+                  <option value="environment" ${editor.credentialSource === "environment" ? "selected" : ""}>Server environment</option>
+                </select>
+              </label>
+              <label>Protocol
+                <select data-field="connection.protocol">
+                  ${Object.entries(PROVIDER_PROTOCOLS).map(([id, label]) => `<option value="${id}" ${editor.protocol === id ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+                </select>
+              </label>
+              <label>Environment variable
+                <select data-field="connection.credentialEnv">
+                  ${credentialOptions.map((name) => `<option value="${name}" ${editor.credentialEnv === name ? "selected" : ""}>${escapeHtml(credentialEnvLabel(name))}</option>`).join("")}
+                </select>
+              </label>
+              <label>ID<input value="${escapeHtml(editor.connectionId)}" data-field="connection.connectionId" placeholder="generated from name" ${editor.mode === "edit" ? "disabled" : ""} /></label>
+              <label>Provider ID<input value="${escapeHtml(editor.provider)}" data-field="connection.provider" /></label>
+              <label>Status<select data-field="connection.status"><option value="active" ${editor.status === "active" ? "selected" : ""}>active</option><option value="disabled" ${editor.status === "disabled" ? "selected" : ""}>disabled</option></select></label>
+              <label>Maximum input tokens<input type="number" min="4096" max="1048576" step="1024" value="${escapeHtml(String(editor.maxInputTokens))}" data-field="connection.maxInputTokens" /></label>
+              <label>Maximum output tokens<input type="number" min="1024" max="131072" step="1024" value="${escapeHtml(String(editor.maxOutputTokens))}" data-field="connection.maxOutputTokens" /></label>
+              <label class="provider-toggle-field"><span>Automatic context compression</span><input type="checkbox" data-field="connection.contextCompressionEnabled" ${editor.contextCompressionEnabled ? "checked" : ""} /></label>
+              <label>Compression threshold (%)<input type="number" min="50" max="95" step="1" value="${escapeHtml(String(editor.contextCompressionThresholdPercent))}" data-field="connection.contextCompressionThresholdPercent" /></label>
+              <label>Maximum continuation rounds<input type="number" min="0" max="32" step="1" value="${escapeHtml(String(editor.maxContinuationRounds))}" data-field="connection.maxContinuationRounds" /></label>
+              <label class="span-2">Metadata JSON<textarea class="code" rows="3" data-field="connection.metadataText">${escapeHtml(editor.metadataText)}</textarea></label>
+            </div>
+          </details>
+          <div class="provider-test-result ${verification?.status || "untested"}">
+            <span class="provider-test-indicator" aria-hidden="true"></span>
+            <div>
+              <strong>${verification?.status === "verified" ? "Connection verified" : verification?.status === "failed" ? "Connection test failed" : "Connection not tested"}</strong>
+              <p>${escapeHtml(verification?.detail || "Run a minimal Provider request to verify the endpoint, credential, and selected model.")}</p>
+              ${verification ? `<small>${escapeHtml(verification.model || "Default model")} / ${verification.duration_ms} ms / ${escapeHtml(formatWorkspaceTimestamp(verification.tested_at))}</small>` : `<small>Testing may consume a small amount of Provider quota.</small>`}
+            </div>
+          </div>
+        </div>
+        <footer class="provider-modal-footer">
+          <div>
+            ${editor.mode === "edit" ? `<button class="secondary danger-action" data-action="disable-provider-connection" ${state.registryDisabling || editor.status === "disabled" ? "disabled" : ""}>Disable</button>` : ""}
+            <button class="secondary" data-action="test-provider-connection" ${testDisabled ? "disabled" : ""}>${testing ? "Testing..." : "Test connection"}</button>
+          </div>
+          <div>
+            <button class="secondary" data-action="close-provider-connection-modal">Cancel</button>
+            <button class="primary" data-action="save-provider-connection" ${state.registrySaving ? "disabled" : ""}>${state.registrySaving ? "Saving..." : "Save connection"}</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
+function getDoctorCheck(report, checkId) {
+  return report?.checks?.find((check) => check.id === checkId) || null;
+}
+
+function setupStatusTone(status) {
+  if (status === "pass") return "pass";
+  if (status === "fail") return "fail";
+  if (status === "warn") return "warn";
+  return "pending";
+}
+
+function renderSetupEnvironmentCheck(check, fallbackLabel) {
+  const status = check?.status || "pending";
+  return `
+    <div class="setup-detail-row">
+      <span class="setup-status-dot ${setupStatusTone(status)}"></span>
+      <span><strong>${escapeHtml(check?.summary || fallbackLabel)}</strong><small>${escapeHtml(check?.detail || "Not checked")}</small></span>
+    </div>
+  `;
+}
+
+function renderStudioSetupModal() {
+  if (!state.setup.open) return "";
+  const editor = state.registryEditor.connection;
+  const preset = PROVIDER_PRESETS[editor.preset] || PROVIDER_PRESETS.custom;
+  const defaults = PROVIDER_DEFAULTS[editor.agentRuntime] || {};
+  const activeConnections = state.providerConnections.filter((item) => item.status === "active");
+  const connection = state.providerConnections.find(
+    (item) => item.connection_id === editor.connectionId,
+  ) || getSetupConnection();
+  const verification = connection?.verification || null;
+  const hostCheck = getDoctorCheck(state.setup.hostReport, "host.shell");
+  const dockerClient = getDoctorCheck(state.setup.dockerReport, "docker.client");
+  const dockerDaemon = getDoctorCheck(state.setup.dockerReport, "docker.daemon");
+  const dockerImage = getDoctorCheck(state.setup.dockerReport, "docker.image");
+  const dockerMount = getDoctorCheck(state.setup.dockerReport, "docker.workspace_mount");
+  const workerLoop = getDoctorCheck(state.setup.dockerReport, "worker.registration_loopback");
+  const dockerAppReady = dockerClient?.status === "pass" && dockerDaemon?.status === "pass";
+  const environmentChecked = !!state.setup.hostReport || !!state.setup.dockerReport;
+  const canFinish = verification?.status === "verified" && environmentChecked && (hostCheck?.status === "pass" || dockerAppReady);
+  const selectedModel = editor.defaultModel || editor.models?.[0] || "";
+  const credentialLabel = verification?.status === "verified"
+    ? "Verified"
+    : verification?.status === "failed"
+      ? "Verification failed"
+      : editor.credentialConfigured ? "Configured" : "Credential required";
+  return `
+    <div class="setup-modal-backdrop">
+      <section class="setup-modal" role="dialog" aria-modal="true" aria-label="My Mate setup">
+        <header class="setup-modal-header">
+          <div>
+            <span class="setup-mark">MM</span>
+            <span><h3>Set up My Mate</h3><p>Connect a model. My Mate handles the technical settings.</p></span>
+          </div>
+          <button class="icon-button" data-action="dismiss-studio-setup" title="Configure later" aria-label="Configure later">&#10005;</button>
+        </header>
+        <nav class="setup-tabs" role="tablist" aria-label="Setup sections">
+          <button class="setup-tab ${state.setup.tab === "model" ? "active" : ""}" data-action="select-setup-tab" data-setup-tab="model" role="tab" aria-selected="${state.setup.tab === "model"}">
+            <span class="setup-step">1</span><span>Model</span><span class="setup-status-dot ${verification?.status === "verified" ? "pass" : verification?.status === "failed" ? "fail" : "pending"}"></span>
+          </button>
+          <button class="setup-tab ${state.setup.tab === "environment" ? "active" : ""}" data-action="select-setup-tab" data-setup-tab="environment" role="tab" aria-selected="${state.setup.tab === "environment"}">
+            <span class="setup-step">2</span><span>Machine</span><span class="setup-status-dot ${environmentChecked ? (hostCheck?.status === "pass" || dockerAppReady ? "pass" : "warn") : "pending"}"></span>
+          </button>
+        </nav>
+        <div class="setup-modal-body">
+          ${state.setup.error ? `<div class="alert danger">${escapeHtml(state.setup.error)}</div>` : ""}
+          ${state.setup.tab === "model" ? `
+            <div class="setup-section-heading">
+              <div><h4>Model connection</h4><p>Provider, model, and credential are enough for normal setup.</p></div>
+              <span class="badge ${verification?.status === "verified" ? "success" : verification?.status === "failed" ? "danger" : "warn"}">${credentialLabel}</span>
+            </div>
+            ${activeConnections.length ? `
+              <div class="setup-connection-picker">
+                <label>Saved connection
+                  <select data-field="setup.connectionId">
+                    ${activeConnections.map((item) => `
+                      <option value="${escapeHtml(item.connection_id)}" ${item.connection_id === editor.connectionId ? "selected" : ""}>
+                        ${escapeHtml(`${item.name} - ${item.default_model || item.models?.[0] || "No model"}`)}
+                      </option>
+                    `).join("")}
+                    <option value="${NEW_SETUP_CONNECTION_ID}" ${editor.mode === "new" ? "selected" : ""}>Add another connection</option>
+                  </select>
+                </label>
+                <span>${connection ? `${(connection.models || []).length} model${(connection.models || []).length === 1 ? "" : "s"} available: ${escapeHtml((connection.models || []).join(", ") || "No models")}` : "Configure a new provider connection."}</span>
+              </div>
+            ` : ""}
+            <div class="setup-model-grid">
+              <label>Provider
+                <select data-field="connection.preset">
+                  ${Object.entries(PROVIDER_PRESETS).map(([id, item]) => `<option value="${id}" ${editor.preset === id ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+                </select>
+              </label>
+              <label>Model
+                <input value="${escapeHtml(selectedModel)}" data-field="setup.model" placeholder="${escapeHtml(defaults.modelPlaceholder || "model id")}" />
+              </label>
+              <label class="span-2">Endpoint${editor.agentRuntime === "glm" || editor.preset === "custom" ? "" : " (optional)"}
+                <input value="${escapeHtml(editor.baseUrl)}" data-field="connection.baseUrl" placeholder="${escapeHtml(defaults.endpointPlaceholder || "https://provider.example/v1")}" />
+              </label>
+              ${editor.credentialSource === "managed" ? `
+                <label class="span-2">API key
+                  <input type="password" value="${escapeHtml(editor.apiKey)}" data-field="connection.apiKey" placeholder="${editor.credentialConfigured ? "Saved key (leave blank to keep)" : "Enter API key"}" autocomplete="new-password" />
+                </label>
+              ` : ""}
+            </div>
+            <div class="setup-verification ${verification?.status || "untested"}">
+              <span class="setup-status-dot ${verification?.status === "verified" ? "pass" : verification?.status === "failed" ? "fail" : "pending"}"></span>
+              <span><strong>${verification?.status === "verified" ? "Connection verified" : verification?.status === "failed" ? "Connection test failed" : "Connection not tested"}</strong><small>${escapeHtml(verification?.detail || "Save and verify sends one minimal request to the selected provider.")}</small></span>
+            </div>
+            <button class="setup-advanced-link" data-action="open-provider-advanced">Advanced connection settings</button>
+          ` : `
+            <div class="setup-section-heading">
+              <div><h4>Environment</h4><p>Checks run locally through Doctor.</p></div>
+              <button class="secondary" data-action="run-setup-environment" ${state.setup.environmentLoading ? "disabled" : ""}>${state.setup.environmentLoading ? "Checking..." : "Run checks"}</button>
+            </div>
+            <div class="setup-environment-list">
+              <article class="setup-environment-card">
+                <div class="setup-environment-main">
+                  <span class="setup-status-dot ${setupStatusTone(hostCheck?.status)}"></span>
+                  <span><strong>${globalThis.navigator?.platform?.startsWith("Win") ? "Git Bash / host shell" : "Host shell"}</strong><small>${escapeHtml(hostCheck?.detail || "Not checked")}</small></span>
+                  <span class="badge ${hostCheck?.status === "pass" ? "success" : hostCheck ? "warn" : "neutral"}">${hostCheck?.status === "pass" ? "Ready" : hostCheck ? "Needs attention" : "Pending"}</span>
+                </div>
+                ${hostCheck?.remediation ? `<p>${escapeHtml(hostCheck.remediation)}</p>` : ""}
+              </article>
+              <article class="setup-environment-card">
+                <div class="setup-environment-main">
+                  <span class="setup-status-dot ${dockerAppReady ? "pass" : state.setup.dockerReport ? "fail" : "pending"}"></span>
+                  <span><strong>Docker</strong><small>${dockerAppReady ? "CLI and Linux daemon are available." : "Docker Desktop and daemon are checked together."}</small></span>
+                  <span class="badge ${dockerAppReady ? "success" : state.setup.dockerReport ? "warn" : "neutral"}">${dockerAppReady ? "Ready" : state.setup.dockerReport ? "Needs attention" : "Pending"}</span>
+                </div>
+                <details class="setup-environment-details" ${state.setup.dockerReport && !dockerAppReady ? "open" : ""}>
+                  <summary>Docker details</summary>
+                  ${renderSetupEnvironmentCheck(dockerClient, "Docker CLI")}
+                  ${renderSetupEnvironmentCheck(dockerDaemon, "Docker daemon")}
+                  ${renderSetupEnvironmentCheck(dockerImage, "Runtime Worker image")}
+                  ${renderSetupEnvironmentCheck(dockerMount, "Workspace mount")}
+                  ${renderSetupEnvironmentCheck(workerLoop, "Worker registration")}
+                </details>
+              </article>
+            </div>
+          `}
+        </div>
+        <footer class="setup-modal-footer">
+          <button class="secondary" data-action="dismiss-studio-setup">Later</button>
+          ${state.setup.tab === "model" ? `
+            <button class="primary" data-action="save-setup-model" ${state.setup.modelSaving ? "disabled" : ""}>${state.setup.modelSaving ? "Saving & testing..." : "Save & verify"}</button>
+          ` : `
+            <button class="primary" data-action="finish-studio-setup" ${canFinish ? "" : "disabled"}>Finish setup</button>
+          `}
+        </footer>
+      </section>
     </div>
   `;
 }
@@ -8935,16 +12513,18 @@ function renderSkillManager() {
   `;
 }
 
-function renderGovernancePanel() {
+function renderGovernancePanel(embedded = false) {
   const policy = state.governance.policy;
+  const wrapperTag = embedded ? "div" : "section";
+  const wrapperClass = embedded ? "registry-governance-view" : "panel governance-panel";
   if (!policy) {
     return `
-      <section class="panel governance-panel">
+      <${wrapperTag} class="${wrapperClass}">
         <div class="panel-header">
           <div><h3>Registry Governance</h3><p>Policy and approval state are unavailable.</p></div>
           <button class="secondary" data-action="refresh-governance" ${state.governance.loading ? "disabled" : ""}>Refresh</button>
         </div>
-      </section>
+      </${wrapperTag}>
     `;
   }
   const identity = state.security.identity;
@@ -8954,7 +12534,7 @@ function renderGovernancePanel() {
   const draft = state.governance.draft;
   const pendingCount = state.governance.changes.filter((change) => change.status === "pending").length;
   return `
-    <section class="panel governance-panel">
+    <${wrapperTag} class="${wrapperClass}">
       <div class="panel-header">
         <div>
           <h3>Registry Governance</h3>
@@ -9037,21 +12617,47 @@ function renderGovernancePanel() {
           </div>
         </div>
       </div>
-    </section>
+    </${wrapperTag}>
   `;
 }
 
 function renderRegistryManagerPanel() {
+  const section = ["connections", "mcp", "agents", "skills", "governance"].includes(state.ui.registrySection)
+    ? state.ui.registrySection
+    : "connections";
+  const tabs = [
+    ["connections", "Connections", state.providerConnections.length],
+    ["mcp", "MCP", state.mcpServers.length],
+    ["agents", "Agent Profiles", state.agentProfiles.length],
+    ["skills", "Skills", state.skills.length],
+    ["governance", "Governance", state.governance.changes.length],
+  ];
+  const sectionContent = section === "agents"
+    ? renderAgentProfileManager()
+    : section === "mcp"
+      ? renderMcpServerManager()
+    : section === "skills"
+      ? renderSkillManager()
+      : section === "governance"
+        ? renderGovernancePanel(true)
+        : renderProviderConnectionManager();
   return `
-    ${renderGovernancePanel()}
     <section class="panel registry-manager-panel">
-      <div class="panel-header">
-        <div><h3>Registry Manager</h3><p>Configure reusable agents and skills for DAG nodes.</p></div>
-        <button class="secondary" data-action="refresh-registry" ${state.registryLoading ? "disabled" : ""}>${state.registryLoading ? "Refreshing..." : "Refresh"}</button>
+      <div class="registry-section-bar">
+        <nav class="registry-section-tabs" role="tablist" aria-label="Registry sections">
+          ${tabs.map(([id, label, count]) => `
+            <button class="registry-section-tab ${section === id ? "active" : ""}" data-action="select-registry-section" data-section="${id}" role="tab" aria-selected="${section === id}">
+              <span>${label}</span><small>${count}</small>
+            </button>
+          `).join("")}
+        </nav>
+        <div class="registry-section-actions">
+          <button class="secondary" data-action="open-studio-setup">Setup</button>
+          <button class="secondary" data-action="refresh-registry" ${state.registryLoading ? "disabled" : ""}>${state.registryLoading ? "Refreshing..." : "Refresh"}</button>
+        </div>
       </div>
-      <div class="registry-manager-grid">
-        ${renderAgentProfileManager()}
-        ${renderSkillManager()}
+      <div class="registry-section-content">
+        ${sectionContent}
       </div>
     </section>
   `;
@@ -9472,8 +13078,10 @@ function buildAuthoringGraphModel(editor = state.editor) {
   );
   const layoutNodeById = new Map(layout.nodes.map((node) => [node.id, node]));
   const layoutEdgeById = new Map(layout.edges.map((edge) => [edge.id, edge]));
+  const savedPositions = getAuthoringPositions(editor);
   const nodes = sourceNodes.map((node, index) => {
     const positioned = layoutNodeById.get(layoutNodeIds[index]);
+    const savedPosition = savedPositions[String(node?.id || "")];
     const outputContract =
       node?.config?.output_contract && typeof node.config.output_contract === "object"
         ? node.config.output_contract
@@ -9499,8 +13107,8 @@ function buildAuthoringGraphModel(editor = state.editor) {
       outboundCount: outboundCount.get(index) || 0,
       column: positioned?.column || 0,
       row: positioned?.row || 0,
-      x: positioned?.x || 24,
-      y: positioned?.y || 24,
+      x: Number.isFinite(savedPosition?.x) ? Math.max(8, savedPosition.x) : positioned?.x || 24,
+      y: Number.isFinite(savedPosition?.y) ? Math.max(8, savedPosition.y) : positioned?.y || 24,
       invalid: positioned?.invalid || false,
     };
   });
@@ -9513,17 +13121,17 @@ function buildAuthoringGraphModel(editor = state.editor) {
       ...edge,
       fromLabel: fromNode?.label || edge.from || "missing source",
       toLabel: toNode?.label || edge.to || "missing target",
-      fromX: positioned?.fromX || 0,
-      fromY: positioned?.fromY || 0,
-      toX: positioned?.toX || 0,
-      toY: positioned?.toY || 0,
+      fromX: fromNode ? fromNode.x + 188 : positioned?.fromX || 0,
+      fromY: fromNode ? fromNode.y + 49 : positioned?.fromY || 0,
+      toX: toNode ? toNode.x : positioned?.toX || 0,
+      toY: toNode ? toNode.y + 49 : positioned?.toY || 0,
     };
   });
   return {
     nodes,
     edges,
-    width: layout.width,
-    height: layout.height,
+    width: Math.max(layout.width, ...nodes.map((node) => node.x + 220)),
+    height: Math.max(layout.height, ...nodes.map((node) => node.y + 130)),
     stats: {
       nodeCount: nodes.length,
       edgeCount: edges.length,
@@ -9543,7 +13151,8 @@ function renderAuthoringGraphNode(node, selection) {
     node.timeout ? `${node.timeout}s` : null,
   ].filter(Boolean);
   return `
-    <button class="authoring-graph-node tone-${node.tone} ${selected ? "selected" : ""}" style="left: ${node.x}px; top: ${node.y}px;" data-action="select-authoring-node" data-index="${node.index}">
+    <div class="authoring-graph-node tone-${node.tone} ${selected ? "selected" : ""}" style="left: ${node.x}px; top: ${node.y}px;" data-action="select-authoring-node" data-index="${node.index}" data-node-id="${escapeHtml(node.id)}" tabindex="0">
+      <button class="authoring-port authoring-port-in" data-action="authoring-port-in" data-index="${node.index}" title="Connect incoming edge" aria-label="Connect incoming edge"></button>
       <span class="authoring-graph-node-head">
         <span class="authoring-graph-node-index">${node.index + 1}</span>
         <span class="authoring-graph-node-title">
@@ -9563,7 +13172,8 @@ function renderAuthoringGraphNode(node, selection) {
               .join("")}</span>`
           : ""
       }
-    </button>
+      <button class="authoring-port authoring-port-out" data-action="authoring-port-out" data-index="${node.index}" title="Connect outgoing edge" aria-label="Connect outgoing edge"></button>
+    </div>
   `;
 }
 
@@ -9589,8 +13199,11 @@ function renderAuthoringGraphEdge(edge, selection) {
 function renderAuthoringGraphCanvas(readOnly) {
   const model = buildAuthoringGraphModel();
   const selection = state.ui.authoringGraphSelection;
-  const invalidBadge = model.stats.invalidEdgeCount
-    ? `<span class="badge danger">${model.stats.invalidEdgeCount} invalid</span>`
+  const validation = validateGraphTopology(state.editor);
+  const patch = buildGraphPatchPreview(authoringGraphSavedSnapshot, authoringGraphSnapshot());
+  const patchCount = patch.nodes_added.length + patch.nodes_removed.length + patch.nodes_changed.length + patch.edges_added.length + patch.edges_removed.length + (patch.layout_changed ? 1 : 0);
+  const invalidBadge = validation.errors.length
+    ? `<span class="badge danger">${validation.errors.length} invalid</span>`
     : '<span class="badge success">valid links</span>';
   return `
     <section class="panel graph-panel authoring-graph-canvas-panel">
@@ -9601,6 +13214,9 @@ function renderAuthoringGraphCanvas(readOnly) {
         </div>
         <div class="actions">
           ${invalidBadge}
+          <span class="badge neutral">${patchCount} changes</span>
+          <button class="icon-button" data-action="undo-authoring" title="Undo" ${readOnly || !authoringGraphHistory.undo.length ? "disabled" : ""}>↶</button>
+          <button class="icon-button" data-action="redo-authoring" title="Redo" ${readOnly || !authoringGraphHistory.redo.length ? "disabled" : ""}>↷</button>
           <button class="secondary" data-action="add-node" ${readOnly ? "disabled" : ""}>Add node</button>
           <button class="secondary" data-action="add-edge" ${readOnly ? "disabled" : ""}>Add edge</button>
         </div>
@@ -9621,6 +13237,10 @@ function renderAuthoringGraphCanvas(readOnly) {
               : '<p class="muted">No edges configured.</p>'
           }
         </div>
+      </div>
+      <div class="authoring-graph-review-strip">
+        <div><strong>Patch preview</strong><small>+${patch.nodes_added.length} nodes, -${patch.nodes_removed.length} nodes, ~${patch.nodes_changed.length} nodes, +${patch.edges_added.length}/-${patch.edges_removed.length} edges${patch.layout_changed ? ", layout changed" : ""}</small></div>
+        ${validation.errors.length ? `<ul>${validation.errors.slice(0, 4).map((item) => `<li>${escapeHtml(item.message)}</li>`).join("")}</ul>` : '<span class="badge success">Topology valid</span>'}
       </div>
     </section>
   `;
@@ -9675,9 +13295,12 @@ function renderEdge(edge, index, readOnly) {
   return `
     <article class="edge-card ${selected ? "authoring-form-selected" : ""}" data-authoring-edge-index="${index}">
       <select data-field="edge.from" data-index="${index}" ${readOnly ? "disabled" : ""}>${options}</select>
+      <input value="${escapeHtml(edge.from_port || "")}" placeholder="From port" data-field="edge.from_port" data-index="${index}" ${readOnly ? "disabled" : ""} />
       <span>to</span>
       <select data-field="edge.to" data-index="${index}" ${readOnly ? "disabled" : ""}>${toOptions}</select>
+      <input value="${escapeHtml(edge.to_port || "")}" placeholder="To port" data-field="edge.to_port" data-index="${index}" ${readOnly ? "disabled" : ""} />
       <input value="${escapeHtml(edge.label || "")}" placeholder="Label" data-field="edge.label" data-index="${index}" ${readOnly ? "disabled" : ""} />
+      <textarea class="code" rows="2" placeholder="Condition JSON" data-field="edge.condition" data-index="${index}" ${readOnly ? "disabled" : ""}>${escapeHtml(edge.condition ? prettyJson(edge.condition) : "")}</textarea>
       <button class="icon-button danger" data-action="remove-edge" data-index="${index}" ${readOnly ? "disabled" : ""}>Del</button>
     </article>
   `;
@@ -9999,35 +13622,120 @@ function getSelectedOrchestratorProfile() {
   );
 }
 
+function renderWorkspaceTaskItem(mission) {
+  const labels = getTaskInventoryLabels(mission);
+  const moving = mission.session_id === state.ui.taskMoveSessionId;
+  return `
+    <button class="workspace-task-item ${mission.session_id === state.selectedSessionId ? "selected" : ""} ${moving ? "moving" : ""}" type="button" draggable="${moving ? "false" : "true"}" data-action="select-session" data-id="${escapeHtml(mission.session_id)}" data-session-id="${escapeHtml(mission.session_id)}" data-workspace-task-drag-session-id="${escapeHtml(mission.session_id)}" ${moving ? 'aria-busy="true"' : ""}>
+      <span class="status-dot ${escapeHtml(labels.tone)}"></span>
+      <span>
+        <strong>${escapeHtml(labels.title)}</strong>
+        <small>${escapeHtml(moving ? "Moving to Workspace..." : labels.subtitle)}</small>
+      </span>
+    </button>
+  `;
+}
+
+function renderWorkspaceCreator() {
+  if (!state.ui.workspaceCreatorOpen) return "";
+  return `
+    <div class="workspace-modal-backdrop">
+      <section class="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" aria-describedby="workspace-modal-description">
+        <header class="workspace-modal-header">
+          <div>
+            <h3 id="workspace-modal-title">Add Workspace</h3>
+            <p id="workspace-modal-description">Connect an existing project folder or create a new one.</p>
+          </div>
+          <button class="icon-button" type="button" data-action="close-workspace-creator" title="Close" aria-label="Close Workspace dialog">&#10005;</button>
+        </header>
+        <div class="workspace-modal-body">
+          ${state.desktop.error ? `<div class="alert danger">${escapeHtml(state.desktop.error)}</div>` : ""}
+          <button class="workspace-folder-command" type="button" data-action="add-sidebar-workspace" ${state.desktop.loading ? "disabled" : ""}>
+            <span class="workspace-folder-command-icon" aria-hidden="true">&#128193;</span>
+            <span><strong>Add existing folder</strong><small>Choose a folder already on this computer</small></span>
+            <span class="workspace-folder-command-arrow" aria-hidden="true">&#8250;</span>
+          </button>
+          <div class="workspace-modal-divider"><span>Create new</span></div>
+          <div class="workspace-modal-form">
+            <label><span class="workspace-field-label">Folder name</span><input data-workspace-creator-initial="true" data-field="desktop.projectName" value="${escapeHtml(state.desktop.projectDraft.name)}" placeholder="my-project" autocomplete="off" /></label>
+            <label><span class="workspace-field-label">Description <small>(optional)</small></span><input data-field="desktop.projectDescription" value="${escapeHtml(state.desktop.projectDraft.description)}" placeholder="Project purpose" /></label>
+            <label><span class="workspace-field-label">Output folder</span><input data-field="desktop.outputRelativePath" value="${escapeHtml(state.desktop.projectDraft.outputRelativePath)}" placeholder="outputs" /></label>
+          </div>
+        </div>
+        <footer class="workspace-modal-footer">
+          <button class="secondary" type="button" data-action="close-workspace-creator">Cancel</button>
+          <button class="primary" type="button" data-action="create-sidebar-project" ${state.desktop.loading || !state.desktop.projectDraft.name.trim() ? "disabled" : ""}>${state.desktop.loading ? "Working..." : "Create Workspace"}</button>
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
+function renderDesktopWorkspaceTree() {
+  const query = state.ui.taskSidebarQuery.trim();
+  const { groups: projectGroups, unassigned: unassignedTasks } = groupWorkspaceTasks({
+    projects: state.desktop.projects,
+    missions: state.missions,
+    sessions: state.sessions,
+    query,
+  });
+  return `
+    <section class="sidebar-panel workspace-tree-panel">
+      <div class="sidebar-panel-header workspace-tree-header">
+        <strong>Workspaces</strong>
+        <button class="icon-button" type="button" data-action="open-workspace-creator" title="Add Workspace" aria-label="Add Workspace">+</button>
+      </div>
+      <div class="workspace-tree-search">
+        <input value="${escapeHtml(state.ui.taskSidebarQuery)}" data-field="desktop.taskSidebarQuery" placeholder="Search workspaces or tasks" />
+      </div>
+      ${state.desktop.error ? `<p class="desktop-local-error workspace-tree-error">${escapeHtml(state.desktop.error)}</p>` : ""}
+      <div class="workspace-tree-list">
+        ${projectGroups.map(({ project, tasks }) => `
+          <section class="workspace-tree-project ${project.active ? "active" : ""} ${state.ui.taskMoveProjectId === project.projectId ? "receiving-task" : ""}" data-workspace-drop-project-id="${escapeHtml(project.projectId)}">
+            <div class="workspace-project-row">
+              <button class="workspace-project-select" type="button" data-action="select-sidebar-project" data-project-id="${escapeHtml(project.projectId)}" data-registered-project-id="${escapeHtml(project.registeredProjectId || "")}">
+                <span class="workspace-folder-icon" aria-hidden="true">&#128193;</span>
+                <span><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(project.rootPath)}</small></span>
+              </button>
+              <button class="icon-button workspace-project-archive" type="button" data-action="archive-desktop-project" data-project-id="${escapeHtml(project.projectId)}" title="Archive Workspace reference" aria-label="Archive ${escapeHtml(project.name)}">&#128451;</button>
+            </div>
+            <div class="workspace-task-children">
+              ${project.active ? `<button class="workspace-new-task" type="button" data-action="new-task" data-project-id="${escapeHtml(project.projectId)}"><span aria-hidden="true">+</span> New task</button>` : ""}
+              ${tasks.length ? tasks.map(renderWorkspaceTaskItem).join("") : `<p class="workspace-tree-empty">${query ? "No matching tasks" : "No tasks yet"}</p>`}
+            </div>
+          </section>
+        `).join("")}
+        ${!projectGroups.length && !unassignedTasks.length ? '<p class="sidebar-muted workspace-tree-empty-state">No Workspaces yet. Add a folder to start.</p>' : ""}
+        ${unassignedTasks.length ? `
+          <section class="workspace-tree-project unassigned">
+            <div class="workspace-unassigned-heading"><strong>Unassigned tasks</strong><small>Created before Workspace grouping</small></div>
+            <div class="workspace-task-children">${unassignedTasks.map(renderWorkspaceTaskItem).join("")}</div>
+          </section>
+        ` : ""}
+      </div>
+    </section>
+  `;
+}
+
 function renderOrchestratorSidebarContent() {
-  const activeProfile = getSelectedOrchestratorProfile();
-  const recent = state.missions.slice(0, 8);
+  if (state.desktop.available) return `<div class="orchestrator-sidebar">${renderDesktopWorkspaceTree()}</div>`;
+  const recent = state.missions.slice(0, 12);
   return `
     <div class="orchestrator-sidebar">
       <section class="sidebar-panel">
         <div class="sidebar-panel-header">
-          <strong>Orchestrator</strong>
-          <button class="mini-button" data-action="refresh-runtime">${state.runtimeLoading ? "..." : "Sync"}</button>
-        </div>
-        <div class="registry-item">
-          <strong>${escapeHtml(activeProfile?.name || activeProfile?.orchestrator_id || state.orchestrator.name || "Draft orchestrator")}</strong>
-          <small>${escapeHtml(state.orchestrator.provider || state.runtimeSummary?.planner?.provider_name || "provider unset")} / ${escapeHtml(state.orchestrator.model || state.runtimeSummary?.planner?.llm_model || "model unset")}</small>
-        </div>
-      </section>
-      <section class="sidebar-panel">
-        <div class="sidebar-panel-header">
-          <strong>Active Missions</strong>
-          <button class="mini-button" data-action="refresh-missions">${state.missionsLoading ? "..." : "Ref"}</button>
+          <strong>Tasks</strong>
+          ${state.selectedSessionId ? '<button class="mini-button" data-action="new-task">New</button>' : ""}
         </div>
         <div class="template-list">
           ${
             recent.length
               ? recent
                   .map((mission) => {
-                    const labels = getMissionInventoryLabels(mission);
+                    const labels = getTaskInventoryLabels(mission);
                     return `
                       <button class="template-item ${mission.session_id === state.selectedSessionId ? "selected" : ""}" data-action="select-session" data-id="${escapeHtml(mission.session_id)}" data-session-id="${escapeHtml(mission.session_id)}">
-                        <span class="status-dot ${statusTone(mission.status)}"></span>
+                        <span class="status-dot ${escapeHtml(labels.tone)}"></span>
                         <span>
                           <strong>${escapeHtml(labels.title)}</strong>
                           <small>${escapeHtml(labels.subtitle)}</small>
@@ -10036,7 +13744,7 @@ function renderOrchestratorSidebarContent() {
                     `;
                   })
                   .join("")
-              : '<p class="sidebar-muted">No active missions yet.</p>'
+              : '<p class="sidebar-muted">No tasks yet.</p>'
           }
         </div>
       </section>
@@ -10044,9 +13752,9 @@ function renderOrchestratorSidebarContent() {
   `;
 }
 
-function renderOrchestratorConversation(messages) {
+function getVisibleOrchestratorMessages(messages) {
   const seen = new Set();
-  const visible = messages
+  return messages
     .filter((message) => message.role === "user" || message.role === "orchestrator")
     .filter((message) => {
       const text = getMessageText(message).trim();
@@ -10057,23 +13765,49 @@ function renderOrchestratorConversation(messages) {
       return true;
     })
     .slice(-10);
-  if (!visible.length) {
-    return '<p class="muted">Start by describing the mission. The orchestrator will turn it into a MissionSpec and DAG proposal.</p>';
-  }
+}
+
+function renderOrchestratorConversation(messages) {
+  const visible = getVisibleOrchestratorMessages(messages);
+  const activeSessionId = state.workspaceDetail?.session?.session_id || state.selectedSessionId || "";
+  const stream = state.conversationStream?.sessionId === activeSessionId
+    ? state.conversationStream
+    : null;
+  const latestVisibleUserText = [...visible]
+    .reverse()
+    .find((message) => message.role === "user")?.content?.text || "";
+  const showOptimisticUser = !!stream?.userText && latestVisibleUserText !== stream.userText;
   return `
     <div class="orchestrator-chat-feed">
-      ${visible
+      ${visible.length ? visible
         .map((message) => {
           const role = message.role === "user" ? "user" : "orchestrator";
           const text = getMessageText(message) || message.kind;
+          const source = message.content?.response_source || (role === "orchestrator" ? "legacy_local" : "");
+          const sourceLabel = source === "provider"
+            ? `${message.content?.model || "Model"} / ${message.content?.provider_connection_id || "Provider"}`
+            : source === "deterministic_fallback"
+              ? "Local fallback"
+              : source === "legacy_local"
+                ? "Legacy local reply"
+                : "";
+          const sourceDetail = source === "deterministic_fallback"
+            ? message.content?.fallback_reason || "The selected model did not return a valid reply."
+            : source === "provider"
+              ? `${message.content?.protocol || "provider"} / requested ${message.content?.requested_model || message.content?.model || "model"} / returned ${message.content?.response_model || message.content?.model || "unknown"}`
+              : source === "legacy_local"
+                ? "This historical reply has no Provider evidence and was generated by the legacy local conversation path."
+                : "";
           return `
             <article class="orchestrator-message ${role}">
-              <span>${escapeHtml(role === "user" ? "You" : "Orchestrator")}</span>
-              <p>${escapeHtml(text)}</p>
+              <header><span>${escapeHtml(role === "user" ? "You" : "My Mate")}</span>${role === "orchestrator" && sourceLabel ? `<small class="conversation-source ${source === "provider" ? "provider" : "fallback"}" title="${escapeHtml(sourceDetail)}">${escapeHtml(sourceLabel)}</small>` : ""}</header>
+              ${role === "orchestrator" ? `<div class="conversation-markdown">${renderMarkdown(text)}</div>` : `<p>${escapeHtml(text)}</p>`}
             </article>
           `;
         })
-        .join("")}
+        .join("") : '<p class="muted conversation-empty">Start by describing the outcome. My Mate will respond here.</p>'}
+      ${showOptimisticUser ? `<article class="orchestrator-message user pending"><header><span>You</span></header><p>${escapeHtml(stream.userText)}</p></article>` : ""}
+      ${stream ? `<article class="orchestrator-message orchestrator streaming" data-conversation-stream-id="${escapeHtml(stream.requestId)}"><header><span>My Mate</span><small class="conversation-source provider">${escapeHtml(stream.model || "Connecting...")}</small></header><div class="conversation-tool-progress-list" data-conversation-tool-progress>${(stream.toolProgress || []).map((progress) => `<div class="conversation-tool-progress ${escapeHtml(progress.status || "running")}" title="${escapeHtml(progress.actionId || "")}"><span class="status-dot ${progress.status === "succeeded" ? "success" : progress.status === "failed" ? "danger" : "warn"}"></span><span>${escapeHtml(progress.summary || progress.toolName || "Running tool")}</span></div>`).join("")}</div><div class="conversation-stream-body"><div class="conversation-markdown" data-conversation-stream-text>${renderMarkdown(stream.text)}</div><span class="conversation-stream-caret" aria-hidden="true"></span></div></article>` : ""}
     </div>
   `;
 }
@@ -10313,16 +14047,546 @@ function renderOrchestratorLaunchpad(detail) {
   `;
 }
 
+function buildTaskExperience(detail = state.workspaceDetail) {
+  const modelVerified = state.providerConnections.some(
+    (connection) => connection.status === "active" && connection.verification?.status === "verified",
+  );
+  const templatesAvailable = state.templates.some((template) => template.status === "published");
+  const quality = deriveResultQuality(detail || {});
+  const supervisionAlert = Array.isArray(detail?.supervision_alerts) ? detail.supervision_alerts[0] || null : null;
+  const repair = supervisionAlert
+    ? {
+        kind: supervisionAlert.category,
+        title: supervisionAlert.title,
+        detail: supervisionAlert.detail,
+        action: supervisionAlert.recommended_action,
+        actionLabel: supervisionAlert.recommended_action_label,
+      }
+    : deriveRepairGuidance(detail || {}, { modelVerified, templatesAvailable });
+  const taskAutonomyMode = normalizeAutonomyMode(
+    detail?.autopilot?.mode || detail?.session?.metadata?.autonomy_mode || state.product.autonomyMode,
+  );
+  const guidance = deriveTaskGuidance(detail, {
+    autonomyMode: taskAutonomyMode,
+    quality,
+    repair,
+  });
+  return {
+    autonomyMode: taskAutonomyMode,
+    autonomy: autonomyModeCopy(taskAutonomyMode),
+    guidance,
+    quality,
+    repair,
+    modelVerified,
+    templatesAvailable,
+    supervisionAlert,
+    autopilot: detail?.autopilot || null,
+    uiPlan: detail?.ui_plan || null,
+    workspaceBinding: detail?.workspace_binding || null,
+  };
+}
+
+function renderTaskGuidance(detail, experience = buildTaskExperience(detail)) {
+  const guidance = experience.guidance;
+  const signals = guidance.signals || [];
+  const guidanceBusy = state.planning || isActionLoading("task-quality", getWorkspaceSelectedRunId(detail) || "");
+  const workspaceAuthorizationFailure = [...(detail?.messages || [])]
+    .reverse()
+    .find((message) => message?.content?.error_code === "workspace_authorization_required");
+  const workspaceAuthorizationNeeded =
+    experience.autopilot?.pending_gate === "workspace_authorization" ||
+    detail?.session?.metadata?.pending_gate === "workspace_authorization" ||
+    (experience.workspaceBinding?.access === "snapshot-read" && !!workspaceAuthorizationFailure);
+  return `
+    <section class="task-guidance-panel task-guidance-${escapeHtml(guidance.phase)}" data-task-phase="${escapeHtml(guidance.phase)}">
+      <div class="task-guidance-heading">
+        <div>
+          <span class="task-start-kicker">Current focus</span>
+          <h3>${escapeHtml(guidance.title)}</h3>
+          <p>${escapeHtml(guidance.detail)}</p>
+        </div>
+        <span class="badge ${escapeHtml(guidance.tone)}">${escapeHtml(guidance.statusLabel)}</span>
+      </div>
+      ${signals.length ? `<div class="task-guidance-signals">
+        ${signals
+          .slice(0, 3)
+          .map(
+            (signal) => `
+              <div class="task-guidance-signal">
+                <small>${escapeHtml(signal.label)}</small>
+                <strong class="${escapeHtml(signal.tone)}">${escapeHtml(signal.value)}</strong>
+              </div>
+            `,
+          )
+          .join("")}
+      </div>` : ""}
+      ${workspaceAuthorizationNeeded ? `<div class="task-autopilot-strip task-workspace-authorization-strip">
+        <span><strong>Workspace authorization</strong><small>${escapeHtml(experience.autopilot?.handoff_reason || `Allow this task to edit an isolated copy of ${experience.workspaceBinding?.display_name || state.desktop.workspace?.name || "the selected project"}.`)}</small></span>
+        <span class="badge warn">Required</span>
+        <div class="task-autopilot-actions">
+          ${state.desktop.workspace
+            ? '<button class="primary" data-action="authorize-desktop-workspace-write">Allow sandbox edits</button>'
+            : desktopHost
+              ? '<button class="secondary" data-action="choose-desktop-workspace">Choose folder</button>'
+              : '<span class="task-desktop-required" title="Open this task in My Mate Desktop to authorize a local folder.">Desktop required</span>'}
+        </div>
+      </div>` : ""}
+      ${experience.autonomyMode === "autopilot" || (experience.autopilot && experience.autopilot.status !== "disabled") ? `<div class="task-autopilot-strip">
+        <span><strong>Autopilot</strong><small>${escapeHtml(experience.autopilot?.last_detail || experience.autonomy.detail)}</small></span>
+        <span class="badge ${statusTone(experience.autopilot?.status || "ready")}">${escapeHtml(experience.autopilot?.status || "ready")}</span>
+        <div class="task-autopilot-actions">
+          ${!experience.autopilot ? '<button class="secondary" data-action="task-autopilot-resume">Start Autopilot</button>' : ["paused", "blocked", "waiting_human", "failed"].includes(experience.autopilot.status) ? '<button class="secondary" data-action="task-autopilot-resume">Resume</button>' : '<button class="secondary" data-action="task-autopilot-pause">Pause</button>'}
+          <button class="icon-button" data-action="task-autopilot-tick" title="Check task now">Ref</button>
+        </div>
+      </div>` : ""}
+      ${guidance.primaryAction ? `<div class="task-guidance-actions">
+        <button class="primary" data-action="${escapeHtml(guidance.primaryAction)}" ${guidanceBusy ? "disabled" : ""}>${guidanceBusy ? "Working..." : escapeHtml(guidance.primaryLabel)}</button>
+      </div>` : ""}
+    </section>
+  `;
+}
+
+function renderTaskQuality(detail, experience = buildTaskExperience(detail)) {
+  const quality = experience.quality;
+  const runStatus = String(detail?.latest_run?.status || detail?.workspace_state?.run_status || "").toLowerCase();
+  const shouldShow =
+    ["completed", "succeeded", "success"].includes(runStatus) ||
+    (detail?.runtime_scorecards || []).length > 0 ||
+    (detail?.runtime_evaluations || []).length > 0;
+  if (!shouldShow) return "";
+
+  const scorecard = Array.isArray(detail?.runtime_scorecards) ? detail.runtime_scorecards.at(-1) : null;
+  const evaluation = Array.isArray(detail?.runtime_evaluations) ? detail.runtime_evaluations.at(-1) : null;
+  const checks = [
+    ["Pipeline", scorecard?.pipeline_verdict || evaluation?.pipeline_verdict || "not checked"],
+    ["Evidence", evaluation?.evidence_verdict || "not checked"],
+    ["Quality", evaluation?.quality_verdict || "not checked"],
+  ];
+
+  return `
+    <section class="task-quality-panel" data-workspace-focus="task-quality">
+      <div class="task-quality-heading">
+        <div><span class="task-start-kicker">Result quality</span><h3>${escapeHtml(quality.title)}</h3><p>${escapeHtml(quality.detail)}</p></div>
+        <span class="badge ${escapeHtml(quality.tone)}">${escapeHtml(quality.label)}</span>
+      </div>
+      <div class="task-quality-checks">
+        ${checks
+          .map(
+            ([label, value]) => `<div><small>${escapeHtml(label)}</small><strong>${escapeHtml(String(value).replaceAll("_", " "))}</strong></div>`,
+          )
+          .join("")}
+      </div>
+      ${quality.findings.length ? `<ul class="task-quality-findings">${quality.findings.map((finding) => `<li>${escapeHtml(finding)}</li>`).join("")}</ul>` : ""}
+    </section>
+  `;
+}
+
+function renderGeneratedDecisionQueue(detail) {
+  const approvals = Array.isArray(detail?.pending_approvals) ? detail.pending_approvals.length : 0;
+  const inputs = Array.isArray(detail?.pending_human_inputs) ? detail.pending_human_inputs.length : 0;
+  if (!approvals && !inputs) return "";
+  return `<section class="task-generated-band task-decision-band"><div><span class="task-start-kicker">Decision</span><h3>${escapeHtml(String(approvals + inputs))} item${approvals + inputs === 1 ? "" : "s"} need you</h3><p>${escapeHtml(`${approvals} approval${approvals === 1 ? "" : "s"} / ${inputs} input request${inputs === 1 ? "" : "s"}`)}</p></div><button class="primary" data-action="open-task-inbox">Review decision</button></section>`;
+}
+
+function renderGeneratedProgress(detail) {
+  const run = detail?.latest_run;
+  if (!run) return "";
+  return `<section class="task-generated-band task-progress-band"><div><span class="task-start-kicker">Progress</span><h3>${escapeHtml(String(run.status || "working").replaceAll("_", " "))}</h3><p>${escapeHtml(run.current_summary || detail?.workspace_state?.latest_run_summary || "My Mate is supervising execution.")}</p></div><button class="secondary" data-action="view-task-progress">View progress</button></section>`;
+}
+
+function renderGeneratedRepair(experience) {
+  const alert = experience.supervisionAlert;
+  if (!alert) return "";
+  const duplicatesPrimaryAction = experience.guidance?.primaryAction === alert.recommended_action;
+  return `<section class="task-generated-band task-repair-band"><div><span class="task-start-kicker">Supervisor</span><h3>${escapeHtml(alert.title)}</h3><p>${escapeHtml(alert.detail)}</p><small>${escapeHtml(`Still active / checked ${formatWorkspaceTimestamp(alert.last_seen_at)}`)}</small></div><div class="task-generated-actions">${duplicatesPrimaryAction ? "" : `<button class="primary" data-action="${escapeHtml(alert.recommended_action)}">${escapeHtml(alert.recommended_action_label)}</button>`}<button class="secondary" data-action="resolve-supervision-alert" data-alert-id="${escapeHtml(alert.alert_id)}">Dismiss</button></div></section>`;
+}
+
+function renderTaskConversationRail(messages) {
+  const visibleMessages = getVisibleOrchestratorMessages(messages);
+  const conversationTargets = getConversationTargets();
+  const conversationTarget = getTaskConversationTarget(state.workspaceDetail);
+  const sendingTarget = getSelectedConversationTarget(conversationTargets) || conversationTarget;
+  const attachments = filterConversationInputAttachments(state.workspaceDetail?.attachments);
+  const conversationTargetLabel = conversationTarget
+    ? `${conversationTarget.connection.name} / ${conversationTarget.model}`
+    : "Model unavailable";
+  const latestProviderMessage = [...messages].reverse().find(
+    (message) => message.content?.response_source === "provider",
+  );
+  const conversationTargetDetail = latestProviderMessage
+    ? `${latestProviderMessage.content?.protocol || "provider"} / requested ${latestProviderMessage.content?.requested_model || latestProviderMessage.content?.model || "model"} / returned ${latestProviderMessage.content?.response_model || latestProviderMessage.content?.model || "unknown"}`
+    : conversationTarget
+      ? "This Session is pinned to this Provider Connection and model."
+      : "No verified Provider Connection is available for this Session.";
+  const checkpoint = state.workspaceDetail?.task_checkpoint || null;
+  const checkpointNotice = checkpoint?.status === "resumable"
+    ? `<div class="task-checkpoint-notice resumable"><span class="status-dot warn"></span><span><strong>Response paused</strong><small>${escapeHtml(checkpoint.next_action || "Continue from the saved task state.")}</small></span><button class="secondary" type="button" data-action="resume-task-checkpoint" ${state.planning ? "disabled" : ""}>Continue</button></div>`
+    : checkpoint?.status === "waiting_human"
+      ? `<div class="task-checkpoint-notice waiting"><span class="status-dot info"></span><span><strong>Waiting for you</strong><small>${escapeHtml(checkpoint.next_action || "Provide the requested decision or input.")}</small></span></div>`
+      : "";
+  return `<section class="task-conversation-rail" data-workspace-focus="task-conversation">
+    <header class="task-conversation-rail-header">
+      <div class="task-conversation-title-row"><div><span class="task-start-kicker">Conversation</span><h3>Task conversation</h3></div><button class="icon-button task-conversation-toggle" data-action="hide-task-conversation" title="Hide conversation" aria-label="Hide conversation">&#10005;</button></div>
+      <div class="task-conversation-summary-meta"><span class="conversation-model-chip ${conversationTarget ? "verified" : "unavailable"}" title="${escapeHtml(conversationTargetDetail)}">${escapeHtml(conversationTargetLabel)}</span><span class="badge neutral">${escapeHtml(String(visibleMessages.length))}</span></div>
+    </header>
+    <section class="orchestrator-chat-panel task-conversation-panel">
+      ${renderOrchestratorConversation(messages)}
+      ${checkpointNotice}
+      ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
+      <div class="orchestrator-composer task-chat-composer" data-conversation-file-drop="true">
+        ${attachments.length ? `<div class="task-chat-attachments">${attachments.slice(-6).map((attachment) => `<span class="task-chat-attachment" title="${escapeHtml(attachment.summary || attachment.storage_uri || attachment.name)}"><span>${escapeHtml(attachment.name || "Attached file")}</span><button class="icon-button" type="button" data-action="remove-conversation-attachment" data-attachment-id="${escapeHtml(attachment.attachment_id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(attachment.name || "attachment")}" ${state.attachmentSaving ? "disabled" : ""}>&#10005;</button></span>`).join("")}</div>` : ""}
+        <textarea rows="2" aria-label="Message My Mate" data-field="planner.intent" placeholder="Message My Mate" ${state.planning ? "disabled" : ""}>${escapeHtml(state.planner.intent)}</textarea>
+        <div class="task-chat-composer-toolbar"><div class="task-chat-toolbar-start"><button class="icon-button task-chat-attach" type="button" data-action="pick-conversation-file" title="Attach text files" aria-label="Attach text files" ${state.attachmentSaving || state.planning ? "disabled" : ""}>&#128206;</button><input class="hidden-file-input" type="file" multiple data-field="conversation.filePicker" data-key="${escapeHtml(String(state.attachmentFilePickerKey))}" accept=".md,.txt,.json,.csv,.yaml,.yml,.xml,.html,.css,.js,.mjs,.jsx,.ts,.tsx,.py,.java,.go,.rs,.sql,.log,.ini,.toml,.sh,.svg,text/*" /><label class="task-chat-model-picker" title="Model for the next reply"><span class="status-dot ${sendingTarget ? "success" : "warn"}"></span><select aria-label="Conversation model" data-field="planner.conversationTarget" ${state.planning || !conversationTargets.length ? "disabled" : ""}>${conversationTargets.length ? conversationTargets.map((target) => `<option value="${escapeHtml(conversationTargetValue(target.connection.connection_id, target.model))}" ${sendingTarget?.connection.connection_id === target.connection.connection_id && sendingTarget.model === target.model ? "selected" : ""}>${escapeHtml(`${target.connection.name} / ${target.model}`)}</option>`).join("") : '<option value="">Model unavailable</option>'}</select></label></div><button class="icon-button primary task-chat-send" data-action="orchestrator-send-message" title="Send message" aria-label="Send message" ${state.planning || !state.planner.intent.trim() || !sendingTarget ? "disabled" : ""}>&#8593;</button></div>
+      </div>
+    </section>
+  </section>`;
+}
+
+function renderTaskTechnicalSection(detail, missionSpec, hasProposal, hasExecutionData, workspace) {
+  return `${missionSpec || hasProposal ? `<details class="task-technical-details" data-workspace-focus="task-plan" ${state.ui.taskPlanExpanded ? "open" : ""}><summary>Plan and technical details</summary><div>${missionSpec ? renderMissionSpecCompact(detail) : ""}${hasProposal ? renderDagProposalSummary() : ""}</div></details>` : ""}
+    ${hasExecutionData ? `<details class="task-runtime-details" data-workspace-focus="task-runtime" ${state.ui.taskRuntimeExpanded ? "open" : ""}><summary><span><strong>Runtime and evidence</strong><small>Progress graph, interventions, artifacts, evaluation, trace, and replay.</small></span><span class="badge ${statusTone(detail?.latest_run?.status || workspace.run_status || "idle")}">${escapeHtml(detail?.latest_run?.status || workspace.run_status || "idle")}</span></summary>${renderExecutionCockpit(detail)}</details>` : ""}`;
+}
+
+function renderGeneratedMissionWorkspace(input) {
+  const { detail, experience, messages, missionSpec, hasProposal, hasExecutionData, workspace } = input;
+  const registry = {
+    task_guidance: () => renderTaskGuidance(detail, experience),
+    decision_queue: () => renderGeneratedDecisionQueue(detail),
+    progress_summary: () => renderGeneratedProgress(detail),
+    result_gallery: () => renderTaskResults(detail),
+    quality_summary: () => renderTaskQuality(detail, experience),
+    repair_recommendation: () => renderGeneratedRepair(experience),
+    technical_details: () => renderTaskTechnicalSection(detail, missionSpec, hasProposal, hasExecutionData, workspace),
+  };
+  const planBlocks = Array.isArray(experience.uiPlan?.blocks) ? experience.uiPlan.blocks : [];
+  const blocks = planBlocks.length
+    ? planBlocks
+    : [
+        { block_id: "guidance", component: "task_guidance" },
+        { block_id: "results", component: "result_gallery" },
+        { block_id: "quality", component: "quality_summary" },
+        { block_id: "technical", component: "technical_details" },
+      ];
+  const rendered = new Set();
+  const output = blocks.flatMap((block) => {
+    const component = block?.component;
+    if (component === "conversation" || !component || rendered.has(component) || typeof registry[component] !== "function") return [];
+    rendered.add(component);
+    const html = registry[component]();
+    return html ? [`<div class="generated-mission-block" data-generated-component="${escapeHtml(component)}">${html}</div>`] : [];
+  });
+  if (!rendered.has("task_guidance")) output.unshift(`<div class="generated-mission-block" data-generated-component="task_guidance">${renderTaskGuidance(detail, experience)}</div>`);
+  if (!rendered.has("result_gallery")) {
+    output.splice(Math.min(1, output.length), 0, `<div class="generated-mission-block" data-generated-component="result_gallery">${renderTaskResults(detail)}</div>`);
+  }
+  return output.join("");
+}
+
+function conversationTargetValue(connectionId, model) {
+  return `${encodeURIComponent(connectionId)}|${encodeURIComponent(model)}`;
+}
+
+function parseConversationTargetValue(value) {
+  const separator = value.indexOf("|");
+  if (separator < 0) return null;
+  try {
+    return {
+      connectionId: decodeURIComponent(value.slice(0, separator)),
+      model: decodeURIComponent(value.slice(separator + 1)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getConversationTargets() {
+  return state.providerConnections
+    .filter(
+      (connection) =>
+        connection.status === "active" &&
+        connection.verification?.status === "verified",
+    )
+    .flatMap((connection) => {
+      const models = connection.models?.length
+        ? connection.models
+        : [connection.default_model].filter(Boolean);
+      return models.map((model) => ({ connection, model }));
+    });
+}
+
+function getSelectedConversationTarget(targets = getConversationTargets()) {
+  return targets.find(
+    (target) =>
+      target.connection.connection_id === state.planner.conversationProviderConnectionId &&
+      target.model === state.planner.conversationModel,
+  ) || targets[0] || null;
+}
+
+function closeArtifactPreview() {
+  state.artifactPreview = {
+    open: false,
+    loading: false,
+    compareLoading: false,
+    error: null,
+    tab: "preview",
+    artifactId: "",
+    detail: null,
+    compare: null,
+  };
+  render();
+}
+
+async function loadArtifactComparison() {
+  const preview = state.artifactPreview;
+  const sessionId = state.selectedSessionId;
+  if (!preview.open || !sessionId || !preview.artifactId || !preview.detail?.previous_artifact_id) return;
+  preview.compareLoading = true;
+  preview.error = null;
+  render();
+  try {
+    const compare = await request(
+      `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(preview.artifactId)}/compare`,
+    );
+    if (!state.artifactPreview.open || state.artifactPreview.artifactId !== preview.artifactId) return;
+    state.artifactPreview.compare = compare;
+  } catch (error) {
+    state.artifactPreview.error = error.message;
+  } finally {
+    if (state.artifactPreview.artifactId === preview.artifactId) {
+      state.artifactPreview.compareLoading = false;
+      render();
+    }
+  }
+}
+
+async function openArtifactPreview(artifactId, tab = "preview") {
+  const sessionId = state.selectedSessionId;
+  if (!sessionId || !artifactId) return;
+  const runtimeArtifact = (state.workspaceDetail?.artifacts || []).find(
+    (artifact) => artifact.artifact_id === artifactId,
+  );
+  const runtimeRunId = runtimeArtifact?.run_id || state.workspaceDetail?.latest_run?.run_id || "";
+  state.artifactPreview = {
+    open: true,
+    loading: true,
+    compareLoading: false,
+    error: null,
+    tab,
+    artifactId,
+    detail: null,
+    compare: null,
+  };
+  render();
+  try {
+    const endpoint = runtimeArtifact && runtimeRunId
+      ? `/api/runs/${encodeURIComponent(runtimeRunId)}/artifacts/${encodeURIComponent(artifactId)}`
+      : `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}`;
+    const detail = await request(
+      endpoint,
+    );
+    if (!state.artifactPreview.open || state.artifactPreview.artifactId !== artifactId) return;
+    state.artifactPreview.detail = detail;
+    state.artifactPreview.loading = false;
+    if (tab === "changes" && detail.previous_artifact_id) {
+      await loadArtifactComparison();
+      return;
+    }
+  } catch (error) {
+    if (state.artifactPreview.artifactId === artifactId) {
+      state.artifactPreview.loading = false;
+      state.artifactPreview.error = error.message;
+    }
+  }
+  render();
+}
+
+function compactArtifactDiffLines(lines, contextSize = 3) {
+  const values = Array.isArray(lines) ? lines : [];
+  const visible = new Set();
+  values.forEach((line, index) => {
+    if (line.type === "context") return;
+    for (let offset = -contextSize; offset <= contextSize; offset += 1) {
+      if (index + offset >= 0 && index + offset < values.length) visible.add(index + offset);
+    }
+  });
+  if (!visible.size && values.length) {
+    for (let index = 0; index < Math.min(values.length, contextSize * 2 + 1); index += 1) visible.add(index);
+  }
+  const compacted = [];
+  let previousIndex = -2;
+  for (const index of [...visible].sort((left, right) => left - right)) {
+    if (index > previousIndex + 1) {
+      compacted.push({ type: "skip", text: "Unchanged lines", old_line: null, new_line: null });
+    }
+    compacted.push(values[index]);
+    previousIndex = index;
+  }
+  if (previousIndex >= 0 && previousIndex < values.length - 1) {
+    compacted.push({ type: "skip", text: "Unchanged lines", old_line: null, new_line: null });
+  }
+  return compacted;
+}
+
+function renderArtifactTablePreview(tablePreview) {
+  const columns = Array.isArray(tablePreview?.columns) ? tablePreview.columns : [];
+  const rows = Array.isArray(tablePreview?.rows) ? tablePreview.rows : [];
+  if (!columns.length) return '<div class="artifact-preview-status"><strong>No spreadsheet rows are available.</strong></div>';
+  return `
+    <div class="artifact-table-preview">
+      <table>
+        <thead><tr>${columns.map((column) => `<th>${escapeHtml(String(column ?? ""))}</th>`).join("")}</tr></thead>
+        <tbody>${rows.map((row) => `<tr>${columns.map((_, index) => `<td>${escapeHtml(String(Array.isArray(row) ? row[index] ?? "" : ""))}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function artifactPreviewLanguage(artifact) {
+  const extension = String(artifact?.name || "").split(".").pop()?.toLowerCase() || "";
+  const aliases = {
+    py: "python", pyi: "python", java: "java", properties: "properties", xml: "xml",
+    js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "typescript",
+    jsx: "javascript", json: "json", jsonl: "json", yaml: "yaml", yml: "yaml", toml: "ini",
+    html: "html", htm: "html", css: "css", scss: "scss", sql: "sql", sh: "shell",
+    bash: "shell", zsh: "shell", ps1: "powershell", c: "c", h: "c", cpp: "cpp", cc: "cpp",
+    hpp: "cpp", cs: "csharp", go: "go", rs: "rust", rb: "ruby", php: "php", gradle: "gradle",
+    md: "markdown", markdown: "markdown",
+  };
+  return aliases[extension] || "text";
+}
+
+function renderArtifactTextPreview(content, artifact) {
+  const source = String(content || "");
+  const language = artifactPreviewLanguage(artifact);
+  let highlighted;
+  try {
+    highlighted = language !== "text" && hljs.getLanguage(language)
+      ? hljs.highlight(source, { language, ignoreIllegals: true })
+      : { value: escapeHtml(source), language: "text" };
+  } catch {
+    highlighted = { value: escapeHtml(source), language: "text" };
+  }
+  return `<section class="artifact-code-block artifact-standalone-code"><div class="artifact-code-toolbar"><span class="artifact-code-language">${escapeHtml(highlighted.language || language)}</span></div><pre class="artifact-text-preview"><code class="hljs">${highlighted.value}</code></pre></section>`;
+}
+
+function renderArtifactPreviewModal() {
+  const preview = state.artifactPreview;
+  if (!preview.open) return "";
+  const detail = preview.detail;
+  const artifact = detail?.artifact || null;
+  const compare = preview.compare;
+  const canCompare = Boolean(detail?.previous_artifact_id);
+  const downloadUri = detail?.download_uri || artifact?.storage_uri || "";
+  const previewContent = detail
+    ? detail.preview_kind === "markdown"
+      ? `<div class="artifact-markdown-preview conversation-markdown">${renderArtifactMarkdown(detail.content)}</div>`
+      : detail.preview_kind === "table"
+        ? renderArtifactTablePreview(detail.table_preview)
+        : detail.preview_kind === "image"
+          ? `<div class="artifact-media-preview"><img src="${escapeHtml(detail.preview_uri || downloadUri)}" alt="${escapeHtml(artifact?.name || "Generated image")}" /></div>`
+          : detail.preview_kind === "pdf"
+            ? `<iframe class="artifact-pdf-preview" src="${escapeHtml(detail.preview_uri || downloadUri)}" title="${escapeHtml(artifact?.name || "PDF preview")}"></iframe>`
+            : detail.preview_kind === "binary"
+              ? `<div class="artifact-preview-status"><strong>Inline preview is not available for this file type.</strong><p>Download the verified file to open it with the appropriate desktop application.</p></div>`
+              : renderArtifactTextPreview(detail.content, artifact)
+    : "";
+  const diffLines = compactArtifactDiffLines(compare?.lines || []);
+  const changesContent = preview.compareLoading
+    ? '<div class="artifact-preview-status"><strong>Comparing versions...</strong></div>'
+    : compare
+      ? `<div class="artifact-diff-summary"><span class="badge neutral">v${escapeHtml(String(compare.base?.version || "?"))} to v${escapeHtml(String(compare.target?.version || "?"))}</span><span class="artifact-diff-additions">+${escapeHtml(String(compare.additions || 0))}</span><span class="artifact-diff-deletions">-${escapeHtml(String(compare.deletions || 0))}</span></div>
+         <div class="workspace-diff-lines artifact-diff-lines">${diffLines.map((line) => {
+           const lineClass = line.type === "added" ? "is-added" : line.type === "removed" ? "is-deleted" : line.type === "skip" ? "is-skip" : "";
+           const marker = line.type === "added" ? "+" : line.type === "removed" ? "-" : line.type === "skip" ? "..." : "";
+           return `<div class="workspace-diff-line ${lineClass}"><span>${escapeHtml(line.old_line || "")}</span><span>${escapeHtml(line.new_line || "")}</span><span>${escapeHtml(marker)}</span><code>${escapeHtml(line.text || " ")}</code></div>`;
+         }).join("")}</div>`
+      : canCompare
+        ? '<div class="artifact-preview-status"><strong>Select Show diff to compare with the previous version.</strong></div>'
+        : '<div class="artifact-preview-status"><strong>This is the first version of this file.</strong><p>A diff becomes available after a newer version is generated.</p></div>';
+  return `
+    <div class="artifact-preview-backdrop">
+      <section class="artifact-preview-modal" role="dialog" aria-modal="true" aria-label="Artifact preview">
+        <header class="artifact-preview-header">
+          <div><span class="task-start-kicker">Generated output</span><h3>${escapeHtml(artifact?.name || "Artifact preview")}</h3><p>${artifact ? `${escapeHtml(formatFileSize(artifact.size_bytes) || artifact.mime_type || "Text file")} / v${escapeHtml(String(artifact.version || 1))} / ${escapeHtml(formatWorkspaceTimestamp(artifact.created_at))}` : "Loading file details..."}</p></div>
+          <button class="icon-button" data-action="close-artifact-preview" title="Close" aria-label="Close artifact preview">&#10005;</button>
+        </header>
+        ${artifact ? `<div class="artifact-preview-tabs" role="tablist" aria-label="Artifact views"><button class="artifact-preview-tab ${preview.tab === "preview" ? "selected" : ""}" role="tab" aria-selected="${preview.tab === "preview"}" data-action="select-artifact-preview-tab" data-tab="preview">Preview</button><button class="artifact-preview-tab ${preview.tab === "changes" ? "selected" : ""}" role="tab" aria-selected="${preview.tab === "changes"}" data-action="select-artifact-preview-tab" data-tab="changes" ${canCompare ? "" : "disabled"}>Changes${canCompare ? "" : " (first version)"}</button></div>` : ""}
+        <div class="artifact-preview-body">
+          ${preview.loading ? '<div class="artifact-preview-status"><strong>Loading preview...</strong></div>' : ""}
+          ${preview.error ? `<div class="alert danger">${escapeHtml(preview.error)}</div>` : ""}
+          ${!preview.loading && !preview.error ? (preview.tab === "changes" ? changesContent : previewContent) : ""}
+        </div>
+        <footer class="artifact-preview-footer"><span>${artifact ? escapeHtml(`${detail.versions?.length || 1} version${detail.versions?.length === 1 ? "" : "s"}`) : ""}</span><div><button class="secondary" data-action="close-artifact-preview">Close</button>${downloadUri ? `<a class="primary artifact-download-button" href="${escapeHtml(downloadUri)}" download>Download</a>` : ""}</div></footer>
+      </section>
+    </div>
+  `;
+}
+
+function renderTaskResults(detail) {
+  const deliverables = getExecutionDeliverables(detail).filter(
+    (item) => item.status === "returned" || item.status === "completed",
+  );
+  const artifacts = Array.isArray(detail?.artifacts) ? detail.artifacts.slice(-6).reverse() : [];
+  const resultItems = deliverables.length
+    ? deliverables.slice(0, 6).map((item) => ({
+        title: item.title || "Result",
+        detail: item.summary || item.uri || "Returned deliverable",
+        uri: item.uri || "",
+        artifactId: item.artifactId || "",
+        mimeType: item.mimeType || "",
+      }))
+    : artifacts.map((artifact) => ({
+        title: artifact.name || artifact.kind || artifact.artifact_id || "Generated result",
+        detail: artifact.summary || artifact.storage_uri || artifact.path || "Generated artifact",
+        uri: artifact.storage_uri || artifact.path || "",
+        artifactId: artifact.artifact_id || "",
+        mimeType: artifact.mime_type || "",
+      }));
+
+  const executionStatus = detail?.latest_run?.status || detail?.workspace_state?.run_status || "not started";
+  const decisionCount = getExecutionQueueItems(detail).length;
+  return `
+    <section class="task-workboard-panel" data-workspace-focus="task-results">
+      <div class="task-results-heading">
+        <div><span class="task-start-kicker">Workboard</span><h3>Files</h3></div>
+        <div class="task-workboard-summary" aria-label="Task output summary">
+          <span>${escapeHtml(String(resultItems.length))} file${resultItems.length === 1 ? "" : "s"}</span>
+          <span class="${escapeHtml(statusTone(executionStatus))}">${escapeHtml(executionStatus)}</span>
+          ${decisionCount ? `<span class="warn">${escapeHtml(String(decisionCount))} pending</span>` : ""}
+        </div>
+      </div>
+      ${resultItems.length
+        ? `<div class="task-result-list">${resultItems
+            .map(
+              (item) => `
+                <article class="task-result-item">
+                  <div class="task-result-file">
+                    <strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong>
+                    <span title="${escapeHtml(item.detail)}">${escapeHtml(item.detail || item.mimeType || "Generated file")}</span>
+                  </div>
+                  <div class="task-result-actions">
+                    ${item.artifactId ? `<button class="secondary" type="button" data-action="open-artifact-preview" data-artifact-id="${escapeHtml(item.artifactId)}">Preview</button>` : ""}
+                    ${String(item.uri || "").startsWith("/api/") ? `<a class="task-result-download secondary" href="${escapeHtml(item.uri)}" download>Download</a>` : ""}
+                  </div>
+                </article>
+              `,
+            )
+            .join("")}</div>`
+        : '<div class="task-workboard-empty"><strong>No outputs yet</strong><p>The task is still in conversation and has not returned a deliverable.</p></div>'}
+    </section>
+  `;
+}
+
 function renderOrchestratorWorkbench() {
   const detail = state.workspaceDetail;
   const session = detail?.session || null;
   const messages = detail?.messages || [];
   const workspace = detail?.workspace_state || {};
-  const title = session?.title || "New orchestrated mission";
+  const title = session?.title || "What do you want to get done?";
   const subtitle =
     detail?.mission_snapshot?.nextActionDetail ||
     detail?.workspace_state?.next_recommended_detail ||
-    "Shape the brief, lock the route, and hand work to runtime only when the mission contract is clear.";
+    "Describe the outcome. My Mate will discuss it with you and choose the internal route only when the task is ready.";
   const hasExecutionData =
     !!detail?.runtime_graph ||
     !!detail?.latest_run ||
@@ -10331,188 +14595,72 @@ function renderOrchestratorWorkbench() {
     (Array.isArray(detail?.interventions) && detail.interventions.length > 0) ||
     (Array.isArray(detail?.dag_patches) && detail.dag_patches.length > 0);
 
+  const missionSpec = getWorkspaceMissionSpec(detail);
+  const hasProposal = !!state.planner?.dagDraft || !!state.planner?.candidatePlan || !!state.planner?.activeProposal;
+  const conversationTargets = getConversationTargets();
+  const selectedConversationTarget = getSelectedConversationTarget(conversationTargets);
+  const verifiedConnection = selectedConversationTarget?.connection || null;
+  const activeWorkspace = state.desktop.workspace;
+  const taskWorkspaceReady = !state.desktop.available || !!activeWorkspace;
+  if (!session) {
+    return `
+      <div class="orchestrator-workbench task-home-workbench">
+        <section class="task-start-surface">
+          <div class="task-start-copy"><span class="task-start-kicker">${activeWorkspace ? `New task in ${escapeHtml(activeWorkspace.displayName || activeWorkspace.name)}` : "New task"}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(subtitle)}</p></div>
+          ${!taskWorkspaceReady ? `<div class="task-workspace-required"><span><strong>Workspace required</strong><small>Add or create a folder from the left sidebar. New tasks automatically inherit it.</small></span><button class="secondary" data-action="open-workspace-creator">Add Workspace</button></div>` : ""}
+          <div class="task-start-composer">
+            <textarea rows="6" aria-label="Task description" data-field="planner.intent" placeholder="Describe the result, constraints, and files or systems involved.">${escapeHtml(state.planner.intent)}</textarea>
+            <div class="task-start-actions">
+              <label class="task-model-picker"><span>Conversation model</span><select aria-label="Conversation model" data-field="planner.conversationTarget" ${conversationTargets.length ? "" : "disabled"}>
+                ${conversationTargets.length
+                  ? conversationTargets.map((target) => `<option value="${escapeHtml(conversationTargetValue(target.connection.connection_id, target.model))}" ${selectedConversationTarget?.connection.connection_id === target.connection.connection_id && selectedConversationTarget.model === target.model ? "selected" : ""}>${escapeHtml(`${target.connection.name} / ${target.model}`)}</option>`).join("")
+                  : '<option value="">No verified model</option>'}
+              </select></label>
+              <button class="primary task-start-button" data-action="orchestrator-send-message" ${state.planning || !state.planner.intent.trim() || !selectedConversationTarget || !taskWorkspaceReady ? "disabled" : ""}>${state.planning ? "Preparing task..." : taskWorkspaceReady ? "Start task" : "Add Workspace first"}</button>
+            </div>
+          </div>
+          <div class="task-readiness-strip">
+            <span class="status-dot ${verifiedConnection ? "success" : "warn"}"></span>
+            <span><strong>${verifiedConnection ? "Model verified" : "Model setup needs attention"}</strong><small>${escapeHtml(selectedConversationTarget ? `${verifiedConnection.name} / ${selectedConversationTarget.model}` : "Open Settings to configure and verify a model connection.")}</small></span>
+            ${verifiedConnection ? "" : '<button class="secondary" data-action="open-studio-setup">Open Settings</button>'}
+          </div>
+          ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
+        </section>
+      </div>
+    `;
+  }
+  const taskExperience = buildTaskExperience(detail);
   return `
-    <div class="orchestrator-workbench">
-      ${renderOrchestratorLaunchpad(detail)}
-      <section class="panel orchestrator-chat-panel">
-        <div class="panel-header">
-          <div>
-            <h3>${escapeHtml(title)}</h3>
-            <p>${escapeHtml(subtitle)}</p>
-          </div>
-          <span class="badge ${statusTone(session?.status || "draft")}">${escapeHtml(session?.status || "new mission")}</span>
-        </div>
-        ${renderOrchestratorConversation(messages)}
-        <div class="orchestrator-composer">
-          <label>Mission instruction<textarea rows="5" data-field="planner.intent" placeholder="Describe the outcome, constraints, and outputs you need.">${escapeHtml(state.planner.intent)}</textarea></label>
-          <div class="orchestrator-actions">
-            <button class="primary" data-action="orchestrator-send-message" ${state.planning ? "disabled" : ""}>${state.planning ? "Thinking..." : state.selectedSessionId ? "Send to orchestrator" : "Start mission"}</button>
-            <button class="secondary" data-action="generate-dag-draft" ${state.planning || !state.planner.intent.trim() ? "disabled" : ""}>Generate DAG</button>
-            <button class="secondary" data-action="plan-intent" ${state.planning || !state.planner.intent.trim() ? "disabled" : ""}>Plan mission</button>
-          </div>
-        </div>
-        ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
-      </section>
-      ${renderMissionSpecCompact(detail)}
-      ${renderDagProposalSummary()}
-      ${hasExecutionData ? renderExecutionCockpit(detail) : ""}
+    <div class="orchestrator-workbench task-active-workbench">
+      ${renderGeneratedMissionWorkspace({ detail, experience: taskExperience, messages, missionSpec, hasProposal, hasExecutionData, workspace })}
     </div>
   `;
 }
 
-function renderOrchestratorRail() {
-  const runtime = state.runtimeSummary?.execution_runtime || null;
-  const planner = state.runtimeSummary?.planner || null;
-  const profiles = state.orchestratorProfiles || [];
-  const selectedProfile = getSelectedOrchestratorProfile();
-  const hostedProfiles = state.runtimeSummary?.agent_hosting?.profiles || [];
-  const readySubagents = hostedProfiles.filter((profile) => profile.health?.status === "ready");
-  const detail = state.workspaceDetail;
-  const deliverables = getExecutionDeliverables(detail);
-  const queueItems = getExecutionQueueItems(detail);
-  const latestArtifacts = Array.isArray(detail?.artifacts) ? detail.artifacts.slice(-4).reverse() : [];
-  const latestRunStatus =
-    detail?.latest_run?.status ||
-    detail?.workspace_state?.run_status ||
-    detail?.session?.workspace_state?.run_status ||
-    "idle";
-  const setupExpanded = state.ui.orchestratorSetupExpanded;
+function getTaskConversationTarget(detail = state.workspaceDetail) {
+  const providerMessage = [...(detail?.messages || [])].reverse().find(
+    (message) => message.content?.response_source === "provider",
+  );
+  const connectionId =
+    providerMessage?.content?.provider_connection_id ||
+    detail?.session?.metadata?.conversation_provider_connection_id ||
+    "";
+  const model =
+    providerMessage?.content?.model ||
+    detail?.session?.metadata?.conversation_model ||
+    "";
+  const connection = state.providerConnections.find(
+    (item) => item.connection_id === connectionId,
+  );
+  if (connection && model) return { connection, model };
+  return getSelectedConversationTarget();
+}
 
+function renderOrchestratorRail() {
+  const detail = state.workspaceDetail;
   return `
-    <aside class="desktop-rail">
-      <section class="panel rail-panel">
-        <div class="panel-header">
-          <div><h3>Orchestrator Setup</h3><p>Persisted profile intent for the supervising orchestrator.</p></div>
-          <div class="orchestrator-setup-actions">
-            <span class="badge neutral">${state.orchestratorProfilesLoading ? "syncing" : "V2"}</span>
-            <button class="mini-button" data-action="toggle-orchestrator-setup">${setupExpanded ? "Hide" : "Edit"}</button>
-          </div>
-        </div>
-        <div class="orchestrator-setup-summary">
-          <div><strong>Profile</strong><span>${escapeHtml(selectedProfile?.name || selectedProfile?.orchestrator_id || "New orchestrator")}</span></div>
-          <div><strong>Provider</strong><span>${escapeHtml(state.orchestrator.provider || planner?.provider_id || "unset")}</span></div>
-          <div><strong>Model</strong><span>${escapeHtml(state.orchestrator.model || planner?.llm_model || "unset")}</span></div>
-          <div><strong>Subagents</strong><span>${escapeHtml(state.orchestrator.defaultSubagentsText || "runtime defaults")}</span></div>
-        </div>
-        ${
-          setupExpanded
-            ? `
-              <div class="orchestrator-config-grid">
-                <label>Profile
-                  <select data-field="orchestrator.selectedProfileId">
-                    <option value="">New orchestrator</option>
-                    ${profiles.map((profile) => `<option value="${escapeHtml(profile.orchestrator_id)}" ${selectedProfile?.orchestrator_id === profile.orchestrator_id ? "selected" : ""}>${escapeHtml(profile.name || profile.orchestrator_id)}</option>`).join("")}
-                  </select>
-                </label>
-                <label>Name<input value="${escapeHtml(state.orchestrator.name || "")}" data-field="orchestrator.name" placeholder="Studio Orchestrator" /></label>
-                <label>Provider<input value="${escapeHtml(state.orchestrator.provider || planner?.provider_id || "")}" data-field="orchestrator.provider" placeholder="planner/provider" /></label>
-                <label>Model<input value="${escapeHtml(state.orchestrator.model || planner?.llm_model || "")}" data-field="orchestrator.model" placeholder="model id" /></label>
-                <label>System prompt<textarea rows="5" data-field="orchestrator.systemPrompt">${escapeHtml(state.orchestrator.systemPrompt)}</textarea></label>
-                <label>Default tools<input value="${escapeHtml(state.orchestrator.defaultToolsText || "")}" data-field="orchestrator.defaultToolsText" placeholder="tool-a, tool-b" /></label>
-                <label>Default subagents<input value="${escapeHtml(state.orchestrator.defaultSubagentsText || "")}" data-field="orchestrator.defaultSubagentsText" placeholder="researcher, builder" /></label>
-                <button class="primary" data-action="save-orchestrator-profile">Save orchestrator profile</button>
-              </div>
-            `
-            : ""
-        }
-      </section>
-      <section class="panel rail-panel">
-        <div class="panel-header">
-          <div><h3>Supervision</h3><p>Runtime posture, deliverables, and execution gates.</p></div>
-          <span class="badge ${statusTone(latestRunStatus)}">${escapeHtml(latestRunStatus)}</span>
-        </div>
-        <div class="rail-kv-list">
-          <div><strong>Deliverables</strong><span>${escapeHtml(`${deliverables.filter((item) => item.status === "returned").length}/${deliverables.length}`)}</span></div>
-          <div><strong>Open Gates</strong><span>${escapeHtml(String(queueItems.length))}</span></div>
-          <div><strong>Artifacts</strong><span>${escapeHtml(String((detail?.artifacts || []).length))}</span></div>
-        </div>
-      </section>
-      <section class="panel rail-panel">
-        <div class="panel-header">
-          <div><h3>Latest Outputs</h3><p>Returned deliverables and recent runtime outputs.</p></div>
-        </div>
-        <div class="rail-feed">
-          ${
-            deliverables.filter((item) => item.status === "returned").length
-              ? deliverables
-                  .filter((item) => item.status === "returned")
-                  .slice(0, 4)
-                  .map(
-                    (item) => `
-                      <div class="rail-feed-item">
-                        <strong>${escapeHtml(item.title)}</strong>
-                        <small>${escapeHtml(item.summary || item.uri || "Returned output")}</small>
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : latestArtifacts.length
-                ? latestArtifacts
-                    .map(
-                      (artifact) => `
-                        <div class="rail-feed-item">
-                          <strong>${escapeHtml(artifact.name || artifact.kind || artifact.artifact_id || "artifact")}</strong>
-                          <small>${escapeHtml(artifact.summary || artifact.storage_uri || artifact.path || "Generated output")}</small>
-                        </div>
-                      `,
-                    )
-                    .join("")
-                : '<p class="muted">No returned outputs yet.</p>'
-          }
-        </div>
-      </section>
-      <section class="panel rail-panel">
-        <div class="panel-header">
-          <div><h3>Approvals & Interventions</h3><p>Items that may require operator attention.</p></div>
-          <span class="badge ${queueItems.length ? "warn" : "neutral"}">${escapeHtml(String(queueItems.length))}</span>
-        </div>
-        <div class="rail-feed">
-          ${
-            queueItems.length
-              ? queueItems
-                  .slice(0, 6)
-                  .map(
-                    (item) => `
-                      <div class="rail-feed-item">
-                        <strong>${escapeHtml(item.title)}</strong>
-                        <small>${escapeHtml(item.detail || formatWorkspaceLabel(item.kind))}</small>
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : '<p class="muted">No approvals or interventions are pending.</p>'
-          }
-        </div>
-      </section>
-      <section class="panel rail-panel">
-        <div class="panel-header">
-          <div><h3>Subagents</h3><p>Available workers for DAG assignment.</p></div>
-          <span class="badge ${readySubagents.length ? "success" : "warn"}">${escapeHtml(String(readySubagents.length))} ready</span>
-        </div>
-        <div class="rail-feed">
-          ${
-            hostedProfiles.length
-              ? hostedProfiles.slice(0, 8).map((profile) => `
-                  <div class="rail-feed-item">
-                    <strong>${escapeHtml(profile.profile_id)}</strong>
-                    <small>${escapeHtml(profile.model || runtimeAgentRefOf(profile) || profile.health?.status || "unbound")}</small>
-                  </div>
-                `).join("")
-              : '<p class="muted">No subagents registered yet.</p>'
-          }
-        </div>
-      </section>
-      <section class="panel rail-panel">
-        <div class="panel-header">
-          <div><h3>Runtime</h3><p>${escapeHtml(runtime?.runtime_health?.detail || "Runtime summary unavailable.")}</p></div>
-          <span class="badge ${runtime?.runtime_health?.status === "ok" ? "success" : "warn"}">${escapeHtml(getRuntimeExecutionLabel(runtime))}</span>
-        </div>
-        <div class="rail-kv-list">
-          <div><strong>Planner</strong><span>${escapeHtml(planner?.provider_name || planner?.provider_id || "unknown")}</span></div>
-          <div><strong>LLM Model</strong><span>${escapeHtml(planner?.llm_model || "n/a")}</span></div>
-          <div><strong>Registered</strong><span>${escapeHtml((planner?.registered_provider_ids || []).join(", ") || "none")}</span></div>
-        </div>
-      </section>
+    <aside class="desktop-rail task-conversation-rail-container">
+      ${renderTaskConversationRail(detail?.messages || [])}
     </aside>
   `;
 }
@@ -10529,6 +14677,35 @@ function renderDesktopSidebarContent() {
       </div>
       ${renderSessionInventoryControls("missions")}
       <div class="template-list">${renderMissionList()}</div>
+    `;
+  }
+  if (state.activeNav === "inbox") {
+    const count = getInboxOpenCount();
+    return `
+      <div class="sidebar-section-header">
+        <strong>Needs attention</strong>
+        <button class="mini-button" data-action="refresh-inbox">${state.inbox.loading ? "..." : "Ref"}</button>
+      </div>
+      <div class="sidebar-panel">
+        <div class="registry-item"><strong>${count ? `${count} open item${count === 1 ? "" : "s"}` : "All clear"}</strong><small>${count ? "Decisions and missing input are collected here." : "No task is waiting for you."}</small></div>
+      </div>
+    `;
+  }
+  if (state.activeNav === "library") {
+    return `
+      <div class="sidebar-section-header"><strong>Library</strong></div>
+      <div class="sidebar-panel">
+        <div class="registry-item"><strong>${state.templates.length} workflows</strong><small>Reusable starting points selected automatically for new tasks.</small></div>
+      </div>
+    `;
+  }
+  if (state.activeNav === "settings") {
+    const verified = state.providerConnections.filter((connection) => connection.verification?.status === "verified").length;
+    return `
+      <div class="sidebar-section-header"><strong>Readiness</strong></div>
+      <div class="sidebar-panel">
+        <div class="registry-item"><strong>${verified ? `${verified} verified model${verified === 1 ? "" : "s"}` : "Model needs verification"}</strong><small>Model and machine checks are managed from one setup flow.</small></div>
+      </div>
     `;
   }
   if (state.activeNav === "sessions") {
@@ -10559,6 +14736,26 @@ function renderDesktopSidebarContent() {
         <div class="registry-item">
           <strong>${escapeHtml(String((state.dashboardSummary?.backlog?.pending_approvals || 0) + (state.dashboardSummary?.backlog?.pending_human_inputs || 0)))}</strong>
           <small>${escapeHtml(`approvals ${state.dashboardSummary?.backlog?.pending_approvals || 0} / input ${state.dashboardSummary?.backlog?.pending_human_inputs || 0}`)}</small>
+        </div>
+      </div>
+    `;
+  }
+  if (state.activeNav === "memory") {
+    const retrieval = state.memory.retrievalStatus;
+    const knowledge = state.memory.knowledgeStatus;
+    return `
+      <div class="sidebar-section-header">
+        <strong>Memory</strong>
+        <button class="mini-button" data-action="refresh-memory">${state.memoryLoading ? "..." : "Ref"}</button>
+      </div>
+      <div class="sidebar-panel">
+        <div class="registry-item">
+          <strong>${escapeHtml(retrieval?.retrieval || "Loading")}</strong>
+          <small>${escapeHtml(`${retrieval?.active_records || 0} active / ${retrieval?.indexed_records || 0} indexed`)}</small>
+        </div>
+        <div class="registry-item">
+          <strong>${escapeHtml(knowledge?.provider_id || "Knowledge provider")}</strong>
+          <small>${escapeHtml(knowledge?.state || "Loading")}</small>
         </div>
       </div>
     `;
@@ -10597,6 +14794,432 @@ function renderDesktopSidebarContent() {
   `;
 }
 
+function findMissionForRun(runId) {
+  if (!runId) return null;
+  return state.missions.find((mission) =>
+    mission.latest_run_id === runId ||
+    mission.mission_snapshot?.executionSummary?.runId === runId ||
+    mission.mission_snapshot?.execution_summary?.run_id === runId
+  ) || null;
+}
+
+function getOpenWorkspaceChanges() {
+  return openWorkspaceChangeSets(state.inbox.workspaceChanges);
+}
+
+function getInboxOpenCount() {
+  return state.inbox.approvals.length +
+    state.inbox.humanInputs.length +
+    state.inbox.alerts.length +
+    state.inbox.memoryCandidates.length +
+    getOpenWorkspaceChanges().length;
+}
+
+function workspaceRootLabel(root) {
+  const parts = String(root || "").replaceAll("\\", "/").split("/").filter(Boolean);
+  return parts.at(-1) || "Workspace";
+}
+
+function renderWorkspaceDiff(change) {
+  const diff = change?.diff;
+  if (!diff || diff.status !== "available") {
+    const reason = diff?.status === "binary"
+      ? "Binary file preview is unavailable. Review its size and hashes before applying."
+      : diff?.status === "too_large"
+        ? "This text file is too large for the bounded inline preview."
+        : "This older Change Set does not include an inline preview.";
+    return `
+      <div class="workspace-diff-unavailable">
+        <strong>Preview unavailable</strong>
+        <span>${escapeHtml(reason)}</span>
+        <dl>
+          <div><dt>Before size</dt><dd>${escapeHtml(change?.before_size_bytes == null ? "not present" : formatWorkspaceBytes(change?.before_size_bytes))}</dd></div>
+          <div><dt>After size</dt><dd>${escapeHtml(change?.after_size_bytes == null ? "deleted" : formatWorkspaceBytes(change?.after_size_bytes))}</dd></div>
+          <div><dt>Before SHA-256</dt><dd>${escapeHtml(change?.before_sha256 || "not present")}</dd></div>
+          <div><dt>After SHA-256</dt><dd>${escapeHtml(change?.after_sha256 || "deleted")}</dd></div>
+        </dl>
+      </div>
+    `;
+  }
+  return `
+    <div class="workspace-diff-lines" role="table" aria-label="Line changes">
+      ${(diff.lines || []).map((line) => {
+        if (line.kind === "skip") {
+          return `<div class="workspace-diff-line is-skip" role="row"><span></span><span></span><span>...</span><code>${escapeHtml(line.text)}</code></div>`;
+        }
+        const marker = line.kind === "added" ? "+" : line.kind === "deleted" ? "-" : " ";
+        return `
+          <div class="workspace-diff-line is-${escapeHtml(line.kind)}" role="row">
+            <span>${escapeHtml(line.old_line ?? "")}</span>
+            <span>${escapeHtml(line.new_line ?? "")}</span>
+            <span>${marker}</span>
+            <code>${escapeHtml(line.text || " ")}</code>
+          </div>
+        `;
+      }).join("") || '<div class="workspace-diff-unavailable"><span>No textual line changes.</span></div>'}
+    </div>
+  `;
+}
+
+function renderWorkspaceChangeReview() {
+  const changeSets = getOpenWorkspaceChanges();
+  const selected = selectWorkspaceChangeSet(changeSets, state.inbox.selectedWorkspaceChangeId);
+  if (!selected) return "";
+  const selectedFile = selectWorkspaceFile(selected, state.inbox.selectedWorkspaceFile);
+  const counts = countWorkspaceChangeKinds(selected);
+  const confirmAction = state.inbox.confirmWorkspaceChangeAction;
+  const actionable = selected.status === "pending";
+  const rejectable = ["pending", "blocked", "apply_failed"].includes(selected.status);
+  return `
+    <section class="workspace-change-review" aria-label="Workspace change review">
+      <header class="workspace-change-review-header">
+        <div>
+          <div class="workspace-change-title-row">
+            <span class="badge ${workspaceChangeTone(selected.status)}">${escapeHtml(selected.status)}</span>
+            <h3>${escapeHtml(workspaceRootLabel(selected.source_root))}</h3>
+          </div>
+          <p>${escapeHtml(selected.run_id)} / ${escapeHtml(selected.node_run_id)}</p>
+        </div>
+        <div class="workspace-change-actions">
+          <button class="secondary danger-action" data-action="stage-workspace-change-action" data-mode="reject" ${!rejectable || isActionLoading("workspace-change", selected.change_set_id) ? "disabled" : ""}>Reject</button>
+          <button class="primary" data-action="stage-workspace-change-action" data-mode="apply" ${!actionable || isActionLoading("workspace-change", selected.change_set_id) ? "disabled" : ""}>Apply changes</button>
+        </div>
+      </header>
+      ${selected.blocked_reason ? `<div class="workspace-change-blocked"><strong>Application blocked</strong><span>${escapeHtml(selected.blocked_reason)}</span></div>` : ""}
+      ${confirmAction ? `
+        <div class="workspace-change-confirm ${confirmAction === "apply" ? "is-apply" : "is-reject"}">
+          <span>${confirmAction === "apply" ? `Apply ${selected.changes.length} reviewed file change${selected.changes.length === 1 ? "" : "s"} to the source workspace?` : "Reject this Change Set without modifying the source workspace?"}</span>
+          <div>
+            <button class="secondary" data-action="cancel-workspace-change-action">Cancel</button>
+            <button class="${confirmAction === "apply" ? "primary" : "secondary danger-action"}" data-action="confirm-workspace-change-action" data-mode="${confirmAction}">Confirm</button>
+          </div>
+        </div>
+      ` : ""}
+      <div class="workspace-change-summary" aria-label="Change summary">
+        <span><strong>${selected.changes.length}</strong> files</span>
+        <span class="is-added"><strong>${counts.added}</strong> added</span>
+        <span class="is-modified"><strong>${counts.modified}</strong> modified</span>
+        <span class="is-deleted"><strong>${counts.deleted}</strong> deleted</span>
+      </div>
+      <div class="workspace-change-layout">
+        <aside class="workspace-change-set-list" aria-label="Workspace change sets requiring review">
+          <div class="workspace-change-pane-title"><strong>Change Sets</strong><span>${changeSets.length}</span></div>
+          ${changeSets.map((item) => `
+            <button class="workspace-change-set-item ${item.change_set_id === selected.change_set_id ? "selected" : ""}" data-action="select-workspace-change-set" data-change-set-id="${escapeHtml(item.change_set_id)}">
+              <span class="status-dot ${workspaceChangeTone(item.status)}"></span>
+              <span><strong>${escapeHtml(workspaceRootLabel(item.source_root))}</strong><small>${escapeHtml(`${item.changes?.length || 0} files / ${formatWorkspaceTimestamp(item.created_at)}`)}</small></span>
+            </button>
+          `).join("")}
+        </aside>
+        <aside class="workspace-change-file-list" aria-label="Changed files">
+          <div class="workspace-change-pane-title"><strong>Files</strong><span>${selected.changes.length}</span></div>
+          ${selected.changes.map((change) => `
+            <button class="workspace-change-file ${change.relative_path === selectedFile?.relative_path ? "selected" : ""}" data-action="select-workspace-change-file" data-path="${escapeHtml(change.relative_path)}">
+              <span class="workspace-change-kind is-${escapeHtml(change.kind)}">${workspaceChangeKindSymbol(change.kind)}</span>
+              <span><strong>${escapeHtml(change.relative_path)}</strong><small>${escapeHtml(formatWorkspaceBytes(change.after_size_bytes ?? change.before_size_bytes))}</small></span>
+            </button>
+          `).join("")}
+        </aside>
+        <section class="workspace-diff-pane">
+          <div class="workspace-diff-header">
+            <div><strong>${escapeHtml(selectedFile?.relative_path || "Select a file")}</strong><small>${selectedFile ? escapeHtml(`${selectedFile.kind} / ${formatWorkspaceBytes(selectedFile.after_size_bytes ?? selectedFile.before_size_bytes)}`) : ""}</small></div>
+            ${selectedFile?.diff?.truncated ? '<span class="badge neutral">Context trimmed</span>' : ""}
+          </div>
+          ${selectedFile ? renderWorkspaceDiff(selectedFile) : '<div class="workspace-diff-unavailable"><span>Select a changed file to inspect it.</span></div>'}
+        </section>
+      </div>
+    </section>
+  `;
+}
+
+function renderInboxWorkspace() {
+  const approvals = state.inbox.approvals || [];
+  const humanInputs = state.inbox.humanInputs || [];
+  const alerts = state.inbox.alerts || [];
+  const count = getInboxOpenCount();
+  return `
+    <section class="product-surface inbox-surface">
+      <div class="product-surface-heading">
+        <div><h3>${count ? "Your attention is needed" : "Nothing needs your attention"}</h3><p>${count ? "Only decisions that can change or unblock a task appear here." : "My Mate will bring approvals, questions, and blocked tasks here."}</p></div>
+        <span class="badge ${count ? "warn" : "success"}">${count ? `${count} open` : "All clear"}</span>
+      </div>
+      ${state.inbox.error ? `<div class="alert danger">${escapeHtml(state.inbox.error)}</div>` : ""}
+      ${renderWorkspaceChangeReview()}
+      <div class="inbox-list">
+        ${state.inbox.memoryCandidates.map((candidate) => `
+          <article class="inbox-item memory-candidate-inbox-item">
+            <span class="inbox-item-kind">Memory</span>
+            <div><strong>${escapeHtml(candidate.proposed_memory?.kind || candidate.operation || "Memory proposal")}</strong><p>${escapeHtml(candidate.proposed_memory?.content || candidate.rationale || "Review this durable memory change.")}</p><small>${escapeHtml(`${candidate.proposed_memory?.scope_kind || "workspace"}:${candidate.proposed_memory?.scope_id || candidate.workspace_id} / ${candidate.risk} risk`)}</small></div>
+            <div class="inbox-item-actions">
+              <button class="secondary" data-action="reject-memory-candidate" data-candidate-id="${escapeHtml(candidate.candidate_id)}" ${isActionLoading("memory-candidate", candidate.candidate_id) ? "disabled" : ""}>Reject</button>
+              <button class="primary" data-action="approve-memory-candidate" data-candidate-id="${escapeHtml(candidate.candidate_id)}" ${isActionLoading("memory-candidate", candidate.candidate_id) ? "disabled" : ""}>Approve</button>
+            </div>
+          </article>
+        `).join("")}
+        ${alerts.map((alert) => {
+          const mission = state.missions.find((item) => item.session_id === alert.session_id) || null;
+          return `<article class="inbox-item supervision-inbox-item">
+            <span class="inbox-item-kind">${escapeHtml(alert.severity === "critical" ? "Critical" : "Supervisor")}</span>
+            <div><strong>${escapeHtml(alert.title)}</strong><p>${escapeHtml(alert.detail)}</p><small>${escapeHtml(mission ? getTaskInventoryLabels(mission).title : formatWorkspaceTimestamp(alert.last_seen_at))}</small></div>
+            <div class="inbox-item-actions">
+              <button class="secondary" data-action="resolve-supervision-alert" data-alert-id="${escapeHtml(alert.alert_id)}">Dismiss</button>
+              <button class="primary" data-action="open-supervision-alert-task" data-session-id="${escapeHtml(alert.session_id)}" data-recommended-action="${escapeHtml(alert.recommended_action || "")}">${escapeHtml(alert.recommended_action_label || "Open task")}</button>
+            </div>
+          </article>`;
+        }).join("")}
+        ${approvals.map((approval) => {
+          const mission = findMissionForRun(approval.run_id);
+          return `
+            <article class="inbox-item">
+              <span class="inbox-item-kind">Approval</span>
+              <div><strong>${escapeHtml(approval.summary || "Task approval")}</strong><p>${escapeHtml(mission ? getMissionInventoryLabels(mission).title : "A running task is waiting for a decision.")}</p><small>${escapeHtml(formatWorkspaceTimestamp(approval.requested_at))}</small></div>
+              <div class="inbox-item-actions">
+                ${mission ? `<button class="secondary" data-action="open-inbox-task" data-session-id="${escapeHtml(mission.session_id)}">Open task</button>` : ""}
+                <button class="secondary" data-action="reject-approval" data-approval-id="${escapeHtml(approval.approval_id)}">Reject</button>
+                <button class="primary" data-action="approve-approval" data-approval-id="${escapeHtml(approval.approval_id)}">Approve</button>
+              </div>
+            </article>
+          `;
+        }).join("")}
+        ${humanInputs.map((input) => {
+          const mission = findMissionForRun(input.run_id);
+          return `
+            <article class="inbox-item">
+              <span class="inbox-item-kind">Input</span>
+              <div><strong>${escapeHtml(input.summary || "Task needs more information")}</strong><p>${escapeHtml(mission ? getMissionInventoryLabels(mission).title : "Open the task to provide the requested information.")}</p><small>${escapeHtml(formatWorkspaceTimestamp(input.requested_at))}</small></div>
+              <div class="inbox-item-actions">
+                ${mission ? `<button class="primary" data-action="open-inbox-task" data-session-id="${escapeHtml(mission.session_id)}">Open task</button>` : '<span class="badge warn">Task unavailable</span>'}
+              </div>
+            </article>
+          `;
+        }).join("")}
+        ${count ? "" : '<div class="product-empty"><strong>My Mate is working quietly</strong><span>You only need to return when a decision or result is ready.</span></div>'}
+      </div>
+    </section>
+  `;
+}
+
+function renderLibraryWorkspace() {
+  const reusable = state.templates.filter((template) => template.status === "published");
+  return `
+    <section class="product-surface library-surface">
+      <div class="product-surface-heading">
+        <div><h3>Reusable workflows</h3><p>Choose a starting point only when you want one. New tasks can select a workflow automatically.</p></div>
+        <span class="badge neutral">${reusable.length} available</span>
+      </div>
+      <div class="library-grid">
+        ${reusable.map((template) => `
+          <article class="library-item">
+            <div><span class="inbox-item-kind">Workflow</span><strong>${escapeHtml(template.name || template.template_id)}</strong><p>${escapeHtml(template.description || "Reusable task workflow")}</p></div>
+            <div class="library-item-meta"><span>${escapeHtml(String(template.nodes?.length || 0))} steps</span><span>v${escapeHtml(String(template.version || 1))}</span></div>
+            <button class="primary" data-action="use-library-workflow" data-id="${escapeHtml(template.template_id)}">Use for a task</button>
+          </article>
+        `).join("") || '<div class="product-empty"><strong>No reusable workflows yet</strong><span>Add one workflow so tasks can start with a validated route.</span><button class="primary" data-action="open-workflow-builder">Open workflow builder</button></div>'}
+      </div>
+    </section>
+  `;
+}
+
+function renderProductSettingsPanel() {
+  const activeConnections = state.providerConnections.filter((connection) => connection.status === "active");
+  const verifiedConnections = activeConnections.filter((connection) => connection.verification?.status === "verified");
+  const runtime = state.runtimeSummary?.execution_runtime || null;
+  const runtimeReady = runtime?.runtime_health?.status === "ok";
+  const autonomy = autonomyModeCopy(state.product.autonomyMode);
+  return `
+    <section class="product-surface settings-home">
+      <div class="product-surface-heading">
+        <div><h3>Ready to work</h3><p>Model access and machine readiness are managed here. Advanced runtime details stay optional.</p></div>
+        <span class="badge ${verifiedConnections.length && runtimeReady ? "success" : "warn"}">${verifiedConnections.length && runtimeReady ? "Ready" : "Needs attention"}</span>
+      </div>
+      <div class="settings-home-list">
+        <article class="settings-home-row">
+          <div><span class="settings-home-index">1</span><span><strong>Model</strong><small>${verifiedConnections.length ? `${verifiedConnections.length} verified connection${verifiedConnections.length === 1 ? "" : "s"}` : activeConnections.length ? "Configured, not verified" : "No model configured"}</small></span></div>
+          <button class="primary" data-action="open-studio-setup">${activeConnections.length ? "Manage model" : "Set up model"}</button>
+        </article>
+        <article class="settings-home-row">
+          <div><span class="settings-home-index">2</span><span><strong>Machine</strong><small>${escapeHtml(runtimeReady ? "Local runtime is available" : runtime?.runtime_health?.detail || "Run the machine check")}</small></span></div>
+          <button class="secondary" data-action="open-environment-setup">Check machine</button>
+        </article>
+      </div>
+      <section class="autonomy-policy-panel">
+        <div class="autonomy-policy-heading">
+          <div><h3>How My Mate should act</h3><p>Choose a human policy. Runtime, provider, and agent settings remain derived.</p></div>
+          <span class="badge info">${escapeHtml(autonomy.label)}</span>
+        </div>
+        <div class="autonomy-options" role="radiogroup" aria-label="Task autonomy">
+          ${AUTONOMY_MODES.map((mode) => {
+            const copy = autonomyModeCopy(mode);
+            const selected = state.product.autonomyMode === mode;
+            return `<button class="autonomy-option ${selected ? "selected" : ""}" role="radio" aria-checked="${selected}" data-action="save-autonomy-mode" data-mode="${escapeHtml(mode)}" ${state.product.autonomySaving ? "disabled" : ""}><strong>${escapeHtml(copy.label)}</strong><small>${escapeHtml(copy.detail)}</small></button>`;
+          }).join("")}
+        </div>
+      </section>
+      <button class="product-advanced-link" data-action="open-registry-advanced">Open advanced model, agent, and governance settings</button>
+    </section>
+  `;
+}
+
+function renderMemoryWorkspace() {
+  const retrieval = state.memory.retrievalStatus;
+  const embedding = retrieval?.embedding || null;
+  const knowledge = state.memory.knowledgeStatus;
+  const result = state.memory.searchResult;
+  const hits = Array.isArray(result?.hits) ? result.hits : [];
+  const settings = state.memory.settings;
+  const observability = state.memory.observability;
+  const intelligenceEvaluation = state.memory.intelligenceEvaluation;
+  const maintenance = state.memory.maintenance;
+  const maintenanceSweep = state.memory.maintenanceSweep;
+  const recommendations = Array.isArray(state.memory.recommendations?.recommendations)
+    ? state.memory.recommendations.recommendations
+    : [];
+  const records = state.memory.records || [];
+  const candidates = state.memory.candidates || [];
+  return `
+    <section class="product-surface memory-workspace">
+      <div class="product-surface-heading">
+        <div><h3>Memory Center</h3><p>${escapeHtml(retrieval?.workspace_id || state.security.workspaceId || "default")}</p></div>
+        <span class="badge ${embedding?.state === "degraded" ? "warn" : "success"}">${escapeHtml(retrieval?.retrieval || "Loading")}</span>
+      </div>
+      <div class="memory-toolbar">
+        <div class="memory-search-row">
+          <input data-field="memory.query" value="${escapeHtml(state.memory.query)}" placeholder="Search canonical memory" autocomplete="off" />
+          <button class="primary" type="button" data-action="filter-memory" ${state.memoryLoading ? "disabled" : ""}>${state.memoryLoading ? "Loading..." : "Search"}</button>
+        </div>
+        <div class="memory-filter-row">
+          <select data-field="memory.statusFilter" aria-label="Memory status">
+            ${["active", "expired", "deleted", "superseded", "all"].map((value) => `<option value="${value}" ${state.memory.statusFilter === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+          <select data-field="memory.scopeFilter" aria-label="Memory scope">
+            ${["all", "user", "workspace", "project", "agent"].map((value) => `<option value="${value}" ${state.memory.scopeFilter === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+          <select data-field="memory.kindFilter" aria-label="Memory kind">
+            ${["all", "preference", "fact", "convention", "decision", "lesson"].map((value) => `<option value="${value}" ${state.memory.kindFilter === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+          <button class="secondary" data-action="export-memory" data-format="json">Export JSON</button>
+          <button class="secondary" data-action="export-memory" data-format="jsonl">Export JSONL</button>
+        </div>
+      </div>
+      <div class="memory-record-list" aria-live="polite">
+        <div class="memory-results-heading"><strong>${records.length} canonical memories</strong><small>Canonical records are soft-deleted and remain auditable.</small></div>
+        ${records.map((memory) => {
+          const editing = state.memory.editingId === memory.memory_id;
+          return `<article class="memory-record-row ${memory.status !== "active" ? "is-muted" : ""}">
+            <div class="memory-record-main">
+              <div class="memory-record-meta"><span class="badge neutral">${escapeHtml(memory.kind)}</span><small>${escapeHtml(`${memory.scope_kind}:${memory.scope_id} / v${memory.version} / ${memory.status}`)}</small></div>
+              ${editing ? `<textarea data-field="memory.editContent" rows="3">${escapeHtml(state.memory.editContent)}</textarea>` : `<p>${escapeHtml(memory.content)}</p>`}
+              <small>${escapeHtml((memory.tags || []).join(" / ") || formatWorkspaceTimestamp(memory.updated_at))}</small>
+            </div>
+            <div class="memory-record-actions">
+              ${editing
+                ? `<button class="secondary" data-action="cancel-memory-edit">Cancel</button><button class="primary" data-action="save-memory-edit" data-memory-id="${escapeHtml(memory.memory_id)}" ${state.memory.saving || !state.memory.editContent.trim() ? "disabled" : ""}>Save</button>`
+                : memory.status === "active"
+                  ? `<button class="secondary" data-action="edit-memory" data-memory-id="${escapeHtml(memory.memory_id)}">Edit</button><button class="secondary danger-action" data-action="delete-memory" data-memory-id="${escapeHtml(memory.memory_id)}">Delete</button>`
+                  : `<button class="secondary" data-action="restore-memory" data-memory-id="${escapeHtml(memory.memory_id)}">Restore</button>`}
+            </div>
+          </article>`;
+        }).join("") || '<div class="product-empty"><strong>No memories in this view</strong><span>Change the filters or complete a task that contains durable preferences or decisions.</span></div>'}
+      </div>
+      <section class="memory-review-section">
+        <div class="memory-results-heading"><strong>Pending review</strong><small>${candidates.length} candidate${candidates.length === 1 ? "" : "s"}</small></div>
+        ${candidates.map((candidate) => `<article class="memory-candidate-row">
+          <div><div class="memory-record-meta"><span class="badge ${candidate.risk === "high" ? "warn" : "neutral"}">${escapeHtml(candidate.risk)} risk</span><small>${escapeHtml(`${candidate.operation} / ${candidate.proposed_memory?.scope_kind || "workspace"}:${candidate.proposed_memory?.scope_id || candidate.workspace_id}`)}</small></div><p>${escapeHtml(candidate.proposed_memory?.content || candidate.rationale)}</p><small>${escapeHtml(candidate.rationale)}</small></div>
+          <div class="memory-record-actions"><button class="secondary" data-action="reject-memory-candidate" data-candidate-id="${escapeHtml(candidate.candidate_id)}">Reject</button><button class="primary" data-action="approve-memory-candidate" data-candidate-id="${escapeHtml(candidate.candidate_id)}">Approve</button></div>
+        </article>`).join("") || '<p class="muted">No inferred memory is waiting for review.</p>'}
+      </section>
+      <div class="memory-status-table">
+        <div><span>Canonical journal</span><strong>${escapeHtml(String(retrieval?.journal_records || 0))}</strong></div>
+        <div><span>Indexed</span><strong>${escapeHtml(String(retrieval?.indexed_records || 0))}</strong></div>
+        <div><span>Queries / failures</span><strong>${escapeHtml(`${observability?.retrieval_queries || 0} / ${observability?.retrieval_failures || 0}`)}</strong></div>
+        <div><span>Last latency</span><strong>${escapeHtml(observability?.retrieval_last_latency_ms == null ? "-" : `${observability.retrieval_last_latency_ms} ms`)}</strong></div>
+      </div>
+      <div class="memory-intelligence-status" aria-label="Memory Intelligence status">
+        <div><span>Extraction</span><strong>${escapeHtml(settings?.intelligence?.extraction_mode || "deterministic")}</strong><small>${escapeHtml(`${observability?.model_extraction_successes || 0} success / ${observability?.model_extraction_fallbacks || 0} fallback`)}</small></div>
+        <div><span>Automatic recall</span><strong>${escapeHtml(String(observability?.automatic_recall_hits || 0))} hits</strong><small>${escapeHtml(`${observability?.automatic_recall_cache_hits || 0} cache hits / ${observability?.automatic_recall_cache_misses || 0} misses / ${observability?.automatic_recall_last_latency_ms ?? "-"} ms`)}</small></div>
+        <div><span>Intent model</span><strong>${settings?.intelligence?.intent_model_enabled ? "Enabled" : "Deterministic"}</strong><small>${escapeHtml(`${observability?.intent_model_successes || 0} success / ${observability?.intent_model_fallbacks || 0} fallback`)}</small></div>
+        <div><span>Quality benchmark</span><strong>${escapeHtml(intelligenceEvaluation ? `${Math.round(Number(intelligenceEvaluation.accuracy || 0) * 100)}%` : "-")}</strong><small>${escapeHtml(intelligenceEvaluation ? `${intelligenceEvaluation.passed}/${intelligenceEvaluation.total} intents / ${intelligenceEvaluation.memory_operations?.passed || 0}/${intelligenceEvaluation.memory_operations?.total || 0} operations` : "Not evaluated")}</small></div>
+      </div>
+      <div class="memory-status-table">
+        <div><span>Private storage</span><strong>AES-256-GCM</strong></div>
+        <div><span>Private migrations</span><strong>${escapeHtml(String((observability?.private_memory_migrations || 0) + (observability?.private_candidate_migrations || 0)))}</strong></div>
+        <div><span>Maintenance sweeps</span><strong>${escapeHtml(String(observability?.maintenance_sweeps || 0))}</strong></div>
+        <div><span>Workspace failures</span><strong>${escapeHtml(String(observability?.maintenance_workspace_failures || 0))}</strong></div>
+      </div>
+      <section class="memory-recommendation-section">
+        <div class="memory-results-heading"><strong>Current Task recommendations</strong><small>${state.memory.recommendations ? `${recommendations.length} relevant memories` : "Select a Task to inspect"}</small></div>
+        ${recommendations.map((item) => `<article class="memory-recommendation-row">
+          <div><div class="memory-record-meta"><span class="badge ${item.sensitivity === "private" ? "warn" : "neutral"}">${escapeHtml(item.sensitivity)}</span><small>${escapeHtml(`${item.scope_kind}:${item.scope_id} / ${item.kind} / v${item.memory_version}`)}</small></div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(item.reason)}</small></div>
+          <div class="memory-result-score"><strong>${escapeHtml(Number(item.score || 0).toFixed(2))}</strong><small>${item.already_in_snapshot ? "In snapshot" : "Newer context"}</small></div>
+        </article>`).join("") || `<p class="muted">${state.memory.recommendations ? "No relevant memory recommendation for the current Task." : "Select a Task, then refresh Memory Center."}</p>`}
+      </section>
+      <div class="memory-provider-row">
+        <span><strong>Embedding</strong><small>${escapeHtml(`${embedding?.provider_id || "disabled"}${embedding?.model ? ` / ${embedding.model}` : ""}`)}</small></span>
+        <span class="badge ${embedding?.state === "ready" ? "success" : embedding?.state === "degraded" ? "warn" : "neutral"}">${escapeHtml(embedding?.state || "disabled")}</span>
+        <span><strong>Knowledge graph</strong><small>${escapeHtml(knowledge?.provider_id || "disabled")}</small></span>
+        <span class="badge ${knowledge?.state === "ready" ? "success" : knowledge?.state === "unavailable" || knowledge?.state === "degraded" ? "warn" : "neutral"}">${escapeHtml(knowledge?.state || "disabled")}</span>
+      </div>
+      <div class="memory-actions-row">
+        <button class="secondary" data-action="rebuild-memory-index" ${state.memory.rebuilding ? "disabled" : ""}>${state.memory.rebuilding ? "Rebuilding..." : "Rebuild index"}</button>
+        ${knowledge?.provider_id === "mempalace" && !knowledge?.read_only ? `<button class="secondary" data-action="rebuild-memory-knowledge" ${state.memory.rebuilding ? "disabled" : ""}>Sync knowledge graph</button>` : ""}
+        <button class="secondary" data-action="run-memory-maintenance" ${state.memory.rebuilding ? "disabled" : ""}>Run maintenance</button>
+        <button class="secondary" data-action="run-memory-maintenance-sweep" ${state.memory.rebuilding ? "disabled" : ""}>Maintain all Workspaces</button>
+        <small>${maintenanceSweep ? `${escapeHtml(String(maintenanceSweep.maintained_workspaces || 0))} maintained / ${escapeHtml(String(maintenanceSweep.failed_workspaces?.length || 0))} failed` : maintenance ? `Last maintenance ${escapeHtml(formatWorkspaceTimestamp(maintenance.completed_at))}` : "Maintenance has not run yet"}</small>
+      </div>
+      <details class="memory-advanced-section">
+        <summary>Retrieval diagnostics</summary>
+        <div class="memory-search-row">
+          <input data-field="memory.query" value="${escapeHtml(state.memory.query)}" placeholder="Run hybrid retrieval" autocomplete="off" />
+          <button class="secondary" type="button" data-action="search-memory" ${state.memoryLoading || !state.memory.query.trim() ? "disabled" : ""}>Search index</button>
+        </div>
+        <div class="memory-results" aria-live="polite">
+        ${result ? `<div class="memory-results-heading"><strong>${escapeHtml(String(result.count || 0))} results</strong><small>${escapeHtml(result.retrieval || "")}${result.embedding_fallback ? " / embedding fallback" : ""}</small></div>` : ""}
+        ${hits.map((hit) => {
+          const memory = hit.memory || {};
+          const evidence = hit.evidence || {};
+          return `<article class="memory-result-row"><div><strong>${escapeHtml(memory.kind || "memory")}</strong><p>${escapeHtml(memory.content || "")}</p><small>${escapeHtml(`${memory.scope_kind || "workspace"}:${memory.scope_id || ""} / v${memory.version || 1}`)}</small></div><div class="memory-result-score"><strong>${escapeHtml(Number(evidence.fused_score || 0).toFixed(4))}</strong><small>${escapeHtml((evidence.matched_by || []).join(" + "))}</small></div></article>`;
+        }).join("") || (result ? '<p class="muted">No visible memories matched.</p>' : "")}
+        </div>
+      </details>
+      ${settings ? `<details class="memory-advanced-section" open>
+        <summary>Memory settings</summary>
+        <div class="memory-settings-grid">
+          <label><span>Background review</span><input type="checkbox" data-field="memory.settings.backgroundEnabled" ${settings.background_review.enabled ? "checked" : ""} /></label>
+          <label><span>Automatic recall</span><input type="checkbox" data-field="memory.settings.recallEnabled" ${settings.automatic_recall.enabled ? "checked" : ""} /></label>
+          <label><span>Extraction mode</span><select data-field="memory.settings.extractionMode"><option value="deterministic" ${settings.intelligence.extraction_mode === "deterministic" ? "selected" : ""}>Deterministic</option><option value="hybrid" ${settings.intelligence.extraction_mode === "hybrid" ? "selected" : ""}>Hybrid model review</option></select></label>
+          <label><span>Model intent routing</span><input type="checkbox" data-field="memory.settings.intentModelEnabled" ${settings.intelligence.intent_model_enabled ? "checked" : ""} /></label>
+          <label><span>Intelligence connection</span><select data-field="memory.settings.intelligenceConnectionId"><option value="">Use Conversation Provider</option>${state.providerConnections.filter((connection) => connection.status === "active" && connection.verification?.status === "verified" && connection.base_url).map((connection) => `<option value="${escapeHtml(connection.connection_id)}" ${settings.intelligence.provider_connection_id === connection.connection_id ? "selected" : ""}>${escapeHtml(connection.name)}</option>`).join("")}</select></label>
+          <label><span>Intelligence model</span><input data-field="memory.settings.intelligenceModel" value="${escapeHtml(settings.intelligence.model || "")}" placeholder="Provider default model" /></label>
+          <label><span>Turn character limit</span><input type="number" min="1000" max="100000" step="1000" data-field="memory.settings.maxTurnCharacters" value="${escapeHtml(String(settings.intelligence.max_turn_characters))}" /></label>
+          <label><span>Minimum confidence</span><input type="number" min="0.5" max="1" step="0.01" data-field="memory.settings.minConfidence" value="${escapeHtml(String(settings.intelligence.min_confidence))}" /></label>
+          <label><span>Model timeout (ms)</span><input type="number" min="1000" max="180000" step="1000" data-field="memory.settings.modelTimeout" value="${escapeHtml(String(settings.intelligence.model_timeout_ms))}" /></label>
+          <label><span>Review minimum characters</span><input type="number" min="1" max="10000" data-field="memory.settings.minReviewCharacters" value="${escapeHtml(String(settings.background_review.min_user_characters))}" /></label>
+          <label><span>Review candidate limit</span><input type="number" min="1" max="20" data-field="memory.settings.maxReviewCandidates" value="${escapeHtml(String(settings.background_review.max_candidates_per_review))}" /></label>
+          <label><span>Recall result limit</span><input type="number" min="1" max="20" data-field="memory.settings.recallMaxResults" value="${escapeHtml(String(settings.automatic_recall.max_results))}" /></label>
+          <label><span>Recall character budget</span><input type="number" min="500" max="20000" step="500" data-field="memory.settings.recallCharacterBudget" value="${escapeHtml(String(settings.automatic_recall.character_budget))}" /></label>
+          <label><span>Recall cache TTL (seconds)</span><input type="number" min="0" max="3600" step="5" data-field="memory.settings.recallCacheTtl" value="${escapeHtml(String(settings.automatic_recall.cache_ttl_seconds ?? 60))}" /></label>
+          <label><span>Project memory</span><input type="checkbox" data-field="memory.settings.projectEnabled" ${settings.scope_policy.project_memory_enabled ? "checked" : ""} /></label>
+          <label><span>Agent memory</span><input type="checkbox" data-field="memory.settings.agentEnabled" ${settings.scope_policy.agent_memory_enabled ? "checked" : ""} /></label>
+          <label><span>Resolved candidate retention</span><input type="number" min="1" max="3650" data-field="memory.settings.retentionDays" value="${escapeHtml(String(settings.retention.resolved_candidate_days))}" /></label>
+          <label><span>Journal record limit</span><input type="number" min="100" max="1000000" data-field="memory.settings.journalLimit" value="${escapeHtml(String(settings.retention.journal_max_records))}" /></label>
+          <label><span>Embedding provider</span><select data-field="memory.settings.embeddingProvider"><option value="disabled" ${settings.embedding.provider === "disabled" ? "selected" : ""}>Disabled</option><option value="openai-compatible" ${settings.embedding.provider === "openai-compatible" ? "selected" : ""}>OpenAI compatible</option></select></label>
+          <label><span>Provider connection</span><select data-field="memory.settings.connectionId"><option value="">Select connection</option>${state.providerConnections.filter((connection) => connection.status === "active").map((connection) => `<option value="${escapeHtml(connection.connection_id)}" ${settings.embedding.provider_connection_id === connection.connection_id ? "selected" : ""}>${escapeHtml(connection.name)}</option>`).join("")}</select></label>
+          <label><span>Embedding model</span><input data-field="memory.settings.embeddingModel" value="${escapeHtml(settings.embedding.model || "")}" placeholder="text-embedding-3-small" /></label>
+          <label><span>Knowledge graph</span><select data-field="memory.settings.knowledgeProvider"><option value="disabled" ${settings.knowledge_graph.provider === "disabled" ? "selected" : ""}>Disabled</option><option value="mempalace" ${settings.knowledge_graph.provider === "mempalace" ? "selected" : ""}>MemPalace</option></select></label>
+          <label class="memory-settings-wide"><span>MemPalace path</span><input data-field="memory.settings.palacePath" value="${escapeHtml(settings.knowledge_graph.palace_path || "")}" /></label>
+        </div>
+        <div class="memory-actions-row"><button class="primary" data-action="save-memory-settings" ${state.memory.saving ? "disabled" : ""}>${state.memory.saving ? "Saving..." : "Save settings"}</button></div>
+      </details>` : ""}
+      <details class="memory-advanced-section">
+        <summary>Import memory</summary>
+        <textarea data-field="memory.importText" rows="6" placeholder="Paste a JSON bundle or JSONL">${escapeHtml(state.memory.importText)}</textarea>
+        <div class="memory-filter-row"><select data-field="memory.importStrategy">${["skip", "merge", "replace"].map((value) => `<option value="${value}" ${state.memory.importStrategy === value ? "selected" : ""}>${value}</option>`).join("")}</select><label class="memory-inline-check"><input type="checkbox" data-field="memory.importDryRun" ${state.memory.importDryRun ? "checked" : ""} /><span>Dry run</span></label><button class="primary" data-action="import-memory" ${!state.memory.importText.trim() || state.memory.saving ? "disabled" : ""}>Import</button></div>
+        ${state.memory.importResult ? `<p class="muted">${escapeHtml(`${state.memory.importResult.created} create, ${state.memory.importResult.updated} update, ${state.memory.importResult.skipped} skip, ${state.memory.importResult.rejected} reject`)}</p>` : ""}
+      </details>
+    </section>
+  `;
+}
+
 function renderDesktopCenter(readOnly, warnings, preview) {
   if (state.activeNav === "orchestrator") {
     return renderOrchestratorWorkbench();
@@ -10604,8 +15227,17 @@ function renderDesktopCenter(readOnly, warnings, preview) {
   if (state.activeNav === "missions" || state.activeNav === "sessions") {
     return renderMissionWorkspace();
   }
+  if (state.activeNav === "inbox") {
+    return renderInboxWorkspace();
+  }
+  if (state.activeNav === "library") {
+    return renderLibraryWorkspace();
+  }
   if (state.activeNav === "dashboard") {
     return renderDashboardWorkspace();
+  }
+  if (state.activeNav === "memory") {
+    return renderMemoryWorkspace();
   }
   if (state.activeNav === "templates") {
     return `
@@ -10621,7 +15253,10 @@ function renderDesktopCenter(readOnly, warnings, preview) {
   if (state.activeNav === "registry") {
     return renderRegistryManagerPanel();
   }
-  return renderSettingsPanel();
+  if (state.activeNav === "operations") {
+    return renderSettingsPanel();
+  }
+  return renderProductSettingsPanel();
 }
 
 function renderCommandPalette() {
@@ -10676,35 +15311,179 @@ function renderActiveView(readOnly, warnings, preview) {
   return renderPlannerPanel();
 }
 
+function captureTaskWorkspaceScroll() {
+  const sessionId = state.activeNav === "orchestrator"
+    ? state.workspaceDetail?.session?.session_id || ""
+    : "";
+  if (!sessionId) return null;
+
+  const center = document.querySelector(".task-workspace-grid .desktop-center");
+  const taskList = document.querySelector(".orchestrator-sidebar .template-list");
+  const chatFeed = document.querySelector(".task-conversation-rail .orchestrator-chat-feed");
+  const distanceFromChatBottom = chatFeed
+    ? Math.max(0, chatFeed.scrollHeight - chatFeed.clientHeight - chatFeed.scrollTop)
+    : 0;
+
+  return {
+    sessionId,
+    centerTop: center?.scrollTop || 0,
+    taskListTop: taskList?.scrollTop || 0,
+    chatTop: chatFeed?.scrollTop || 0,
+    chatPinnedToBottom: distanceFromChatBottom <= 48,
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+  };
+}
+
+function restoreTaskWorkspaceScroll(snapshot) {
+  if (!snapshot) return;
+  const sessionId = state.activeNav === "orchestrator"
+    ? state.workspaceDetail?.session?.session_id || ""
+    : "";
+  if (!sessionId || snapshot.sessionId !== sessionId) return;
+
+  const restore = () => {
+    if (state.workspaceDetail?.session?.session_id !== snapshot.sessionId) return;
+    const center = document.querySelector(".task-workspace-grid .desktop-center");
+    const taskList = document.querySelector(".orchestrator-sidebar .template-list");
+    const chatFeed = document.querySelector(".task-conversation-rail .orchestrator-chat-feed");
+    if (center) center.scrollTop = snapshot.centerTop;
+    if (taskList) taskList.scrollTop = snapshot.taskListTop;
+    if (chatFeed) {
+      chatFeed.scrollTop = snapshot.chatPinnedToBottom
+        ? chatFeed.scrollHeight
+        : Math.min(snapshot.chatTop, Math.max(0, chatFeed.scrollHeight - chatFeed.clientHeight));
+    }
+    if (window.matchMedia("(max-width: 1180px)").matches) {
+      window.scrollTo(snapshot.windowX, snapshot.windowY);
+    }
+  };
+
+  restore();
+  window.requestAnimationFrame(restore);
+}
+
+function renderTaskWorkspaceSurface() {
+  studioPerformance.taskSurfaceRenderCount += 1;
+  publishStudioPerformance();
+  const workspaceSession = state.workspaceDetail?.session || null;
+  const shell = document.querySelector(".app-shell");
+  const workspace = shell?.querySelector(":scope > .workspace");
+  const desktopGrid = workspace?.querySelector(".desktop-grid");
+  const center = desktopGrid?.querySelector(":scope > .desktop-center");
+  if (state.activeNav !== "orchestrator" || !workspaceSession || !shell || !workspace || !desktopGrid || !center) {
+    render();
+    return;
+  }
+
+  const preservedTaskScroll = captureTaskWorkspaceScroll();
+  const guidance = buildTaskExperience(state.workspaceDetail).guidance;
+  const title = workspaceSession.title || "Tasks";
+  const subtitle = guidance?.detail || "Continue the task or review its current result.";
+  const badgeLabel = guidance?.statusLabel || "ready";
+  const badgeTone = guidance?.tone || statusTone(badgeLabel);
+  const readOnly = ["published", "archived"].includes(state.editor.status);
+  const warnings = validateGraph();
+  const selectedTemplate = state.templates.find((item) => item.template_id === state.selectedId) || null;
+  const preview = selectedTemplate || buildDraftPayload();
+
+  shell.classList.add("task-shell-active");
+  workspace.classList.remove("task-switch-pending");
+  workspace.removeAttribute("aria-busy");
+  updateTaskInventorySelection(workspaceSession.session_id);
+
+  const heading = workspace.querySelector(".topbar h2");
+  if (heading) heading.textContent = title;
+  const topbarDescription = workspace.querySelector(".topbar > div > p");
+  if (topbarDescription) topbarDescription.textContent = subtitle;
+  const badge = workspace.querySelector(".topbar .badge");
+  if (badge) {
+    badge.className = `badge ${badgeTone}`;
+    badge.textContent = badgeLabel;
+  }
+  const actions = workspace.querySelector(".topbar .actions");
+  if (actions) {
+    actions.innerHTML = `${state.ui.taskConversationVisible ? "" : '<button class="icon-button" data-action="show-task-conversation" title="Show conversation" aria-label="Show conversation">&#9776;</button>'}<button class="primary" data-action="new-task">New task</button>`;
+  }
+
+  for (const child of [...workspace.children]) {
+    if (child.classList?.contains("alert")) child.remove();
+  }
+  const alerts = [
+    state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : "",
+    state.notice ? `<div class="alert success">${escapeHtml(state.notice)}</div>` : "",
+    state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : "",
+  ].filter(Boolean).join("");
+  if (alerts) desktopGrid.insertAdjacentHTML("beforebegin", alerts);
+
+  desktopGrid.className = `desktop-grid task-workspace-grid ${state.ui.taskConversationVisible ? "" : "task-conversation-hidden"}`.trim();
+  center.innerHTML = renderDesktopCenter(readOnly, warnings, preview);
+  const existingRail = [...desktopGrid.children].find((child) => child !== center) || null;
+  const railHtml = state.ui.taskConversationVisible ? renderOrchestratorRail() : "";
+  if (existingRail && railHtml) {
+    existingRail.outerHTML = railHtml;
+  } else if (existingRail) {
+    existingRail.remove();
+  } else if (railHtml) {
+    desktopGrid.insertAdjacentHTML("beforeend", railHtml);
+  }
+
+  afterRender();
+  restoreTaskWorkspaceScroll(preservedTaskScroll);
+}
+
 function render() {
+  studioPerformance.fullRenderCount += 1;
+  publishStudioPerformance();
   const readOnly = ["published", "archived"].includes(state.editor.status);
   const warnings = validateGraph();
   const selectedTemplate = state.templates.find((item) => item.template_id === state.selectedId) || null;
   const preview = selectedTemplate || buildDraftPayload();
   const workspaceSession = state.workspaceDetail?.session || null;
+  const taskGuidance = state.activeNav === "orchestrator" && workspaceSession
+    ? buildTaskExperience(state.workspaceDetail).guidance
+    : null;
   const workspaceTitle =
     state.activeNav === "orchestrator"
-      ? "Orchestrator Workbench"
+      ? workspaceSession?.title || "Tasks"
+      : state.activeNav === "inbox"
+        ? "Inbox"
+      : state.activeNav === "library"
+        ? "Library"
+      : state.activeNav === "settings"
+        ? "Settings"
       : state.activeNav === "missions" || state.activeNav === "sessions"
         ? workspaceSession?.title || "Mission Workspace"
         : state.activeNav === "dashboard"
           ? "Unified Dashboard"
+          : state.activeNav === "memory"
+            ? "Memory"
           : state.activeNav === "templates"
         ? state.editor.name
         : state.activeNav === "agents"
           ? "Subagent Hosting"
         : state.activeNav === "registry"
           ? "Registry Workspace"
-          : "Desktop Settings";
+          : "System Details";
   const workspaceSubtitle =
     state.activeNav === "orchestrator"
-      ? "Choose model intent, talk through the mission, review the MissionSpec and DAG before subagents execute."
+      ? workspaceSession
+        ? taskGuidance?.detail || "Continue the task or review its current result."
+        : "Describe an outcome. My Mate handles planning, model selection, and execution details."
+      : state.activeNav === "inbox"
+        ? "Approvals, questions, and blocked tasks that specifically need you."
+      : state.activeNav === "library"
+        ? "Reusable workflows and results without exposing authoring internals."
+      : state.activeNav === "settings"
+        ? "Configure a model, verify this machine, and manage your workspace."
       : state.activeNav === "missions" || state.activeNav === "sessions"
         ? workspaceSession?.workspace_state?.next_recommended_detail ||
           state.workspaceDetail?.mission_snapshot?.nextActionDetail ||
           "Mission-first workspace for brief, work, checkpoints, outputs, and runtime."
-        : state.activeNav === "dashboard"
+      : state.activeNav === "dashboard"
           ? "Inspect platform workload, operator backlog, and runtime posture in one view."
+          : state.activeNav === "memory"
+            ? "Inspect hybrid retrieval indexes and optional knowledge providers."
           : state.activeNav === "templates"
         ? `${state.editor.templateId || "unsaved draft"}${state.editor.updatedAt ? ` / updated ${new Date(state.editor.updatedAt).toLocaleString()}` : ""}`
         : state.activeNav === "agents"
@@ -10714,15 +15493,28 @@ function render() {
           : "Observe runtime, planner, and registry ownership boundaries.";
   const titleBadge =
     state.activeNav === "orchestrator"
-      ? "V2"
+      ? taskGuidance?.statusLabel || "ready"
+      : state.activeNav === "inbox"
+        ? `${getInboxOpenCount()} open`
+      : state.activeNav === "library"
+        ? `${state.templates.filter((template) => template.status === "published").length} workflows`
+      : state.activeNav === "settings"
+        ? state.providerConnections.some((connection) => connection.verification?.status === "verified") ? "ready" : "check"
+      : state.activeNav === "memory"
+        ? state.memory.retrievalStatus?.retrieval || "memory"
       : state.activeNav === "templates"
         ? `${state.editor.status}${state.editor.version ? ` v${state.editor.version}` : ""}`
         : state.activeNav === "missions" || state.activeNav === "sessions"
         ? workspaceSession?.status || "idle"
         : state.activeNav;
+  const titleBadgeTone = state.activeNav === "orchestrator" && taskGuidance
+    ? taskGuidance.tone
+    : statusTone(titleBadge);
+  const taskWorkspaceActive = state.activeNav === "orchestrator" && !!workspaceSession;
+  const preservedTaskScroll = captureTaskWorkspaceScroll();
 
   document.getElementById("root").innerHTML = `
-    <main class="app-shell">
+    <main class="app-shell ${taskWorkspaceActive ? "task-shell-active" : ""}">
       <datalist id="agent-profile-options">
         ${state.agentProfiles.map((profile) => `<option value="${escapeHtml(profile.profile_id)}"></option>`).join("")}
       </datalist>
@@ -10733,7 +15525,7 @@ function render() {
         <div class="sidebar-header">
           <div>
             <p class="eyebrow">My Mate</p>
-            <h1>${escapeHtml(state.activeNav === "orchestrator" ? "Mission Orchestrator" : "Mission Workspace")}</h1>
+            <h1>Task Workspace</h1>
           </div>
           <div class="sidebar-header-actions">
             <button class="icon-button" data-action="open-command-palette" title="Command palette (Ctrl/Cmd+K)">Cmd</button>
@@ -10749,13 +15541,22 @@ function render() {
           <div>
             <div class="title-row">
               <h2>${escapeHtml(workspaceTitle)}</h2>
-              <span class="badge ${statusTone(titleBadge)}">${escapeHtml(titleBadge)}</span>
+              <span class="badge ${escapeHtml(titleBadgeTone)}">${escapeHtml(titleBadge)}</span>
             </div>
             <p>${escapeHtml(workspaceSubtitle || "")}</p>
           </div>
           <div class="actions">
-            ${
-              state.activeNav === "templates"
+            ${state.activeNav === "orchestrator"
+              ? workspaceSession ? `${state.ui.taskConversationVisible ? "" : '<button class="icon-button" data-action="show-task-conversation" title="Show conversation" aria-label="Show conversation">&#9776;</button>'}<button class="primary" data-action="new-task">New task</button>` : ""
+              : state.activeNav === "inbox"
+                ? `<button class="primary" data-action="refresh-inbox" ${state.inbox.loading ? "disabled" : ""}>${state.inbox.loading ? "Refreshing..." : "Refresh"}</button>`
+              : state.activeNav === "library"
+                ? `<button class="secondary" data-action="refresh">Refresh library</button>`
+              : state.activeNav === "settings"
+                ? `<button class="primary" data-action="open-studio-setup">Run setup</button>`
+              : state.activeNav === "memory"
+                ? `<button class="secondary" data-action="refresh-memory" ${state.memoryLoading ? "disabled" : ""}>${state.memoryLoading ? "Refreshing..." : "Refresh"}</button>`
+              : state.activeNav === "templates"
                 ? `
                   <button class="secondary" data-action="derive-template" ${state.deriving || !state.editor.templateId || state.editor.status === "archived" ? "disabled" : ""}>${state.deriving ? "Deriving..." : "Derive"}</button>
                   <button class="secondary" data-action="new-template-version" ${state.versioning || state.editor.status !== "published" ? "disabled" : ""}>${state.versioning ? "Creating..." : "New version"}</button>
@@ -10775,17 +15576,23 @@ function render() {
         ${state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : ""}
         ${state.activeNav === "templates" && readOnly ? '<div class="alert warn">Published templates are read-only in this MVP.</div>' : ""}
 
-        <div class="desktop-grid">
+        <div class="desktop-grid ${taskWorkspaceActive ? "task-workspace-grid" : ""} ${taskWorkspaceActive && !state.ui.taskConversationVisible ? "task-conversation-hidden" : ""} ${["inbox", "library", "settings", "operations", "memory"].includes(state.activeNav) || (state.activeNav === "orchestrator" && !workspaceSession) ? "product-single-column" : ""}">
           <div class="desktop-center">
             ${renderDesktopCenter(readOnly, warnings, preview)}
           </div>
-          ${state.activeNav === "orchestrator" ? renderOrchestratorRail() : renderDesktopRail()}
+          ${state.activeNav === "orchestrator" && workspaceSession && state.ui.taskConversationVisible ? renderOrchestratorRail() : state.activeNav === "missions" || state.activeNav === "sessions" || state.activeNav === "dashboard" || state.activeNav === "templates" || state.activeNav === "agents" || state.activeNav === "registry" ? renderDesktopRail() : ""}
         </div>
       </section>
     </main>
+    ${renderProviderConnectionModal()}
+    ${renderMcpServerModal()}
+    ${renderStudioSetupModal()}
+    ${renderWorkspaceCreator()}
+    ${renderArtifactPreviewModal()}
     ${renderCommandPalette()}
   `;
   afterRender();
+  restoreTaskWorkspaceScroll(preservedTaskScroll);
 }
 
 function handleChange(target) {
@@ -10793,6 +15600,22 @@ function handleChange(target) {
   if (!field) return;
   const value = target.value;
   const index = Number(target.dataset.index);
+
+  if (field === "setup.connectionId") {
+    if (value === NEW_SETUP_CONNECTION_ID) {
+      state.registryEditor.connection = createSetupConnectionEditor();
+    } else {
+      const connection = state.providerConnections.find((item) => item.connection_id === value);
+      if (connection) state.registryEditor.connection = editorFromProviderConnection(connection);
+    }
+    state.setup.editorTouched = false;
+    state.setup.error = null;
+    render();
+    return;
+  }
+  if (state.setup.open && (field.startsWith("connection.") || field === "setup.model")) {
+    state.setup.editorTouched = true;
+  }
 
   if (field === "template.name") updateEditor({ name: value });
   if (field === "template.workspaceScope") updateEditor({ workspaceScope: value });
@@ -10807,6 +15630,34 @@ function handleChange(target) {
   }
   if (field === "session.query") {
     state.sessionQuery = value;
+    return;
+  }
+  if (field === "desktop.projectName") {
+    state.desktop.projectDraft.name = value;
+    document
+      .querySelectorAll('[data-action="create-desktop-project"], [data-action="create-sidebar-project"]')
+      .forEach((createButton) => {
+        createButton.disabled = state.desktop.loading || !value.trim();
+      });
+    return;
+  }
+  if (field === "desktop.projectDescription") {
+    state.desktop.projectDraft.description = value;
+    return;
+  }
+  if (field === "desktop.outputRelativePath") {
+    state.desktop.projectDraft.outputRelativePath = value;
+    return;
+  }
+  if (field === "desktop.taskSidebarQuery") {
+    state.ui.taskSidebarQuery = value;
+    clearTimeout(taskSidebarSearchTimer);
+    taskSidebarSearchTimer = setTimeout(() => {
+      render();
+      const input = document.querySelector('input[data-field="desktop.taskSidebarQuery"]');
+      input?.focus();
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    }, 120);
     return;
   }
   if (field === "command.query") {
@@ -10829,6 +15680,65 @@ function handleChange(target) {
   if (field === "dashboard.comparePrevious") {
     state.dashboardFilters.comparePrevious = target.checked === true;
     void loadDashboardSummary();
+    return;
+  }
+  if (field === "memory.query") {
+    state.memory.query = value;
+    const searchButton = document.querySelector('[data-action="search-memory"]');
+    if (searchButton) searchButton.disabled = state.memoryLoading || !value.trim();
+    return;
+  }
+  if (field === "memory.statusFilter" || field === "memory.scopeFilter" || field === "memory.kindFilter") {
+    const key = field.split(".").at(-1);
+    state.memory[key] = value;
+    void loadMemoryStatus();
+    return;
+  }
+  if (field === "memory.editContent") {
+    state.memory.editContent = value;
+    const saveButton = document.querySelector('[data-action="save-memory-edit"]');
+    if (saveButton) saveButton.disabled = state.memory.saving || !value.trim();
+    return;
+  }
+  if (field === "memory.importText") {
+    state.memory.importText = value;
+    const importButton = document.querySelector('[data-action="import-memory"]');
+    if (importButton) importButton.disabled = state.memory.saving || !value.trim();
+    return;
+  }
+  if (field === "memory.importStrategy") {
+    state.memory.importStrategy = value;
+    return;
+  }
+  if (field === "memory.importDryRun") {
+    state.memory.importDryRun = target.checked === true;
+    return;
+  }
+  if (field.startsWith("memory.settings.") && state.memory.settings) {
+    const settings = state.memory.settings;
+    if (field === "memory.settings.backgroundEnabled") settings.background_review.enabled = target.checked === true;
+    if (field === "memory.settings.recallEnabled") settings.automatic_recall.enabled = target.checked === true;
+    if (field === "memory.settings.extractionMode") settings.intelligence.extraction_mode = value;
+    if (field === "memory.settings.intentModelEnabled") settings.intelligence.intent_model_enabled = target.checked === true;
+    if (field === "memory.settings.intelligenceConnectionId") settings.intelligence.provider_connection_id = value || null;
+    if (field === "memory.settings.intelligenceModel") settings.intelligence.model = value || null;
+    if (field === "memory.settings.maxTurnCharacters") settings.intelligence.max_turn_characters = Number(value) || 12000;
+    if (field === "memory.settings.minConfidence") settings.intelligence.min_confidence = Number(value) || 0.72;
+    if (field === "memory.settings.modelTimeout") settings.intelligence.model_timeout_ms = Number(value) || 45000;
+    if (field === "memory.settings.minReviewCharacters") settings.background_review.min_user_characters = Number(value) || 24;
+    if (field === "memory.settings.maxReviewCandidates") settings.background_review.max_candidates_per_review = Number(value) || 3;
+    if (field === "memory.settings.recallMaxResults") settings.automatic_recall.max_results = Number(value) || 4;
+    if (field === "memory.settings.recallCharacterBudget") settings.automatic_recall.character_budget = Number(value) || 4000;
+    if (field === "memory.settings.recallCacheTtl") settings.automatic_recall.cache_ttl_seconds = Math.max(0, Math.min(3600, Number(value) || 0));
+    if (field === "memory.settings.projectEnabled") settings.scope_policy.project_memory_enabled = target.checked === true;
+    if (field === "memory.settings.agentEnabled") settings.scope_policy.agent_memory_enabled = target.checked === true;
+    if (field === "memory.settings.retentionDays") settings.retention.resolved_candidate_days = Number(value) || 90;
+    if (field === "memory.settings.journalLimit") settings.retention.journal_max_records = Number(value) || 20000;
+    if (field === "memory.settings.embeddingProvider") settings.embedding.provider = value;
+    if (field === "memory.settings.connectionId") settings.embedding.provider_connection_id = value || null;
+    if (field === "memory.settings.embeddingModel") settings.embedding.model = value || null;
+    if (field === "memory.settings.knowledgeProvider") settings.knowledge_graph.provider = value;
+    if (field === "memory.settings.palacePath") settings.knowledge_graph.palace_path = value || null;
     return;
   }
   if (field === "governance.policy.mode") {
@@ -10941,6 +15851,16 @@ function handleChange(target) {
     state.planner.dagDraft = null;
     state.planner.proposalOverrides = {};
     state.planner.error = null;
+    const taskAction = document.querySelector('[data-action="orchestrator-send-message"]');
+    if (taskAction) taskAction.disabled = state.planning || !value.trim();
+    return;
+  }
+  if (field === "planner.conversationTarget") {
+    const target = parseConversationTargetValue(value);
+    state.planner.conversationProviderConnectionId = target?.connectionId || "";
+    state.planner.conversationModel = target?.model || "";
+    state.planner.error = null;
+    render();
     return;
   }
   if (field === "planner.inputsText") {
@@ -10986,10 +15906,65 @@ function handleChange(target) {
     syncProposalOverrideField(target);
     return;
   }
+  if (field?.startsWith("mcp.")) {
+    const key = field.slice(4);
+    if (key === "presetId") {
+      const preset = state.mcpConnectorPresets.find((item) => item.preset_id === value);
+      state.registryEditor.mcpServer = preset ? editorFromMcpConnectorPreset(preset) : emptyMcpServerEditor();
+      state.error = null;
+      render();
+      return;
+    }
+    if (key.startsWith("secret.")) {
+      const secretName = key.slice(7);
+      state.registryEditor.mcpServer.presetSecretValues[secretName] = value;
+      state.error = null;
+    }
+    else if (key === "serverId") state.registryEditor.mcpServer.serverId = value.toLowerCase().replace(/[^a-z0-9._-]+/gu, ".").replace(/^\.+|\.+$/gu, "");
+    else if (key === "enabled") state.registryEditor.mcpServer.enabled = target.checked;
+    else if (["connectTimeoutMs", "toolTimeoutMs"].includes(key)) state.registryEditor.mcpServer[key] = Number(value);
+    else state.registryEditor.mcpServer[key] = value;
+    if (key === "transport") render();
+    return;
+  }
   if (field === "agent.profileId") updateAgentProfileEditor({ profileId: slugify(value) });
   if (field === "agent.status") updateAgentProfileEditor({ status: value });
   if (field === "agent.name") updateAgentProfileEditor({ name: value });
   if (field === "agent.description") updateAgentProfileEditor({ description: value });
+  if (field === "agent.agentRuntime") {
+    const selected = state.providerConnections.find(
+      (connection) => connection.connection_id === state.registryEditor.profile.providerConnectionId,
+    );
+    const compatible = state.providerConnections.filter(
+      (connection) => connection.agent_runtime === value && connection.status === "active",
+    );
+    const nextConnection = selected?.agent_runtime === value
+      ? selected
+      : compatible.length === 1
+        ? compatible[0]
+        : null;
+    updateAgentProfileEditor({
+      agentRuntime: value,
+      providerConnectionId: nextConnection?.connection_id || "",
+      openclawProvider: nextConnection?.provider || state.registryEditor.profile.openclawProvider,
+    });
+    render();
+    return;
+  }
+  if (field === "agent.providerConnectionId") {
+    const selected = state.providerConnections.find((connection) => connection.connection_id === value);
+    updateAgentProfileEditor({
+      providerConnectionId: value,
+      agentRuntime: selected?.agent_runtime || state.registryEditor.profile.agentRuntime,
+      openclawProvider: selected?.provider || state.registryEditor.profile.openclawProvider,
+      openclawAgentId: selected?.models?.includes(state.registryEditor.profile.openclawAgentId)
+        ? state.registryEditor.profile.openclawAgentId
+        : "",
+    });
+    render();
+    return;
+  }
+  if (field === "agent.harnessProfile") updateAgentProfileEditor({ harnessProfile: value });
   if (field === "agent.openclawAgentId") updateAgentProfileEditor({ openclawAgentId: value });
   if (field === "agent.openclawProvider") updateAgentProfileEditor({ openclawProvider: value });
   if (field === "agent.openclawModel") updateAgentProfileEditor({ openclawModel: value });
@@ -11001,6 +15976,84 @@ function handleChange(target) {
   }
   if (field === "agent.policyTagsText") updateAgentProfileEditor({ policyTagsText: value });
   if (field === "agent.metadataText") updateAgentProfileEditor({ metadataText: value });
+  if (field === "connection.connectionId") {
+    updateProviderConnectionEditor({ connectionId: slugify(value) });
+  }
+  if (field === "connection.status") updateProviderConnectionEditor({ status: value });
+  if (field === "connection.name") updateProviderConnectionEditor({ name: value });
+  if (field === "connection.preset") {
+    const preset = PROVIDER_PRESETS[value] || PROVIDER_PRESETS.custom;
+    const model = preset.model || "";
+    const defaults = PROVIDER_DEFAULTS[preset.runtime] || {};
+    updateProviderConnectionEditor({
+      preset: value,
+      agentRuntime: preset.runtime,
+      provider: preset.provider,
+      protocol: preset.protocol,
+      baseUrl: "",
+      models: [model],
+      defaultModel: model,
+      credentialEnv: defaults.credentialEnv || "",
+      ...(state.setup.open && state.registryEditor.connection.mode === "new"
+        ? { name: `${preset.label} default` }
+        : {}),
+    });
+    render();
+    return;
+  }
+  if (field === "connection.agentRuntime") {
+    const defaults = PROVIDER_DEFAULTS[value] || {};
+    updateProviderConnectionEditor({
+      agentRuntime: value,
+      provider: defaults.provider || value,
+      credentialEnv: defaults.credentialEnv || "",
+    });
+    render();
+    return;
+  }
+  if (field === "connection.protocol") updateProviderConnectionEditor({ protocol: value });
+  if (field === "connection.provider") updateProviderConnectionEditor({ provider: value });
+  if (field === "connection.baseUrl") updateProviderConnectionEditor({ baseUrl: value });
+  if (field === "setup.model") {
+    const previous = state.registryEditor.connection.defaultModel;
+    const models = [...state.registryEditor.connection.models];
+    const index = Math.max(0, models.indexOf(previous));
+    models[index] = value;
+    updateProviderConnectionEditor({ models, defaultModel: value });
+  }
+  if (field === "connection.model") {
+    const models = [...state.registryEditor.connection.models];
+    const previous = models[index] || "";
+    models[index] = value;
+    const shouldDefault = !state.registryEditor.connection.defaultModel || state.registryEditor.connection.defaultModel === previous;
+    updateProviderConnectionEditor({
+      models,
+      ...(shouldDefault ? { defaultModel: value } : {}),
+    });
+    const radio = target.closest(".provider-model-row")?.querySelector('input[type="radio"]');
+    if (radio) {
+      radio.value = value;
+      if (shouldDefault) radio.checked = true;
+    }
+    const countLabel = target.closest(".provider-modal")?.querySelector(".provider-model-header span");
+    if (countLabel) countLabel.textContent = `${models.filter((item) => item.trim()).length} configured`;
+  }
+  if (field === "connection.defaultModelChoice") {
+    updateProviderConnectionEditor({ defaultModel: state.registryEditor.connection.models[index] || "" });
+  }
+  if (field === "connection.apiKey") updateProviderConnectionEditor({ apiKey: value });
+  if (field === "connection.credentialSource") {
+    updateProviderConnectionEditor({ credentialSource: value });
+    render();
+    return;
+  }
+  if (field === "connection.credentialEnv") updateProviderConnectionEditor({ credentialEnv: value });
+  if (field === "connection.maxInputTokens") updateProviderConnectionEditor({ maxInputTokens: Number(value) });
+  if (field === "connection.maxOutputTokens") updateProviderConnectionEditor({ maxOutputTokens: Number(value) });
+  if (field === "connection.contextCompressionEnabled") updateProviderConnectionEditor({ contextCompressionEnabled: target.checked });
+  if (field === "connection.contextCompressionThresholdPercent") updateProviderConnectionEditor({ contextCompressionThresholdPercent: Number(value) });
+  if (field === "connection.maxContinuationRounds") updateProviderConnectionEditor({ maxContinuationRounds: Number(value) });
+  if (field === "connection.metadataText") updateProviderConnectionEditor({ metadataText: value });
   if (field === "skill.skillId") updateSkillEditor({ skillId: slugify(value) });
   if (field === "skill.status") updateSkillEditor({ status: value });
   if (field === "skill.name") updateSkillEditor({ name: value });
@@ -11060,7 +16113,16 @@ function handleChange(target) {
   }
   if (field === "edge.from") updateEdge(index, { from: value });
   if (field === "edge.to") updateEdge(index, { to: value });
+  if (field === "edge.from_port") updateEdge(index, { from_port: value.trim() || null });
+  if (field === "edge.to_port") updateEdge(index, { to_port: value.trim() || null });
   if (field === "edge.label") updateEdge(index, { label: value || null });
+  if (field === "edge.condition") {
+    if (!value.trim()) updateEdge(index, { condition: null });
+    else {
+      const parsed = parseJsonObject(value);
+      if (parsed.ok) updateEdge(index, { condition: parsed.value });
+    }
+  }
 }
 
 function syncTextareaState(target) {
@@ -11068,6 +16130,11 @@ function syncTextareaState(target) {
   if (!field) return;
   const value = target.value;
   const index = Number(target.dataset.index);
+
+  if (field === "memory.editContent" || field === "memory.importText") {
+    handleChange(target);
+    return;
+  }
 
   if (field === "planner.intent") {
     state.planner.intent = value;
@@ -11077,6 +16144,8 @@ function syncTextareaState(target) {
     state.planner.dagDraft = null;
     state.planner.proposalOverrides = {};
     state.planner.error = null;
+    const taskAction = document.querySelector('[data-action="orchestrator-send-message"]');
+    if (taskAction) taskAction.disabled = state.planning || !value.trim();
     return;
   }
   if (field === "planner.inputsText") {
@@ -11106,6 +16175,8 @@ function syncTextareaState(target) {
   if (field === "template.metadataText") state.editor.metadataText = value;
   if (field === "agent.description") state.registryEditor.profile.description = value;
   if (field === "agent.metadataText") state.registryEditor.profile.metadataText = value;
+  if (field === "connection.metadataText") state.registryEditor.connection.metadataText = value;
+  if (field?.startsWith("mcp.")) state.registryEditor.mcpServer[field.slice(4)] = value;
   if (field === "skill.description") state.registryEditor.skill.description = value;
   if (field === "skill.inputSchemaText") state.registryEditor.skill.inputSchemaText = value;
   if (field === "skill.outputContractText") state.registryEditor.skill.outputContractText = value;
@@ -11152,6 +16223,10 @@ function fitRuntimeGraphToView(source) {
 }
 
 document.addEventListener("click", (event) => {
+  if (event.target.matches?.(".workspace-modal-backdrop")) {
+    closeWorkspaceCreator();
+    return;
+  }
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
@@ -11169,7 +16244,98 @@ document.addEventListener("click", (event) => {
   }
   if (action === "refresh") void loadWorkspaceData();
   if (action === "switch-nav") {
-    switchDesktopNav(button.dataset.nav || "missions");
+    switchDesktopNav(button.dataset.nav || "orchestrator");
+  }
+  if (action === "switch-navigation-tab") {
+    switchDesktopNavigationTab(button.dataset.tab || "task");
+    return;
+  }
+  if (action === "new-task") {
+    void beginNewTaskInProject(button.dataset.projectId || state.desktop.workspace?.projectId || "");
+    return;
+  }
+  if (action === "select-sidebar-project") {
+    void beginNewTaskInProject(button.dataset.projectId || "");
+    return;
+  }
+  if (action === "open-workspace-creator") {
+    openWorkspaceCreator(false);
+    return;
+  }
+  if (action === "close-workspace-creator") {
+    closeWorkspaceCreator();
+    return;
+  }
+  if (action === "add-sidebar-workspace") {
+    void chooseDesktopWorkspace(state.ui.workspaceCreatorStartTask);
+    return;
+  }
+  if (action === "create-sidebar-project") {
+    void createDesktopProject(state.ui.workspaceCreatorStartTask);
+    return;
+  }
+  if (action === "hide-task-conversation") {
+    state.ui.taskConversationVisible = false;
+    render();
+  }
+  if (action === "show-task-conversation") {
+    state.ui.taskConversationVisible = true;
+    render();
+    document.querySelector('textarea[data-field="planner.intent"]')?.focus();
+  }
+  if (action === "refresh-inbox") void loadInbox();
+  if (action === "select-workspace-change-set") {
+    selectWorkspaceChangeSetForReview(button.dataset.changeSetId || "");
+  }
+  if (action === "select-workspace-change-file") {
+    selectWorkspaceChangeFileForReview(button.dataset.path || "");
+  }
+  if (action === "stage-workspace-change-action") {
+    state.inbox.confirmWorkspaceChangeAction = button.dataset.mode || "";
+    render();
+  }
+  if (action === "cancel-workspace-change-action") {
+    state.inbox.confirmWorkspaceChangeAction = "";
+    render();
+  }
+  if (action === "confirm-workspace-change-action") {
+    void resolveWorkspaceChangeSet(button.dataset.mode || "");
+  }
+  if (action === "open-inbox-task") {
+    const sessionId = button.dataset.sessionId || "";
+    if (sessionId) void openSessionFromCommand("orchestrator", sessionId);
+  }
+  if (action === "open-supervision-alert-task") {
+    const sessionId = button.dataset.sessionId || "";
+    void openSupervisionAlertRecommendation(sessionId, button.dataset.recommendedAction || "");
+  }
+  if (action === "resolve-supervision-alert") {
+    void resolveSupervisionAlert(button.dataset.alertId || "");
+  }
+  if (action === "use-library-workflow") {
+    state.planner.templateId = button.dataset.id || "";
+    state.activeNav = "orchestrator";
+    state.selectedSessionId = null;
+    state.workspaceDetail = null;
+    state.notice = "Workflow selected. Describe the outcome to start the task.";
+    buildStudioLocationState();
+    render();
+  }
+  if (action === "open-workflow-builder") {
+    switchDesktopNav("templates");
+  }
+  if (action === "save-autonomy-mode") {
+    void saveProductAutonomyMode(button.dataset.mode || "assisted");
+  }
+  if (action === "open-environment-setup") {
+    openStudioSetup("environment");
+    if (!state.setup.hostReport && !state.setup.dockerReport) void runSetupEnvironmentChecks();
+  }
+  if (action === "open-system-details") {
+    switchDesktopNav("operations");
+  }
+  if (action === "open-registry-advanced") {
+    switchDesktopNav("registry");
   }
   if (action === "refresh-security") void refreshStudioSecurityAndWorkspace();
   if (action === "save-security-settings") void saveStudioSecuritySettings();
@@ -11198,14 +16364,95 @@ document.addEventListener("click", (event) => {
   if (action === "archive-session") void updateSelectedSessionVisibility("archive");
   if (action === "unarchive-session") void updateSelectedSessionVisibility("unarchive");
   if (action === "attach-context-file") void createWorkspaceAttachment();
+  if (action === "choose-desktop-workspace") void chooseDesktopWorkspace();
+  if (action === "create-desktop-project") void createDesktopProject();
+  if (action === "select-desktop-project") void selectDesktopProject(button.dataset.projectId || "");
+  if (action === "archive-desktop-project") void archiveDesktopProject(button.dataset.projectId || "");
+  if (action === "authorize-desktop-workspace-write") void authorizeDesktopWorkspaceWrite();
+  if (action === "refresh-desktop-workspace") {
+    void loadDesktopWorkspaceDirectory(state.desktop.listing?.relativePath || "");
+  }
+  if (action === "open-desktop-workspace-directory") {
+    void loadDesktopWorkspaceDirectory(button.dataset.path || "");
+  }
+  if (action === "attach-desktop-workspace-file") {
+    void attachDesktopWorkspaceFile(button.dataset.path || "");
+  }
   if (action === "pick-context-file") {
     const input = document.querySelector("input[data-field='attachment.filePicker']");
     if (input) input.click();
+  }
+  if (action === "pick-conversation-file") {
+    const input = document.querySelector("input[data-field='conversation.filePicker']");
+    if (input) input.click();
+  }
+  if (action === "remove-conversation-attachment") {
+    void removeWorkspaceAttachment(button.dataset.attachmentId || "");
+  }
+  if (action === "open-artifact-preview") {
+    void openArtifactPreview(button.dataset.artifactId || "");
+  }
+  if (action === "close-artifact-preview") {
+    closeArtifactPreview();
+  }
+  if (action === "select-artifact-preview-tab") {
+    const tab = button.dataset.tab === "changes" ? "changes" : "preview";
+    state.artifactPreview.tab = tab;
+    if (tab === "changes" && !state.artifactPreview.compare && state.artifactPreview.detail?.previous_artifact_id) {
+      void loadArtifactComparison();
+    } else {
+      render();
+    }
+  }
+  if (action === "toggle-artifact-mermaid-source") {
+    toggleArtifactMermaidSource(button);
   }
   if (action === "attach-workspace-context-reference") {
     void attachWorkspaceContextReference(button.dataset.key || "");
   }
   if (action === "orchestrator-send-message") void sendOrchestratorMessage();
+  if (action === "resume-task-checkpoint") void resumeTaskCheckpoint();
+  if (action === "start-task-work" || action === "refresh-task-plan") {
+    void sendTaskGuidanceDirective(action);
+  }
+  if (action === "open-task-inbox") {
+    switchDesktopNav("inbox");
+  }
+  if (action === "open-task-settings") {
+    switchDesktopNav("settings");
+  }
+  if (action === "open-task-library") {
+    switchDesktopNav("library");
+  }
+  if (action === "review-task-plan") {
+    state.ui.taskPlanExpanded = true;
+    pendingWorkspaceFocus = "task-plan";
+    render();
+  }
+  if (action === "scan-task-recovery") {
+    state.ui.taskRuntimeExpanded = true;
+    void scanRuntimeRecovery();
+  }
+  if (action === "check-task-quality") {
+    void checkTaskQuality();
+  }
+  if (action === "task-autopilot-pause") void controlTaskAutopilot("pause");
+  if (action === "task-autopilot-resume") void controlTaskAutopilot("resume");
+  if (action === "task-autopilot-tick") void controlTaskAutopilot("tick");
+  if (action === "review-task-results") {
+    pendingWorkspaceFocus = "task-results";
+    render();
+  }
+  if (action === "view-task-progress" || action === "review-task-recovery" || action === "review-task-evidence") {
+    state.ui.taskRuntimeExpanded = true;
+    pendingWorkspaceFocus = action === "review-task-evidence" ? "task-quality" : "task-runtime";
+    render();
+  }
+  if (action === "review-task-conversation") {
+    state.ui.taskConversationExpanded = true;
+    pendingWorkspaceFocus = "task-conversation";
+    render();
+  }
   if (action === "save-orchestrator-profile") void saveOrchestratorProfile();
   if (action === "toggle-orchestrator-setup") {
     state.ui.orchestratorSetupExpanded = !state.ui.orchestratorSetupExpanded;
@@ -11338,6 +16585,32 @@ document.addEventListener("click", (event) => {
   if (action === "refresh-dashboard") {
     void Promise.all([loadRuntimeSummary(false), loadDashboardSummary(false)]).then(() => render());
   }
+  if (action === "refresh-memory") void loadMemoryStatus();
+  if (action === "filter-memory") void loadMemoryStatus();
+  if (action === "search-memory") void searchMemoryFromStudio();
+  if (action === "rebuild-memory-index") void rebuildMemoryFromStudio("retrieval");
+  if (action === "rebuild-memory-knowledge") void rebuildMemoryFromStudio("knowledge");
+  if (action === "approve-memory-candidate") void resolveMemoryCandidate(button.dataset.candidateId || "", "approve");
+  if (action === "reject-memory-candidate") void resolveMemoryCandidate(button.dataset.candidateId || "", "reject");
+  if (action === "edit-memory") {
+    const memory = state.memory.records.find((item) => item.memory_id === button.dataset.memoryId);
+    state.memory.editingId = memory?.memory_id || "";
+    state.memory.editContent = memory?.content || "";
+    render();
+  }
+  if (action === "cancel-memory-edit") {
+    state.memory.editingId = "";
+    state.memory.editContent = "";
+    render();
+  }
+  if (action === "save-memory-edit") void saveMemoryEdit(button.dataset.memoryId || "");
+  if (action === "delete-memory") void changeMemoryStatus(button.dataset.memoryId || "", "delete");
+  if (action === "restore-memory") void changeMemoryStatus(button.dataset.memoryId || "", "restore");
+  if (action === "save-memory-settings") void saveMemorySettings();
+  if (action === "run-memory-maintenance") void runMemoryMaintenanceFromStudio();
+  if (action === "run-memory-maintenance-sweep") void runMemoryMaintenanceSweepFromStudio();
+  if (action === "import-memory") void importMemoryFromStudio();
+  if (action === "export-memory") void exportMemoryFromStudio(button.dataset.format || "json");
   if (action === "set-dashboard-cost-group") {
     state.dashboardFilters.costGroupBy = button.dataset.value || "agent";
     render();
@@ -11372,12 +16645,38 @@ document.addEventListener("click", (event) => {
   if (action === "submit-human-input") void submitHumanInputRequest(button.dataset.inputRequestId, button);
   if (action === "submit-intervention") void submitRuntimeIntervention();
   if (action === "select-session") {
-    state.activeNav = state.activeNav === "sessions" ? "sessions" : "missions";
+    state.activeNav = state.activeNav === "orchestrator"
+      ? "orchestrator"
+      : state.activeNav === "sessions" ? "sessions" : "missions";
     const nextSessionId = button.dataset.id || "";
     prepareWorkspaceSessionChange(nextSessionId);
     state.selectedSessionId = nextSessionId;
     pendingSessionInventoryScroll = true;
     void loadSessionWorkspace(state.selectedSessionId);
+  }
+  if (action === "select-registry-section") {
+    state.ui.registrySection = button.dataset.section || "connections";
+    state.error = null;
+    render();
+  }
+  if (action === "open-studio-setup") openStudioSetup("model");
+  if (action === "dismiss-studio-setup") dismissStudioSetup();
+  if (action === "select-setup-tab") {
+    const tab = button.dataset.setupTab || "model";
+    state.setup.tab = tab;
+    state.setup.error = null;
+    render();
+    if (tab === "environment" && !state.setup.hostReport && !state.setup.dockerReport) {
+      void runSetupEnvironmentChecks();
+    }
+  }
+  if (action === "save-setup-model") void saveSetupModel();
+  if (action === "run-setup-environment") void runSetupEnvironmentChecks();
+  if (action === "finish-studio-setup") finishStudioSetup();
+  if (action === "open-provider-advanced") {
+    state.setup.open = false;
+    state.ui.providerConnectionModalOpen = true;
+    render();
   }
   if (action === "refresh-registry") void Promise.all([loadRegistry(false), loadGovernance(false)]).then(() => render());
   if (action === "refresh-governance") void loadGovernance();
@@ -11393,17 +16692,77 @@ document.addEventListener("click", (event) => {
     void decideStudioGovernanceChange(button.dataset.id || "", "apply");
   }
   if (action === "new-agent-profile") {
-    state.activeNav = "agents";
+    state.activeNav = "registry";
+    state.ui.registrySection = "agents";
     state.registryEditor.profile = emptyAgentProfileEditor();
     render();
   }
+  if (action === "new-provider-connection") {
+    state.ui.registrySection = "connections";
+    state.registryEditor.connection = emptyProviderConnectionEditor();
+    state.ui.providerConnectionModalOpen = true;
+    state.error = null;
+    render();
+  }
+  if (action === "new-mcp-server") {
+    state.ui.registrySection = "mcp";
+    state.registryEditor.mcpServer = state.mcpConnectorPresets.length
+      ? editorFromMcpConnectorPreset(state.mcpConnectorPresets[0])
+      : emptyMcpServerEditor();
+    state.ui.mcpServerModalOpen = true;
+    state.error = null;
+    render();
+  }
+  if (action === "edit-mcp-server") {
+    const server = state.mcpServers.find((item) => item.server_id === button.dataset.id);
+    if (server) {
+      state.ui.registrySection = "mcp";
+      state.registryEditor.mcpServer = editorFromMcpServer(server);
+      state.ui.mcpServerModalOpen = true;
+      state.error = null;
+      render();
+    }
+  }
+  if (action === "close-mcp-server-modal") {
+    state.ui.mcpServerModalOpen = false;
+    state.error = null;
+    render();
+  }
+  if (action === "save-mcp-server") void saveMcpServer();
+  if (action === "test-mcp-server") void testMcpServer(button.dataset.id || "");
+  if (action === "toggle-mcp-server") {
+    void setMcpServerEnabled(button.dataset.id || "", button.dataset.enabled === "true");
+  }
+  if (action === "close-provider-connection-modal") {
+    state.ui.providerConnectionModalOpen = false;
+    state.error = null;
+    render();
+  }
+  if (action === "add-provider-model") {
+    state.registryEditor.connection.models = [...state.registryEditor.connection.models, ""];
+    render();
+  }
+  if (action === "remove-provider-model") {
+    const index = Number(button.dataset.index);
+    const removed = state.registryEditor.connection.models[index] || "";
+    const models = state.registryEditor.connection.models.filter((_, itemIndex) => itemIndex !== index);
+    const nextModels = models.length ? models : [""];
+    state.registryEditor.connection.models = nextModels;
+    if (state.registryEditor.connection.defaultModel === removed) {
+      state.registryEditor.connection.defaultModel = nextModels.find(Boolean) || "";
+    }
+    render();
+  }
   if (action === "new-skill") {
+    state.activeNav = "registry";
+    state.ui.registrySection = "skills";
     state.registryEditor.skill = emptySkillEditor();
     render();
   }
   if (action === "edit-agent-profile") {
     const profile = state.agentProfiles.find((item) => item.profile_id === button.dataset.id);
     if (profile) {
+      state.ui.registrySection = "agents";
       state.registryEditor.profile = editorFromAgentProfile(profile);
       render();
     }
@@ -11411,20 +16770,37 @@ document.addEventListener("click", (event) => {
   if (action === "edit-agent-profile-from-hosting") {
     const profile = state.agentProfiles.find((item) => item.profile_id === button.dataset.id);
     if (profile) {
-      state.activeNav = "agents";
+      state.activeNav = "registry";
+      state.ui.registrySection = "agents";
       state.registryEditor.profile = editorFromAgentProfile(profile);
+      render();
+    }
+  }
+  if (action === "edit-provider-connection") {
+    const connection = state.providerConnections.find(
+      (item) => item.connection_id === button.dataset.id,
+    );
+    if (connection) {
+      state.ui.registrySection = "connections";
+      state.registryEditor.connection = editorFromProviderConnection(connection);
+      state.ui.providerConnectionModalOpen = true;
+      state.error = null;
       render();
     }
   }
   if (action === "edit-skill") {
     const skill = state.skills.find((item) => item.skill_id === button.dataset.id);
     if (skill) {
+      state.ui.registrySection = "skills";
       state.registryEditor.skill = editorFromSkill(skill);
       render();
     }
   }
   if (action === "save-agent-profile") void saveAgentProfile();
   if (action === "disable-agent-profile") void disableAgentProfile();
+  if (action === "save-provider-connection") void saveProviderConnection();
+  if (action === "test-provider-connection") void testProviderConnection();
+  if (action === "disable-provider-connection") void disableProviderConnection();
   if (action === "save-skill") void saveSkill();
   if (action === "disable-skill") void disableSkill();
   if (action === "new-template") {
@@ -11433,6 +16809,7 @@ document.addEventListener("click", (event) => {
     state.lineage = null;
     resetAuthoringGraphSelection();
     state.editor = emptyEditor();
+    resetAuthoringEditorState();
     state.notice = "Started a new draft.";
     state.error = null;
     render();
@@ -11464,6 +16841,10 @@ document.addEventListener("click", (event) => {
   if (action === "archive-template") void archiveSelectedTemplate();
   if (action === "select-authoring-node") selectAuthoringGraphItem("node", button.dataset.index);
   if (action === "select-authoring-edge") selectAuthoringGraphItem("edge", button.dataset.index);
+  if (action === "authoring-port-out") handleAuthoringPortOut(Number(button.dataset.index));
+  if (action === "authoring-port-in") handleAuthoringPortIn(Number(button.dataset.index));
+  if (action === "undo-authoring") undoAuthoringGraph();
+  if (action === "redo-authoring") redoAuthoringGraph();
   if (action === "add-node") addNode();
   if (action === "remove-node") removeNode(Number(button.dataset.index));
   if (action === "add-edge") addEdge();
@@ -11474,7 +16855,7 @@ document.addEventListener("change", (event) => handleChange(event.target));
 document.addEventListener("input", (event) => {
   if (event.target.matches("textarea[data-field]")) syncTextareaState(event.target);
   if (event.target.matches("input[data-field^='proposal.']")) syncProposalOverrideField(event.target);
-  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='command.query'], input[data-field^='attachment.'], input[data-field^='orchestrator.'], input[data-field^='agent.'], input[data-field^='skill.'], textarea[data-field='execution.interventionText']")) {
+  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='command.query'], input[data-field='memory.query'], input[data-field^='memory.settings.'], input[data-field^='attachment.'], input[data-field^='desktop.'], input[data-field^='orchestrator.'], input[data-field^='agent.'], input[data-field^='connection.'], input[data-field^='mcp.'], input[data-field^='setup.'], input[data-field^='skill.'], textarea[data-field='execution.interventionText']")) {
     handleChange(event.target);
   }
 });
@@ -11486,22 +16867,126 @@ document.addEventListener("change", (event) => {
   }
 });
 
+document.addEventListener("change", (event) => {
+  if (event.target.matches("input[data-field='conversation.filePicker']")) {
+    void createWorkspaceAttachmentsFromFiles(event.target.files);
+    event.target.value = "";
+  }
+});
+
+document.addEventListener("pointerdown", (event) => {
+  const nodeElement = event.target.closest(".authoring-graph-node");
+  if (
+    !nodeElement ||
+    event.target.closest(".authoring-port") ||
+    event.button !== 0 ||
+    state.activeNav !== "templates" ||
+    state.activeView !== "dag"
+  ) return;
+  const nodeId = nodeElement.dataset.nodeId;
+  const position = getAuthoringPositions()[nodeId] || {
+    x: Number.parseFloat(nodeElement.style.left) || 0,
+    y: Number.parseFloat(nodeElement.style.top) || 0,
+  };
+  authoringNodeDrag = {
+    nodeId,
+    element: nodeElement,
+    startX: event.clientX,
+    startY: event.clientY,
+    originX: position.x,
+    originY: position.y,
+    x: position.x,
+    y: position.y,
+    moved: false,
+  };
+  nodeElement.setPointerCapture?.(event.pointerId);
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (!authoringNodeDrag) return;
+  const dx = event.clientX - authoringNodeDrag.startX;
+  const dy = event.clientY - authoringNodeDrag.startY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) authoringNodeDrag.moved = true;
+  authoringNodeDrag.x = Math.max(8, authoringNodeDrag.originX + dx);
+  authoringNodeDrag.y = Math.max(8, authoringNodeDrag.originY + dy);
+  authoringNodeDrag.element.style.left = `${authoringNodeDrag.x}px`;
+  authoringNodeDrag.element.style.top = `${authoringNodeDrag.y}px`;
+});
+
+document.addEventListener("pointerup", () => {
+  if (!authoringNodeDrag) return;
+  const drag = authoringNodeDrag;
+  authoringNodeDrag = null;
+  if (!drag.moved) return;
+  setAuthoringNodePosition(drag.nodeId, { x: drag.x, y: drag.y });
+  recordAuthoringMutation();
+  render();
+});
+
+function clearWorkspaceTaskDragState() {
+  draggedWorkspaceTaskSessionId = "";
+  document.querySelectorAll(".workspace-task-item.dragging, .workspace-tree-project.is-drop-target")
+    .forEach((element) => element.classList.remove("dragging", "is-drop-target"));
+}
+
+document.addEventListener("dragstart", (event) => {
+  const task = event.target.closest?.("[data-workspace-task-drag-session-id]");
+  if (!task) return;
+  const sessionId = task.dataset.workspaceTaskDragSessionId || "";
+  if (!sessionId || state.ui.taskMoveSessionId) {
+    event.preventDefault();
+    return;
+  }
+  draggedWorkspaceTaskSessionId = sessionId;
+  task.classList.add("dragging");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", sessionId);
+});
+
+document.addEventListener("dragend", () => {
+  clearWorkspaceTaskDragState();
+});
+
 document.addEventListener("dragover", (event) => {
-  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true']");
+  const projectDropZone = event.target.closest?.("[data-workspace-drop-project-id]");
+  if (projectDropZone && canMoveTaskToProject(
+    draggedWorkspaceTaskSessionId,
+    projectDropZone.dataset.workspaceDropProjectId || "",
+  )) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    document.querySelectorAll(".workspace-tree-project.is-drop-target")
+      .forEach((element) => element.classList.toggle("is-drop-target", element === projectDropZone));
+    return;
+  }
+  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true'], [data-conversation-file-drop='true']");
   if (!dropZone) return;
   event.preventDefault();
   dropZone.classList.add("dragging");
 });
 
 document.addEventListener("dragleave", (event) => {
-  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true']");
+  const projectDropZone = event.target.closest?.("[data-workspace-drop-project-id]");
   const relatedTarget = event.relatedTarget;
+  if (projectDropZone && !(relatedTarget instanceof Node && projectDropZone.contains(relatedTarget))) {
+    projectDropZone.classList.remove("is-drop-target");
+  }
+  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true'], [data-conversation-file-drop='true']");
   if (!dropZone || (relatedTarget instanceof Node && dropZone.contains(relatedTarget))) return;
   dropZone.classList.remove("dragging");
 });
 
 document.addEventListener("drop", (event) => {
-  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true']");
+  const projectDropZone = event.target.closest?.("[data-workspace-drop-project-id]");
+  const projectId = projectDropZone?.dataset.workspaceDropProjectId || "";
+  const sessionId = draggedWorkspaceTaskSessionId || event.dataTransfer?.getData("text/plain") || "";
+  if (projectDropZone && canMoveTaskToProject(sessionId, projectId)) {
+    event.preventDefault();
+    clearWorkspaceTaskDragState();
+    void moveTaskToDesktopProject(sessionId, projectId);
+    return;
+  }
+  const dropZone = event.target.closest?.("[data-attachment-drop-zone='true'], [data-conversation-file-drop='true']");
   if (!dropZone) return;
   event.preventDefault();
   dropZone.classList.remove("dragging");
@@ -11510,6 +16995,37 @@ document.addEventListener("drop", (event) => {
 
 document.addEventListener("keydown", (event) => {
   const key = event.key;
+  if (key === "Escape" && state.artifactPreview.open) {
+    event.preventDefault();
+    closeArtifactPreview();
+    return;
+  }
+  if (key === "Escape" && state.ui.workspaceCreatorOpen) {
+    event.preventDefault();
+    closeWorkspaceCreator();
+    return;
+  }
+  if (key === "Escape" && state.setup.open) {
+    event.preventDefault();
+    state.setup.open = false;
+    state.setup.error = null;
+    render();
+    return;
+  }
+  if (key === "Escape" && state.ui.providerConnectionModalOpen) {
+    event.preventDefault();
+    state.ui.providerConnectionModalOpen = false;
+    state.error = null;
+    render();
+    return;
+  }
+  if (key === "Escape" && state.ui.mcpServerModalOpen) {
+    event.preventDefault();
+    state.ui.mcpServerModalOpen = false;
+    state.error = null;
+    render();
+    return;
+  }
   if (key === "Escape" && state.ui.runtimeDrawerOpen) {
     event.preventDefault();
     state.ui.runtimeDrawerOpen = false;
@@ -11528,6 +17044,32 @@ document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === "k") {
     event.preventDefault();
     openCommandPalette();
+    return;
+  }
+
+  if (
+    key === "Enter" &&
+    !event.shiftKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    event.target?.matches?.('textarea[data-field="planner.intent"]') &&
+    state.activeNav === "orchestrator"
+  ) {
+    event.preventDefault();
+    if (!state.planning && state.planner.intent.trim()) void sendOrchestratorMessage();
+    return;
+  }
+
+  if (
+    key === "Enter" &&
+    !event.shiftKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    event.target?.matches?.('input[data-field="memory.query"]') &&
+    state.activeNav === "memory"
+  ) {
+    event.preventDefault();
+    void searchMemoryFromStudio();
     return;
   }
 
@@ -11555,6 +17097,32 @@ document.addEventListener("keydown", (event) => {
   }
 
   if (isTextEntryTarget(event.target)) return;
+  if (state.activeNav === "templates" && state.activeView === "dag") {
+    const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redoAuthoringGraph();
+      else undoAuthoringGraph();
+      return;
+    }
+    if (modifier && key.toLowerCase() === "y") {
+      event.preventDefault();
+      redoAuthoringGraph();
+      return;
+    }
+    if (key === "Delete" || key === "Backspace") {
+      event.preventDefault();
+      deleteAuthoringSelection();
+      return;
+    }
+    if (key === "Escape") {
+      event.preventDefault();
+      authoringGraphConnection = null;
+      resetAuthoringGraphSelection();
+      render();
+      return;
+    }
+  }
   if (state.ui.runtimeDrawerOpen && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) {
     event.preventDefault();
     const direction = {
@@ -11585,6 +17153,7 @@ document.addEventListener("keydown", (event) => {
 
 hydrateStudioLocationState();
 render();
+void initializeDesktopHost();
 void loadSecurity(false).then(async (securityLoaded) => {
   if (!securityLoaded) {
     resetWorkspaceScopedState();

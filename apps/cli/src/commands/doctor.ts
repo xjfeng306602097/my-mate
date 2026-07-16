@@ -9,6 +9,7 @@ import { reportCommandError, writeJson } from "../output.js";
 export interface DoctorCommandOptions {
   mode: "quick" | "docker" | "model";
   runtime?: DoctorRequest["runtime"];
+  providerConnection?: string;
   modelProbe?: boolean;
   json?: boolean;
 }
@@ -44,6 +45,7 @@ export async function executeDoctor(
       mode: options.mode,
       runtime: options.runtime,
       model_probe: options.modelProbe === true,
+      provider_connection_id: options.providerConnection,
     };
     const report = await client.post<DoctorReport>("/api/diagnostics/doctor", request);
     if (options.json) writeJson(io, report);

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/evaluation/live-acceptance-result.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "acceptance_id", "status", "started_at", "completed_at", "environment", "lanes"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "acceptance_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["passed", "failed", "skipped"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_version", "platform", "arch", "revision"],
+      "properties": {
+        "node_version": { "type": "string" },
+        "platform": { "type": "string" },
+        "arch": { "type": "string" },
+        "revision": { "type": ["string", "null"] }
+      }
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "provider", "evaluator_id", "model", "status", "credential_source", "harness_source", "duration_ms", "attempt_count", "evidence", "output_digest", "error"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "enum": ["provider", "model_judge"] },
+          "provider": { "type": "string" },
+          "evaluator_id": { "type": ["string", "null"] },
+          "model": { "type": ["string", "null"] },
+          "status": { "enum": ["passed", "failed", "skipped"] },
+          "credential_source": { "type": ["string", "null"] },
+          "harness_source": { "type": ["string", "null"] },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "attempt_count": { "type": "integer", "minimum": 0 },
+          "evidence": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "properties": {
+              "scenario": { "type": "string" },
+              "output_verified": { "type": "boolean" },
+              "native_evidence_count": { "type": "integer", "minimum": 0 },
+              "tool_call_count": { "type": "integer", "minimum": 0 },
+              "tool_result_count": { "type": "integer", "minimum": 0 },
+              "tool_correlation_verified": { "type": "boolean" },
+              "usage_availability": { "enum": ["available", "partial", "unavailable"] },
+              "quality_verdict": { "enum": ["pass", "fail", "error"] }
+            }
+          },
+          "output_digest": { "type": ["string", "null"] },
+          "error": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

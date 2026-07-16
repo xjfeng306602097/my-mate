@@ -79,6 +79,12 @@ export function generateSessionMessageId(): string {
   return `msg_${stamp}_${sequence}_${suffix}`;
 }
 
+export function generateConversationActionId(): string {
+  const { stamp, sequence } = nextSortableIdSeed();
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `act_${stamp}_${sequence}_${suffix}`;
+}
+
 export function generateSessionInterventionId(): string {
   const { stamp, sequence } = nextSortableIdSeed();
   const suffix = Math.random().toString(36).slice(2, 8);

@@ -6,7 +6,8 @@ export type DoctorRuntime =
   | "openclaw"
   | "codex"
   | "claude-sdk"
-  | "kimi";
+  | "kimi"
+  | "glm";
 
 export type DoctorReadinessTarget = "runtime" | "deterministic" | "model";
 
@@ -14,6 +15,7 @@ export interface DoctorRequest {
   mode: DoctorMode;
   runtime?: DoctorRuntime;
   model_probe?: boolean;
+  provider_connection_id?: string;
 }
 
 export interface DoctorCheck {

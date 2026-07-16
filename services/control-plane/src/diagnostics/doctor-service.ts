@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import {
   DATA_DIR,
   RUNTIME_DOCKER_BIN,
@@ -8,6 +9,8 @@ import {
   RUNTIME_WORKSPACES_DIR,
 } from "../config.js";
 import { describeRuntimeWorkerImage } from "../runtime-worker-image.js";
+import { getProviderConnection } from "../provider-connection-store.js";
+import { getManagedProviderCredential } from "../provider-secret-store.js";
 import {
   getJsonStorageBackend,
   getJsonStorageBackendKind,
@@ -48,6 +51,49 @@ export interface DoctorServiceOptions {
   now?: () => Date;
 }
 
+async function resolveHostShell(
+  runner: DoctorCommandRunner,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const configured = env.MY_MATE_HOST_SHELL?.trim();
+  if (configured) {
+    await requireSuccessfulCommand({
+      runner,
+      command: configured,
+      args: process.platform === "win32" ? ["--version"] : ["-c", "printf my-mate-host-shell"],
+    });
+    return configured;
+  }
+
+  if (process.platform !== "win32") {
+    const shell = env.SHELL?.trim() || "/bin/sh";
+    await requireSuccessfulCommand({
+      runner,
+      command: shell,
+      args: ["-c", "printf my-mate-host-shell"],
+    });
+    return shell;
+  }
+
+  const gitResult = await requireSuccessfulCommand({
+    runner,
+    command: "git",
+    args: ["--exec-path"],
+  });
+  const gitExecPath = gitResult.stdout.trim();
+  const gitRoot = gitExecPath ? path.resolve(gitExecPath, "..", "..", "..") : "";
+  const candidates = [
+    env.GIT_BASH,
+    gitRoot ? path.join(gitRoot, "bin", "bash.exe") : "",
+    env.ProgramFiles ? path.join(env.ProgramFiles, "Git", "bin", "bash.exe") : "",
+    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe") : "",
+  ].filter((item): item is string => !!item?.trim());
+  const shell = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!shell) throw new Error("Git Bash was not found.");
+  await requireSuccessfulCommand({ runner, command: shell, args: ["--version"] });
+  return shell;
+}
+
 function elapsed(start: number): number {
   return Math.max(0, Math.round(performance.now() - start));
 }
@@ -55,7 +101,7 @@ function elapsed(start: number): number {
 function defaultRuntime(options: DoctorServiceOptions, mode: DoctorRequest["mode"]): DoctorRuntime {
   if (mode === "docker") return "docker-worker";
   const candidate = options.executionAdapterKind;
-  if (["local", "openclaw", "codex", "claude-sdk", "kimi"].includes(candidate)) {
+  if (["local", "openclaw", "codex", "claude-sdk", "kimi", "glm"].includes(candidate)) {
     return candidate as DoctorRuntime;
   }
   return options.runtimeStatus.node_provisioner_kind === "docker" ? "docker-worker" : "local";
@@ -73,6 +119,33 @@ export async function runDoctor(
   const checks: DoctorCheck[] = [];
   const env = options.env || process.env;
   const runtime = request.runtime || defaultRuntime(options, request.mode);
+  const providerConnection = request.provider_connection_id
+    ? getProviderConnection(request.provider_connection_id)
+    : null;
+  const providerRuntime = (providerConnection?.agent_runtime || runtime) as DoctorRuntime;
+  const providerEnv: NodeJS.ProcessEnv = { ...env };
+  if (providerConnection) {
+    if (providerConnection.credential_source === "managed") {
+      const managedCredential = getManagedProviderCredential(providerConnection.connection_id);
+      if (managedCredential) providerEnv[providerConnection.credential_env] = managedCredential;
+    }
+    const model = providerConnection.default_model || undefined;
+    if (providerRuntime === "glm") {
+      if (providerConnection.base_url) providerEnv.MY_MATE_GLM_ANTHROPIC_BASE_URL = providerConnection.base_url;
+      if (model) providerEnv.MY_MATE_GLM_MODEL = model;
+    } else if (providerRuntime === "claude-sdk") {
+      if (providerConnection.base_url) providerEnv.ANTHROPIC_BASE_URL = providerConnection.base_url;
+      if (model) providerEnv.MY_MATE_CLAUDE_MODEL = model;
+    } else if (providerRuntime === "codex") {
+      if (providerConnection.base_url) providerEnv.OPENAI_BASE_URL = providerConnection.base_url;
+      if (model) providerEnv.MY_MATE_CODEX_MODEL = model;
+    } else if (providerRuntime === "kimi") {
+      if (providerConnection.base_url) providerEnv.KIMI_BASE_URL = providerConnection.base_url;
+      if (model) providerEnv.MY_MATE_KIMI_MODEL = model;
+    } else if (providerRuntime === "openclaw" && providerConnection.base_url) {
+      providerEnv.MY_MATE_OPENCLAW_BRIDGE_BASE_URL = providerConnection.base_url;
+    }
+  }
   const runner = options.commandRunner || defaultDoctorCommandRunner;
   const dockerBin = options.dockerBin || RUNTIME_DOCKER_BIN;
   const image = options.workerImage || RUNTIME_WORKER_IMAGE;
@@ -139,6 +212,34 @@ export async function runDoctor(
     },
     `Workspace root is ${workspaceRoot}.`,
   );
+
+  const hostShellStart = performance.now();
+  try {
+    const hostShell = await resolveHostShell(runner, env);
+    add({
+      id: "host.shell",
+      category: "runtime",
+      status: "pass",
+      required_for: [],
+      summary: process.platform === "win32" ? "Git Bash host shell is available." : "Host shell is available.",
+      detail: `shell=${hostShell}`,
+      remediation: null,
+      duration_ms: elapsed(hostShellStart),
+    });
+  } catch (error) {
+    add({
+      id: "host.shell",
+      category: "runtime",
+      status: "warn",
+      required_for: [],
+      summary: process.platform === "win32" ? "Git Bash host shell is not available." : "Host shell is not available.",
+      detail: error instanceof Error ? error.message : "Host shell check failed.",
+      remediation: process.platform === "win32"
+        ? "Install Git for Windows or set MY_MATE_HOST_SHELL to bash.exe."
+        : "Set MY_MATE_HOST_SHELL or SHELL to an executable host shell.",
+      duration_ms: elapsed(hostShellStart),
+    });
+  }
 
   const status = options.runtimeStatus;
   const workerRuntime = runtime === "docker-worker";
@@ -363,18 +464,45 @@ export async function runDoctor(
     }
   }
 
-  const provider = inspectProviderConfiguration(runtime, env);
-  if (["openclaw", "codex", "claude-sdk", "kimi"].includes(runtime)) {
+  if (request.provider_connection_id) {
+    const runtimeMatches = !!providerConnection && (
+      runtime === "local" || runtime === "docker-worker" || runtime === providerRuntime
+    );
+    const connectionReady = !!providerConnection && providerConnection.status === "active" && runtimeMatches;
+    add({
+      id: "provider.connection",
+      category: "provider",
+      status: connectionReady ? "pass" : "fail",
+      required_for: ["model"],
+      summary: connectionReady
+        ? `Provider Connection ${request.provider_connection_id} is active.`
+        : `Provider Connection ${request.provider_connection_id} is not usable.`,
+      detail: !providerConnection
+        ? "The connection was not found in the selected workspace."
+        : providerConnection.status !== "active"
+          ? "The connection is disabled."
+          : !runtimeMatches
+            ? `Connection runtime ${providerRuntime} does not match requested runtime ${runtime}.`
+            : `runtime=${providerRuntime}; credential_env=${providerConnection.credential_env}; secret value is not returned.`,
+      remediation: connectionReady
+        ? null
+        : "Select an active Provider Connection whose Agent Runtime matches the requested runtime.",
+      duration_ms: 0,
+    });
+  }
+
+  const provider = inspectProviderConfiguration(providerRuntime, providerEnv);
+  if (["openclaw", "codex", "claude-sdk", "kimi", "glm"].includes(providerRuntime)) {
     add({
       id: "harness.configuration",
       category: "harness",
       status: provider.harnessConfigured ? "pass" : "fail",
       required_for: ["model"],
-      summary: `${runtime} harness is configured.`,
+      summary: `${providerRuntime} harness is configured.`,
       detail: provider.harnessEnv
         ? `${provider.harnessEnv} is ${provider.harnessConfigured ? "configured" : "not configured"}.`
         : null,
-      remediation: provider.harnessConfigured ? null : `Configure ${provider.harnessEnv || `${runtime} harness`}.`,
+      remediation: provider.harnessConfigured ? null : `Configure ${provider.harnessEnv || `${providerRuntime} harness`}.`,
       duration_ms: 0,
     });
     add({
@@ -382,11 +510,11 @@ export async function runDoctor(
       category: "provider",
       status: provider.credentialConfigured ? "pass" : "fail",
       required_for: ["model"],
-      summary: `${runtime} credential reference is available.`,
+      summary: `${providerRuntime} credential reference is available.`,
       detail: provider.credentialSource
         ? `Credential source ${provider.credentialSource} is present; its value is not returned.`
         : "No supported credential reference is present.",
-      remediation: provider.credentialConfigured ? null : `Configure a credential reference for ${runtime}.`,
+      remediation: provider.credentialConfigured ? null : `Configure ${providerConnection?.credential_env || `a credential reference for ${providerRuntime}`}.`,
       duration_ms: 0,
     });
   } else {
@@ -397,7 +525,7 @@ export async function runDoctor(
       required_for: [],
       summary: "No model provider was selected.",
       detail: `Runtime ${runtime} is deterministic-only.`,
-      remediation: "Select codex, claude-sdk, kimi, or openclaw for model readiness.",
+      remediation: "Select codex, claude-sdk, glm, kimi, or openclaw for model readiness.",
       duration_ms: 0,
     });
   }
@@ -406,14 +534,14 @@ export async function runDoctor(
   if (request.model_probe) {
     const start = performance.now();
     try {
-      await runLiveProviderProbe({ runtime, env, fetchImpl: options.fetchImpl });
+      await runLiveProviderProbe({ runtime: providerRuntime, env: providerEnv, fetchImpl: options.fetchImpl });
       modelVerified = true;
       add({
         id: "provider.live_probe",
         category: "provider",
         status: "pass",
         required_for: [],
-        summary: `${runtime} live provider probe succeeded.`,
+        summary: `${providerRuntime} live provider probe succeeded.`,
         detail: "Provider authentication and endpoint reachability were verified.",
         remediation: null,
         duration_ms: elapsed(start),
@@ -425,7 +553,7 @@ export async function runDoctor(
         category: "provider",
         status: "fail",
         required_for: [],
-        summary: `${runtime} live provider probe failed.`,
+        summary: `${providerRuntime} live provider probe failed.`,
         detail: error instanceof Error ? error.message : "Live provider probe failed.",
         remediation: "Check provider credentials, endpoint, model access, and network connectivity.",
         duration_ms: elapsed(start),
@@ -445,7 +573,7 @@ export async function runDoctor(
   }
 
   const generatedAt = (options.now || (() => new Date()))().toISOString();
-  const modelCapableRuntime = ["openclaw", "codex", "claude-sdk", "kimi"].includes(runtime);
+  const modelCapableRuntime = ["openclaw", "codex", "claude-sdk", "kimi", "glm"].includes(providerRuntime);
   return {
     schema_version: 1,
     report_id: `doctor:${randomUUID()}`,

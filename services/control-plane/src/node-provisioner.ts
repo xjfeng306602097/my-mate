@@ -18,8 +18,10 @@ import {
   RUNTIME_WORKER_QUEUE_LIMIT,
   RUNTIME_WORKER_QUEUE_TIMEOUT_MS,
   RUNTIME_WORKER_REGISTER_TIMEOUT_MS,
+  RUNTIME_SECRET_ENVS_DIR,
   RUNTIME_WORKSPACES_DIR,
 } from "./config.js";
+import { getManagedProviderCredential } from "./provider-secret-store.js";
 import { deriveRuntimeWorkerToken } from "./runtime-worker-auth.js";
 import {
   runtimeWorkerWebSocketUrl,
@@ -37,6 +39,7 @@ import {
   saveWorkerReconciliationRecord,
   type WorkerReconciliationRecord,
 } from "./runtime/worker-reconciliation-store.js";
+import { ensureRunWorkspace, runWorkspaceHostPath } from "./runtime/run-workspace.js";
 import { nowIso, slugify } from "./utils.js";
 
 export interface WorkerProvisionRequest {
@@ -213,6 +216,25 @@ function dockerSafeName(value: string): string {
   return slugify(value).replace(/[^a-z0-9_.-]/g, "-").slice(0, 54) || "worker";
 }
 
+function writeManagedCredentialEnvFile(
+  leaseId: string,
+  envName: string,
+  credential: string,
+): string {
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(envName) || /[\r\n\0]/.test(credential)) {
+    throw new Error("Managed Provider credential cannot be injected safely.");
+  }
+  fs.mkdirSync(RUNTIME_SECRET_ENVS_DIR, { recursive: true });
+  const file = path.join(RUNTIME_SECRET_ENVS_DIR, `${dockerSafeName(leaseId)}.env`);
+  fs.writeFileSync(file, `${envName}=${credential}\n`, { encoding: "utf8", mode: 0o600 });
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Windows may not apply POSIX modes; the file remains short-lived.
+  }
+  return file;
+}
+
 function containerManagerBaseUrl(request: WorkerProvisionRequest): string {
   const configured =
     RUNTIME_WORKER_MANAGER_WS_URL ||
@@ -299,6 +321,8 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
     timer: NodeJS.Timeout;
     resolve: (result: { acquired: boolean; reason: string; retryable: boolean }) => void;
   }> = [];
+  private readonly activeProvisioning = new Map<string, WorkerLeaseRecord>();
+  private readonly provisioningCancellations = new Map<string, string>();
   private readonly maxConcurrentWorkers: number;
   private readonly queueLimit: number;
   private readonly queueTimeoutMs: number;
@@ -385,6 +409,8 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
       }
       this.capacityQueue.splice(index, 1);
       clearTimeout(queued.timer);
+      this.activeProvisioning.delete(queued.lease.lease_id);
+      this.provisioningCancellations.delete(queued.lease.lease_id);
       delete queued.lease.metadata.queue_position;
       delete queued.lease.metadata.queue_depth;
       queued.resolve({
@@ -395,7 +421,25 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
       cancelled += 1;
     }
     if (cancelled > 0) this.refreshQueueMetadata();
+    for (const [leaseId, lease] of this.activeProvisioning) {
+      if (
+        lease.run_id === input.runId &&
+        (!input.nodeRunId || lease.node_run_id === input.nodeRunId) &&
+        !this.provisioningCancellations.has(leaseId)
+      ) {
+        this.provisioningCancellations.set(leaseId, input.reason);
+        lease.metadata.provisioning_control = "cancel_requested";
+        lease.metadata.provisioning_cancel_reason = input.reason;
+        saveWorkerLeaseRecord(lease);
+        cancelled += 1;
+      }
+    }
     return cancelled;
+  }
+
+  private throwIfProvisioningCancelled(lease: WorkerLeaseRecord): void {
+    const reason = this.provisioningCancellations.get(lease.lease_id);
+    if (reason) throw new Error(`PROVISIONING_CANCELLED: ${reason}`);
   }
 
   private acquireCapacity(lease: WorkerLeaseRecord): Promise<{
@@ -489,8 +533,9 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
     const token = deriveRuntimeWorkerToken(workerId);
     const acquiredAt = request.requested_at || nowIso();
     const requestedWorkspacePath = request.job.provision.workspace.project_local_repo;
-    const workspaceHostPath = requestedWorkspacePath
-      ? path.resolve(requestedWorkspacePath)
+    const sourceWorkspacePath = requestedWorkspacePath ? path.resolve(requestedWorkspacePath) : null;
+    const workspaceHostPath = sourceWorkspacePath
+      ? runWorkspaceHostPath(request.job.run_id)
       : path.resolve(RUNTIME_WORKSPACES_DIR, dockerSafeName(request.job.run_id));
 
     const baseLease: WorkerLeaseRecord = {
@@ -514,13 +559,18 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
         container_name: containerName,
         image: request.job.provision.image || this.options.image || RUNTIME_WORKER_IMAGE,
         workspace_host_path: workspaceHostPath,
-        workspace_source: requestedWorkspacePath ? "project_local_repo" : "runtime_workspace",
+        workspace_source: sourceWorkspacePath ? "run_sandbox_copy" : "runtime_workspace",
+        source_workspace_path: sourceWorkspacePath,
+        requires_change_approval: request.job.provision.execution_policy.requires_change_approval,
         isolation_profile: "default-v1",
       },
     };
     saveWorkerLeaseRecord(baseLease);
+    this.activeProvisioning.set(leaseId, baseLease);
     const capacity = await this.acquireCapacity(baseLease);
     if (!capacity.acquired) {
+      this.activeProvisioning.delete(leaseId);
+      this.provisioningCancellations.delete(leaseId);
       baseLease.status = capacity.retryable ? "failed" : "released";
       baseLease.last_error = capacity.reason;
       baseLease.released_at = nowIso();
@@ -534,12 +584,14 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
       };
     }
     const run = this.options.commandRunner || runDockerCommand;
+    let managedCredentialEnvFile: string | null = null;
     try {
-      if (requestedWorkspacePath) {
-        const workspaceStat = fs.statSync(workspaceHostPath);
-        if (!workspaceStat.isDirectory()) {
-          throw new Error(`Runtime workspace is not a directory: ${workspaceHostPath}`);
-        }
+      this.throwIfProvisioningCancelled(baseLease);
+      if (sourceWorkspacePath) {
+        const baseline = ensureRunWorkspace({ runId: request.job.run_id, sourceRoot: sourceWorkspacePath });
+        baseLease.metadata.workspace_baseline_created_at = baseline.created_at;
+        baseLease.metadata.workspace_baseline_file_count = Object.keys(baseline.files).length;
+        saveWorkerLeaseRecord(baseLease);
       } else {
         fs.mkdirSync(workspaceHostPath, { recursive: true });
       }
@@ -555,6 +607,7 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
           container_name: containerName,
         },
       });
+      this.throwIfProvisioningCancelled(baseLease);
       const managerWsUrl = runtimeWorkerWebSocketUrl(
         containerManagerBaseUrl(request),
         workerId,
@@ -607,6 +660,28 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
           args.push("-e", name);
         }
       }
+      const connectionCredentialEnv = request.job.harness.provider_connection?.credential_env;
+      const providerConnection = request.job.harness.provider_connection;
+      if (providerConnection?.credential_source === "managed") {
+        const credential = getManagedProviderCredential(providerConnection.connection_id);
+        if (!credential) {
+          throw new Error("Provider Connection credential is not configured.");
+        }
+        managedCredentialEnvFile = writeManagedCredentialEnvFile(
+          leaseId,
+          providerConnection.credential_env,
+          credential,
+        );
+        args.push("--env-file", managedCredentialEnvFile);
+      } else if (
+        connectionCredentialEnv &&
+        /^[A-Z_][A-Z0-9_]*$/.test(connectionCredentialEnv) &&
+        process.env[connectionCredentialEnv] !== undefined &&
+        !explicitEnvNames.has(connectionCredentialEnv) &&
+        !args.includes(connectionCredentialEnv)
+      ) {
+        args.push("-e", connectionCredentialEnv);
+      }
       const limits = request.job.provision.resource_limits;
       const defaultLimits = this.options.defaultResourceLimits || {
         cpus: RUNTIME_WORKER_DEFAULT_CPUS,
@@ -633,10 +708,12 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
       baseLease.container_id = result.stdout.split(/\s+/)[0] || null;
       baseLease.metadata.container_id = baseLease.container_id;
       saveWorkerLeaseRecord(baseLease);
+      this.throwIfProvisioningCancelled(baseLease);
       const worker = await this.workerHub.waitForWorker(
         workerId,
         this.options.registerTimeoutMs || RUNTIME_WORKER_REGISTER_TIMEOUT_MS,
       );
+      this.throwIfProvisioningCancelled(baseLease);
       const healthResult = await run(
         this.options.dockerBin || RUNTIME_DOCKER_BIN,
         [
@@ -653,6 +730,7 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
           healthResult.stderr || healthResult.stdout || "Runtime Worker health probe failed.",
         );
       }
+      this.throwIfProvisioningCancelled(baseLease);
       baseLease.status = "ready";
       baseLease.last_heartbeat_at = worker.last_heartbeat_at;
       baseLease.metadata.health_status = "healthy";
@@ -663,12 +741,14 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
         lease: baseLease,
       };
     } catch (error) {
+      const cancelled =
+        error instanceof Error && error.message.startsWith("PROVISIONING_CANCELLED:");
       baseLease.status = "failed";
       baseLease.last_error = error instanceof Error ? error.message : "Docker worker provisioning failed.";
-      baseLease.release_reason = "provisioning_failed";
+      baseLease.release_reason = cancelled ? "provisioning_cancelled" : "provisioning_failed";
       baseLease.metadata.provisioning_error = baseLease.last_error;
       saveWorkerLeaseRecord(baseLease);
-      await this.cleanupLease(baseLease, "provisioning_failed", {
+      await this.cleanupLease(baseLease, baseLease.release_reason, {
         containerRef: containerName,
         force: true,
       });
@@ -678,8 +758,14 @@ export class DockerWorkerProvisioner implements NodeProvisioner {
           typeof baseLease.metadata.provisioning_error === "string"
             ? baseLease.metadata.provisioning_error
             : "Docker worker provisioning failed.",
-        retryable: true,
+        retryable: !cancelled,
       };
+    } finally {
+      if (managedCredentialEnvFile) {
+        fs.rmSync(managedCredentialEnvFile, { force: true });
+      }
+      this.activeProvisioning.delete(leaseId);
+      this.provisioningCancellations.delete(leaseId);
     }
   }
 

@@ -30,7 +30,7 @@ It builds on:
 
 Current tracking snapshot date:
 
-- `2026-07-11`
+- `2026-07-13`
 
 Current validated local checks:
 
@@ -70,6 +70,19 @@ Current read of the repository:
 
 Latest implementation update:
 
+- `DESKTOP-SANDBOX-DIFF` risk-routed local workspace loop landed
+  - Desktop Host grants bounded read-only access to a user-selected folder
+  - low-risk deterministic work stays local while project-local and real Agent
+    Harness execution routes to Docker
+  - Docker receives a filtered per-Job copy and never mounts the source folder
+  - Worker mutations persist as approval-gated Change Sets with conflict and
+    sandbox-integrity validation
+  - Studio Inbox renders Change Sets, files, line diffs, binary/oversized
+    metadata, and two-step Apply/Reject controls at desktop and mobile widths
+  - API Gateway, generated contracts, focused tests, browser Apply/Reject, and
+    the real Docker Worker smoke pass
+  - signed Desktop receipt binding, transactional rollback, revocation, and Git
+    worktree staging remain explicit production hardening
 - `HR-P0` HomeRail-alignment runtime foundation and operator loop landed
   - canonical route snapshots prevent direct template runs from becoming
     `Unrouted`; compiled nodes retain declared or honest default work packages
@@ -103,7 +116,8 @@ Latest implementation update:
   - normalized evidence is JSON-Schema validated and exposed in supervise
     deltas; unavailable usage no longer counts as complete
 - `HR-P1-D2` Provider Adapters landed
-  - Codex JSONL/app-server, Claude SDK, Kimi stream/ACP/SDK, and OpenClaw bridge
+  - Codex app-server, Claude Agent SDK, Anthropic-compatible GLM, Kimi
+    stream/ACP/SDK, and OpenClaw bridge
     records normalize into provider-native Evidence V2
   - command stdout is parsed while the process runs; unknown output retains the
     D1 synthetic fallback and missing provider usage stays explicitly unavailable
@@ -999,12 +1013,24 @@ This also means the following may land incrementally:
 
 | ID | Area | Status | Priority | Task | Notes |
 |---|---|---|---|---|---|
+| `PX-00` | Product Intelligence | Done | P0 | Define and enforce the Human Surface Contract, information budget, and progressive-disclosure boundary. | Contract: `docs/36-product-intelligence-human-surface-contract.md`; the default surface is limited to Task, Decision, and Result. |
+| `PX-01` | Product Intelligence | Done | P0 | Reduce the default Studio shell to Tasks, Inbox, Library, and Settings while retaining advanced routes. | Default task flow exposes one primary action; technical routes remain available through Advanced and existing deep links. |
+| `PX-02` | Product Intelligence | Done | P0 | Make setup derive Connection internals, bind the default Agent, verify the live Connection, and run environment checks. | Setup saves the encrypted Connection, repairs and binds `default-agent`, runs the live Connection test, and only advances after verification; `Configured` is never presented as `Verified`. |
+| `PX-03` | Product Intelligence | Done | P0 | Advance a prepared task through one recommended human action while preserving strict runtime validation. | `Start work` uses the existing Session message contract; the post-action Task Guidance state decides whether success may be shown. |
+| `PX-04` | Product Intelligence | Done | P0 | Adapt the Tasks workspace to ready, running, decision, result, recovery, paused, and preparation states. | A tested pure guidance model drives the task header, three-signal strip, primary action, results-first surface, and progressive disclosure. |
+| `PX-05` | Product Intelligence | Done | P0 | Proactively surface blocking decisions, stale plans, transition failures, stopped Runs, and result evidence. | Decisions outrank progress, failed business transitions never render as success, and technical runtime/evidence remains reachable on demand. |
+| `PX-06` | Product Intelligence | Done | P0 | Express autonomy as Review first, Assisted, or Autopilot instead of runtime configuration. | The policy persists on workspace `default-agent` metadata; guarded Autopilot only advances verified routine-ready tasks and keeps strict validation and human gates. |
+| `PX-07` | Product Intelligence | Done | P0 | Derive one concrete repair recommendation for model, workflow, validation, stale-plan, transition, and stopped-Run failures. | Repair actions reuse Settings, Library, plan review, conversation, and Recovery APIs; original evidence remains available. |
+| `PX-08` | Product Intelligence | Done | P0 | Lead completed work with honest result trust guidance backed by Scorecard and independent Evaluation evidence. | `Trusted` requires both passing check families; missing or failed evidence stays visible as Not checked, Partial, or Review needed. |
+| `SUP-01` | Product Intelligence | Done | P0 | Run durable proactive supervision across active tasks with deduplicated alerts, repair actions, resolution, and audit-friendly evidence. | Background watchdog and explicit scan cover configuration, human gates, stalled/failed Runs, quality gaps, and Autopilot handoff; alerts appear in Task and Inbox surfaces. |
+| `AI-01` | Product Intelligence | Done | P0 | Operate a durable bounded Orchestrator Autopilot loop across start, supervision, safe retry, human handoff, quality evaluation, pause, resume, and completion. | Per-Session controller persists iteration/runtime limits and history; only verified routine-ready tasks auto-start, retries stay inside node policy, and failed quality returns control to a human. |
+| `GENUI-01` | Product Intelligence | Done | P0 | Generate a safe adaptive Mission Workspace plan from server-side task truth. | Control Plane emits a versioned whitelist-only UI Plan; Studio renders through a component registry, ignores unknown components, preserves Task Guidance fallback, and keeps technical details advanced. |
 | `HR-P0` | HomeRail Alignment | Done | P0 | Establish canonical route/work-package truth and the `doctor -> run -> supervise -> scorecard` Docker operator loop. | All P0 gates in `docs/27-p0-p1-implementation-blueprint.md` pass, including the real two-Worker Docker smoke and `14/14` pipeline scorecard. |
 | `HR-P1` | HomeRail Alignment | Done | P1 | Add eval, trace, replay/rerun, provider-native evidence, usage/cost, and graph-first runtime UX. | C1, C2, D1, D2, E1, and E2 pass scoped implementation, test, and visual gates; live provider/model judge checks remain explicit opt-in. |
 | `HR-P1-C1` | Policy And Evaluation | Done | P1 | Add declarative policy checks and independent persisted evaluation verdicts. | Offline none/deterministic paths, model queue/recovery, Gateway, CLI, schemas, and tests pass; live Anthropic judge remains explicit opt-in. |
 | `HR-P1-C2` | Trace And Replay | Done | P1 | Add first-class trace, pure replay, projection differences, replay-plan, and linked rerun. | Complete V2 runs replay exactly, legacy runs report partial, and rerun uses frozen-plan lineage plus Idempotency-Key. |
 | `HR-P1-D1` | Evidence Protocol | Done | P1 | Add streaming Harness Client, Evidence V2 fields, redaction, payload refs, and V1 compatibility. | Synthetic fallbacks are sequenced, schema-validated, redacted, and usage-unavailable. |
-| `HR-P1-D2` | Provider Adapters | Done | P1 | Normalize Codex, Claude SDK, Kimi, and OpenClaw native evidence and project usage/cost/tools. | Recorded fixtures and offline tests pass; live provider verification remains explicit opt-in and no unknown model receives estimated cost. |
+| `HR-P1-D2` | Provider Adapters | Done | P1 | Normalize Codex, Claude Agent SDK, GLM, Kimi, and OpenClaw native evidence and project usage/cost/tools. | Codex/Claude/GLM use Agent Harness paths, recorded fixtures and offline tests pass, live Provider verification remains explicit opt-in, and no unknown model receives estimated cost. |
 | `HR-P1-E1` | Runtime Graph UX | Done | P1 | Share deterministic DAG layout and make the spatial runtime graph the primary Studio run view. | Authoring/compare/runtime share one layout; toolbar, cursor refresh, node drawer, URL/keyboard selection, mobile-width list fallback, and six overlap fixtures pass. |
 | `HR-P1-E2` | Evaluation UI And Mobile | Done | P1 | Make Studio evaluation actionable and add Mobile topology, evidence, trace, and replay inspection. | Studio actions and verdicts, Mobile staged topology/full-height evidence, four focused tests, and desktop/mobile browser acceptance pass. |
 | `MW-00` | Mission Workspace | Done | P0 | Define a unified `Mission Workspace` contract in the Control Plane and align Mobile and Studio to consume it. | Contract definition, Control Plane normalization, Mobile cleanup, Studio cleanup, and cross-stage verification have landed. |
@@ -1040,11 +1066,11 @@ This also means the following may land incrementally:
 | `REL-02` | Release Engineering | Done | P1 | Add CI release gates for generated-contract drift, checks, tests, Runtime Worker image build, and deterministic Docker smoke. | PR/main and tag/manual workflows separate full deterministic checks from image build, provenance, Docker operator, and restart-recovery gates; actionlint passes. |
 | `REL-03` | Release Engineering | Done | P2 | Add SBOM, image signing and vulnerability policy, plus documented upgrade and rollback procedures. | Pinned Syft/Grype local evidence, CycloneDX/SARIF artifacts, Critical blocking, Alpine stock image, GHCR BuildKit attestations, keyless cosign signing, and digest rollback policy are implemented. |
 | `RT-04` | Runtime Semantics | Done | P1 | Evaluate structured edge conditions and route matching failure ports to recovery nodes without premature terminal Run failure. | Safe bounded AST, persisted per-edge decisions, retry-first recovery, recovered-failure completion, Runtime Graph/Trace/Scorecard projection, and focused acceptance coverage landed. |
-| `RT-05` | Runtime Semantics | Todo | P1 | Add Worker-native human-gate suspend/resume with persisted gate and control protocol state. | Manager-side approval and node requeue remain the compatibility behavior. |
-| `RT-06` | Runtime Semantics | Todo | P2 | Add dynamic fanout cardinality and complete harness/control-during-provisioning guarantees. | Keep bounded capacity and recovery invariants intact. |
-| `STU-04` | Studio Authoring | Todo | P2 | Add direct-manipulation DAG editing with node drag, edge/port editing, validation, undo/redo, and patch preview. | Retain the form-backed editor as the deterministic and accessible fallback. |
-| `MW-04` | Mission Workspace | Todo | P2 | Add an independently rebuildable evented Mission/Session materializer with checkpoints and consistency verification. | Preserve the existing Mission Workspace API contract. |
-| `LIVE-01` | Provider Acceptance | Todo | P2 | Add credential-aware opt-in live provider and real model-judge release acceptance lanes. | Nondeterministic live checks must remain separate from default unit-test gates. |
+| `RT-05` | Runtime Semantics | Done | P1 | Add Worker-native human-gate suspend/resume with persisted gate and control protocol state. | Same-Job suspend/resume, gate-bound payload, ACK audit, persistent lifecycle, and Manager-requeue compatibility are implemented and tested. |
+| `RT-06` | Runtime Semantics | Done | P2 | Add dynamic fanout cardinality and complete harness/control-during-provisioning guarantees. | Bounded deterministic fanout, all-child joins, capability reporting, and queued/active provisioning cancellation are implemented and tested. |
+| `STU-04` | Studio Authoring | Done | P2 | Add direct-manipulation DAG editing with node drag, edge/port editing, validation, undo/redo, and patch preview. | Direct manipulation, persisted layout, topology validation, history, keyboard controls, patch preview, and form fallback are implemented. |
+| `MW-04` | Mission Workspace | Done | P2 | Add an independently rebuildable evented Mission/Session materializer with checkpoints and consistency verification. | Ordered idempotent events, incremental checkpoints, event-only rebuild, digest verification, OpenAPI/Gateway/CLI operations, and compatibility coverage are implemented. |
+| `LIVE-01` | Provider Acceptance | Done | P2 | Add credential-aware opt-in live provider and real model-judge release acceptance lanes. | Host and Docker Agent Harness lanes enforce workspace tools, correlation, usage, secret-safe evidence, and optional release gating; Codex and GLM 5.2 are locally passed, while Claude Bedrock is locally failed by its Worker-owned timeout. |
 
 ## Suggested Near-Term Milestones
 
@@ -1427,6 +1453,31 @@ Exit condition:
       acceptance validate provider preference, estimate fallback, unavailable
       evidence, grouping, layout, and clean console output.
 
+### LIVE-01 Provider Configuration Status
+
+- [x] Studio Registry lists workspace-scoped Provider Connections and uses a
+      focused create/edit modal for Codex, Claude Agent SDK, GLM, Kimi,
+      OpenClaw, and custom providers.
+- [x] Provider protocol, endpoint, multiple models, one default model, and
+      credential source metadata are persisted; API keys are write-only and
+      never returned.
+- [x] Managed API keys use AES-256-GCM storage with a deployment master key;
+      environment references remain supported and storage snapshots exclude
+      Provider secrets.
+- [x] Agent Profiles bind Agent Runtime, harness profile, Provider Connection,
+      model/agent reference, tools, and skills with runtime compatibility checks.
+- [x] RunPlan compilation freezes the non-secret Connection snapshot and Runtime
+      Worker Jobs retain only endpoint/model configuration and credential env
+      identity.
+- [x] Docker provisioning passes environment credentials using `-e ENV_NAME`
+      and managed credentials through a deleted-after-use env file; tests prove
+      secret values are absent from command arguments and serialized Jobs.
+- [x] Doctor and CLI resolve `provider_connection_id`, report configured state
+      without values, and keep live probing explicitly opt in.
+- [x] Control Plane, API Gateway, OpenAPI/generated types, Studio desktop/mobile
+      interaction, workspace isolation, snapshot immutability, and secret
+      rejection have focused acceptance coverage.
+
 ### Milestone D: Production Foundations
 
 Track in parallel when product shell risk is lower:
@@ -1464,8 +1515,8 @@ Completed in order:
 Then continue the runtime semantics track:
 
 - [x] `RT-04`
-- [ ] `RT-05`
-- [ ] `RT-06`
+- [x] `RT-05`
+- [x] `RT-06`
 
 Exit condition:
 
@@ -1477,8 +1528,52 @@ Exit condition:
 
 ## Review Rhythm
 
+### Long-Term Memory M5 Status
+
+- [x] Canonical `MemoryRecord` remains the only source of truth.
+- [x] Rebuildable SQLite FTS5 plus multilingual n-gram retrieval uses reciprocal-rank fusion.
+- [x] Optional OpenAI-compatible embeddings rerank only privacy-filtered records and fail open locally.
+- [x] Version and digest checks remove stale updates and deleted records from model-visible results.
+- [x] Optional MemPalace status, provenance-filtered query, and canonical sync boundaries do not affect baseline search.
+- [x] OpenAPI, generated types, Gateway routes, focused tests, and `Advanced > Memory` observability are included.
+
+M6 and M7 are complete. The next memory work is production hardening and proactive product use of durable memory rather than another storage-layer milestone.
+
 Suggested maintenance rhythm:
 
 - weekly: update `Status`, `Priority`, and `Notes`
 - at milestone close: move completed work into `Shipped Baseline`
 - at every major demo: refresh the validation commands in `Snapshot`
+# M6 Memory completion (2026-07-16)
+
+- [x] Memory Center and Inbox candidate review
+- [x] Idempotent background memory extraction with autonomy policy
+- [x] Project snapshot extension and Agent scope opt-in
+- [x] Canonical lifecycle, restore, retention, and derived-index compaction
+- [x] JSON/JSONL dry-run import and complete export
+- [x] Provider Connection-backed embedding settings and optional MemPalace settings
+- [x] Memory observability, Control Plane API, Gateway, OpenAPI, and shared types
+- [x] Studio desktop/mobile acceptance and full regression
+
+# M7 Memory Intelligence completion (2026-07-16)
+
+- [x] Dedicated or Conversation Provider-backed Memory Intelligence model settings
+- [x] Model-assisted full-turn extraction with deterministic failure fallback
+- [x] Governed create, update, supersede, delete, and ignore semantics
+- [x] Server-side automatic recall with User, Workspace, Project, and Agent isolation
+- [x] Unified structured Conversation Intent Router with low-confidence model refinement
+- [x] English/Chinese intent evaluation fixtures and persisted quality/operation metrics
+- [x] Control Plane API, Gateway allowlist, OpenAPI, generated shared types, and Studio controls
+- [x] Focused M7 behavior tests, full regression, and desktop/mobile browser acceptance
+
+# M8 Memory Production completion (2026-07-16)
+
+- [x] AES-256-GCM Private Memory, candidate, and snapshot encryption with legacy migration
+- [x] Private Memory exclusion from journal, embedding cache, and MemPalace projections
+- [x] Independent multi-Workspace maintenance sweep and watchdog integration
+- [x] Generation-aware automatic recall cache with TTL and write invalidation
+- [x] Explainable current-Task recommendations with scoped visibility and snapshot freshness
+- [x] Privacy-safe Proactive Supervision recommendation alerts
+- [x] Expanded 36-case bilingual intent and 8-case Memory operation quality suite
+- [x] Control Plane, Gateway, OpenAPI, generated types, Studio settings, and observability
+- [x] Final full regression and desktop/mobile browser acceptance

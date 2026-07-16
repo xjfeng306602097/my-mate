@@ -10,6 +10,7 @@ import {
   createRuntimeMessageBase,
   isRuntimeProtocolMessage,
   type JobAckMessage,
+  type JobControlAckMessage,
   type JobControlMessage,
   type JobDispatchMessage,
   type RuntimeControlAction,
@@ -29,6 +30,10 @@ import { saveWorkerEvidence } from "./runtime/worker-evidence-store.js";
 import { deriveRuntimeWorkerToken } from "./runtime-worker-auth.js";
 import { nowIso } from "./utils.js";
 import { appendRunEvent } from "./event-store.js";
+import {
+  getRuntimeHumanGate,
+  saveRuntimeHumanGate,
+} from "./runtime/human-gate-store.js";
 
 interface WorkerConnection {
   workerId: string;
@@ -173,10 +178,7 @@ export class RuntimeWorkerHub {
     this.resetPersistedConnectionState();
     httpServer.on("upgrade", (req, socket, head) => {
       const workerId = pathWorkerId(req);
-      if (!workerId) {
-        rejectUpgrade(socket, 404, "Not Found");
-        return;
-      }
+      if (!workerId) return;
       this.server.handleUpgrade(req, socket, head, (webSocket) => {
         this.handleConnection(workerId, webSocket);
       });
@@ -215,6 +217,7 @@ export class RuntimeWorkerHub {
       version: "",
       capabilities: [],
       supported_harnesses: [],
+      harness_capabilities: {},
       active_job_id: null,
       expected_at: expectedAt,
       registered_at: null,
@@ -301,6 +304,9 @@ export class RuntimeWorkerHub {
     workerId: string;
     jobId: string;
     action: RuntimeControlAction;
+    controlId?: string;
+    gateId?: string | null;
+    payload?: Record<string, unknown> | null;
     reason?: string | null;
   }): boolean {
     const connection = this.connections.get(input.workerId);
@@ -310,8 +316,11 @@ export class RuntimeWorkerHub {
     const message: JobControlMessage = {
       ...createRuntimeMessageBase(),
       kind: "job.control",
+      control_id: input.controlId || `control:${input.jobId}:${Date.now().toString(36)}`,
       job_id: input.jobId,
       action: input.action,
+      gate_id: input.gateId ?? null,
+      payload: input.payload ?? null,
       reason: input.reason ?? null,
     };
     connection.socket.send(JSON.stringify(message));
@@ -508,6 +517,7 @@ export class RuntimeWorkerHub {
       version: message.version,
       capabilities: [...message.capabilities],
       supported_harnesses: [...message.supported_harnesses],
+      harness_capabilities: { ...message.harness_capabilities },
       active_job_id: null,
       expected_at: expectation?.expectedAt || null,
       registered_at: timestamp,
@@ -533,6 +543,7 @@ export class RuntimeWorkerHub {
           version: record.version,
           capabilities: record.capabilities,
           supported_harnesses: record.supported_harnesses,
+          harness_capabilities: record.harness_capabilities || {},
         },
         created_at: timestamp,
         idempotency_key: `worker.registered:${record.worker_id}`,
@@ -605,6 +616,10 @@ export class RuntimeWorkerHub {
       }
       return;
     }
+    if (message.kind === "job.control_ack") {
+      this.recordControlAck(connection, message);
+      return;
+    }
     if (message.kind === "worker.event") {
       await this.eventHandler(message.event);
       return;
@@ -638,6 +653,50 @@ export class RuntimeWorkerHub {
     }
     if (message.kind === "worker.register") {
       this.sendProtocolError(connection.socket, "already_registered", "Worker is already registered.");
+    }
+  }
+
+  private recordControlAck(connection: WorkerConnection, message: JobControlAckMessage): void {
+    const job = connection.activeJob;
+    if (!job || job.job_id !== message.job_id || message.worker_id !== connection.workerId) {
+      this.sendProtocolError(
+        connection.socket,
+        "control_ack_identity_mismatch",
+        "Worker control acknowledgement does not match the active dispatch identity.",
+      );
+      return;
+    }
+    appendRunEvent({
+      run_id: job.run_id,
+      node_run_id: job.node_run_id,
+      type: message.status === "applied" ? "job.control_applied" : "job.control_rejected",
+      actor_type: "agent",
+      actor_id: `runtime-worker:${connection.workerId}`,
+      payload: {
+        control_id: message.control_id,
+        job_id: message.job_id,
+        action: message.action,
+        gate_id: message.gate_id,
+        status: message.status,
+        reason: message.reason,
+      },
+      created_at: message.sent_at || nowIso(),
+      idempotency_key: `job.control_ack:${message.control_id}`,
+    });
+    if (message.gate_id) {
+      const gate = getRuntimeHumanGate(job.run_id, message.gate_id);
+      if (gate && gate.job_id === message.job_id) {
+        if (message.status === "applied") {
+          gate.status = message.action === "resume" ? "resumed" : "cancelled";
+          gate.resolved_at = message.sent_at || nowIso();
+          gate.last_error = null;
+        } else {
+          gate.status = "suspended";
+          gate.last_error = message.reason || "Runtime Worker rejected human-gate control.";
+        }
+        gate.control_id = message.control_id;
+        saveRuntimeHumanGate(gate);
+      }
     }
   }
 

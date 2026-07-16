@@ -19,7 +19,7 @@ const executionAdapterBaseUrl = `http://127.0.0.1:${executionAdapterPort}`;
 
 const bridgeApiKey = "e2e-bridge-key";
 const callbackToken = "e2e-callback-token";
-const timeoutMs = 180000;
+const timeoutMs = Number(process.env.MY_MATE_OPENCLAW_E2E_TIMEOUT_MS || 360000);
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });

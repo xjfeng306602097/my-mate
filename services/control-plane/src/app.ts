@@ -1,13 +1,30 @@
 ﻿import express from "express";
+import { timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { strToU8, zipSync } from "fflate";
 import type { Request, Response } from "express";
 import type {
   AuthMeResponse,
   WorkspaceRole,
 } from "@my-mate/shared-types/identity";
+import { ROLE_PERMISSIONS } from "@my-mate/shared-types/identity";
 import { getApproval, listApprovals, saveApproval } from "./approval-store.js";
+import {
+  applyRuntimeWorkspaceChangeSet,
+  getRuntimeWorkspaceChangeSet,
+  listRuntimeWorkspaceChangeSets,
+  rejectRuntimeWorkspaceChangeSet,
+} from "./runtime/workspace-change-set.js";
 import { listArtifacts } from "./artifact-store.js";
+import {
+  publishTaskArtifact,
+  resolvePublishedRuntimeArtifactPath,
+  resolvePublishedSessionArtifactPath,
+} from "./durable-artifact-publisher.js";
 import { applyNodeAction, applyRunAction } from "./control-actions.js";
 import { appendRunEvent, listRunEvents } from "./event-store.js";
+import { getRuntimeHumanGate } from "./runtime/human-gate-store.js";
 import { createEmptyExecutionRef } from "./execution-ref.js";
 import {
   createDagPatch,
@@ -53,12 +70,100 @@ import {
   upsertOrchestratorProfile,
 } from "./orchestrator-profile-store.js";
 import { createSessionMessage, listSessionMessages } from "./session-message-store.js";
-import { createSessionIntervention, listSessionInterventions } from "./session-intervention-store.js";
-import { createSessionAttachment, listSessionAttachments } from "./session-attachment-store.js";
-import { getJsonStorageBackendKind } from "./storage-backend.js";
-import { appendAuditEvent, listAuditEvents, verifyWorkspaceAuditChain } from "./audit-store.js";
-import { INTERNAL_AUTH_SECRET } from "./config.js";
 import {
+  completeConversationAction,
+  getConversationAction,
+  markConversationActionApproved,
+} from "./conversation-action-store.js";
+import { createSessionIntervention, listSessionInterventions } from "./session-intervention-store.js";
+import {
+  createSessionAttachment,
+  deleteSessionAttachment,
+  listSessionAttachments,
+  saveSessionAttachment,
+} from "./session-attachment-store.js";
+import { getJsonStorageBackendKind } from "./storage-backend.js";
+import {
+  generateProviderConversationReply,
+  streamProviderConversationReply,
+  type ConversationProviderEvidence,
+} from "./conversation-provider.js";
+import type {
+  ConversationDesktopCapabilityRequest,
+  ConversationToolProgress,
+} from "./conversation-tools.js";
+import { appendAuditEvent, listAuditEvents, verifyWorkspaceAuditChain } from "./audit-store.js";
+import {
+  approveMemoryCandidate,
+  createMemory,
+  createMemoryCandidate,
+  deleteMemory,
+  getMemory,
+  getMemoryCandidate,
+  listMemories,
+  listMemoryCandidates,
+  MemoryStoreError,
+  rejectMemoryCandidate,
+  restoreMemory,
+  type MemoryListFilters,
+  updateMemory,
+} from "./memory-store.js";
+import { runBackgroundMemoryReview } from "./memory-background-review.js";
+import { getLastMemoryMaintenance, runMemoryMaintenance, runMemoryMaintenanceSweep } from "./memory-lifecycle.js";
+import { getMemoryObservability } from "./memory-observability.js";
+import { getMemorySettings, MemorySettingsError, updateMemorySettings } from "./memory-settings-store.js";
+import { exportMemories, importMemories, serializeMemoryExport } from "./memory-transfer.js";
+import { routeConversationIntent } from "./conversation-intent-router.js";
+import { refineConversationIntent } from "./conversation-intent-intelligence.js";
+import { evaluateConversationIntentRouter } from "./memory-intelligence-evaluation.js";
+import { ensureCoreMemorySnapshot } from "./memory-snapshot-store.js";
+import { listSessionMemoryRecommendations } from "./memory-recommendation.js";
+import { recallSessions } from "./session-recall-store.js";
+import {
+  getMemoryRetrievalIndexStatus,
+  rebuildMemoryRetrievalIndex,
+  searchMemoryRetrieval,
+} from "./memory-retrieval-index.js";
+import {
+  getMemoryKnowledgeProviderStatus,
+  queryMemoryKnowledgeGraph,
+  rebuildMemoryKnowledgeGraph,
+} from "./memory-knowledge-provider.js";
+import {
+  beginTaskCheckpoint,
+  getLatestTaskCheckpoint,
+  getTaskCheckpoint,
+  listTaskCheckpoints,
+  markInterruptedCheckpointsForRecovery,
+  taskCheckpointResumePrompt,
+  transitionTaskCheckpoint,
+} from "./task-checkpoint-store.js";
+import { DESKTOP_BRIDGE_TOKEN, INTERNAL_AUTH_SECRET } from "./config.js";
+import {
+  getActiveSessionWorkspaceBinding,
+  getWorkspaceBinding,
+  publicWorkspaceBinding,
+  registerWorkspaceBinding,
+  revokeWorkspaceBinding,
+  workspaceCapabilityDigest,
+} from "./workspace-binding-store.js";
+import {
+  archiveLocalProject,
+  getLocalProject,
+  listLocalProjects,
+  publicLocalProject,
+  registerLocalProject,
+  validateProjectCapability,
+} from "./local-project-store.js";
+import {
+  archiveTaskWorkspace,
+  bindTaskWorkspace,
+  getTaskWorkspace,
+  publicTaskWorkspace,
+  restoreTaskWorkspace,
+} from "./task-workspace-store.js";
+import {
+  getActiveWorkspaceId,
   getRequestAuthContext,
   hasPermission,
   requiredPermission,
@@ -86,6 +191,38 @@ function requestActor(req: Request, fallback = "user"): string {
     ? req.body.requested_by.trim()
     : fallback;
 }
+
+function sendMemoryStoreError(res: Response, error: unknown): Response {
+  if (error instanceof MemoryStoreError) {
+    return res.status(error.statusCode).json({ code: error.code, message: error.message });
+  }
+  throw error;
+}
+
+function hasBearerToken(req: Request, token: string): boolean {
+  if (!token) return false;
+  const authorization = req.header("authorization") || "";
+  const candidate = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const expectedBuffer = Buffer.from(token);
+  const candidateBuffer = Buffer.from(candidate);
+  return expectedBuffer.length === candidateBuffer.length && timingSafeEqual(expectedBuffer, candidateBuffer);
+}
+
+const WORKSPACE_MUTATION_TOOL_PATTERN = /(?:^|[-_.])(write|edit|patch|apply_patch|save|delete|remove|rename|move|shell|terminal|exec|command|bash|powershell|cmd|git)(?:$|[-_.])/i;
+
+function templateRequestsWorkspaceMutation(template: WorkflowTemplateRecord): boolean {
+  return template.nodes.some((node) => {
+    const config = isPlainObject(node.config) ? node.config : {};
+    const configuredTools = Array.isArray(config.allowed_tools)
+      ? config.allowed_tools.filter((tool): tool is string => typeof tool === "string")
+      : [];
+    const profileTools = node.agent_profile
+      ? getAgentProfile(node.agent_profile)?.allowed_tools || []
+      : [];
+    const tools = [...new Set([...configuredTools, ...profileTools])];
+    return tools.some((tool) => WORKSPACE_MUTATION_TOOL_PATTERN.test(tool));
+  });
+}
 import {
   buildDashboardSummary,
   type DashboardObservabilityStatusFilter,
@@ -102,6 +239,19 @@ import { getReplay } from "./evaluation/replay-store.js";
 import { createOrGetReplayPlan } from "./evaluation/replay-plan-engine.js";
 import { getReplayPlan } from "./evaluation/replay-plan-store.js";
 import { createOrGetRerun } from "./evaluation/rerun-service.js";
+import {
+  ensureAutopilotController,
+  getAutopilotController,
+  listAutopilotControllers,
+  saveAutopilotController,
+} from "./autopilot-store.js";
+import { buildMissionUiPlan } from "./mission-ui-planner.js";
+import { runProactiveSupervisionScan } from "./proactive-supervisor.js";
+import {
+  getSupervisionAlert,
+  listSupervisionAlerts,
+  saveSupervisionAlert,
+} from "./supervision-store.js";
 import type { TraceSpanKind } from "./evaluation/types.js";
 import {
   archiveSession,
@@ -141,6 +291,25 @@ import {
   upsertAgentProfile,
   upsertSkill,
 } from "./registry-store.js";
+import { getCapabilityRegistry } from "./capability-registry.js";
+import { getCapabilityPluginHost } from "./plugin-host.js";
+import { getMcpHost } from "./mcp-host.js";
+import { listMcpConnectorPresets } from "./mcp-connector-presets.js";
+import {
+  getMcpServer,
+  listMcpServers,
+  publicMcpServer,
+  upsertMcpServer,
+  type UpsertMcpServerInput,
+} from "./mcp-server-store.js";
+import {
+  disableProviderConnection,
+  getProviderConnection,
+  listProviderConnections,
+  providerConnectionStatus,
+  recordProviderConnectionVerification,
+  upsertProviderConnection,
+} from "./provider-connection-store.js";
 import {
   applyGovernanceChange,
   createGovernanceChange,
@@ -153,6 +322,9 @@ import {
 } from "./governance-store.js";
 import type {
   AgentProfileRecord,
+  ArtifactRecord,
+  AutopilotControllerRecord,
+  AutopilotMode,
   AgentHostingSummary,
   ConfirmSessionPlanRequest,
   ConfirmDagProposalRequest,
@@ -207,6 +379,7 @@ import type {
   SessionInterventionStatus,
   SessionRecord,
   SessionWorkspaceDetailResponse,
+  SupervisionAlertRecord,
   SessionWorkspaceStreamEvent,
   SessionMessageRecord,
   SupersedeDagProposalRequest,
@@ -214,6 +387,7 @@ import type {
   UpdateDagProposalAssignmentsRequest,
   UpdateTemplateRequest,
   UpsertAgentProfileRequest,
+  UpsertProviderConnectionRequest,
   UpsertOrchestratorProfileRequest,
   UpsertSkillRequest,
   WorkflowEdge,
@@ -222,14 +396,21 @@ import type {
 } from "./types.js";
 import { generateNodeRunId, isPlainObject, nowIso, slugify } from "./utils.js";
 import {
-  buildMissionWorkspaceProjection,
   MISSION_WORKSPACE_CONTRACT_VERSION,
   type MissionWorkspaceProjection,
 } from "./mission-workspace.js";
+import {
+  getMissionMaterializerCheckpoint,
+  synchronizeAndMaterializeMission,
+  verifyMissionMaterialization,
+  type MissionMaterializerSource,
+} from "./mission-materializer.js";
 import { buildRouteCompareSummary } from "./route-compare.js";
 import { buildRuntimeGraphSummary } from "./runtime-graph.js";
 import { buildRuntimeRunProjection } from "./runtime/runtime-run-projection.js";
 import { listNodeHandoffRecords } from "./runtime/node-handoff-store.js";
+import { listWorkerLeaseRecords } from "./runtime/worker-lease-store.js";
+import { runWorkspaceHostPath } from "./runtime/run-workspace.js";
 import type { NodeProvisioner } from "./node-provisioner.js";
 import {
   buildRuntimeRecoveryView,
@@ -270,6 +451,55 @@ function getSingleParam(value: unknown): string | null {
     return typeof first === "string" ? first || null : null;
   }
   return typeof value === "string" ? value || null : null;
+}
+
+function runtimeArtifactRelativePath(storageUri: string): string | null {
+  if (!storageUri.startsWith("workspace://")) return null;
+  const relativePath = storageUri.slice("workspace://".length).replaceAll("\\", "/");
+  const segments = relativePath.split("/").filter(Boolean);
+  if (
+    !segments.length ||
+    relativePath.includes("\0") ||
+    relativePath.startsWith("/") ||
+    /^[A-Za-z]:\//u.test(relativePath) ||
+    segments.some((segment) => segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+  return segments.join("/");
+}
+
+function resolveRuntimeArtifactPath(runId: string, artifact: ArtifactRecord): string | null {
+  const published = resolvePublishedRuntimeArtifactPath(runId, artifact);
+  if (published) return published;
+  const relativePath = runtimeArtifactRelativePath(artifact.storage_uri);
+  if (!relativePath) return null;
+  const leaseRoots = listWorkerLeaseRecords(runId)
+    .filter((lease) => !artifact.node_run_id || lease.node_run_id === artifact.node_run_id)
+    .map((lease) => lease.metadata?.workspace_host_path)
+    .filter((value): value is string => typeof value === "string" && !!value.trim());
+  const roots = [...new Set([...leaseRoots, runWorkspaceHostPath(runId)])];
+  for (const rootValue of roots) {
+    const root = path.resolve(rootValue);
+    if (!fs.existsSync(root)) continue;
+    const candidate = path.resolve(root, ...relativePath.split("/"));
+    const relativeToRoot = path.relative(root, candidate);
+    if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) continue;
+    try {
+      const realRoot = fs.realpathSync(root);
+      const realCandidate = fs.realpathSync(candidate);
+      const realRelative = path.relative(realRoot, realCandidate);
+      if (realRelative.startsWith("..") || path.isAbsolute(realRelative)) continue;
+      if (fs.statSync(realCandidate).isFile()) return realCandidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function runtimeArtifactDownloadUri(runId: string, artifactId: string): string {
+  return `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/download`;
 }
 
 function getPositiveNumberQueryParam(value: unknown): number | null {
@@ -581,6 +811,1011 @@ function getOptionalStringField(
   return { ok: true, value: trimmed || null };
 }
 
+const FILE_DELIVERABLE_ACTION_PATTERN =
+  /(?:\u751f\u6210|\u5bfc\u51fa|\u5bfc\u51fa\u6765|\u4e0b\u8f7d|\u4fdd\u5b58|\u521b\u5efa|\u5199\u6210|\u505a\u6210|create|generate|export|download|save|write)[\s\S]{0,160}(?:\u6587\u4ef6|\u6587\u6863|\u8868\u683c|\u5de5\u4f5c\u7c3f|\u7535\u5b50\u8868\u683c|\u4ee3\u7801|\u811a\u672c|\u914d\u7f6e|excel|spreadsheet|workbook|word|pdf|presentation|slides?|archive|source|code|script|config|file|\.[a-z0-9]{1,12}\b)|(?:\u6587\u4ef6|\u6587\u6863|\u8868\u683c|\u5de5\u4f5c\u7c3f|\u7535\u5b50\u8868\u683c|\u4ee3\u7801|\u811a\u672c|\u914d\u7f6e|excel|spreadsheet|workbook|word|pdf|presentation|slides?|archive|source|code|script|config|file|\.[a-z0-9]{1,12}\b)[\s\S]{0,160}(?:\u751f\u6210|\u5bfc\u51fa|\u4e0b\u8f7d|\u4fdd\u5b58|\u521b\u5efa|create|generate|export|download|save|write)/iu;
+const FILE_MUTATION_ACTION_PATTERN =
+  /(?:\u4fee\u6539|\u66f4\u65b0|\u7f16\u8f91|\u8c03\u6574|\u6539\u5199|\u91cd\u5199|\u8ffd\u52a0|\u65b0\u589e|\u589e\u52a0|\u589e\u8865|\u6269\u5145|\u6dfb\u52a0|\u52a0\u5165|\u52a0\u4e0a|\u52a0|\u8865\u4e0a|\u8865\u5165|\u63d2\u5165|\u5220\u9664|\u79fb\u9664|\u8865\u5145|modify|update|edit|revise|rewrite|append|add|insert|delete|remove)[\s\S]{0,120}(?:\u6587\u4ef6|\u6587\u6863|\u7248\u672c|\u5185\u5bb9|\u76ee\u5f55|\u7d22\u5f15|\u4ea7\u51fa\u7269|file|document|artifact|content|table of contents|index|\.md\b|\.txt\b|\.json\b|\.csv\b|\.html?\b)|(?:\u6587\u4ef6|\u6587\u6863|\u7248\u672c|\u5185\u5bb9|\u76ee\u5f55|\u7d22\u5f15|\u4ea7\u51fa\u7269|file|document|artifact|content|table of contents|index|\.md\b|\.txt\b|\.json\b|\.csv\b|\.html?\b)[\s\S]{0,120}(?:\u4fee\u6539|\u66f4\u65b0|\u7f16\u8f91|\u8c03\u6574|\u6539\u5199|\u91cd\u5199|\u8ffd\u52a0|\u65b0\u589e|\u589e\u52a0|\u589e\u8865|\u6269\u5145|\u6dfb\u52a0|\u52a0\u5165|\u52a0\u4e0a|\u52a0|\u8865\u4e0a|\u8865\u5165|\u63d2\u5165|\u5220\u9664|\u79fb\u9664|\u8865\u5145|modify|update|edit|revise|rewrite|append|add|insert|delete|remove)/iu;
+const FILE_MUTATION_NEGATION_PATTERN =
+  /(?:\u4e0d\u8981|\u522b|\u7981\u6b62|\u4e0d\u5f97|\u65e0\u9700|\u4e0d\u9700\u8981|do\s+not|don't|never|avoid|without)\s*(?:\u4fee\u6539|\u66f4\u65b0|\u7f16\u8f91|\u8c03\u6574|\u6539\u5199|\u91cd\u5199|\u8ffd\u52a0|\u65b0\u589e|\u589e\u52a0|\u589e\u8865|\u6269\u5145|\u6dfb\u52a0|\u52a0\u5165|\u52a0\u4e0a|\u52a0|\u8865\u4e0a|\u8865\u5165|\u63d2\u5165|\u5220\u9664|\u79fb\u9664|\u8865\u5145|modify(?:ing)?|update|edit|revise|rewrite|append|add|insert|delete|remove)/iu;
+const FILE_TRANSLATION_ACTION_PATTERN =
+  /(?:\u7ffb\u8bd1|\u8bd1\u6210|\u7ffb\u6210|translate|translation)/iu;
+const FILE_TRANSLATION_REQUEST_PATTERN =
+  /(?:\u7ffb\u8bd1|\u4e2d\u6587|\u82f1\u6587|\u82f1\u8bed|\u6cd5\u6587|\u6cd5\u8bed|\u5fb7\u6587|\u5fb7\u8bed|\u65e5\u6587|\u65e5\u8bed|\u97e9\u6587|\u97e9\u8bed|\u897f\u73ed\u7259\u6587|\u8461\u8404\u7259\u6587|\u4fc4\u6587|\u610f\u5927\u5229\u6587|translate|translation|chinese|english|french|german|japanese|korean|spanish|portuguese|russian|italian)/iu;
+const FILE_SEMANTIC_REFERENCE_PATTERN =
+  /(?:\u6587\u4ef6|\u6587\u6863|\u7248\u672c|\u76ee\u5f55|\u7d22\u5f15|\u4ea7\u51fa\u7269|\u8868\u683c|\u5de5\u4f5c\u7c3f|\u7535\u5b50\u8868\u683c|\u4ee3\u7801|\u811a\u672c|\u914d\u7f6e|excel|spreadsheet|workbook|word|pdf|presentation|slides?|archive|source|code|script|config|file|document|artifact|table of contents|index|\.[a-z0-9]{1,12}\b)/iu;
+const FILE_EXISTING_SOURCE_REFERENCE_PATTERN =
+  /(?:\u6839\u636e|\u57fa\u4e8e|\u4ece|\u628a|\u5c06|\u9488\u5bf9|\u9644\u4ef6|\u4e0a\u4f20|(?:\u8fd9\u4e2a|\u90a3\u4e2a|\u8be5|\u4e2d\u6587\u7684|\u82f1\u6587\u7684|\u6cd5\u6587\u7684|\u6cd5\u8bed\u7684)(?:\u6587\u4ef6|\u6587\u6863)|\u6587\u6863\u5185\u5bb9|based\s+on|from\s+(?:the\s+)?(?:file|document|attachment)|using\s+(?:the\s+)?(?:file|document|attachment)|attached|uploaded|source\s+(?:file|document))/iu;
+const REQUESTED_OUTPUT_FILE_PATTERN =
+  /([a-z0-9][a-z0-9._-]{0,160}\.[a-z0-9]{1,12})/iu;
+const FILE_ENVELOPE_PATTERN =
+  /<my-mate-file(?:\s+name=(?:"([^"]+)"|'([^']+)'))?\s*>([\s\S]*?)<\/my-mate-file>/iu;
+const SPREADSHEET_OUTPUT_PATTERN = /(?:\bexcel\b|\bspreadsheet\b|\bworkbook\b|\u8868\u683c|\u5de5\u4f5c\u7c3f|\u7535\u5b50\u8868\u683c|\.xlsx?\b)/iu;
+const WORKER_ARTIFACT_OUTPUT_PATTERN = /(?:\bpdf\b|\bword\b|\bdocx?\b|\bpptx?\b|\bpresentation\b|\bslides?\b|\bepub\b|\bimage\b|\baudio\b|\bvideo\b|\barchive\b|\bzip\b|\u6f14\u793a\u6587\u7a3f|\u5e7b\u706f\u7247|\u56fe\u7247|\u97f3\u9891|\u89c6\u9891|\u538b\u7f29\u5305|\.(?:pdf|docx?|pptx?|epub|png|jpe?g|gif|webp|mp3|wav|mp4|mov|zip|tar|gz|7z|rar)\b)/iu;
+const DIRECT_TEXT_OUTPUT_EXTENSIONS = new Set([
+  "md", "markdown", "txt", "log", "json", "jsonl", "xml", "yaml", "yml", "toml", "csv", "tsv",
+  "html", "htm", "css", "scss", "less", "properties", "ini", "cfg", "conf", "env",
+  "py", "pyi", "java", "kt", "kts", "js", "mjs", "cjs", "ts", "tsx", "jsx", "c", "h", "cpp", "cc",
+  "hpp", "cs", "go", "rs", "rb", "php", "sh", "bash", "zsh", "ps1", "bat", "sql", "graphql", "proto",
+  "gradle", "dockerfile", "makefile", "cmake", "tf", "hcl", "tex", "rst", "diff", "patch",
+]);
+
+const CONVERSATION_TARGET_LANGUAGES = [
+  { pattern: /(?:\u6cd5\u6587|\u6cd5\u8bed|french|fran[c\u00e7]ais)/iu, label: "French", code: "fr" },
+  { pattern: /(?:\u4e2d\u6587|\u6c49\u8bed|chinese)/iu, label: "Simplified Chinese", code: "zh" },
+  { pattern: /(?:\u82f1\u6587|\u82f1\u8bed|english)/iu, label: "English", code: "en" },
+  { pattern: /(?:\u5fb7\u6587|\u5fb7\u8bed|german|deutsch)/iu, label: "German", code: "de" },
+  { pattern: /(?:\u65e5\u6587|\u65e5\u8bed|japanese)/iu, label: "Japanese", code: "ja" },
+  { pattern: /(?:\u97e9\u6587|\u97e9\u8bed|korean)/iu, label: "Korean", code: "ko" },
+  { pattern: /(?:\u897f\u73ed\u7259\u6587|spanish|espa[n\u00f1]ol)/iu, label: "Spanish", code: "es" },
+  { pattern: /(?:\u8461\u8404\u7259\u6587|portuguese|portugu[e\u00ea]s)/iu, label: "Portuguese", code: "pt" },
+  { pattern: /(?:\u4fc4\u6587|\u4fc4\u8bed|russian)/iu, label: "Russian", code: "ru" },
+  { pattern: /(?:\u610f\u5927\u5229\u6587|italian|italiano)/iu, label: "Italian", code: "it" },
+] as const;
+
+interface ConversationFileDeliverableRequest {
+  operation: "translate" | "modify" | "transform";
+  outputFormat: "text" | "xlsx" | "worker";
+  sourceAttachmentId: string;
+  sourceName: string;
+  sourceContentLength: number;
+  sourceSelectionSource: "explicit" | "named" | "language" | "single_candidate" | "model" | "none";
+  sourceSelectionConfidence: number;
+  sourceSelectionReason: string;
+  outputName: string;
+  mimeType: string;
+  targetLanguage: string | null;
+  userInstruction: string;
+}
+
+interface ConversationFileDeliverableIntent {
+  operation: "translate" | "modify" | "transform";
+  outputFormat: "text" | "xlsx" | "worker";
+  requestedOutputName: string | null;
+  targetLanguage: (typeof CONVERSATION_TARGET_LANGUAGES)[number] | null;
+  userInstruction: string;
+}
+
+type ConversationFileAttachment = ReturnType<typeof listSessionAttachments>[number];
+
+type ConversationFileDeliverableResolution =
+  | { kind: "request"; request: ConversationFileDeliverableRequest }
+  | {
+      kind: "clarification";
+      message: string;
+      candidateArtifactIds: string[];
+    };
+
+interface ParsedConversationFile {
+  name: string;
+  content: string;
+  spreadsheet: ParsedSpreadsheet | null;
+}
+
+type SpreadsheetCell = string | number | boolean | null;
+
+interface ParsedSpreadsheet {
+  sheetName: string;
+  columns: string[];
+  rows: SpreadsheetCell[][];
+}
+
+function sanitizeGeneratedFileName(value: string, fallback: string): string {
+  const leaf = value.replace(/\\/gu, "/").split("/").filter(Boolean).pop() || "";
+  const safe = leaf
+    .replace(/[<>:"|?*\u0000-\u001f]/gu, "-")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/^\.+/gu, "");
+  return (safe || fallback).slice(0, 180);
+}
+
+function generatedTranslationName(sourceName: string, languageCode = "translated"): string {
+  const safeSource = sanitizeGeneratedFileName(sourceName, "translated-output.md");
+  const dot = safeSource.lastIndexOf(".");
+  const base = dot > 0 ? safeSource.slice(0, dot) : safeSource;
+  const extension = dot > 0 ? safeSource.slice(dot) : ".md";
+  const translatedBase = /(?:[-_.](?:zh|cn|en|eng|english|fr|de|ja|ko|es|pt|ru|it))$/iu.test(base)
+    ? base.replace(/(?:[-_.](?:zh|cn|en|eng|english|fr|de|ja|ko|es|pt|ru|it))$/iu, `-${languageCode}`)
+    : `${base}-${languageCode}`;
+  return `${translatedBase}${extension}`;
+}
+
+function generatedSpreadsheetName(sourceName: string): string {
+  const safeSource = sanitizeGeneratedFileName(sourceName, "generated-output.xlsx");
+  const dot = safeSource.lastIndexOf(".");
+  const base = dot > 0 ? safeSource.slice(0, dot) : safeSource;
+  return `${base}-summary.xlsx`;
+}
+
+function requestedArtifactExtension(userText: string, requestedOutputName: string | null): string | null {
+  const explicit = requestedOutputName?.split(".").pop()?.toLocaleLowerCase();
+  if (explicit) return explicit;
+  const aliases: Array<[RegExp, string]> = [
+    [/(?:\bpdf\b)/iu, "pdf"],
+    [/(?:\bword\b|\bdocx?\b|word\s*\u6587\u6863|docx?\s*\u6587\u6863)/iu, "docx"],
+    [/(?:\bpptx?\b|\bpresentation\b|\bslides?\b|\u6f14\u793a\u6587\u7a3f|\u5e7b\u706f\u7247)/iu, "pptx"],
+    [/(?:\bexcel\b|\bspreadsheet\b|\bworkbook\b|\u8868\u683c|\u5de5\u4f5c\u7c3f)/iu, "xlsx"],
+    [/(?:\bpython\b|python\s*\u6587\u4ef6|\u811a\u672c)/iu, "py"],
+    [/(?:\bjava\b|java\s*\u6587\u4ef6)/iu, "java"],
+    [/(?:\bproperties\b)/iu, "properties"],
+    [/(?:\bxml\b)/iu, "xml"],
+    [/(?:\bjson\b)/iu, "json"],
+    [/(?:\byaml\b|\byml\b)/iu, "yaml"],
+    [/(?:\bhtml\b)/iu, "html"],
+    [/(?:\bmarkdown\b|\bmd\b)/iu, "md"],
+  ];
+  return aliases.find(([pattern]) => pattern.test(userText))?.[1] || null;
+}
+
+function generatedDerivedArtifactName(sourceName: string, extension: string): string {
+  const safeSource = sanitizeGeneratedFileName(sourceName, `generated-output.${extension}`);
+  const dot = safeSource.lastIndexOf(".");
+  const base = dot > 0 ? safeSource.slice(0, dot) : safeSource;
+  return `${base}-output.${extension}`;
+}
+
+function generatedFileMimeType(fileName: string): string {
+  const extension = fileName.toLowerCase().split(".").pop() || "";
+  if (extension === "md" || extension === "markdown") return "text/markdown; charset=utf-8";
+  if (["txt", "log", "properties", "ini", "cfg", "conf", "env"].includes(extension)) return "text/plain; charset=utf-8";
+  if (["py", "pyi", "java", "kt", "kts", "js", "mjs", "cjs", "ts", "tsx", "jsx", "c", "h", "cpp", "cc", "hpp", "cs", "go", "rs", "rb", "php", "sh", "bash", "zsh", "ps1", "bat", "sql", "graphql", "proto", "gradle"].includes(extension)) return "text/plain; charset=utf-8";
+  if (extension === "json") return "application/json; charset=utf-8";
+  if (extension === "xml") return "application/xml; charset=utf-8";
+  if (extension === "yaml" || extension === "yml") return "application/yaml; charset=utf-8";
+  if (extension === "csv") return "text/csv; charset=utf-8";
+  if (extension === "xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (extension === "xls") return "application/vnd.ms-excel";
+  if (extension === "docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (extension === "doc") return "application/msword";
+  if (extension === "pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  if (extension === "ppt") return "application/vnd.ms-powerpoint";
+  if (extension === "pdf") return "application/pdf";
+  if (extension === "epub") return "application/epub+zip";
+  if (extension === "zip") return "application/zip";
+  if (extension === "png") return "image/png";
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "gif") return "image/gif";
+  if (extension === "webp") return "image/webp";
+  if (extension === "mp3") return "audio/mpeg";
+  if (extension === "wav") return "audio/wav";
+  if (extension === "mp4") return "video/mp4";
+  if (extension === "html" || extension === "htm") return "text/html; charset=utf-8";
+  return "application/octet-stream";
+}
+
+function generatedArtifactLanguageCode(
+  attachment: ReturnType<typeof listSessionAttachments>[number],
+): string | null {
+  const metadataCode = typeof attachment.metadata?.target_language_code === "string"
+    ? attachment.metadata.target_language_code.trim().toLocaleLowerCase()
+    : "";
+  if (metadataCode) return metadataCode;
+  const leaf = normalizeGeneratedArtifactName(attachment.name);
+  const dot = leaf.lastIndexOf(".");
+  const base = dot > 0 ? leaf.slice(0, dot) : leaf;
+  const aliases: Array<{ code: string; values: string[] }> = [
+    { code: "zh", values: ["zh", "cn", "chinese"] },
+    { code: "en", values: ["en", "eng", "english"] },
+    { code: "fr", values: ["fr", "fra", "french"] },
+    { code: "de", values: ["de", "deu", "german"] },
+    { code: "ja", values: ["ja", "jp", "japanese"] },
+    { code: "ko", values: ["ko", "kr", "korean"] },
+    { code: "es", values: ["es", "spa", "spanish"] },
+    { code: "pt", values: ["pt", "por", "portuguese"] },
+    { code: "ru", values: ["ru", "rus", "russian"] },
+    { code: "it", values: ["it", "ita", "italian"] },
+  ];
+  return aliases.find(({ values }) =>
+    values.some((value) => base === value || base.endsWith(`-${value}`) || base.endsWith(`_${value}`) || base.endsWith(`.${value}`)),
+  )?.code || null;
+}
+
+function detectConversationFileDeliverableIntent(
+  userText: string,
+): ConversationFileDeliverableIntent | null {
+  const requestedOutputName = REQUESTED_OUTPUT_FILE_PATTERN.exec(userText)?.[1] || null;
+  const requestedExtension = requestedArtifactExtension(userText, requestedOutputName);
+  const spreadsheetRequested =
+    requestedExtension === "xlsx" || requestedExtension === "xls" || SPREADSHEET_OUTPUT_PATTERN.test(userText);
+  const workerArtifactRequested = !spreadsheetRequested && (
+    (!!requestedExtension && !DIRECT_TEXT_OUTPUT_EXTENSIONS.has(requestedExtension)) ||
+    WORKER_ARTIFACT_OUTPUT_PATTERN.test(userText)
+  );
+  const mentionedLanguage = CONVERSATION_TARGET_LANGUAGES.find((language) => language.pattern.test(userText)) || null;
+  const mutationRequested =
+    FILE_MUTATION_ACTION_PATTERN.test(userText) && !FILE_MUTATION_NEGATION_PATTERN.test(userText);
+  const translationRequested = FILE_TRANSLATION_ACTION_PATTERN.test(userText);
+  const deliverableRequested = FILE_DELIVERABLE_ACTION_PATTERN.test(userText);
+  if (!mutationRequested && !deliverableRequested) return null;
+  if (
+    !mutationRequested &&
+    !translationRequested &&
+    !FILE_TRANSLATION_REQUEST_PATTERN.test(userText) &&
+    !requestedOutputName &&
+    !spreadsheetRequested &&
+    !workerArtifactRequested
+  ) return null;
+  const operation = translationRequested || (!mutationRequested && !spreadsheetRequested && mentionedLanguage)
+    ? "translate"
+    : mutationRequested
+      ? "modify"
+      : "transform";
+  const targetLanguage = operation === "translate" ? mentionedLanguage : null;
+  return {
+    operation,
+    outputFormat: workerArtifactRequested ? "worker" : spreadsheetRequested ? "xlsx" : "text",
+    requestedOutputName,
+    targetLanguage,
+    userInstruction: userText,
+  };
+}
+
+function conversationFileContent(attachment: ConversationFileAttachment): string {
+  return String(
+    attachment.metadata.generated_text_content ||
+      attachment.metadata.desktop_text_content ||
+      attachment.metadata.uploaded_text_content ||
+      "",
+  );
+}
+
+function conversationFileCandidates(sessionId: string): ConversationFileAttachment[] {
+  const latestByName = new Map<string, ConversationFileAttachment>();
+  for (const attachment of listSessionAttachments(sessionId)) {
+    if (!conversationFileContent(attachment).trim()) continue;
+    latestByName.set(normalizeGeneratedArtifactName(attachment.name), attachment);
+  }
+  return [...latestByName.values()];
+}
+
+function buildConversationFileDeliverableRequest(input: {
+  intent: ConversationFileDeliverableIntent;
+  attachment: ConversationFileAttachment;
+  selectionSource: ConversationFileDeliverableRequest["sourceSelectionSource"];
+  selectionConfidence: number;
+  selectionReason: string;
+}): ConversationFileDeliverableRequest {
+  const { intent, attachment } = input;
+  const sourceContent = conversationFileContent(attachment);
+  const requestedExtension = requestedArtifactExtension(intent.userInstruction, intent.requestedOutputName);
+  const defaultOutputName = intent.outputFormat === "xlsx"
+    ? generatedSpreadsheetName(attachment.name)
+    : intent.outputFormat === "worker"
+      ? generatedDerivedArtifactName(attachment.name, requestedExtension || "bin")
+      : intent.operation === "transform" && requestedExtension
+        ? generatedDerivedArtifactName(attachment.name, requestedExtension)
+      : intent.operation === "modify"
+        ? attachment.name
+        : generatedTranslationName(attachment.name, intent.targetLanguage?.code || "translated");
+  const requestedOutputName = intent.outputFormat === "xlsx" && intent.requestedOutputName?.toLowerCase().endsWith(".xls")
+    ? `${intent.requestedOutputName.slice(0, -4)}.xlsx`
+    : intent.requestedOutputName;
+  const outputName = sanitizeGeneratedFileName(
+    requestedOutputName || defaultOutputName,
+    defaultOutputName,
+  );
+  return {
+    operation: intent.operation,
+    outputFormat: intent.outputFormat,
+    sourceAttachmentId: attachment.attachment_id,
+    sourceName: attachment.name,
+    sourceContentLength: sourceContent.length,
+    sourceSelectionSource: input.selectionSource,
+    sourceSelectionConfidence: input.selectionConfidence,
+    sourceSelectionReason: input.selectionReason,
+    outputName,
+    mimeType: generatedFileMimeType(outputName),
+    targetLanguage: intent.targetLanguage?.label || null,
+    userInstruction: intent.userInstruction,
+  };
+}
+
+function buildConversationNewFileDeliverableRequest(
+  intent: ConversationFileDeliverableIntent,
+): ConversationFileDeliverableRequest {
+  const requestedExtension = requestedArtifactExtension(intent.userInstruction, intent.requestedOutputName);
+  const fallbackExtension = intent.outputFormat === "xlsx"
+    ? "xlsx"
+    : intent.outputFormat === "worker"
+      ? requestedExtension || "bin"
+      : requestedExtension || "md";
+  const fallbackName = `generated-output.${fallbackExtension}`;
+  const outputName = sanitizeGeneratedFileName(intent.requestedOutputName || fallbackName, fallbackName);
+  return {
+    operation: intent.operation,
+    outputFormat: intent.outputFormat,
+    sourceAttachmentId: "",
+    sourceName: "",
+    sourceContentLength: 0,
+    sourceSelectionSource: "none",
+    sourceSelectionConfidence: 1,
+    sourceSelectionReason: "The user requested a new file without an existing source artifact.",
+    outputName,
+    mimeType: generatedFileMimeType(outputName),
+    targetLanguage: intent.targetLanguage?.label || null,
+    userInstruction: intent.userInstruction,
+  };
+}
+
+function conversationFileClarification(
+  userText: string,
+  candidates: ConversationFileAttachment[],
+  reason: "missing" | "ambiguous" | "invalid_explicit",
+): ConversationFileDeliverableResolution {
+  const usesChinese = /[\u3400-\u9fff]/u.test(userText);
+  const names = candidates.map((candidate) => candidate.name);
+  const candidateText = names.length ? names.join(usesChinese ? "、" : ", ") : "";
+  const message = reason === "missing"
+    ? usesChinese
+      ? "当前会话里没有可读取的源文件。请先上传文件，或从 Workboard 选择一个产出物作为修改目标。"
+      : "No readable source file is available in this Session. Attach a file or select a Workboard output as the edit target."
+    : reason === "invalid_explicit"
+      ? usesChinese
+        ? `你选择的修改目标已经不可用。请重新从 Workboard 选择文件${candidateText ? `；当前可选：${candidateText}` : ""}。`
+        : `The selected edit target is no longer available. Select it again from Workboard${candidateText ? `; available files: ${candidateText}` : ""}.`
+      : usesChinese
+        ? `我无法唯一确定要修改哪个文件。请从 Workboard 明确选择一个目标文件${candidateText ? `；当前候选：${candidateText}` : ""}。`
+        : `I could not determine a unique file to modify. Select an explicit Workboard target${candidateText ? `; candidates: ${candidateText}` : ""}.`;
+  return {
+    kind: "clarification",
+    message,
+    candidateArtifactIds: candidates.map((candidate) => candidate.attachment_id),
+  };
+}
+
+function parseConversationFileTargetSelection(value: string): {
+  sourceAttachmentId: string;
+  confidence: number;
+  reason: string;
+} | null {
+  const match = /\{[\s\S]*\}/u.exec(value);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]) as unknown;
+    if (!isPlainObject(parsed) || typeof parsed.source_attachment_id !== "string") return null;
+    const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
+    return {
+      sourceAttachmentId: parsed.source_attachment_id.trim(),
+      confidence: Math.max(0, Math.min(1, confidence)),
+      reason: typeof parsed.reason === "string" ? parsed.reason.trim() : "Selected by the conversation model.",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseConversationFileOperationIntent(
+  value: string,
+  userText: string,
+): ConversationFileDeliverableIntent | null {
+  const match = /\{[\s\S]*\}/u.exec(value);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]) as unknown;
+    if (!isPlainObject(parsed)) return null;
+    const operation = parsed.operation;
+    const confidence = typeof parsed.confidence === "number"
+      ? Math.max(0, Math.min(1, parsed.confidence))
+      : 0;
+    if ((operation !== "modify" && operation !== "translate" && operation !== "transform") || confidence < 0.7) return null;
+    const targetLanguageCode = typeof parsed.target_language_code === "string"
+      ? parsed.target_language_code.trim().toLocaleLowerCase()
+      : "";
+    const targetLanguage = operation === "translate"
+      ? CONVERSATION_TARGET_LANGUAGES.find((language) => language.code === targetLanguageCode) ||
+        CONVERSATION_TARGET_LANGUAGES.find((language) => language.pattern.test(userText)) ||
+        null
+      : null;
+    const requestedOutputNameValue = typeof parsed.requested_output_name === "string"
+      ? parsed.requested_output_name.trim()
+      : "";
+    const requestedOutputName = requestedOutputNameValue
+      ? REQUESTED_OUTPUT_FILE_PATTERN.exec(requestedOutputNameValue)?.[1] || null
+      : REQUESTED_OUTPUT_FILE_PATTERN.exec(userText)?.[1] || null;
+    const requestedExtension = requestedArtifactExtension(userText, requestedOutputName);
+    const outputFormat = parsed.output_format === "worker" || (
+        parsed.output_format !== "text" &&
+        parsed.output_format !== "xlsx" &&
+        (
+          (!!requestedExtension && !DIRECT_TEXT_OUTPUT_EXTENSIONS.has(requestedExtension)) ||
+          WORKER_ARTIFACT_OUTPUT_PATTERN.test(userText)
+        )
+      )
+      ? "worker"
+      : parsed.output_format === "xlsx" ||
+          SPREADSHEET_OUTPUT_PATTERN.test(userText) ||
+          /\.xlsx?$/iu.test(requestedOutputName || "")
+        ? "xlsx"
+        : "text";
+    return {
+      operation,
+      outputFormat,
+      requestedOutputName,
+      targetLanguage,
+      userInstruction: userText,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function inferConversationFileDeliverableIntent(input: {
+  session: SessionRecord;
+  sessionId: string;
+  userText: string;
+  candidates: ConversationFileAttachment[];
+  explicitTargetArtifactId?: string | null;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<ConversationFileDeliverableIntent | null> {
+  const candidateSummary = input.candidates.map((candidate) => ({
+    source_attachment_id: candidate.attachment_id,
+    name: candidate.name,
+    mime_type: candidate.mime_type,
+    kind: candidate.kind,
+    summary: candidate.summary,
+    source: candidate.metadata?.source || null,
+    target_language: candidate.metadata?.target_language || null,
+  }));
+  try {
+    const reply = await generateProviderConversationReply({
+      session: input.session,
+      messages: listSessionMessages(input.sessionId),
+      fetchImpl: input.fetchImpl,
+      signal: input.signal,
+      attachmentIds: [],
+      responseContract: [
+        "FILE_OPERATION_CLASSIFICATION: Classify the user's latest instruction before any file work.",
+        "Do not modify, translate, summarize, or generate file content in this step.",
+        `Latest instruction: ${input.userText}`,
+        `Explicit target artifact id: ${input.explicitTargetArtifactId?.trim() || "none"}`,
+        `Available files: ${JSON.stringify(candidateSummary)}`,
+        "Return JSON only with this exact shape:",
+        '{"operation":"modify|translate|transform|none","output_format":"text|xlsx|worker","target_language_code":"fr or null","requested_output_name":"name.ext or null","confidence":0.0,"reason":"brief reason"}',
+        "Choose modify when the user asks to add, remove, revise, enrich, restructure, or otherwise change an existing file.",
+        "Choose translate only when the user requests a language transformation of a source file.",
+        "Choose transform when the user asks to derive a new structured output, such as an Excel workbook, from an existing file.",
+        "Use output_format worker for PDF, Word, PowerPoint, images, audio, video, archives, and other binary deliverables.",
+        "Choose none for questions, explanations, previews, or requests that do not require creating a new artifact version.",
+      ].join("\n"),
+    });
+    return parseConversationFileOperationIntent(reply.text, input.userText);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveConversationFileDeliverable(input: {
+  session: SessionRecord;
+  sessionId: string;
+  userText: string;
+  explicitTargetArtifactId?: string | null;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<ConversationFileDeliverableResolution | null> {
+  const allReadableAttachments = listSessionAttachments(input.sessionId).filter(
+    (attachment) => !!conversationFileContent(attachment).trim(),
+  );
+  let candidates = conversationFileCandidates(input.sessionId);
+  const explicitTargetArtifactId = input.explicitTargetArtifactId?.trim() || "";
+  let intent = detectConversationFileDeliverableIntent(input.userText);
+  if (!intent) {
+    if (
+      FILE_MUTATION_NEGATION_PATTERN.test(input.userText) &&
+      !FILE_TRANSLATION_ACTION_PATTERN.test(input.userText) &&
+      !FILE_DELIVERABLE_ACTION_PATTERN.test(input.userText)
+    ) return null;
+    if (!explicitTargetArtifactId && !FILE_SEMANTIC_REFERENCE_PATTERN.test(input.userText)) return null;
+    intent = await inferConversationFileDeliverableIntent({
+      session: input.session,
+      sessionId: input.sessionId,
+      userText: input.userText,
+      candidates,
+      explicitTargetArtifactId,
+      fetchImpl: input.fetchImpl,
+      signal: input.signal,
+    });
+    if (!intent) return null;
+  }
+  if (
+    intent.operation === "transform" &&
+    !explicitTargetArtifactId &&
+    !FILE_EXISTING_SOURCE_REFERENCE_PATTERN.test(input.userText) &&
+    !candidates.some((candidate) => input.userText.toLocaleLowerCase().includes(candidate.name.toLocaleLowerCase()))
+  ) {
+    return { kind: "request", request: buildConversationNewFileDeliverableRequest(intent) };
+  }
+  if (!candidates.length) {
+    return intent.operation === "transform"
+      ? { kind: "request", request: buildConversationNewFileDeliverableRequest(intent) }
+      : conversationFileClarification(input.userText, [], "missing");
+  }
+
+  if (explicitTargetArtifactId) {
+    const attachment = allReadableAttachments.find(
+      (candidate) => candidate.attachment_id === explicitTargetArtifactId,
+    );
+    if (!attachment) return conversationFileClarification(input.userText, candidates, "invalid_explicit");
+    return {
+      kind: "request",
+      request: buildConversationFileDeliverableRequest({
+        intent,
+        attachment,
+        selectionSource: "explicit",
+        selectionConfidence: 1,
+        selectionReason: "The user explicitly selected this Workboard artifact.",
+      }),
+    };
+  }
+
+  const normalizedOutputName = intent.requestedOutputName
+    ? normalizeGeneratedArtifactName(intent.requestedOutputName)
+    : "";
+  if (intent.operation === "translate" && normalizedOutputName) {
+    candidates = candidates.filter(
+      (candidate) => normalizeGeneratedArtifactName(candidate.name) !== normalizedOutputName,
+    );
+  }
+  if (!candidates.length) return conversationFileClarification(input.userText, [], "missing");
+
+  const explicitlyNamedSource = [...candidates]
+    .reverse()
+    .find(
+      (item) =>
+        input.userText.toLocaleLowerCase().includes(item.name.toLocaleLowerCase()),
+    );
+  if (explicitlyNamedSource) {
+    return {
+      kind: "request",
+      request: buildConversationFileDeliverableRequest({
+        intent,
+        attachment: explicitlyNamedSource,
+        selectionSource: "named",
+        selectionConfidence: 1,
+        selectionReason: "The user named the source file in the instruction.",
+      }),
+    };
+  }
+
+  const mentionedSourceLanguage = intent.operation !== "translate"
+    ? CONVERSATION_TARGET_LANGUAGES.find((language) => language.pattern.test(input.userText)) || null
+    : null;
+  const languageMatches = mentionedSourceLanguage
+    ? candidates.filter((candidate) => generatedArtifactLanguageCode(candidate) === mentionedSourceLanguage.code)
+    : [];
+  if (languageMatches.length === 1) {
+    return {
+      kind: "request",
+      request: buildConversationFileDeliverableRequest({
+        intent,
+        attachment: languageMatches[0]!,
+        selectionSource: "language",
+        selectionConfidence: 0.98,
+        selectionReason: `The requested source language uniquely matched ${languageMatches[0]!.name}.`,
+      }),
+    };
+  }
+  if (languageMatches.length > 1) candidates = languageMatches;
+
+  if (candidates.length === 1) {
+    return {
+      kind: "request",
+      request: buildConversationFileDeliverableRequest({
+        intent,
+        attachment: candidates[0]!,
+        selectionSource: "single_candidate",
+        selectionConfidence: 0.96,
+        selectionReason: "Only one readable source file was available.",
+      }),
+    };
+  }
+
+  const generatedCandidates = candidates.filter(
+    (candidate) => candidate.metadata?.source === "conversation_generated_output",
+  );
+  if (generatedCandidates.length === 1) {
+    return {
+      kind: "request",
+      request: buildConversationFileDeliverableRequest({
+        intent,
+        attachment: generatedCandidates[0]!,
+        selectionSource: "single_candidate",
+        selectionConfidence: 0.9,
+        selectionReason: "A single server-generated artifact was available among the source files.",
+      }),
+    };
+  }
+
+  const candidateSummary = candidates.map((candidate) => ({
+    source_attachment_id: candidate.attachment_id,
+    name: candidate.name,
+    mime_type: candidate.mime_type,
+    kind: candidate.kind,
+    source: candidate.metadata?.source || null,
+    target_language: candidate.metadata?.target_language || null,
+    created_at: candidate.created_at,
+  }));
+  try {
+    const selectionReply = await generateProviderConversationReply({
+      session: input.session,
+      messages: listSessionMessages(input.sessionId),
+      fetchImpl: input.fetchImpl,
+      signal: input.signal,
+      responseContract: [
+        "SOURCE_FILE_SELECTION: Select the single source file that the user's latest instruction refers to.",
+        "Do not modify, translate, summarize, or generate file content in this step.",
+        `Latest instruction: ${input.userText}`,
+        `Candidate files: ${JSON.stringify(candidateSummary)}`,
+        "Return JSON only with this exact shape:",
+        '{"source_attachment_id":"candidate id","confidence":0.0,"reason":"brief reason"}',
+        "Use confidence below 0.70 when the instruction does not uniquely identify one candidate.",
+      ].join("\n"),
+      attachmentIds: [],
+    });
+    const selection = parseConversationFileTargetSelection(selectionReply.text);
+    const selected = selection
+      ? candidates.find((candidate) => candidate.attachment_id === selection.sourceAttachmentId)
+      : null;
+    if (selected && selection && selection.confidence >= 0.7) {
+      return {
+        kind: "request",
+        request: buildConversationFileDeliverableRequest({
+          intent,
+          attachment: selected,
+          selectionSource: "model",
+          selectionConfidence: selection.confidence,
+          selectionReason: selection.reason,
+        }),
+      };
+    }
+  } catch {
+    // The user can resolve an unavailable or low-confidence model decision explicitly in Workboard.
+  }
+  return conversationFileClarification(input.userText, candidates, "ambiguous");
+}
+
+function listSessionInputAttachments(sessionId: string) {
+  return listSessionAttachments(sessionId).filter(
+    (attachment) =>
+      attachment.kind !== "generated_output" &&
+      attachment.metadata?.source !== "conversation_generated_output",
+  );
+}
+
+function isConversationGeneratedArtifact(
+  attachment: ReturnType<typeof listSessionAttachments>[number],
+): boolean {
+  return (
+    attachment.kind === "generated_output" &&
+    attachment.metadata?.source === "conversation_generated_output" &&
+    typeof attachment.metadata?.generated_text_content === "string"
+  );
+}
+
+function normalizeGeneratedArtifactName(value: string): string {
+  return value.trim().replaceAll("\\", "/").split("/").pop()?.toLocaleLowerCase() || "";
+}
+
+function listGeneratedArtifactVersions(sessionId: string, name: string) {
+  const normalizedName = normalizeGeneratedArtifactName(name);
+  return listSessionAttachments(sessionId).filter(
+    (attachment) =>
+      isConversationGeneratedArtifact(attachment) &&
+      normalizeGeneratedArtifactName(attachment.name) === normalizedName,
+  );
+}
+
+type GeneratedArtifactDiffLine = {
+  type: "context" | "added" | "removed";
+  text: string;
+  old_line: number | null;
+  new_line: number | null;
+};
+
+function buildGeneratedArtifactDiff(baseContent: string, targetContent: string): {
+  lines: GeneratedArtifactDiffLine[];
+  additions: number;
+  deletions: number;
+} {
+  const baseLines = baseContent.replaceAll("\r\n", "\n").split("\n");
+  const targetLines = targetContent.replaceAll("\r\n", "\n").split("\n");
+  const commonPrefix: GeneratedArtifactDiffLine[] = [];
+  let prefixLength = 0;
+  while (
+    prefixLength < baseLines.length &&
+    prefixLength < targetLines.length &&
+    baseLines[prefixLength] === targetLines[prefixLength]
+  ) {
+    commonPrefix.push({
+      type: "context",
+      text: baseLines[prefixLength] || "",
+      old_line: prefixLength + 1,
+      new_line: prefixLength + 1,
+    });
+    prefixLength += 1;
+  }
+
+  let baseSuffix = baseLines.length - 1;
+  let targetSuffix = targetLines.length - 1;
+  while (
+    baseSuffix >= prefixLength &&
+    targetSuffix >= prefixLength &&
+    baseLines[baseSuffix] === targetLines[targetSuffix]
+  ) {
+    baseSuffix -= 1;
+    targetSuffix -= 1;
+  }
+
+  const oldMiddle = baseLines.slice(prefixLength, baseSuffix + 1);
+  const newMiddle = targetLines.slice(prefixLength, targetSuffix + 1);
+  const cellCount = (oldMiddle.length + 1) * (newMiddle.length + 1);
+  const lines: GeneratedArtifactDiffLine[] = [...commonPrefix];
+  let additions = 0;
+  let deletions = 0;
+
+  if (cellCount <= 4_000_000) {
+    const table = Array.from({ length: oldMiddle.length + 1 }, () =>
+      new Uint32Array(newMiddle.length + 1),
+    );
+    for (let oldIndex = oldMiddle.length - 1; oldIndex >= 0; oldIndex -= 1) {
+      for (let newIndex = newMiddle.length - 1; newIndex >= 0; newIndex -= 1) {
+        table[oldIndex]![newIndex] = oldMiddle[oldIndex] === newMiddle[newIndex]
+          ? table[oldIndex + 1]![newIndex + 1]! + 1
+          : Math.max(table[oldIndex + 1]![newIndex]!, table[oldIndex]![newIndex + 1]!);
+      }
+    }
+    let oldIndex = 0;
+    let newIndex = 0;
+    while (oldIndex < oldMiddle.length || newIndex < newMiddle.length) {
+      if (
+        oldIndex < oldMiddle.length &&
+        newIndex < newMiddle.length &&
+        oldMiddle[oldIndex] === newMiddle[newIndex]
+      ) {
+        lines.push({
+          type: "context",
+          text: oldMiddle[oldIndex] || "",
+          old_line: prefixLength + oldIndex + 1,
+          new_line: prefixLength + newIndex + 1,
+        });
+        oldIndex += 1;
+        newIndex += 1;
+      } else if (
+        newIndex < newMiddle.length &&
+        (oldIndex >= oldMiddle.length || table[oldIndex]![newIndex + 1]! >= table[oldIndex + 1]![newIndex]!)
+      ) {
+        lines.push({
+          type: "added",
+          text: newMiddle[newIndex] || "",
+          old_line: null,
+          new_line: prefixLength + newIndex + 1,
+        });
+        additions += 1;
+        newIndex += 1;
+      } else {
+        lines.push({
+          type: "removed",
+          text: oldMiddle[oldIndex] || "",
+          old_line: prefixLength + oldIndex + 1,
+          new_line: null,
+        });
+        deletions += 1;
+        oldIndex += 1;
+      }
+    }
+  } else {
+    for (let index = 0; index < oldMiddle.length; index += 1) {
+      lines.push({
+        type: "removed",
+        text: oldMiddle[index] || "",
+        old_line: prefixLength + index + 1,
+        new_line: null,
+      });
+      deletions += 1;
+    }
+    for (let index = 0; index < newMiddle.length; index += 1) {
+      lines.push({
+        type: "added",
+        text: newMiddle[index] || "",
+        old_line: null,
+        new_line: prefixLength + index + 1,
+      });
+      additions += 1;
+    }
+  }
+
+  const suffixLength = baseLines.length - baseSuffix - 1;
+  for (let index = 0; index < suffixLength; index += 1) {
+    lines.push({
+      type: "context",
+      text: baseLines[baseSuffix + index + 1] || "",
+      old_line: baseSuffix + index + 2,
+      new_line: targetSuffix + index + 2,
+    });
+  }
+  return { lines, additions, deletions };
+}
+
+function generatedArtifactPublicMetadata(
+  artifact: ReturnType<typeof listSessionAttachments>[number],
+  version: number,
+) {
+  return {
+    artifact_id: artifact.attachment_id,
+    session_id: artifact.session_id,
+    name: artifact.name,
+    storage_uri: artifact.storage_uri,
+    mime_type: artifact.mime_type,
+    size_bytes: artifact.size_bytes,
+    summary: artifact.summary,
+    created_at: artifact.created_at,
+    source_attachment_id:
+      typeof artifact.metadata?.source_attachment_id === "string"
+        ? artifact.metadata.source_attachment_id
+        : null,
+    source_selection_source:
+      typeof artifact.metadata?.source_selection_source === "string"
+        ? artifact.metadata.source_selection_source
+        : null,
+    source_selection_confidence:
+      typeof artifact.metadata?.source_selection_confidence === "number"
+        ? artifact.metadata.source_selection_confidence
+        : null,
+    version,
+  };
+}
+
+const SESSION_ARTIFACT_DOWNLOAD_CLAIM_PATTERN =
+  /(?:https?:\/\/[^\s)]+)?\/api\/sessions\/([^/\s)]+)\/artifacts\/([^/\s)]+)\/download/giu;
+
+function guardConversationArtifactClaims(sessionId: string, text: string): {
+  text: string;
+  rejected: boolean;
+  artifactIds: string[];
+} {
+  const claims = [...text.matchAll(SESSION_ARTIFACT_DOWNLOAD_CLAIM_PATTERN)];
+  if (!claims.length) return { text, rejected: false, artifactIds: [] };
+  const persistedArtifactIds = new Set(
+    listSessionAttachments(sessionId)
+      .filter(isConversationGeneratedArtifact)
+      .map((attachment) => attachment.attachment_id),
+  );
+  const invalidArtifactIds = claims.flatMap((claim) => {
+    const claimedSessionId = String(claim[1] || "");
+    const artifactId = String(claim[2] || "");
+    return claimedSessionId === sessionId && persistedArtifactIds.has(artifactId)
+      ? []
+      : [artifactId || "unknown"];
+  });
+  if (!invalidArtifactIds.length) return { text, rejected: false, artifactIds: [] };
+  const usesChinese = /[\u3400-\u9fff]/u.test(text);
+  return {
+    text: usesChinese
+      ? "模型声称已经生成文件，但服务端没有找到对应的真实产出物。本轮没有返回下载链接，请重新生成文件。"
+      : "The model claimed that a file was generated, but no matching server artifact exists. No download link was returned; regenerate the file.",
+    rejected: true,
+    artifactIds: [...new Set(invalidArtifactIds)],
+  };
+}
+
+function conversationFileResponseContract(
+  request: ConversationFileDeliverableRequest,
+  repairRound: number,
+): string {
+  const spreadsheetInstructions = request.outputFormat === "xlsx"
+    ? [
+        "The server will create the XLSX binary. You must return the workbook data as strict JSON inside the file envelope.",
+        'Use this exact JSON shape: {"sheet_name":"Sheet1","columns":["Column A","Column B"],"rows":[["value",1],["value",2]]}',
+        "Use only string, number, boolean, or null cell values. Keep every row aligned with the columns array.",
+        "Do not return Markdown tables, CSV, base64, XML, formulas, prose, or a placeholder.",
+      ]
+    : [];
+  return [
+    "This turn requires a real file deliverable, not an acknowledgement or promise.",
+    !request.sourceAttachmentId
+      ? `Create a complete new file according to the user's latest request: ${request.userInstruction}`
+      : request.operation === "modify"
+      ? `Modify the complete source file ${request.sourceName} according to the user's latest request: ${request.userInstruction}`
+      : `Transform the complete source file ${request.sourceName} according to the user's latest request: ${request.userInstruction}`,
+    `Output file name: ${request.outputName}.`,
+    request.targetLanguage ? `Target language: ${request.targetLanguage}.` : null,
+    !request.sourceAttachmentId
+      ? "Create the complete requested content now. Include all requested sections and valid syntax for the target file type."
+      : request.operation === "translate"
+      ? "Translate every section into the requested target language while preserving Markdown headings, tables, lists, links, Mermaid blocks, and code blocks."
+      : request.operation === "modify"
+        ? "Apply the requested edits to the full document while preserving every unaffected section, Markdown heading, table, list, link, Mermaid block, and code block."
+        : "Derive the requested structured output from the complete source document, covering all relevant sections rather than only the opening portion.",
+    ...spreadsheetInstructions,
+    "Do not summarize, omit later chapters, or say that you will do the work later.",
+    "Return exactly one UTF-8 file envelope with no prose or code fence outside it:",
+    `<my-mate-file name="${request.outputName}">`,
+    "COMPLETE FILE CONTENT",
+    "</my-mate-file>",
+    repairRound > 0
+      ? `This is semantic repair round ${repairRound}. A previous attempt did not return a complete file envelope.`
+      : null,
+  ].filter(Boolean).join("\n");
+}
+
+function conversationArtifactWorkerRequiredText(
+  request: ConversationFileDeliverableRequest,
+  scheduled = false,
+): string {
+  const usesChinese = /[\u3400-\u9fff]/u.test(request.userInstruction);
+  if (scheduled) {
+    return usesChinese
+      ? `已识别到需要生成真实二进制文件 ${request.outputName}，并已交给 Autopilot 安排沙盒 Artifact Worker 执行。只有 Worker 输出目录中存在通过校验的真实文件后，任务才会标记为完成并返回下载链接。`
+      : `This request requires a real binary artifact (${request.outputName}) and Autopilot has scheduled the sandboxed Artifact Worker. The task will complete only after a verified file exists in the Worker output directory.`;
+  }
+  return usesChinese
+    ? `已识别到需要生成真实二进制文件 ${request.outputName}。这类 PDF、Word、PowerPoint、媒体或压缩包必须交给沙盒 Artifact Worker 生成；本轮不会把“准备开始”当作完成，也不会伪造下载链接。`
+    : `This request requires a real binary artifact (${request.outputName}). PDF, Word, PowerPoint, media, and archive outputs must be produced by the sandboxed Artifact Worker. This turn will not treat an acknowledgement as completion or invent a download link.`;
+}
+
+function parseSpreadsheetPayload(value: string): ParsedSpreadsheet | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!isPlainObject(parsed) || !Array.isArray(parsed.columns) || !Array.isArray(parsed.rows)) return null;
+    const columns = parsed.columns.map((column) => String(column ?? "").trim());
+    if (!columns.length || columns.some((column) => !column)) return null;
+    const rows: SpreadsheetCell[][] = [];
+    for (const row of parsed.rows) {
+      if (!Array.isArray(row)) return null;
+      const cells = row.slice(0, columns.length).map((cell): SpreadsheetCell => {
+        if (cell === null || typeof cell === "string" || typeof cell === "number" || typeof cell === "boolean") {
+          return cell;
+        }
+        return JSON.stringify(cell);
+      });
+      while (cells.length < columns.length) cells.push(null);
+      rows.push(cells);
+    }
+    if (!rows.length) return null;
+    return {
+      sheetName: sanitizeGeneratedFileName(
+        typeof parsed.sheet_name === "string" ? parsed.sheet_name : "Sheet1",
+        "Sheet1",
+      ).slice(0, 31),
+      columns,
+      rows,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseConversationFileReply(
+  value: string,
+  request: ConversationFileDeliverableRequest,
+): ParsedConversationFile | null {
+  const match = FILE_ENVELOPE_PATTERN.exec(value);
+  if (match) {
+    const content = String(match[3] || "").replace(/^\r?\n/u, "").replace(/\r?\n$/u, "");
+    if (!content.trim()) return null;
+    const spreadsheet = request.outputFormat === "xlsx" ? parseSpreadsheetPayload(content) : null;
+    if (request.outputFormat === "xlsx" && !spreadsheet) return null;
+    return {
+      name: sanitizeGeneratedFileName(match[1] || match[2] || request.outputName, request.outputName),
+      content,
+      spreadsheet,
+    };
+  }
+  if (request.outputFormat === "xlsx") return null;
+  const fenced = [...value.matchAll(/```(?:\w+)?\s*\r?\n([\s\S]*?)```/gu)]
+    .map((item) => String(item[1] || "").trim())
+    .sort((left, right) => right.length - left.length)[0];
+  if (fenced && fenced.length >= Math.min(1_000, Math.floor(request.sourceContentLength * 0.2))) {
+    return { name: request.outputName, content: fenced, spreadsheet: null };
+  }
+  const normalized = value.trim();
+  const minimumRawLength = Math.min(1_000, Math.max(240, Math.floor(request.sourceContentLength * 0.2)));
+  const looksDeferred = /(?:\u6211\u6765|\u5f00\u59cb|\u7a0d\u540e|\u63a5\u4e0b\u6765|let me|i(?:'ll| will)|starting now)/iu.test(normalized);
+  return normalized.length >= minimumRawLength && !looksDeferred
+    ? { name: request.outputName, content: normalized, spreadsheet: null }
+    : null;
+}
+
 function buildPlanOptionComparisonRationale(input: {
   primaryTemplateName: string;
   primaryValidation: PlannerValidationResult;
@@ -836,6 +2071,9 @@ function isAgentProfileBody(value: unknown): value is UpsertAgentProfileRequest 
   if ("harness_profile" in value && !isNullableString(value.harness_profile)) {
     return false;
   }
+  if ("provider_connection_id" in value && !isNullableString(value.provider_connection_id)) {
+    return false;
+  }
   if ("openclaw_agent_id" in value && typeof value.openclaw_agent_id !== "string") {
     return false;
   }
@@ -960,6 +2198,32 @@ function isCreateSessionBody(value: unknown): value is CreateSessionRequest {
   ) {
     return false;
   }
+  if (
+    "provider_connection_id" in value &&
+    value.provider_connection_id !== undefined &&
+    typeof value.provider_connection_id !== "string"
+  ) {
+    return false;
+  }
+  if ("model" in value && value.model !== undefined && typeof value.model !== "string") {
+    return false;
+  }
+  if (
+    "defer_conversation_reply" in value &&
+    value.defer_conversation_reply !== undefined &&
+    typeof value.defer_conversation_reply !== "boolean"
+  ) {
+    return false;
+  }
+  if (
+    "autonomy_mode" in value &&
+    value.autonomy_mode !== undefined &&
+    value.autonomy_mode !== "review_first" &&
+    value.autonomy_mode !== "assisted" &&
+    value.autonomy_mode !== "autopilot"
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -967,8 +2231,80 @@ function isCreateSessionMessageBody(value: unknown): value is CreateSessionMessa
   return (
     isPlainObject(value) &&
     typeof value.content === "string" &&
-    !!value.content.trim()
+    !!value.content.trim() &&
+    (!("provider_connection_id" in value) ||
+      value.provider_connection_id === undefined ||
+      typeof value.provider_connection_id === "string") &&
+    (!("model" in value) || value.model === undefined || typeof value.model === "string") &&
+    (!("target_artifact_id" in value) ||
+      value.target_artifact_id === undefined ||
+      typeof value.target_artifact_id === "string")
   );
+}
+
+type ConversationSelectionValidation =
+  | {
+      ok: true;
+      selection: {
+        provider_connection_id: string;
+        model: string;
+      } | null;
+    }
+  | {
+      ok: false;
+      status: number;
+      code: string;
+      message: string;
+    };
+
+function validateConversationSelection(input: {
+  provider_connection_id?: string;
+  model?: string;
+}): ConversationSelectionValidation {
+  const requestedConnectionId = input.provider_connection_id?.trim() || null;
+  const requestedModel = input.model?.trim() || null;
+  if (!requestedConnectionId && !requestedModel) return { ok: true, selection: null };
+  if (!requestedConnectionId) {
+    return {
+      ok: false,
+      status: 400,
+      code: "provider_connection_required",
+      message: "provider_connection_id is required when model is selected.",
+    };
+  }
+  const connection = getProviderConnection(requestedConnectionId);
+  if (!connection) {
+    return {
+      ok: false,
+      status: 404,
+      code: "provider_connection_not_found",
+      message: "Selected Provider Connection was not found.",
+    };
+  }
+  if (connection.status !== "active" || connection.verification?.status !== "verified") {
+    return {
+      ok: false,
+      status: 409,
+      code: "provider_connection_not_ready",
+      message: "Selected Provider Connection must be active and verified.",
+    };
+  }
+  const selectedModel = requestedModel || connection.default_model || connection.models[0] || null;
+  if (!selectedModel || !connection.models.includes(selectedModel)) {
+    return {
+      ok: false,
+      status: 400,
+      code: "provider_model_not_available",
+      message: "Selected model is not available on the Provider Connection.",
+    };
+  }
+  return {
+    ok: true,
+    selection: {
+      provider_connection_id: connection.connection_id,
+      model: selectedModel,
+    },
+  };
 }
 
 function isCreateSessionAttachmentBody(value: unknown): value is CreateSessionAttachmentRequest {
@@ -1151,6 +2487,69 @@ function isCreateRunFromSessionBody(value: unknown): value is CreateRunFromSessi
   return true;
 }
 
+function isProviderConnectionBody(value: unknown): value is UpsertProviderConnectionRequest {
+  if (!isPlainObject(value)) return false;
+  const allowedFields = new Set([
+    "connection_id", "name", "agent_runtime", "provider", "protocol", "base_url", "models", "default_model",
+    "max_input_tokens", "max_output_tokens", "context_compression_enabled",
+    "context_compression_threshold_percent", "max_continuation_rounds", "credential_source",
+    "credential_env", "api_key", "status", "metadata",
+  ]);
+  if (Object.keys(value).some((key) => !allowedFields.has(key))) return false;
+  if ("connection_id" in value && typeof value.connection_id !== "string") return false;
+  if (typeof value.name !== "string" || !value.name.trim()) return false;
+  if (typeof value.agent_runtime !== "string" || !value.agent_runtime.trim()) return false;
+  if ("provider" in value && typeof value.provider !== "string") return false;
+  if (
+    "protocol" in value &&
+    !["codex-appserver", "anthropic-messages", "openai-compatible", "openclaw-bridge"].includes(String(value.protocol))
+  ) return false;
+  if ("base_url" in value && !isNullableString(value.base_url)) return false;
+  if ("models" in value && !isStringArray(value.models)) return false;
+  if ("default_model" in value && !isNullableString(value.default_model)) return false;
+  if (
+    "max_input_tokens" in value &&
+    (typeof value.max_input_tokens !== "number" ||
+      !Number.isInteger(value.max_input_tokens) ||
+      value.max_input_tokens < 4_096 ||
+      value.max_input_tokens > 1_048_576)
+  ) return false;
+  if (
+    "max_output_tokens" in value &&
+    (typeof value.max_output_tokens !== "number" ||
+      !Number.isInteger(value.max_output_tokens) ||
+      value.max_output_tokens < 1_024 ||
+      value.max_output_tokens > 131_072)
+  ) return false;
+  if (
+    "context_compression_enabled" in value &&
+    typeof value.context_compression_enabled !== "boolean"
+  ) return false;
+  if (
+    "context_compression_threshold_percent" in value &&
+    (typeof value.context_compression_threshold_percent !== "number" ||
+      !Number.isInteger(value.context_compression_threshold_percent) ||
+      value.context_compression_threshold_percent < 50 ||
+      value.context_compression_threshold_percent > 95)
+  ) return false;
+  if (
+    "max_continuation_rounds" in value &&
+    (typeof value.max_continuation_rounds !== "number" ||
+      !Number.isInteger(value.max_continuation_rounds) ||
+      value.max_continuation_rounds < 0 ||
+      value.max_continuation_rounds > 32)
+  ) return false;
+  if (
+    "credential_source" in value &&
+    value.credential_source !== "managed" && value.credential_source !== "environment"
+  ) return false;
+  if ("credential_env" in value && (typeof value.credential_env !== "string" || !value.credential_env.trim())) return false;
+  if ("api_key" in value && typeof value.api_key !== "string") return false;
+  if ("status" in value && value.status !== "active" && value.status !== "disabled") return false;
+  if ("metadata" in value && !isPlainObject(value.metadata)) return false;
+  return true;
+}
+
 function isConfirmSessionPlanBody(value: unknown): value is ConfirmSessionPlanRequest {
   return (
     isPlainObject(value) &&
@@ -1224,6 +2623,13 @@ function isDagProposalAssignment(value: unknown): value is DagProposalAssignment
     return false;
   }
   if ("metadata" in value && value.metadata !== undefined && !isPlainObject(value.metadata)) {
+    return false;
+  }
+  if (
+    isPlainObject(value.metadata) &&
+    "uploaded_text_content" in value.metadata &&
+    (typeof value.metadata.uploaded_text_content !== "string" || value.metadata.uploaded_text_content.length > 512 * 1024)
+  ) {
     return false;
   }
   return true;
@@ -1341,6 +2747,31 @@ function sendGovernanceError(res: Response, error: unknown) {
   });
 }
 
+export interface ConversationStreamTurnInput {
+  sessionId: string;
+  content?: string;
+  resumeLatestUser?: boolean;
+  automaticResume?: boolean;
+  providerConnectionId?: string;
+  model?: string;
+  targetArtifactId?: string;
+  signal?: AbortSignal;
+  onStarted?: (input: {
+    userMessage: SessionMessageRecord;
+    providerConnectionId: string | null;
+    model: string | null;
+    checkpointId: string;
+  }) => void | Promise<void>;
+  onDelta: (text: string) => void | Promise<void>;
+  onToolProgress?: (progress: ConversationToolProgress) => void | Promise<void>;
+  onDesktopCapability?: (request: ConversationDesktopCapabilityRequest) => void | Promise<void>;
+}
+
+export interface ConversationStreamTurnResult {
+  session: SessionRecord;
+  assistantMessage: SessionMessageRecord;
+}
+
 export function createApp(options?: {
   executionAdapter?: ExecutionAdapter;
   dispatcher?: RuntimeDispatcher;
@@ -1348,9 +2779,16 @@ export function createApp(options?: {
   onRuntimeEngine?: (runtimeEngine: RuntimeEngine) => void;
   doctor?: Omit<DoctorServiceOptions, "runtimeStatus" | "executionAdapterKind">;
   security?: SecurityOptions;
+  desktopBridgeToken?: string;
+  productIntelligenceWatchdog?: boolean;
+  conversation?: {
+    fetchImpl?: typeof fetch;
+  };
 }) {
   migrateLegacyWorkspaceRecords();
+  getCapabilityPluginHost().ensureDiscovered();
   const app = express();
+  const desktopBridgeToken = options?.desktopBridgeToken ?? DESKTOP_BRIDGE_TOKEN;
   app.use(express.json({ limit: "1mb" }));
   app.use("/api", (req: Request, res: Response, next) => {
     if (req.path.startsWith("/internal/")) return next();
@@ -1437,6 +2875,368 @@ export function createApp(options?: {
     }
     return next();
   });
+
+  app.post("/api/internal/desktop/workspace-bindings", (req: Request, res: Response) => {
+    if (!desktopBridgeToken) {
+      return res.status(503).json({
+        code: "desktop_bridge_unavailable",
+        message: "The Desktop workspace bridge is not configured.",
+      });
+    }
+    if (!hasBearerToken(req, desktopBridgeToken)) {
+      return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+    }
+    const body = isPlainObject(req.body) ? req.body : {};
+    const sessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    const access = body.access === "sandbox-write" ? "sandbox-write" : body.access === "snapshot-read" ? "snapshot-read" : null;
+    const scope = body.scope === "run" || body.scope === "persistent" || body.scope === "session" ? body.scope : null;
+    if (
+      !access ||
+      !scope ||
+      typeof body.desktop_instance_id !== "string" ||
+      !body.desktop_instance_id.trim() ||
+      typeof body.capability_id !== "string" ||
+      !body.capability_id.trim() ||
+      typeof body.root_path !== "string" ||
+      !body.root_path.trim()
+    ) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "A Session, Desktop instance, capability, root path, access, and scope are required.",
+      });
+    }
+    try {
+      const requestedProjectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
+      const requestedProject = requestedProjectId ? getLocalProject(requestedProjectId) : null;
+      const resolvedRoot = fs.realpathSync(path.resolve(body.root_path.trim()));
+      if (requestedProjectId && (!requestedProject || requestedProject.root_path !== resolvedRoot)) {
+        return res.status(409).json({
+          code: "local_project_root_mismatch",
+          message: "The requested Project does not match the selected Desktop folder.",
+        });
+      }
+      if (
+        requestedProject &&
+        (requestedProject.desktop_instance_id !== body.desktop_instance_id.trim() ||
+          !validateProjectCapability(requestedProject, body.capability_id.trim()))
+      ) {
+        return res.status(409).json({
+          code: "local_project_capability_mismatch",
+          message: "The requested Project is not authorized by this Desktop capability.",
+        });
+      }
+      const project = registerLocalProject({
+        workspaceId: session.workspace_id || "default",
+        desktopInstanceId: body.desktop_instance_id.trim(),
+        capabilityId: body.capability_id.trim(),
+        rootPath: resolvedRoot,
+        name: typeof body.display_name === "string" ? body.display_name : undefined,
+        description: typeof body.description === "string" ? body.description : null,
+        defaultOutputRelativePath:
+          typeof body.output_relative_path === "string" ? body.output_relative_path : "outputs",
+      });
+      if (
+        !project ||
+        project.status !== "active" ||
+        project.workspace_id !== (session.workspace_id || "default") ||
+        project.root_path !== resolvedRoot ||
+        !validateProjectCapability(project, body.capability_id.trim())
+      ) {
+        return res.status(409).json({
+          code: "local_project_capability_mismatch",
+          message: "The selected Project no longer matches this Desktop folder capability.",
+        });
+      }
+      const binding = registerWorkspaceBinding({
+        workspaceId: session.workspace_id || "default",
+        sessionId,
+        desktopInstanceId: body.desktop_instance_id.trim(),
+        capabilityId: body.capability_id.trim(),
+        rootPath: body.root_path.trim(),
+        displayName: typeof body.display_name === "string" ? body.display_name : undefined,
+        access,
+        scope,
+        expiresAt: typeof body.expires_at === "string" ? body.expires_at : null,
+        metadata: { project_id: project.project_id },
+      });
+      const taskWorkspace = bindTaskWorkspace({
+        workspaceId: session.workspace_id || "default",
+        sessionId,
+        projectId: project.project_id,
+        bindingId: binding.binding_id,
+        outputRelativePath:
+          typeof body.output_relative_path === "string" && body.output_relative_path.trim()
+            ? body.output_relative_path.trim()
+            : project.default_output_relative_path,
+      });
+      session.metadata = {
+        ...session.metadata,
+        local_project_id: project.project_id,
+        task_workspace_id: taskWorkspace.task_workspace_id,
+        task_output_relative_path: taskWorkspace.output_relative_path,
+      };
+      saveSession(session);
+      if (access === "sandbox-write") {
+        session.metadata = {
+          ...session.metadata,
+          pending_gate: null,
+          pending_decision: "Workspace authorization granted; execution can continue.",
+        };
+        if (session.status === "waiting_human") session.status = "ready_to_run";
+        session.updated_at = nowIso();
+        saveSession(session);
+        const controller = getAutopilotController(sessionId);
+        if (controller?.pending_gate === "workspace_authorization") {
+          saveAutopilotController({
+            ...controller,
+            status: controller.mode === "autopilot" ? "ready" : "disabled",
+            phase: "authorized",
+            handoff_reason: null,
+            pending_gate: null,
+            next_tick_at: controller.mode === "autopilot" ? nowIso() : null,
+            updated_at: nowIso(),
+          });
+        }
+      }
+      return res.status(201).json({
+        binding: publicWorkspaceBinding(binding),
+        project: publicLocalProject(project),
+        task_workspace: publicTaskWorkspace(taskWorkspace),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        code: "workspace_binding_failed",
+        message: error instanceof Error ? error.message : "Workspace binding failed.",
+      });
+    }
+  });
+
+  app.post("/api/internal/desktop/projects", (req: Request, res: Response) => {
+    if (!desktopBridgeToken || !hasBearerToken(req, desktopBridgeToken)) {
+      return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+    }
+    const body = isPlainObject(req.body) ? req.body : {};
+    if (
+      typeof body.workspace_id !== "string" ||
+      typeof body.desktop_instance_id !== "string" ||
+      typeof body.capability_id !== "string" ||
+      typeof body.root_path !== "string"
+    ) {
+      return res.status(400).json({ code: "invalid_request", message: "Project workspace, Desktop capability, and root path are required." });
+    }
+    try {
+      const project = registerLocalProject({
+        workspaceId: body.workspace_id.trim() || "default",
+        desktopInstanceId: body.desktop_instance_id.trim(),
+        capabilityId: body.capability_id.trim(),
+        rootPath: body.root_path.trim(),
+        name: typeof body.name === "string" ? body.name : undefined,
+        description: typeof body.description === "string" ? body.description : null,
+        defaultOutputRelativePath:
+          typeof body.default_output_relative_path === "string" ? body.default_output_relative_path : "outputs",
+      });
+      return res.status(201).json({ project: publicLocalProject(project) });
+    } catch (error) {
+      return res.status(400).json({
+        code: "local_project_registration_failed",
+        message: error instanceof Error ? error.message : "Local Project registration failed.",
+      });
+    }
+  });
+
+  app.post("/api/internal/desktop/projects/:projectId/archive", (req: Request, res: Response) => {
+    if (!desktopBridgeToken || !hasBearerToken(req, desktopBridgeToken)) {
+      return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+    }
+    try {
+      const project = archiveLocalProject(getSingleParam(req.params.projectId) || "");
+      return res.json({ project: publicLocalProject(project), removed_local_directory: false });
+    } catch (error) {
+      return res.status(404).json({ code: "not_found", message: error instanceof Error ? error.message : "Local Project not found." });
+    }
+  });
+
+  app.post(
+    "/api/internal/desktop/sessions/:sessionId/conversation-actions/:actionId/result",
+    (req: Request, res: Response) => {
+      if (!desktopBridgeToken || !hasBearerToken(req, desktopBridgeToken)) {
+        return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+      }
+      const sessionId = getSingleParam(req.params.sessionId) || "";
+      const actionId = getSingleParam(req.params.actionId) || "";
+      const action = getConversationAction(sessionId, actionId);
+      if (!action) {
+        return res.status(404).json({ code: "not_found", message: "Conversation Action not found." });
+      }
+      if (!["running", "pending_approval"].includes(action.status)) {
+        return res.status(409).json({
+          code: "conversation_action_not_pending",
+          message: "Conversation Action is not waiting for a Desktop result.",
+        });
+      }
+      const body = isPlainObject(req.body) ? req.body : {};
+      if (body.status === "approved") {
+        if (
+          action.status !== "pending_approval" ||
+          action.executor !== "mcp" ||
+          body.capability_id !== action.tool_name
+        ) {
+          return res.status(400).json({
+            code: "desktop_capability_approval_invalid",
+            message: "Desktop approval does not match the pending MCP Action.",
+          });
+        }
+        const approved = markConversationActionApproved(action);
+        return res.json({ action_id: approved.action_id, status: "approved" });
+      }
+      const status = body.status === "succeeded" ? "succeeded" : body.status === "failed" ? "failed" : null;
+      if (!status) {
+        return res.status(400).json({ code: "invalid_request", message: "A terminal Desktop result is required." });
+      }
+      if (action.tool_name !== "desktop_application_open") {
+        const capability = getCapabilityRegistry().getCapability(action.tool_name);
+        if (
+          (!(["desktop", "browser"] as string[]).includes(action.executor) &&
+            !(status === "failed" && action.executor === "mcp")) ||
+          (capability !== null && (
+            capability.kind !== "tool" ||
+            capability.executor !== action.executor
+          )) ||
+          body.capability_id !== action.tool_name ||
+          !isPlainObject(body.result)
+        ) {
+          return res.status(400).json({
+            code: "desktop_capability_result_invalid",
+            message: "Desktop capability result does not match the registered Conversation Action.",
+          });
+        }
+        const errorCode = status === "failed" && typeof body.code === "string" && body.code.trim()
+          ? body.code.trim().slice(0, 80)
+          : status === "failed"
+            ? "desktop_capability_failed"
+            : null;
+        const result = {
+          ...body.result,
+          ok: status === "succeeded",
+          ...(errorCode ? { code: errorCode } : {}),
+          desktop_attested: true,
+          capability_id: action.tool_name,
+        };
+        const completed = completeConversationAction({ action, result, errorCode });
+        return res.json({ action_id: completed.action_id, status: completed.status });
+      }
+      const applicationName = typeof body.application_name === "string" && body.application_name.trim()
+        ? body.application_name.trim().slice(0, 120)
+        : "Desktop application";
+      const errorCode = status === "failed" && typeof body.code === "string" && body.code.trim()
+        ? body.code.trim().slice(0, 80)
+        : status === "failed"
+          ? "desktop_application_open_failed"
+          : null;
+      const message = typeof body.message === "string" && body.message.trim()
+        ? body.message.trim().slice(0, 500)
+        : status === "succeeded"
+          ? `${applicationName} was opened after Desktop confirmation.`
+          : `${applicationName} was not opened.`;
+      const result = status === "succeeded"
+        ? { ok: true, application_name: applicationName, message, desktop_attested: true }
+        : { ok: false, code: errorCode, application_name: applicationName, message, desktop_attested: true };
+      const completed = completeConversationAction({ action, result, errorCode });
+      return res.json({
+        action_id: completed.action_id,
+        status: completed.status,
+      });
+    },
+  );
+
+  app.post("/api/internal/desktop/registry/mcp-servers", async (req: Request, res: Response) => {
+    if (!desktopBridgeToken || !hasBearerToken(req, desktopBridgeToken)) {
+      return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+    }
+    const body = isPlainObject(req.body) ? req.body as unknown as UpsertMcpServerInput : null;
+    if (!body || body.transport !== "stdio") {
+      return res.status(400).json({ code: "mcp_stdio_invalid", message: "Desktop can configure only stdio MCP servers through this route." });
+    }
+    try {
+      const workspaceId = typeof (body as unknown as Record<string, unknown>).workspace_id === "string"
+        ? String((body as unknown as Record<string, unknown>).workspace_id).trim() || "default"
+        : "default";
+      const saved = upsertMcpServer(workspaceId, body);
+      if (saved.enabled) await getMcpHost().connect(saved.server_id, workspaceId).catch(() => undefined);
+      else await getMcpHost().disconnect(saved.server_id, { workspaceId });
+      return res.status(201).json(publicMcpServer(getMcpServer(saved.server_id, workspaceId) || saved));
+    } catch (error) {
+      return res.status(400).json({
+        code: "mcp_server_invalid",
+        message: error instanceof Error ? error.message : "MCP server configuration is invalid.",
+      });
+    }
+  });
+
+  app.post("/api/internal/desktop/registry/mcp-servers/:serverId/:operation(test|enable)", async (req: Request, res: Response) => {
+    if (!desktopBridgeToken || !hasBearerToken(req, desktopBridgeToken)) {
+      return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+    }
+    const serverId = getSingleParam(req.params.serverId) || "";
+    const operation = getSingleParam(req.params.operation) || "";
+    const body = isPlainObject(req.body) ? req.body : {};
+    const workspaceId = typeof body.workspace_id === "string" && body.workspace_id.trim()
+      ? body.workspace_id.trim()
+      : "default";
+    const record = getMcpServer(serverId, workspaceId);
+    if (!record) return res.status(404).json({ code: "not_found", message: "MCP server not found." });
+    if (record.transport !== "stdio") {
+      return res.status(400).json({ code: "mcp_transport_invalid", message: "Desktop authorization is reserved for stdio MCP servers." });
+    }
+    try {
+      const updated = operation === "enable"
+        ? await getMcpHost().setEnabled(serverId, true, workspaceId)
+        : await getMcpHost().connect(serverId, workspaceId);
+      return res.json(publicMcpServer(updated));
+    } catch (error) {
+      const current = getMcpServer(serverId, workspaceId);
+      return res.status(400).json({
+        code: operation === "enable" ? "mcp_enable_failed" : "mcp_connection_failed",
+        message: error instanceof Error ? error.message : "MCP operation failed.",
+        ...(current ? { server: publicMcpServer(current) } : {}),
+      });
+    }
+  });
+
+  app.get("/api/projects", (req: Request, res: Response) => {
+    const includeArchived = getSingleParam(req.query.visibility) === "all";
+    return res.json({ items: listLocalProjects({ includeArchived }).map(publicLocalProject) });
+  });
+
+  app.post("/api/internal/desktop/workspace-bindings/:bindingId/revoke", (req: Request, res: Response) => {
+    if (!desktopBridgeToken || !hasBearerToken(req, desktopBridgeToken)) {
+      return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+    }
+    const bindingId = getSingleParam(req.params.bindingId);
+    try {
+      return res.json({ binding: publicWorkspaceBinding(revokeWorkspaceBinding(bindingId || "")) });
+    } catch (error) {
+      return res.status(404).json({
+        code: "not_found",
+        message: error instanceof Error ? error.message : "Workspace Binding not found.",
+      });
+    }
+  });
+
+  app.get("/api/sessions/:sessionId/workspace-binding", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    return res.json({
+      binding: sessionId ? publicWorkspaceBinding(getActiveSessionWorkspaceBinding(sessionId)) : null,
+    });
+  });
+
+  app.get("/api/sessions/:sessionId/task-workspace", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    return res.json({ task_workspace: sessionId ? publicTaskWorkspace(getTaskWorkspace(sessionId)) : null });
+  });
+
   const executionAdapter = options?.executionAdapter || getExecutionAdapter();
   const runtimeEngine = new RuntimeEngine({
     executionAdapter,
@@ -1447,6 +3247,12 @@ export function createApp(options?: {
   options?.dispatcher?.bindWorkerEventHandler?.((event) =>
     runtimeEngine.applyWorkerEvent(event).then(() => undefined),
   );
+
+  function buildMaterializedMissionProjection(
+    input: MissionMaterializerSource,
+  ): MissionWorkspaceProjection {
+    return synchronizeAndMaterializeMission(input).projection;
+  }
 
   function eventSummary(event: EventRecord): string | null {
     const message = event.payload.message;
@@ -2164,9 +3970,9 @@ export function createApp(options?: {
         };
       }
       return {
-        action: "draft",
-        label: "Draft a workflow",
-        detail: "Turn the current brief into an initial DAG before comparing full plan options.",
+        action: "clarify",
+        label: "Continue the conversation",
+        detail: "Clarify the outcome and important constraints before My Mate chooses an internal execution route.",
       };
     })();
 
@@ -2322,7 +4128,7 @@ export function createApp(options?: {
   function syncSessionWorkingState(sessionId: string, session: SessionRecord): void {
     const workspaceState = buildSessionWorkspaceState(sessionId, session);
     const threadMessages = buildSessionThreadMessages(sessionId);
-    const missionProjection = buildMissionWorkspaceProjection({
+    const missionProjection = buildMaterializedMissionProjection({
       session,
       messages: threadMessages,
       workspaceState,
@@ -2348,10 +4154,14 @@ export function createApp(options?: {
   function persistSessionDecisionArtifacts(input: {
     session: SessionRecord;
     sessionId: string;
-    interpretation: ReturnType<typeof interpretSessionMessage>;
+    interpretation: Awaited<ReturnType<typeof interpretSessionMessage>>;
     userText: string;
     orchestratorText: string;
     turnSummaryText?: string;
+    conversationEvidence?: ConversationProviderEvidence | {
+      response_source: "deterministic_fallback";
+      fallback_reason: string;
+    };
     createdAt?: string;
   }): SessionMessageRecord {
     const orchestratorMessage = appendSessionMessage({
@@ -2360,6 +4170,7 @@ export function createApp(options?: {
       kind: "text",
       content: {
         text: input.orchestratorText,
+        ...(input.conversationEvidence || { response_source: "deterministic_fallback" }),
       },
       createdAt: input.createdAt,
     });
@@ -2649,7 +4460,7 @@ export function createApp(options?: {
     }
     if (input.seededGoal) {
       if (primaryOpenQuestion) {
-        return `Right now, I anchored the mission around: ${workingGoal}. Before I draft the workflow, I need one detail from you: ${primaryOpenQuestion}`;
+        return `Right now, I anchored the mission around: ${workingGoal}. Before I choose an execution route, I need one detail from you: ${primaryOpenQuestion}`;
       }
       return workingGoal
         ? `Right now, I anchored the mission around: ${workingGoal}. There is no active route yet. Next I recommend: ${nextMove}`
@@ -2673,6 +4484,821 @@ export function createApp(options?: {
     }
     return `I logged that note. Right now, ${routeState}. Next I recommend: ${nextMove}`;
   }
+
+  async function generateConversationFileDeliverable(input: {
+    session: SessionRecord;
+    sessionId: string;
+    request: ConversationFileDeliverableRequest;
+    signal?: AbortSignal;
+  }): Promise<{
+    file: ParsedConversationFile | null;
+    evidence: ConversationProviderEvidence;
+    semanticRepairRounds: number;
+  }> {
+    let lastReply: Awaited<ReturnType<typeof streamProviderConversationReply>> | null = null;
+    let lastError: unknown = null;
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        lastReply = await streamProviderConversationReply({
+          session: input.session,
+          messages: listSessionMessages(input.sessionId),
+          fetchImpl: options?.conversation?.fetchImpl,
+          signal: input.signal,
+          responseContract: conversationFileResponseContract(input.request, attempt),
+          attachmentIds: input.request.sourceAttachmentId ? [input.request.sourceAttachmentId] : [],
+          onDelta: async () => {},
+        });
+      } catch (error) {
+        if (input.signal?.aborted) throw error;
+        lastError = error;
+        if (attempt + 1 < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+          continue;
+        }
+        throw error;
+      }
+      const file = parseConversationFileReply(lastReply.text, input.request);
+      if (file) {
+        return {
+          file,
+          evidence: lastReply.evidence,
+          semanticRepairRounds: attempt,
+        };
+      }
+    }
+    if (!lastReply) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error("Conversation Provider did not return a file response.");
+    }
+    return {
+      file: null,
+      evidence: lastReply.evidence,
+      semanticRepairRounds: maxAttempts - 1,
+    };
+  }
+
+  function spreadsheetPreviewContent(spreadsheet: ParsedSpreadsheet): string {
+    const escapeCell = (value: SpreadsheetCell) => String(value ?? "").replaceAll("\t", " ").replaceAll("\r", " ").replaceAll("\n", " ");
+    return [spreadsheet.columns, ...spreadsheet.rows]
+      .map((row) => row.map(escapeCell).join("\t"))
+      .join("\n");
+  }
+
+  function escapeSpreadsheetXml(value: unknown): string {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&apos;");
+  }
+
+  function spreadsheetColumnName(index: number): string {
+    let value = index + 1;
+    let label = "";
+    while (value > 0) {
+      const remainder = (value - 1) % 26;
+      label = String.fromCharCode(65 + remainder) + label;
+      value = Math.floor((value - 1) / 26);
+    }
+    return label;
+  }
+
+  function spreadsheetCellXml(value: SpreadsheetCell, row: number, column: number, style: number): string {
+    const reference = `${spreadsheetColumnName(column)}${row}`;
+    if (value === null) return `<c r="${reference}" s="${style}"/>`;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return `<c r="${reference}" s="${style}"><v>${value}</v></c>`;
+    }
+    if (typeof value === "boolean") {
+      return `<c r="${reference}" s="${style}" t="b"><v>${value ? 1 : 0}</v></c>`;
+    }
+    return `<c r="${reference}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${escapeSpreadsheetXml(value)}</t></is></c>`;
+  }
+
+  async function buildSpreadsheetBinary(spreadsheet: ParsedSpreadsheet): Promise<Buffer> {
+    const allRows: SpreadsheetCell[][] = [spreadsheet.columns, ...spreadsheet.rows];
+    const rowXml = allRows.map((row, rowIndex) => {
+      const excelRow = rowIndex + 1;
+      const style = rowIndex === 0 ? 1 : rowIndex % 2 === 0 ? 3 : 2;
+      return `<row r="${excelRow}">${row.map((value, columnIndex) => spreadsheetCellXml(value, excelRow, columnIndex, style)).join("")}</row>`;
+    }).join("");
+    const columnXml = spreadsheet.columns.map((column, index) => {
+      const width = Math.min(48, Math.max(12, column.length + 4));
+      return `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`;
+    }).join("");
+    const lastColumn = spreadsheetColumnName(spreadsheet.columns.length - 1);
+    const lastRow = allRows.length;
+    const createdAt = new Date().toISOString();
+    const files: Record<string, Uint8Array> = {
+      "[Content_Types].xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>'),
+      "_rels/.rels": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>'),
+      "docProps/app.xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>My Mate Studio</Application></Properties>'),
+      "docProps/core.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>My Mate Studio</dc:creator><cp:lastModifiedBy>My Mate Studio</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">${createdAt}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${createdAt}</dcterms:modified></cp:coreProperties>`),
+      "xl/workbook.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${escapeSpreadsheetXml(spreadsheet.sheetName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      "xl/_rels/workbook.xml.rels": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
+      "xl/styles.xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF8FAFC"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE4E7EC"/></left><right style="thin"><color rgb="FFE4E7EC"/></right><top style="thin"><color rgb="FFE4E7EC"/></top><bottom style="thin"><color rgb="FFE4E7EC"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'),
+      "xl/worksheets/sheet1.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columnXml}</cols><sheetData>${rowXml}</sheetData><autoFilter ref="A1:${lastColumn}${lastRow}"/><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`),
+    };
+    return Buffer.from(zipSync(files, { level: 6 }));
+  }
+
+  async function persistConversationFileDeliverable(input: {
+    session: SessionRecord;
+    sessionId: string;
+    userText: string;
+    request: ConversationFileDeliverableRequest;
+    file: ParsedConversationFile;
+    evidence: ConversationProviderEvidence;
+    semanticRepairRounds: number;
+  }): Promise<SessionMessageRecord> {
+    const outputName = sanitizeGeneratedFileName(input.request.outputName, input.request.outputName);
+    const mimeType = generatedFileMimeType(outputName) || input.request.mimeType;
+    const spreadsheet = input.request.outputFormat === "xlsx" ? input.file.spreadsheet : null;
+    if (input.request.outputFormat === "xlsx" && !spreadsheet) {
+      throw new Error("The Provider did not return valid spreadsheet rows.");
+    }
+    const binaryContent = spreadsheet ? await buildSpreadsheetBinary(spreadsheet) : null;
+    const previewContent = spreadsheet ? spreadsheetPreviewContent(spreadsheet) : input.file.content;
+    const published = publishTaskArtifact({
+      sessionId: input.sessionId,
+      fileName: outputName,
+      content: binaryContent || Buffer.from(previewContent, "utf8"),
+      overwrite: true,
+    });
+    const output = createSessionAttachment({
+      sessionId: input.sessionId,
+      request: {
+        name: outputName,
+        storage_uri: `session-output://${input.sessionId}/${encodeURIComponent(outputName)}`,
+        mime_type: mimeType,
+        size_bytes: binaryContent?.byteLength || Buffer.byteLength(previewContent, "utf8"),
+        kind: "generated_output",
+        summary: input.request.sourceName
+          ? `Generated from ${input.request.sourceName}.`
+          : "Generated from the conversation request.",
+        metadata: {
+          source: "conversation_generated_output",
+          source_attachment_id: input.request.sourceAttachmentId || null,
+          source_name: input.request.sourceName || null,
+          source_selection_source: input.request.sourceSelectionSource,
+          source_selection_confidence: input.request.sourceSelectionConfidence,
+          source_selection_reason: input.request.sourceSelectionReason,
+          operation: input.request.operation,
+          target_language: input.request.targetLanguage,
+          target_language_code:
+            CONVERSATION_TARGET_LANGUAGES.find((language) => language.label === input.request.targetLanguage)?.code || null,
+          generated_text_content: previewContent,
+          generated_binary_content_base64: binaryContent?.toString("base64") || null,
+          generated_spreadsheet_preview_json: spreadsheet ? JSON.stringify(spreadsheet) : null,
+          encoding: binaryContent ? "base64" : "utf-8",
+          publication_status: published ? "published" : "unpublished",
+          published_relative_path: published?.published_relative_path || null,
+        },
+      },
+    });
+    output.storage_uri = `/api/sessions/${encodeURIComponent(input.sessionId)}/artifacts/${encodeURIComponent(output.attachment_id)}/download`;
+    saveSessionAttachment(output);
+
+    const usesChinese = /[\u3400-\u9fff]/u.test(input.userText);
+    const assistantText = usesChinese
+      ? `完整文件已经生成：[下载 ${outputName}](${output.storage_uri})`
+      : `The complete file is ready: [Download ${outputName}](${output.storage_uri})`;
+    const assistantMessage = appendSessionMessage({
+      sessionId: input.sessionId,
+      role: "orchestrator",
+      kind: "text",
+      content: {
+        text: assistantText,
+        ...input.evidence,
+        semantic_continuation_rounds: input.semanticRepairRounds,
+        deliverable_status: "returned",
+      },
+    });
+    appendSessionMessage({
+      sessionId: input.sessionId,
+      role: "system",
+      kind: "goal_update_card",
+      content: {
+        working_goal: input.session.current_goal,
+        constraints_summary: input.session.metadata?.constraints_summary || null,
+        open_questions: [],
+      },
+    });
+    appendSessionMessage({
+      sessionId: input.sessionId,
+      role: "system",
+      kind: "decision_card",
+      content: {
+        pending_decision: `Review or download ${outputName}.`,
+        latest_orchestrator_intent: "deliver_file",
+      },
+    });
+    const artifactMessage = appendSessionMessage({
+      sessionId: input.sessionId,
+      role: "system",
+      kind: "artifact_card",
+      content: {
+        artifact_id: output.attachment_id,
+        name: output.name,
+        type: "conversation_generated_file",
+        storage_uri: output.storage_uri,
+        mime_type: output.mime_type,
+        size_bytes: output.size_bytes,
+        summary: output.summary,
+        source_attachment_id: input.request.sourceAttachmentId,
+        source_selection_source: input.request.sourceSelectionSource,
+        source_selection_confidence: input.request.sourceSelectionConfidence,
+        created_at: output.created_at,
+      },
+    });
+
+    input.session.status = "completed";
+    input.session.metadata = {
+      ...getSessionMetadataObject(input.session),
+      open_questions: [],
+      pending_decision: `Review or download ${outputName}.`,
+      latest_orchestrator_intent: "deliver_file",
+      latest_generated_artifact_message_id: artifactMessage.message_id,
+      latest_generated_artifact_id: output.attachment_id,
+    };
+    syncSessionWorkingState(input.sessionId, input.session);
+    const workspaceState = getSessionMetadataObject(input.session).workspace_state as Record<string, unknown>;
+    appendSessionMessage({
+      sessionId: input.sessionId,
+      role: "orchestrator",
+      kind: "orchestrator_turn",
+      content: {
+        intent: "deliver_file",
+        summary: `Generated ${outputName} from ${input.request.sourceName}.`,
+        narrative_reply: assistantText,
+        user_text: input.userText,
+        user_read: `You requested a generated file based on ${input.request.sourceName}.`,
+        workspace_impact: "The requested file is persisted as a downloadable Session artifact.",
+        next_action_label: "Review output",
+        next_action_detail: `Download or review ${outputName}.`,
+        generated_outputs: [outputName],
+        workspace_stage: typeof workspaceState.stage === "string" ? workspaceState.stage : "execution",
+        auto_transition: "deliver_file",
+      },
+    });
+    appendSessionMessage({
+      sessionId: input.sessionId,
+      role: "system",
+      kind: "workspace_snapshot_card",
+      content: workspaceState,
+    });
+    input.session.updated_at = nowIso();
+    input.session.last_orchestrator_message_id = assistantMessage.message_id;
+    saveSession(input.session);
+    return assistantMessage;
+  }
+
+  async function buildModelBackedSessionConversationReply(input: {
+    session: SessionRecord;
+    sessionId: string;
+    userText: string;
+    fallbackText: string;
+  }): Promise<{
+    text: string;
+    evidence: ConversationProviderEvidence | {
+      response_source: "deterministic_fallback";
+      fallback_reason: string;
+    };
+  }> {
+    try {
+      const reply = await generateProviderConversationReply({
+        session: input.session,
+        messages: listSessionMessages(input.sessionId),
+        fetchImpl: options?.conversation?.fetchImpl,
+      });
+      return reply;
+    } catch (error) {
+      const fallbackReason = error instanceof Error ? error.message : "Conversation Provider failed.";
+      if ((error as { code?: unknown })?.code === "conversation_provider_unavailable") {
+        return {
+          text: input.fallbackText,
+          evidence: {
+            response_source: "deterministic_fallback",
+            fallback_reason: fallbackReason,
+          },
+        };
+      }
+      const usesChinese = /[\u3400-\u9fff]/u.test(input.userText);
+      return {
+        text: usesChinese
+          ? `模型连接失败：${fallbackReason}。本轮没有创建或修改工作流。请重试，或在 Settings 中重新测试这个 Connection。`
+          : `Model connection failed: ${fallbackReason}. No workflow was created or changed. Retry, or test this Connection again in Settings.`,
+        evidence: {
+          response_source: "deterministic_fallback",
+          fallback_reason: fallbackReason,
+        },
+      };
+    }
+  }
+
+  async function streamSessionConversationTurn(
+    input: ConversationStreamTurnInput,
+  ): Promise<ConversationStreamTurnResult> {
+    const session = getSession(input.sessionId);
+    if (!session) throw Object.assign(new Error("Mission not found."), { code: "not_found" });
+
+    const conversationSelection = validateConversationSelection({
+      provider_connection_id: input.providerConnectionId,
+      model: input.model,
+    });
+    if (!conversationSelection.ok) {
+      throw Object.assign(new Error(conversationSelection.message), {
+        code: conversationSelection.code,
+      });
+    }
+
+    const metadataBeforeSelection = getSessionMetadataObject(session);
+    const previousConnectionId =
+      typeof metadataBeforeSelection.conversation_provider_connection_id === "string"
+        ? metadataBeforeSelection.conversation_provider_connection_id
+        : null;
+    const previousModel =
+      typeof metadataBeforeSelection.conversation_model === "string"
+        ? metadataBeforeSelection.conversation_model
+        : null;
+    if (conversationSelection.selection) {
+      session.metadata = {
+        ...metadataBeforeSelection,
+        conversation_provider_connection_id: conversationSelection.selection.provider_connection_id,
+        conversation_model: conversationSelection.selection.model,
+      };
+    }
+    const activeConnectionId =
+      conversationSelection.selection?.provider_connection_id || previousConnectionId;
+    const activeModel = conversationSelection.selection?.model || previousModel;
+    const modelSwitch =
+      !!conversationSelection.selection &&
+      (previousConnectionId !== activeConnectionId || previousModel !== activeModel);
+
+    let userMessage: SessionMessageRecord | null = null;
+    if (input.resumeLatestUser) {
+      userMessage = [...listSessionMessages(input.sessionId)]
+        .reverse()
+        .find((message) => message.role === "user" && message.kind === "text") || null;
+      if (!userMessage) {
+        throw Object.assign(new Error("No pending user message is available to resume."), {
+          code: "pending_message_not_found",
+        });
+      }
+    } else {
+      const content = input.content?.trim() || "";
+      if (!content) throw Object.assign(new Error("content is required."), { code: "invalid_request" });
+      userMessage = appendSessionMessage({
+        sessionId: input.sessionId,
+        role: "user",
+        kind: "text",
+        content: {
+          text: content,
+          ...(input.targetArtifactId?.trim()
+            ? { target_artifact_id: input.targetArtifactId.trim() }
+            : {}),
+          ...(activeConnectionId && activeModel
+            ? {
+                provider_connection_id: activeConnectionId,
+                model: activeModel,
+                model_switch: modelSwitch,
+              }
+            : {}),
+        },
+      });
+    }
+
+    const userText = String(userMessage.content.text || "").trim();
+    if (!userText) throw Object.assign(new Error("content is required."), { code: "invalid_request" });
+    const resumeSource = input.resumeLatestUser
+      ? getLatestTaskCheckpoint(input.sessionId, session.workspace_id)
+      : null;
+    const checkpoint = beginTaskCheckpoint({
+      session,
+      sourceUserMessageId: userMessage.message_id,
+      resumeFrom: resumeSource?.status === "resumable" ? resumeSource : null,
+      automaticResume: input.automaticResume === true,
+    });
+    if (checkpoint.status === "failed") {
+      throw Object.assign(new Error("Task checkpoint resume budget was exhausted."), {
+        code: "task_checkpoint_resume_limit",
+      });
+    }
+    const resumeContract = resumeSource?.status === "resumable"
+      ? taskCheckpointResumePrompt(checkpoint)
+      : undefined;
+    const seededGoal = !session.current_goal && !!userText;
+    const interpretation = await interpretSessionMessage({
+      sessionId: input.sessionId,
+      session,
+      userText,
+      seededGoal,
+    });
+    const metadataBeforePersist = getSessionMetadataObject(session);
+    session.current_goal = interpretation.workingGoal;
+    session.metadata = {
+      ...metadataBeforePersist,
+      working_goal: interpretation.workingGoal,
+      constraints_summary: interpretation.constraintsSummary,
+      open_questions: interpretation.openQuestions,
+      pending_decision: interpretation.pendingDecision,
+      latest_orchestrator_intent: interpretation.intent,
+      route_stale: interpretation.shouldMarkRouteStale
+        ? true
+        : metadataBeforePersist.route_stale === true,
+      stale_reason: interpretation.shouldMarkRouteStale
+        ? interpretation.staleReason
+        : typeof metadataBeforePersist.stale_reason === "string"
+          ? metadataBeforePersist.stale_reason
+          : null,
+    };
+    syncSessionWorkingState(input.sessionId, session);
+    saveSession(session);
+    await input.onStarted?.({
+      userMessage,
+      providerConnectionId: activeConnectionId,
+      model: activeModel,
+      checkpointId: checkpoint.checkpoint_id,
+    });
+
+    const explicitTargetArtifactId =
+      input.targetArtifactId?.trim() ||
+      (typeof userMessage.content.target_artifact_id === "string"
+        ? userMessage.content.target_artifact_id.trim()
+        : "");
+    const fileDeliverableResolution = await resolveConversationFileDeliverable({
+      session,
+      sessionId: input.sessionId,
+      userText,
+      explicitTargetArtifactId,
+      fetchImpl: options?.conversation?.fetchImpl,
+      signal: input.signal,
+    });
+    const fileDeliverableRequest = fileDeliverableResolution?.kind === "request"
+      ? fileDeliverableResolution.request
+      : null;
+    const fileClarification = fileDeliverableResolution?.kind === "clarification"
+      ? fileDeliverableResolution
+      : null;
+    let streamedText = "";
+    let conversationTurnFailed = false;
+    let conversationEvidence: ConversationProviderEvidence | {
+      response_source: "deterministic_fallback";
+      fallback_reason: string;
+    };
+    try {
+      if (fileClarification) {
+        streamedText = fileClarification.message;
+        await input.onDelta(streamedText);
+        conversationEvidence = {
+          response_source: "deterministic_fallback",
+          fallback_reason: "The source file target was missing or ambiguous.",
+        };
+        session.status = "waiting_human";
+        session.metadata = {
+          ...getSessionMetadataObject(session),
+          pending_decision: "Select an explicit source file from Workboard.",
+          latest_orchestrator_intent: "file_target_clarification",
+          file_target_candidate_ids: fileClarification.candidateArtifactIds,
+        };
+      } else if (fileDeliverableRequest) {
+        if (fileDeliverableRequest.outputFormat === "worker") {
+          const autonomyMode = resolveSessionAutopilotMode(session);
+          const scheduled = autonomyMode === "autopilot";
+          streamedText = conversationArtifactWorkerRequiredText(fileDeliverableRequest, scheduled);
+          await input.onDelta(streamedText);
+          conversationEvidence = {
+            response_source: "deterministic_fallback",
+            fallback_reason: "The requested binary format requires the sandboxed Artifact Worker.",
+          };
+          session.status = scheduled ? "ready_to_run" : "waiting_human";
+          session.metadata = {
+            ...getSessionMetadataObject(session),
+            pending_decision: scheduled
+              ? "Autopilot will start and supervise the sandboxed Artifact Worker."
+              : "Start the sandboxed Artifact Worker for this binary deliverable.",
+            latest_orchestrator_intent: "artifact_worker_required",
+            requested_artifact_name: fileDeliverableRequest.outputName,
+            requested_artifact_mime_type: fileDeliverableRequest.mimeType,
+          };
+          if (scheduled) {
+            const controller = ensureAutopilotController({
+              sessionId: input.sessionId,
+              workspaceId: session.workspace_id,
+              mode: autonomyMode,
+            });
+            saveAutopilotController({
+              ...controller,
+              status: "ready",
+              phase: "planning",
+              handoff_reason: null,
+              pending_gate: null,
+              updated_at: nowIso(),
+            });
+          }
+        } else {
+          const generated = await generateConversationFileDeliverable({
+            session,
+            sessionId: input.sessionId,
+            request: fileDeliverableRequest,
+            signal: input.signal,
+          });
+          if (generated.file) {
+            const assistantMessage = await persistConversationFileDeliverable({
+              session,
+              sessionId: input.sessionId,
+              userText,
+              request: fileDeliverableRequest,
+              file: generated.file,
+              evidence: generated.evidence,
+              semanticRepairRounds: generated.semanticRepairRounds,
+            });
+            transitionTaskCheckpoint(checkpoint, {
+              status: "completed",
+              reason: "turn_completed",
+              detail: "The requested file deliverable was persisted.",
+              sourceAssistantMessageId: assistantMessage.message_id,
+              progressSummary: String(assistantMessage.content.text || "File deliverable completed."),
+              nextAction: "Review the generated artifact.",
+              providerEvidence: generated.evidence,
+            });
+            await input.onDelta(String(assistantMessage.content.text || ""));
+            try {
+              await runBackgroundMemoryReview(input.sessionId, {
+                fetchImpl: options?.conversation?.fetchImpl,
+                signal: input.signal,
+              });
+            } catch {
+              // Background review is fail-open and never invalidates a completed deliverable.
+            }
+            return {
+              session: buildSessionSummary(input.sessionId) || session,
+              assistantMessage,
+            };
+          }
+          streamedText = /[\u3400-\u9fff]/u.test(userText)
+            ? "模型连续返回了说明性回复，但没有提供完整文件内容。本轮保持未完成，请重试文件生成。"
+            : "The model repeatedly returned explanatory text without the complete file. This task remains incomplete; retry file generation.";
+          await input.onDelta(streamedText);
+          conversationEvidence = generated.evidence;
+          session.status = "waiting_human";
+          session.metadata = {
+            ...getSessionMetadataObject(session),
+            pending_decision: "Retry the incomplete file deliverable.",
+            latest_orchestrator_intent: "deliver_file_incomplete",
+          };
+        }
+      } else {
+        const reply = await streamProviderConversationReply({
+          session,
+          messages: listSessionMessages(input.sessionId),
+          fetchImpl: options?.conversation?.fetchImpl,
+          signal: input.signal,
+          responseContract: resumeContract,
+          onDelta: async (delta) => {
+            streamedText += delta;
+            await input.onDelta(delta);
+          },
+          onToolProgress: input.onToolProgress,
+          onDesktopCapability: input.onDesktopCapability,
+        });
+        streamedText = reply.text;
+        conversationEvidence = reply.evidence;
+      }
+    } catch (error) {
+      conversationTurnFailed = true;
+      const fallbackReason = error instanceof Error ? error.message : "Conversation Provider failed.";
+      const errorCode = error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code || "conversation_failed")
+        : "conversation_failed";
+      const interrupted = input.signal?.aborted === true ||
+        (error instanceof Error && error.name === "AbortError") ||
+        /aborted|terminated|network|fetch failed|socket|timed out|HTTP (?:429|5\d\d)/iu.test(fallbackReason);
+      transitionTaskCheckpoint(checkpoint, {
+        status: interrupted ? "resumable" : "failed",
+        reason: interrupted
+          ? input.signal?.aborted
+            ? "client_disconnected"
+            : "provider_interrupted"
+          : errorCode === "conversation_tool_round_limit"
+            ? "tool_round_limit"
+            : "unrecoverable_error",
+        detail: fallbackReason,
+        progressSummary: streamedText || "The model turn stopped before a complete reply was available.",
+        nextAction: interrupted
+          ? "Resume from the persisted checkpoint without repeating completed work."
+          : "Review the error and retry with corrected configuration or guidance.",
+        errorCode,
+        errorMessage: fallbackReason,
+      });
+      const usesChinese = /[\u3400-\u9fff]/u.test(userText);
+      const fallbackText = (error as { code?: unknown })?.code === "conversation_provider_unavailable"
+        ? buildSessionConversationReply({
+            session,
+            sessionId: input.sessionId,
+            userText,
+            seededGoal,
+          })
+          : streamedText
+          ? usesChinese
+            ? `\n\n模型响应已中断：${fallbackReason}。请重试本轮消息。`
+            : `\n\nThe model response was interrupted: ${fallbackReason}. Retry this message.`
+          : usesChinese
+            ? `模型连接失败：${fallbackReason}。本轮没有创建或修改工作流。请重试，或在 Settings 中重新测试这个 Connection。`
+            : `Model connection failed: ${fallbackReason}. No workflow was created or changed. Retry, or test this Connection again in Settings.`;
+      streamedText += fallbackText;
+      await input.onDelta(fallbackText);
+      conversationEvidence = {
+        response_source: "deterministic_fallback",
+        fallback_reason: fallbackReason,
+      };
+    }
+
+    const guardedArtifactClaims = guardConversationArtifactClaims(input.sessionId, streamedText.trim());
+    if (guardedArtifactClaims.rejected) {
+      streamedText = guardedArtifactClaims.text;
+      await input.onDelta(`\n\n${guardedArtifactClaims.text}`);
+      session.status = "waiting_human";
+      session.metadata = {
+        ...getSessionMetadataObject(session),
+        pending_decision: "Regenerate the file through the server-backed deliverable flow.",
+        latest_orchestrator_intent: "artifact_claim_rejected",
+        rejected_artifact_ids: guardedArtifactClaims.artifactIds,
+      };
+    }
+
+    const assistantMessage = persistSessionDecisionArtifacts({
+      session,
+      sessionId: input.sessionId,
+      interpretation,
+      userText,
+      orchestratorText: streamedText.trim(),
+      conversationEvidence,
+      turnSummaryText: interpretation.turnText,
+    });
+    const providerEvidence = conversationEvidence.response_source === "provider"
+      ? conversationEvidence
+      : null;
+    let latestCheckpoint = getTaskCheckpoint(
+      input.sessionId,
+      checkpoint.checkpoint_id,
+      session.workspace_id,
+    ) || checkpoint;
+    if (providerEvidence?.context_compacted && latestCheckpoint.status === "in_progress") {
+      latestCheckpoint = transitionTaskCheckpoint(latestCheckpoint, {
+        status: "in_progress",
+        reason: "context_compacted",
+        detail: "Earlier Conversation context was summarized before this turn continued.",
+        contextSummary: typeof session.metadata?.conversation_context_summary === "string"
+          ? session.metadata.conversation_context_summary
+          : null,
+        providerEvidence,
+      });
+    }
+    const checkpointProgress = latestCheckpoint.resume_attempts > 0 && latestCheckpoint.progress_summary
+      ? `${latestCheckpoint.progress_summary}\n${streamedText}`
+      : streamedText;
+    let finalCheckpoint = latestCheckpoint;
+    if (providerEvidence?.continuation_limit_reached) {
+      finalCheckpoint = transitionTaskCheckpoint(latestCheckpoint, {
+        status: "resumable",
+        reason: "continuation_limit",
+        detail: "The Provider reached its bounded continuation limit before the task finished.",
+        sourceAssistantMessageId: assistantMessage.message_id,
+        progressSummary: checkpointProgress,
+        contextSummary: typeof session.metadata?.conversation_context_summary === "string"
+          ? session.metadata.conversation_context_summary
+          : null,
+        nextAction: "Continue the unfinished response from this checkpoint.",
+        providerEvidence,
+      });
+    } else if (latestCheckpoint.status === "in_progress") {
+      const waitingHuman = session.status === "waiting_human";
+      finalCheckpoint = transitionTaskCheckpoint(latestCheckpoint, {
+        status: waitingHuman ? "waiting_human" : "completed",
+        reason: waitingHuman ? "waiting_input" : "turn_completed",
+        detail: waitingHuman
+          ? "The task requires user input or approval before it can continue."
+          : "The Conversation turn reached a complete response.",
+        sourceAssistantMessageId: assistantMessage.message_id,
+        progressSummary: checkpointProgress,
+        contextSummary: typeof session.metadata?.conversation_context_summary === "string"
+          ? session.metadata.conversation_context_summary
+          : null,
+        nextAction: waitingHuman ? String(session.metadata?.pending_decision || "Provide the requested input.") : null,
+        providerEvidence,
+      });
+    }
+    if (session.status === "completed" || session.status === "failed" || session.status === "cancelled") {
+      session.status = "draft";
+      syncSessionWorkingState(input.sessionId, session);
+    }
+    saveSession(session);
+    if (
+      finalCheckpoint.status === "resumable" &&
+      finalCheckpoint.reason === "continuation_limit" &&
+      finalCheckpoint.auto_resume_eligible &&
+      finalCheckpoint.resume_attempts < finalCheckpoint.max_resume_attempts
+    ) {
+      return await streamSessionConversationTurn({
+        ...input,
+        content: undefined,
+        resumeLatestUser: true,
+        automaticResume: true,
+      });
+    }
+    if (
+      finalCheckpoint.status === "resumable" &&
+      finalCheckpoint.auto_resume_eligible &&
+      finalCheckpoint.resume_attempts >= finalCheckpoint.max_resume_attempts
+    ) {
+      finalCheckpoint = transitionTaskCheckpoint(finalCheckpoint, {
+        status: "failed",
+        reason: "resume_limit",
+        detail: "The bounded automatic resume budget was exhausted.",
+        nextAction: "Review the partial result and explicitly retry with new guidance.",
+      });
+      session.status = "waiting_human";
+      session.metadata = {
+        ...getSessionMetadataObject(session),
+        pending_decision: "Review the interrupted result before explicitly retrying.",
+        latest_orchestrator_intent: "task_checkpoint_resume_limit",
+      };
+      saveSession(session);
+    }
+    if (!conversationTurnFailed && finalCheckpoint.status === "completed") {
+      try {
+        await runBackgroundMemoryReview(input.sessionId, {
+          fetchImpl: options?.conversation?.fetchImpl,
+          signal: input.signal,
+        });
+      } catch {
+        // Background review is fail-open and never invalidates a completed Conversation turn.
+      }
+    }
+    return {
+      session: buildSessionSummary(input.sessionId) || session,
+      assistantMessage,
+    };
+  }
+
+  app.locals.streamConversationTurn = streamSessionConversationTurn;
+  app.locals.recoverConversationCheckpoints = async () => {
+    const recovered = markInterruptedCheckpointsForRecovery();
+    const results: Array<{ checkpoint_id: string; status: "resumed" | "deferred" | "failed"; error?: string }> = [];
+    for (const checkpoint of recovered) {
+      if (!checkpoint.auto_resume_eligible || checkpoint.resume_attempts >= checkpoint.max_resume_attempts) {
+        results.push({ checkpoint_id: checkpoint.checkpoint_id, status: "deferred" });
+        continue;
+      }
+      const session = getSession(checkpoint.session_id);
+      if (!session) {
+        results.push({ checkpoint_id: checkpoint.checkpoint_id, status: "failed", error: "Session not found." });
+        continue;
+      }
+      const workspace = {
+        workspace_id: checkpoint.workspace_id,
+        workspace_name: checkpoint.workspace_id,
+        role: "operator" as const,
+      };
+      try {
+        await runWithRequestContext({
+          schema_version: 1,
+          principal: {
+            principal_id: session.created_by || "conversation-recovery",
+            display_name: "Conversation Recovery",
+            principal_type: "service",
+          },
+          memberships: [workspace],
+          selected_workspace: workspace,
+          permissions: ROLE_PERMISSIONS.operator,
+          auth_method: "development",
+          issued_at: nowIso(),
+          request_id: `task-checkpoint-recovery:${checkpoint.checkpoint_id}`,
+        }, () => streamSessionConversationTurn({
+          sessionId: checkpoint.session_id,
+          resumeLatestUser: true,
+          automaticResume: true,
+          onDelta: () => {},
+        }));
+        results.push({ checkpoint_id: checkpoint.checkpoint_id, status: "resumed" });
+      } catch (error) {
+        results.push({
+          checkpoint_id: checkpoint.checkpoint_id,
+          status: "failed",
+          error: error instanceof Error ? error.message : "Checkpoint recovery failed.",
+        });
+      }
+    }
+    return { recovered: recovered.length, results };
+  };
+  app.locals.conversationSecurity = {
+    internalAuthSecret: options?.security?.internalAuthSecret ?? INTERNAL_AUTH_SECRET,
+    allowDevelopmentIdentity: options?.security?.allowDevelopmentIdentity,
+  } satisfies SecurityOptions;
 
   function normalizeTextForIntent(value: string): string {
     return value.trim().toLowerCase().replace(/\s+/g, " ");
@@ -3048,7 +5674,7 @@ export function createApp(options?: {
       if (text === currentGoal) {
         return false;
       }
-      const intent = detectSessionMessageIntentRefined(text).intent;
+      const intent = routeConversationIntent(text).intent;
       return intent === "add_constraint";
     });
     const constraints = [...new Set(constraintTexts)].slice(-3);
@@ -3081,10 +5707,7 @@ export function createApp(options?: {
         : session.current_goal || "";
     const questions: string[] = [];
     if (!constraintsSummary && !hasConstraintSignalsInBrief(workingGoal)) {
-      questions.push("What constraints or success criteria should shape the workflow?");
-    }
-    if (!hasDraft && !hasPlan) {
-      questions.push("Should the orchestrator draft a DAG first or go straight to full plan options?");
+      questions.push("What constraints or success criteria matter most for this task?");
     }
     if (hasPlan && session.confirmed_plan_revision === null) {
       questions.push("Which plan option should be confirmed for execution?");
@@ -3271,7 +5894,7 @@ export function createApp(options?: {
         return "The latest message was treated as a follow-up question or note without mutating the active route.";
       case "capture_goal":
       default:
-        return "The task objective was refreshed and is ready to be shaped into a workflow.";
+        return "The task objective was refreshed. Continue the conversation until the outcome and important constraints are clear.";
     }
   }
 
@@ -3316,7 +5939,7 @@ export function createApp(options?: {
       case "capture_goal":
       default:
         if (input.primaryOpenQuestion) {
-          return `I anchored the mission and surfaced the one missing detail I need before drafting: ${compactText(input.primaryOpenQuestion, 140)}.`;
+          return `I anchored the mission and surfaced the next detail to clarify before choosing an execution route: ${compactText(input.primaryOpenQuestion, 140)}.`;
         }
         return input.workingGoal
           ? `I anchored the mission around: ${compactText(input.workingGoal, 140)}. There is no active route yet.`
@@ -3400,7 +6023,7 @@ export function createApp(options?: {
       case "capture_goal":
       default:
         if (input.primaryOpenQuestion) {
-          return `The workspace is waiting on one missing planning detail before it drafts the first workflow shape: ${input.primaryOpenQuestion}`;
+          return `The workspace is waiting on one detail before it chooses an execution route: ${input.primaryOpenQuestion}`;
         }
         return input.workingGoal
           ? "The working goal was refreshed and is ready for orchestration."
@@ -3472,12 +6095,12 @@ export function createApp(options?: {
     return outputs.slice(0, 5);
   }
 
-  function interpretSessionMessage(input: {
+  async function interpretSessionMessage(input: {
     sessionId: string;
     session: SessionRecord;
     userText: string;
     seededGoal: boolean;
-  }): {
+  }): Promise<{
     intent: ReturnType<typeof detectSessionMessageIntentRefined>["intent"];
     workingGoal: string | null;
     constraintsSummary: string | null;
@@ -3492,13 +6115,13 @@ export function createApp(options?: {
     shouldMarkRouteStale: boolean;
     staleReason: string | null;
     constraintEffect: string | null;
-  } {
-    const detected = input.seededGoal
-      ? {
-          intent: "capture_goal" as const,
-          directiveText: null,
-        }
-      : detectSessionMessageIntentRefined(input.userText);
+  }> {
+    const routed = input.seededGoal
+      ? { ...routeConversationIntent(input.userText), intent: "capture_goal" as const, confidence: 1 }
+      : await refineConversationIntent(input.session, routeConversationIntent(input.userText), {
+          fetchImpl: options?.conversation?.fetchImpl,
+        });
+    const detected = { intent: routed.intent, directiveText: routed.directive_text };
     const persistedMessages = listSessionMessages(input.sessionId);
     const latestPlanningMessage = getLatestMessageByKinds(input.sessionId, ["plan_options_card", "plan_card"]);
     const latestDraftMessage = getLatestMessageByKinds(input.sessionId, ["draft_card"]);
@@ -3553,6 +6176,7 @@ export function createApp(options?: {
       (workingGoal.length >= 60 ||
         /,| and | with | compare | first | include | keep | show | route /i.test(workingGoal));
     const shouldAutoDraft =
+      !input.seededGoal &&
       !routeExists &&
       !!workingGoal &&
       (detected.intent === "ask_draft" ||
@@ -4571,6 +7195,7 @@ export function createApp(options?: {
       }
 
       for (const artifact of listArtifacts(runId)) {
+        const publicStorageUri = runtimeArtifactDownloadUri(runId, artifact.artifact_id);
         projectionMessages.push({
           message_id: sessionProjectionMessageId("artifact", sessionId, artifact.artifact_id),
           session_id: sessionId,
@@ -4580,7 +7205,7 @@ export function createApp(options?: {
             artifact_id: artifact.artifact_id,
             name: artifact.name,
             type: artifact.type,
-            storage_uri: artifact.storage_uri,
+            storage_uri: publicStorageUri,
             mime_type: artifact.mime_type,
             size_bytes: artifact.size_bytes,
             created_at: artifact.created_at,
@@ -4670,7 +7295,7 @@ export function createApp(options?: {
     const metadata = getSessionMetadataObject(summarySession);
     const workspaceState = buildSessionWorkspaceState(sessionId, summarySession);
     const threadMessages = buildSessionThreadMessages(sessionId);
-    const missionProjection = buildMissionWorkspaceProjection({
+    const missionProjection = buildMaterializedMissionProjection({
       session: summarySession,
       messages: threadMessages,
       workspaceState,
@@ -4723,8 +7348,11 @@ export function createApp(options?: {
     };
   }
 
-  function buildMissionListItem(sessionId: string): MissionListItem | null {
-    const session = buildSessionSummary(sessionId);
+  function buildMissionListItem(
+    sessionId: string,
+    sessionOverride?: SessionSummaryProjection,
+  ): MissionListItem | null {
+    const session = sessionOverride || buildSessionSummary(sessionId);
     if (!session) {
       return null;
     }
@@ -4945,13 +7573,17 @@ export function createApp(options?: {
 
   function listMissionItems(filters: SessionListFilters = getDefaultSessionListFilters()): MissionListItem[] {
     return listSessionSummaries(filters)
-      .map((session) => buildMissionListItem(session.session_id))
+      .map((session) => buildMissionListItem(session.session_id, session))
       .filter((item): item is MissionListItem => !!item)
       .filter((mission) => sessionMatchesVisibility(mission, filters));
   }
 
-  function resolveSessionWorkspaceRun(sessionId: string, requestedRunId: string | null): RunRecord | null {
-    const session = buildSessionSummary(sessionId);
+  function resolveSessionWorkspaceRun(
+    sessionId: string,
+    requestedRunId: string | null,
+    sessionOverride?: SessionSummaryProjection,
+  ): RunRecord | null {
+    const session = sessionOverride || buildSessionSummary(sessionId);
     if (!session) {
       return null;
     }
@@ -4964,39 +7596,36 @@ export function createApp(options?: {
     return getRun(requestedRunId);
   }
 
-  function buildMissionDetailResponse(sessionId: string, selectedRunId: string | null = null): MissionDetailResponse | null {
-    const session = buildSessionSummary(sessionId);
+  function buildMissionDetailResponse(
+    sessionId: string,
+    selectedRunId: string | null = null,
+    sessionOverride?: SessionSummaryProjection,
+  ): MissionDetailResponse | null {
+    const session = sessionOverride || buildSessionSummary(sessionId);
     if (!session) {
       return null;
     }
 
-    const mission = buildMissionListItem(sessionId);
+    const mission = buildMissionListItem(sessionId, session);
     if (!mission) {
       return null;
     }
 
     const messages = buildSessionThreadMessages(sessionId);
     const workspaceState = isPlainObject(session.workspace_state) ? session.workspace_state : {};
-    const selectedRun = resolveSessionWorkspaceRun(sessionId, selectedRunId);
-    const missionProjection = buildMissionWorkspaceProjection({
-      session: session as SessionRecord,
-      messages,
-      workspaceState,
-      runRoute: selectedRun ? getRunRouteOrLegacy(selectedRun.run_id) : null,
-    });
-
+    const selectedRun = resolveSessionWorkspaceRun(sessionId, selectedRunId, session);
     return {
       mission,
       session,
       messages,
       latest_run: selectedRun,
-      attachments: listSessionAttachments(sessionId),
+      attachments: listSessionInputAttachments(sessionId),
       workspace_state: workspaceState,
-      next_actions: buildSessionNextActions(sessionId),
+      next_actions: buildSessionNextActions(sessionId, session),
       workspace_contract_version: MISSION_WORKSPACE_CONTRACT_VERSION,
-      mission_spec: missionProjection.missionSpec,
-      mission_spec_contract: missionProjection.missionSpecContract,
-      mission_snapshot: missionProjection.missionSnapshot,
+      mission_spec: session.mission_spec || null,
+      mission_spec_contract: session.mission_spec_contract || null,
+      mission_snapshot: session.mission_snapshot || null,
       mission_view: mission.mission_view,
       runtime_projection: selectedRun
         ? buildRuntimeRunProjection(selectedRun.run_id)
@@ -5004,8 +7633,23 @@ export function createApp(options?: {
     };
   }
 
-  function buildSessionNextActions(sessionId: string): string[] {
+  function buildMissionMaterializerSource(sessionId: string): MissionMaterializerSource | null {
     const session = buildSessionSummary(sessionId);
+    if (!session) return null;
+    const workspaceState = isPlainObject(session.workspace_state) ? session.workspace_state : {};
+    return {
+      session: session as SessionRecord,
+      messages: buildSessionThreadMessages(sessionId),
+      workspaceState,
+      runRoute: session.latest_run_id ? getRunRouteOrLegacy(session.latest_run_id) : null,
+    };
+  }
+
+  function buildSessionNextActions(
+    sessionId: string,
+    sessionOverride?: SessionSummaryProjection,
+  ): string[] {
+    const session = sessionOverride || buildSessionSummary(sessionId);
     if (!session) {
       return [];
     }
@@ -5037,11 +7681,54 @@ export function createApp(options?: {
   function buildSessionWorkspaceDetailResponse(
     sessionId: string,
     selectedRunId: string | null = null,
+    sessionOverride?: SessionSummaryProjection,
   ): SessionWorkspaceDetailResponse | null {
-    const mission = buildMissionDetailResponse(sessionId, selectedRunId);
+    const mission = buildMissionDetailResponse(sessionId, selectedRunId, sessionOverride);
     if (!mission) {
       return null;
     }
+
+    const run = mission.latest_run;
+    const pendingApprovals = run
+      ? listApprovals("pending").filter((item) => item.run_id === run.run_id)
+      : [];
+    const pendingHumanInputs = run
+      ? listHumanInputs("pending").filter((item) => item.run_id === run.run_id)
+      : [];
+    const artifacts = run
+      ? listArtifacts(run.run_id).map((artifact) => ({
+          ...artifact,
+          storage_uri: runtimeArtifactDownloadUri(run.run_id, artifact.artifact_id),
+        }))
+      : [];
+    const alerts = listSupervisionAlerts({ sessionId, status: "open" });
+    const autopilot = getAutopilotController(sessionId);
+    const scorecard = run ? listScorecards(run.run_id)[0] || null : null;
+    const evaluation = run ? listEvaluations(run.run_id)[0] || null : null;
+    const failedQuality = [
+      scorecard?.pipeline_verdict,
+      scorecard?.contract_verdict,
+      evaluation?.quality_verdict,
+      evaluation?.evidence_verdict,
+    ].some((value) => ["fail", "failed", "reject", "error", "incomplete"].includes(String(value || "").toLowerCase()));
+    const qualityState = failedQuality
+      ? "review"
+      : scorecard && evaluation
+        ? "trusted"
+        : scorecard || evaluation
+          ? "partial"
+          : "unchecked";
+    const resultCount = artifacts.length;
+    const uiPlan = buildMissionUiPlan({
+      session: mission.session,
+      run,
+      pendingApprovals: pendingApprovals.length,
+      pendingHumanInputs: pendingHumanInputs.length,
+      resultCount,
+      qualityState,
+      alerts,
+      autopilot,
+    });
 
     return {
       session: mission.session,
@@ -5056,6 +7743,14 @@ export function createApp(options?: {
       mission_spec_contract: mission.mission_spec_contract || null,
       mission_snapshot: mission.mission_snapshot || null,
       runtime_projection: mission.runtime_projection || null,
+      artifacts,
+      pending_approvals: pendingApprovals,
+      pending_human_inputs: pendingHumanInputs,
+      supervision_alerts: alerts,
+      autopilot,
+      ui_plan: uiPlan,
+      workspace_binding: publicWorkspaceBinding(getActiveSessionWorkspaceBinding(sessionId)),
+      task_workspace: publicTaskWorkspace(getTaskWorkspace(sessionId)),
     };
   }
 
@@ -5323,6 +8018,10 @@ export function createApp(options?: {
         : [],
       interventions: listSessionInterventions(sessionId),
       dag_patches: listSessionDagPatches(sessionId),
+      supervision_alerts: workspace.supervision_alerts || [],
+      autopilot: workspace.autopilot || null,
+      ui_plan: workspace.ui_plan,
+      workspace_binding: workspace.workspace_binding || null,
     };
   }
 
@@ -6408,6 +9107,69 @@ export function createApp(options?: {
       return;
     }
 
+    const metadata = getSessionMetadataObject(session);
+    const handledRunIds = Array.isArray(metadata.conversation_run_completion_ids)
+      ? metadata.conversation_run_completion_ids.filter((value): value is string => typeof value === "string")
+      : [];
+    let effectiveRunStatus = runStatus;
+    if (["completed", "failed", "cancelled"].includes(runStatus) && !handledRunIds.includes(runId)) {
+      const run = getRun(runId);
+      const deliverables = listArtifacts(runId).filter((artifact) => artifact.type === "deliverable");
+      const latestUserText = [...listSessionMessages(sessionId)]
+        .reverse()
+        .find((message) => message.role === "user" && message.kind === "text")?.content.text;
+      const usesChinese = typeof latestUserText === "string" && /[\u3400-\u9fff]/u.test(latestUserText);
+      if (runStatus === "completed" && deliverables.length) {
+        const links = deliverables.map((artifact) =>
+          `[${artifact.name}](${runtimeArtifactDownloadUri(runId, artifact.artifact_id)})`
+        ).join(usesChinese ? "、" : ", ");
+        appendSessionMessage({
+          sessionId,
+          role: "orchestrator",
+          kind: "text",
+          content: {
+            text: usesChinese ? `任务已完成，真实文件已经生成：${links}` : `The task completed and the verified files are ready: ${links}`,
+            deliverable_status: "returned",
+            source_run_id: runId,
+          },
+          linkedRunId: runId,
+        });
+      } else if (runStatus === "completed" && metadata.latest_orchestrator_intent === "artifact_worker_required") {
+        effectiveRunStatus = "waiting_human";
+        appendSessionMessage({
+          sessionId,
+          role: "orchestrator",
+          kind: "text",
+          content: {
+            text: usesChinese
+              ? "Artifact Worker 已结束，但没有在约定输出目录中生成可验证文件。本轮仍未完成，请检查 Worker 日志后重试。"
+              : "The Artifact Worker finished without a verifiable file in its output directory. This task remains incomplete; inspect the Worker logs and retry.",
+            deliverable_status: "missing",
+            source_run_id: runId,
+          },
+          linkedRunId: runId,
+        });
+      } else if (runStatus === "failed") {
+        appendSessionMessage({
+          sessionId,
+          role: "orchestrator",
+          kind: "text",
+          content: {
+            text: usesChinese
+              ? `任务执行失败：${run?.blocked_reason || run?.waiting_reason || run?.current_summary || "Runtime Worker failed."}`
+              : `Task execution failed: ${run?.blocked_reason || run?.waiting_reason || run?.current_summary || "Runtime Worker failed."}`,
+            deliverable_status: "failed",
+            source_run_id: runId,
+          },
+          linkedRunId: runId,
+        });
+      }
+      session.metadata = {
+        ...metadata,
+        conversation_run_completion_ids: [...handledRunIds, runId],
+      };
+    }
+
     const activeRunIds = new Set(session.active_run_ids);
     if (["completed", "failed", "cancelled"].includes(runStatus)) {
       activeRunIds.delete(runId);
@@ -6417,15 +9179,15 @@ export function createApp(options?: {
     session.latest_run_id = runId;
     session.active_run_ids = [...activeRunIds];
     session.status =
-      runStatus === "waiting_human"
+      effectiveRunStatus === "waiting_human"
         ? "waiting_human"
-        : runStatus === "running" || runStatus === "queued"
+        : effectiveRunStatus === "running" || effectiveRunStatus === "queued"
           ? "running"
-          : runStatus === "completed"
+          : effectiveRunStatus === "completed"
             ? "completed"
-            : runStatus === "failed"
+            : effectiveRunStatus === "failed"
               ? "failed"
-              : runStatus === "cancelled"
+              : effectiveRunStatus === "cancelled"
                 ? "cancelled"
                 : "ready_to_run";
     session.updated_at = nowIso();
@@ -6447,6 +9209,7 @@ export function createApp(options?: {
     validationMode: RunValidationMode;
     proposalId?: string | null;
     routeSource?: RunRouteSource;
+    workspaceBindingId?: string | null;
   }) {
     const template = getTemplate(input.templateId.trim());
     if (!template) {
@@ -6466,6 +9229,23 @@ export function createApp(options?: {
         body: {
           code: "template_not_published",
           message: "Template must be published before it can be executed.",
+        },
+      };
+    }
+
+    const workspaceBinding = input.workspaceBindingId
+      ? getWorkspaceBinding(input.workspaceBindingId)
+      : null;
+    if (
+      input.workspaceBindingId &&
+      (!workspaceBinding || workspaceBinding.status !== "active" || workspaceBinding.access !== "sandbox-write")
+    ) {
+      return {
+        ok: false as const,
+        status: 409,
+        body: {
+          code: "workspace_authorization_required",
+          message: "The local Workspace Binding is missing, expired, or does not allow sandbox writes.",
         },
       };
     }
@@ -6511,6 +9291,7 @@ export function createApp(options?: {
       },
     );
 
+    run.workspace_binding_id = workspaceBinding?.binding_id || null;
     const runPlan = compileRunPlan(run, template);
     const nodeRuns = materializeInitialNodeRuns(runPlan, run.created_at);
     const routeSource: RunRouteSource = input.routeSource || {
@@ -7149,11 +9930,55 @@ export function createApp(options?: {
       templateId = recommendation.selected_template.template_id;
     }
 
+    const workspaceBinding = getActiveSessionWorkspaceBinding(input.sessionId);
+    const executionTemplate = getTemplate(templateId);
+    if (
+      workspaceBinding?.access === "snapshot-read" &&
+      executionTemplate &&
+      templateRequestsWorkspaceMutation(executionTemplate)
+    ) {
+      const message = `Allow this task to modify an isolated copy of ${workspaceBinding.display_name} before execution starts.`;
+      input.session.status = "waiting_human";
+      input.session.metadata = {
+        ...input.session.metadata,
+        pending_gate: "workspace_authorization",
+        pending_decision: message,
+      };
+      input.session.updated_at = nowIso();
+      saveSession(input.session);
+      const controller = ensureAutopilotController({
+        sessionId: input.sessionId,
+        workspaceId: input.session.workspace_id,
+        mode: resolveSessionAutopilotMode(input.session),
+      });
+      saveAutopilotController({
+        ...controller,
+        status: "waiting_human",
+        phase: "workspace_authorization",
+        handoff_reason: message,
+        pending_gate: "workspace_authorization",
+        updated_at: nowIso(),
+      });
+      return {
+        ok: false as const,
+        status: 409,
+        body: {
+          code: "workspace_authorization_required",
+          message,
+          workspace_binding: publicWorkspaceBinding(workspaceBinding),
+          requested_access: "sandbox-write",
+        },
+      };
+    }
+
     const requestedInputs = {
       ...(isPlainObject(proposalMetadata.inputs) ? proposalMetadata.inputs : {}),
       ...(selectedPlanConfig?.inputs || {}),
       ...(input.inputs || {}),
     };
+    if (workspaceBinding) {
+      delete requestedInputs.project_local_repo;
+    }
     const runIntent = selectedPlanConfig?.intent || selectedProposal?.summary || input.latestGoal;
     if (!("goal" in requestedInputs) && runIntent) {
       requestedInputs.goal = runIntent;
@@ -7190,6 +10015,8 @@ export function createApp(options?: {
       validationMode,
       proposalId: selectedProposal?.proposal_id || requestedProposalId,
       routeSource,
+      workspaceBindingId:
+        workspaceBinding?.access === "sandbox-write" ? workspaceBinding.binding_id : null,
     });
     if (!result.ok) {
       return result;
@@ -7277,6 +10104,248 @@ export function createApp(options?: {
     };
   }
 
+  function resolveSessionAutopilotMode(session?: SessionRecord | null): AutopilotMode {
+    const sessionMode = session && isPlainObject(session.metadata)
+      ? session.metadata.autonomy_mode
+      : null;
+    if (sessionMode === "review_first" || sessionMode === "assisted" || sessionMode === "autopilot") {
+      return sessionMode;
+    }
+    const profile = getAgentProfile("default-agent");
+    const value = isPlainObject(profile?.metadata) ? profile?.metadata.product_autonomy_mode : null;
+    return value === "review_first" || value === "autopilot" ? value : "assisted";
+  }
+
+  function updateAutopilotController(
+    controller: AutopilotControllerRecord,
+    update: Partial<AutopilotControllerRecord>,
+    action: string,
+    detail: string,
+  ): AutopilotControllerRecord {
+    const timestamp = nowIso();
+    const history = Array.isArray(controller.metadata.history)
+      ? controller.metadata.history.slice(-49)
+      : [];
+    return saveAutopilotController({
+      ...controller,
+      ...update,
+      last_action: action,
+      last_detail: detail,
+      last_tick_at: timestamp,
+      updated_at: timestamp,
+      metadata: {
+        ...controller.metadata,
+        ...(update.metadata || {}),
+        history: [...history, { action, detail, at: timestamp, status: update.status || controller.status }],
+      },
+    });
+  }
+
+  async function tickSessionAutopilot(sessionId: string): Promise<AutopilotControllerRecord | null> {
+    const session = getSession(sessionId);
+    if (!session) return null;
+    let controller = ensureAutopilotController({ sessionId, workspaceId: session.workspace_id, mode: resolveSessionAutopilotMode(session) });
+    if (controller.status === "paused" || controller.status === "disabled" || controller.status === "completed") {
+      return controller;
+    }
+    const timestamp = nowIso();
+    const startedAt = controller.started_at || timestamp;
+    const elapsedMs = Date.parse(timestamp) - Date.parse(startedAt);
+    if (controller.iteration >= controller.max_iterations || elapsedMs >= controller.max_runtime_minutes * 60_000) {
+      return updateAutopilotController(
+        controller,
+        { status: "blocked", phase: "handoff", handoff_reason: "Autopilot reached its iteration or runtime boundary." },
+        "handoff",
+        "Autopilot stopped at its configured execution boundary.",
+      );
+    }
+
+    controller = saveAutopilotController({
+      ...controller,
+      mode: resolveSessionAutopilotMode(session),
+      status: controller.status === "ready" ? "running" : controller.status,
+      started_at: startedAt,
+      iteration: controller.iteration + 1,
+      next_tick_at: new Date(Date.parse(timestamp) + 2_000).toISOString(),
+      updated_at: timestamp,
+    });
+    const run = session.latest_run_id ? getRun(session.latest_run_id) : null;
+    const pendingApprovals = run
+      ? listApprovals("pending").filter((item) => item.run_id === run.run_id)
+      : [];
+    const pendingInputs = run
+      ? listHumanInputs("pending").filter((item) => item.run_id === run.run_id)
+      : [];
+    if (pendingApprovals.length || pendingInputs.length || run?.status === "waiting_human") {
+      return updateAutopilotController(
+        controller,
+        {
+          status: "waiting_human",
+          phase: "decision",
+          handoff_reason: "A human decision is required.",
+          pending_gate: pendingApprovals.length ? "runtime_approval" : "human_input",
+        },
+        "wait_for_human",
+        "Autopilot paused at a required approval or human-input gate.",
+      );
+    }
+
+    if (!run) {
+      if (controller.mode !== "autopilot") {
+        return updateAutopilotController(
+          controller,
+          {
+            status: "waiting_human",
+            phase: "review",
+            handoff_reason: "The selected autonomy policy requires human start confirmation.",
+            pending_gate: "start_confirmation",
+          },
+          "wait_for_start",
+          "Review first and Assisted policies do not start execution in the background.",
+        );
+      }
+      const defaultAgent = getAgentProfile("default-agent");
+      const connection = defaultAgent?.provider_connection_id
+        ? getProviderConnection(defaultAgent.provider_connection_id)
+        : null;
+      if (connection?.verification?.status !== "verified") {
+        return updateAutopilotController(
+          controller,
+          { status: "blocked", phase: "configuration", handoff_reason: "The default Provider Connection is not verified." },
+          "block_configuration",
+          "Verify the default Provider Connection before Autopilot starts execution.",
+        );
+      }
+      const runResult = await performSessionRun({
+        sessionId,
+        session,
+        latestGoal: session.current_goal || session.title,
+        validationMode: "strict",
+      });
+      if (!runResult.ok) {
+        if (runResult.body.code === "workspace_authorization_required") {
+          return updateAutopilotController(
+            controller,
+            {
+              status: "waiting_human",
+              phase: "workspace_authorization",
+              handoff_reason: String(runResult.body.message || "Workspace authorization is required."),
+              pending_gate: "workspace_authorization",
+            },
+            "wait_for_workspace",
+            String(runResult.body.message || "Autopilot needs a Desktop Workspace authorization."),
+          );
+        }
+        return updateAutopilotController(
+          controller,
+          { status: "blocked", phase: "validation", handoff_reason: String(runResult.body.message || runResult.body.code || "Run creation failed.") },
+          "block_run",
+          String(runResult.body.message || "Strict Run validation blocked Autopilot."),
+        );
+      }
+      return updateAutopilotController(
+        controller,
+        { status: "running", phase: "execution", handoff_reason: null, pending_gate: null },
+        "start_run",
+        `Autopilot opened Run ${runResult.body.run_id}.`,
+      );
+    }
+
+    if (["queued", "running", "paused"].includes(run.status)) {
+      return updateAutopilotController(
+        controller,
+        {
+          status: run.status === "paused" ? "waiting_human" : "running",
+          phase: "supervision",
+          pending_gate: run.status === "paused" ? "human_input" : null,
+        },
+        "supervise",
+        `Run ${run.run_id} is ${run.status}; Autopilot is monitoring progress and gates.`,
+      );
+    }
+    const terminalWorkspaceChange = ["completed", "failed", "cancelled"].includes(run.status)
+      ? listRuntimeWorkspaceChangeSets("pending").find((changeSet) => changeSet.run_id === run.run_id)
+      : null;
+    if (terminalWorkspaceChange) {
+      return updateAutopilotController(
+        controller,
+        {
+          status: "waiting_human",
+          phase: "change_review",
+          handoff_reason: "Review the generated Workspace Change Set before writing to the source project.",
+          pending_gate: "change_review",
+        },
+        "wait_for_change_review",
+        `Workspace Change Set ${terminalWorkspaceChange.change_set_id} is ready for review.`,
+      );
+    }
+    if (["failed", "cancelled"].includes(run.status)) {
+      if (run.status === "failed" && controller.mode === "autopilot") {
+        const plan = getRunPlan(run.run_id);
+        const retryable = plan
+          ? listNodeRuns(run.run_id).find((nodeRun) => {
+              if (nodeRun.status !== "failed") return false;
+              const node = getCompiledNode(plan, nodeRun.node_run_id);
+              return !!node && nodeRun.attempt < Math.max(1, node.retry_policy.max_attempts);
+            })
+          : null;
+        if (retryable) {
+          applyNodeAction(run.run_id, retryable.node_run_id, "retry", "autopilot");
+          executionAdapter.notifyNodeAction(run.run_id, retryable.node_run_id, "retry");
+          queueReadyNodes(run.run_id);
+          return updateAutopilotController(
+            controller,
+            { status: "running", phase: "recovery", handoff_reason: null },
+            "retry_failed_node",
+            `Autopilot retried ${retryable.node_run_id} within the Run retry policy.`,
+          );
+        }
+      }
+      return updateAutopilotController(
+        controller,
+        { status: "blocked", phase: "recovery", handoff_reason: run.blocked_reason || run.current_summary || `Run ${run.status}.` },
+        "handoff_recovery",
+        "Autopilot preserved the failure and handed recovery control to the user.",
+      );
+    }
+    if (run.status === "completed") {
+      try {
+        const scorecard = createOrGetPipelineScorecard(run.run_id, { profile: "pipeline-v1", allowIncomplete: false }).result;
+        const evaluation = (await createOrGetEvaluation(run.run_id, { evaluatorId: "deterministic-v1", allowIncomplete: false })).result;
+        if (["queued", "running"].includes(evaluation.status)) {
+          return updateAutopilotController(
+            controller,
+            { status: "running", phase: "quality" },
+            "evaluate",
+            "Independent result evaluation is still running.",
+          );
+        }
+        const failed = [
+          scorecard.pipeline_verdict,
+          scorecard.contract_verdict,
+          evaluation.quality_verdict,
+          evaluation.evidence_verdict,
+        ].some((value) => ["fail", "failed", "reject", "error", "incomplete"].includes(String(value || "").toLowerCase()));
+        return updateAutopilotController(
+          controller,
+          failed
+            ? { status: "blocked", phase: "quality", handoff_reason: "Result quality or evidence did not pass." }
+            : { status: "completed", phase: "result", completed_at: timestamp, next_tick_at: null, handoff_reason: null },
+          failed ? "handoff_quality" : "complete",
+          failed ? "Autopilot requires human review of result quality." : "Autopilot completed after independent quality verification.",
+        );
+      } catch (error) {
+        return updateAutopilotController(
+          controller,
+          { status: "running", phase: "quality" },
+          "wait_quality",
+          error instanceof Error ? error.message : "Quality evidence is not settled yet.",
+        );
+      }
+    }
+    return updateAutopilotController(controller, { status: "running", phase: "supervision" }, "observe", `Observed Run ${run.run_id} in ${run.status}.`);
+  }
+
   function queueReadyNodes(runId: string): void {
     void runtimeEngine.queueReadyNodes(runId);
   }
@@ -7315,6 +10384,83 @@ export function createApp(options?: {
         node_provisioner_kind: runtimeStatus.node_provisioner_kind,
       },
     });
+  });
+
+  app.get("/api/supervision/alerts", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.query.session_id);
+    const statusValue = getSingleParam(req.query.status);
+    const status = statusValue === "resolved" ? "resolved" : statusValue === "open" ? "open" : undefined;
+    return res.json({ items: listSupervisionAlerts({ sessionId: sessionId || undefined, status }) });
+  });
+
+  app.post("/api/supervision/scan", (_req: Request, res: Response) => {
+    return res.json(runProactiveSupervisionScan());
+  });
+
+  app.post("/api/supervision/alerts/:alertId/resolve", (req: Request, res: Response) => {
+    const alertId = getSingleParam(req.params.alertId);
+    const alert = alertId ? getSupervisionAlert(alertId) : null;
+    if (!alert) return res.status(404).json({ code: "not_found", message: "Supervision alert not found." });
+    const timestamp = nowIso();
+    return res.json(saveSupervisionAlert({ ...alert, status: "resolved", resolved_at: timestamp, last_seen_at: timestamp }));
+  });
+
+  app.get("/api/sessions/:sessionId/autopilot", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!sessionId || !session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    return res.json(ensureAutopilotController({ sessionId, workspaceId: session.workspace_id, mode: resolveSessionAutopilotMode(session) }));
+  });
+
+  app.put("/api/sessions/:sessionId/autopilot", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!sessionId || !session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    const body = isPlainObject(req.body) ? req.body : {};
+    const mode = body.mode;
+    if (mode !== "review_first" && mode !== "assisted" && mode !== "autopilot") {
+      return res.status(400).json({ code: "invalid_request", message: "mode must be review_first, assisted, or autopilot." });
+    }
+    const current = ensureAutopilotController({ sessionId, workspaceId: session.workspace_id, mode });
+    session.metadata = { ...session.metadata, autonomy_mode: mode };
+    session.updated_at = nowIso();
+    saveSession(session);
+    return res.json(saveAutopilotController({
+      ...current,
+      mode,
+      status: mode === "autopilot" ? (current.status === "disabled" ? "ready" : current.status) : "disabled",
+      next_tick_at: mode === "autopilot" ? current.next_tick_at : null,
+      handoff_reason: mode === "autopilot" ? current.handoff_reason : null,
+      pending_gate: mode === "autopilot" ? current.pending_gate || null : null,
+      max_iterations: typeof body.max_iterations === "number" ? Math.max(1, Math.min(100, Math.floor(body.max_iterations))) : current.max_iterations,
+      max_runtime_minutes: typeof body.max_runtime_minutes === "number" ? Math.max(1, Math.min(1440, Math.floor(body.max_runtime_minutes))) : current.max_runtime_minutes,
+      updated_at: nowIso(),
+    }));
+  });
+
+  app.post("/api/sessions/:sessionId/autopilot/tick", async (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const controller = sessionId ? await tickSessionAutopilot(sessionId) : null;
+    return controller
+      ? res.json(controller)
+      : res.status(404).json({ code: "not_found", message: "Session not found." });
+  });
+
+  app.post("/api/sessions/:sessionId/autopilot/pause", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const controller = sessionId ? getAutopilotController(sessionId) : null;
+    if (!controller) return res.status(404).json({ code: "not_found", message: "Autopilot controller not found." });
+    const timestamp = nowIso();
+    return res.json(saveAutopilotController({ ...controller, status: "paused", paused_at: timestamp, next_tick_at: null, updated_at: timestamp }));
+  });
+
+  app.post("/api/sessions/:sessionId/autopilot/resume", async (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    const controller = sessionId && session ? ensureAutopilotController({ sessionId, workspaceId: session.workspace_id, mode: resolveSessionAutopilotMode(session) }) : null;
+    if (!controller || !session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    saveAutopilotController({ ...controller, status: "ready", paused_at: null, handoff_reason: null, pending_gate: null, next_tick_at: nowIso(), updated_at: nowIso() });
+    return res.json(await tickSessionAutopilot(sessionId!));
   });
 
   app.get("/api/auth/me", (_req: Request, res: Response) => {
@@ -7453,6 +10599,288 @@ export function createApp(options?: {
     });
   });
 
+  app.get("/api/memories", (req: Request, res: Response) => {
+    const status = getSingleParam(req.query.status) || undefined;
+    const scopeKind = getSingleParam(req.query.scope_kind) || undefined;
+    const kind = getSingleParam(req.query.kind) || undefined;
+    const limit = Number(getSingleParam(req.query.limit) || 100);
+    if (
+      (status && !["active", "superseded", "expired", "deleted", "all"].includes(status)) ||
+      (scopeKind && !["user", "workspace", "project", "agent"].includes(scopeKind)) ||
+      (kind && !["preference", "fact", "convention", "decision", "lesson"].includes(kind)) ||
+      !Number.isFinite(limit) || limit < 1 || limit > 500
+    ) {
+      return res.status(400).json({ code: "invalid_request", message: "Memory filters are invalid." });
+    }
+    return res.json({
+      items: listMemories({
+        status: status as MemoryListFilters["status"],
+        scopeKind: scopeKind as MemoryListFilters["scopeKind"],
+        scopeId: getSingleParam(req.query.scope_id) || undefined,
+        kind: kind as MemoryListFilters["kind"],
+        query: getSingleParam(req.query.query) || undefined,
+        limit,
+      }),
+    });
+  });
+
+  app.get("/api/memory-settings", (_req: Request, res: Response) => {
+    return res.json(getMemorySettings());
+  });
+
+  app.put("/api/memory-settings", (req: Request, res: Response) => {
+    try {
+      return res.json(updateMemorySettings(isPlainObject(req.body) ? req.body : {}));
+    } catch (error) {
+      if (error instanceof MemorySettingsError) {
+        return res.status(400).json({ code: error.code, message: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/memory-observability", (_req: Request, res: Response) => {
+    return res.json(getMemoryObservability());
+  });
+
+  app.get("/api/memory-intelligence/evaluation", (_req: Request, res: Response) => {
+    return res.json(evaluateConversationIntentRouter());
+  });
+
+  app.get("/api/memory-maintenance", (_req: Request, res: Response) => {
+    return res.json({ last_run: getLastMemoryMaintenance() });
+  });
+
+  app.post("/api/memory-maintenance", (_req: Request, res: Response) => {
+    try {
+      return res.json(runMemoryMaintenance());
+    } catch (error) {
+      return res.status(503).json({
+        code: "memory_maintenance_failed",
+        message: error instanceof Error ? error.message : "Memory maintenance failed.",
+      });
+    }
+  });
+
+  app.post("/api/memory-maintenance/sweep", (_req: Request, res: Response) => {
+    const result = runMemoryMaintenanceSweep({ dueOnly: false });
+    return res.status(result.failed_workspaces.length ? 207 : 200).json(result);
+  });
+
+  app.get("/api/memories/export", (req: Request, res: Response) => {
+    const format = getSingleParam(req.query.format) === "jsonl" ? "jsonl" : "json";
+    const requestedStatus = getSingleParam(req.query.status) || "all";
+    if (!new Set(["active", "superseded", "expired", "deleted", "all"]).has(requestedStatus)) {
+      return res.status(400).json({ code: "invalid_request", message: "Export status is invalid." });
+    }
+    const bundle = exportMemories(requestedStatus as Parameters<typeof exportMemories>[0]);
+    res.setHeader("content-type", format === "jsonl" ? "application/x-ndjson; charset=utf-8" : "application/json; charset=utf-8");
+    res.setHeader("content-disposition", `attachment; filename=memory-export.${format}`);
+    return res.send(serializeMemoryExport(bundle, format));
+  });
+
+  app.post("/api/memories/import", (req: Request, res: Response) => {
+    const body = isPlainObject(req.body) ? req.body : {};
+    try {
+      return res.json(importMemories(body.payload ?? body.memories ?? req.body, {
+        dryRun: body.dry_run === true,
+        strategy: typeof body.strategy === "string" ? body.strategy as "skip" | "merge" | "replace" : "skip",
+      }));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-retrieval/search", async (req: Request, res: Response) => {
+    const query = typeof req.body?.query === "string" ? req.body.query : "";
+    const limit = Number(req.body?.limit || 8);
+    if (!query.trim() || !Number.isFinite(limit) || limit < 1 || limit > 20) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "query is required and limit must be between 1 and 20.",
+      });
+    }
+    try {
+      return res.json(await searchMemoryRetrieval({
+        query,
+        scopeKind: typeof req.body?.scope_kind === "string" ? req.body.scope_kind : undefined,
+        scopeId: typeof req.body?.scope_id === "string" ? req.body.scope_id : undefined,
+        kind: typeof req.body?.kind === "string" ? req.body.kind : undefined,
+        limit,
+      }));
+    } catch (error) {
+      return res.status(503).json({
+        code: "memory_retrieval_unavailable",
+        message: error instanceof Error ? error.message : "Memory retrieval is unavailable.",
+      });
+    }
+  });
+
+  app.get("/api/memory-retrieval/status", (_req: Request, res: Response) => {
+    try {
+      return res.json(getMemoryRetrievalIndexStatus());
+    } catch (error) {
+      return res.status(503).json({
+        code: "memory_retrieval_unavailable",
+        message: error instanceof Error ? error.message : "Memory retrieval is unavailable.",
+      });
+    }
+  });
+
+  app.post("/api/memory-retrieval/rebuild", (_req: Request, res: Response) => {
+    try {
+      const records = rebuildMemoryRetrievalIndex();
+      return res.json({ records, status: getMemoryRetrievalIndexStatus() });
+    } catch (error) {
+      return res.status(503).json({
+        code: "memory_retrieval_rebuild_failed",
+        message: error instanceof Error ? error.message : "Memory retrieval rebuild failed.",
+      });
+    }
+  });
+
+  app.get("/api/memory-knowledge/status", (_req: Request, res: Response) => {
+    return res.json(getMemoryKnowledgeProviderStatus());
+  });
+
+  app.post("/api/memory-knowledge/query", (req: Request, res: Response) => {
+    const entity = typeof req.body?.entity === "string" ? req.body.entity.trim() : "";
+    const limit = Number(req.body?.limit || 25);
+    if (!entity || !Number.isFinite(limit) || limit < 1 || limit > 100) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "entity is required and limit must be between 1 and 100.",
+      });
+    }
+    return res.json(queryMemoryKnowledgeGraph({
+      entity,
+      asOf: typeof req.body?.as_of === "string" ? req.body.as_of : null,
+      limit,
+    }));
+  });
+
+  app.post("/api/memory-knowledge/rebuild", (_req: Request, res: Response) => {
+    return res.json(rebuildMemoryKnowledgeGraph(listMemories({ status: "all", limit: 500 })));
+  });
+
+  app.post("/api/memories", (req: Request, res: Response) => {
+    try {
+      return res.status(201).json(createMemory(isPlainObject(req.body) ? req.body : {}));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.get("/api/memories/:memoryId", (req: Request, res: Response) => {
+    const memoryId = getSingleParam(req.params.memoryId);
+    const memory = memoryId ? getMemory(memoryId) : null;
+    return memory
+      ? res.json(memory)
+      : res.status(404).json({ code: "not_found", message: "Memory not found." });
+  });
+
+  app.patch("/api/memories/:memoryId", (req: Request, res: Response) => {
+    const memoryId = getSingleParam(req.params.memoryId);
+    if (!memoryId) return res.status(400).json({ code: "invalid_request", message: "memoryId is required." });
+    try {
+      const memory = updateMemory(memoryId, isPlainObject(req.body) ? req.body : {});
+      return memory
+        ? res.json(memory)
+        : res.status(404).json({ code: "not_found", message: "Memory not found." });
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.delete("/api/memories/:memoryId", (req: Request, res: Response) => {
+    const memoryId = getSingleParam(req.params.memoryId);
+    const memory = memoryId ? deleteMemory(memoryId) : null;
+    return memory
+      ? res.json(memory)
+      : res.status(404).json({ code: "not_found", message: "Memory not found." });
+  });
+
+  app.post("/api/memories/:memoryId/restore", (req: Request, res: Response) => {
+    const memoryId = getSingleParam(req.params.memoryId);
+    const memory = memoryId ? restoreMemory(memoryId) : null;
+    return memory
+      ? res.json(memory)
+      : res.status(404).json({ code: "not_found", message: "Memory not found." });
+  });
+
+  app.get("/api/memory-candidates", (req: Request, res: Response) => {
+    const status = getSingleParam(req.query.status) || "pending";
+    if (!["pending", "approved", "rejected", "all"].includes(status)) {
+      return res.status(400).json({ code: "invalid_request", message: "Candidate status is invalid." });
+    }
+    return res.json({
+      items: listMemoryCandidates(status as Parameters<typeof listMemoryCandidates>[0]),
+    });
+  });
+
+  app.get("/api/memory-candidates/:candidateId", (req: Request, res: Response) => {
+    const candidateId = getSingleParam(req.params.candidateId);
+    const candidate = candidateId ? getMemoryCandidate(candidateId) : null;
+    return candidate
+      ? res.json(candidate)
+      : res.status(404).json({ code: "not_found", message: "Memory candidate not found." });
+  });
+
+  app.post("/api/sessions/:sessionId/memory-review", async (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    if (!sessionId || !getSession(sessionId)) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    return res.json(await runBackgroundMemoryReview(sessionId, {
+      fetchImpl: options?.conversation?.fetchImpl,
+    }));
+  });
+
+  app.post("/api/memory-candidates", (req: Request, res: Response) => {
+    const body = isPlainObject(req.body) ? req.body : {};
+    if (!isPlainObject(body.proposed_memory)) {
+      return res.status(400).json({ code: "invalid_request", message: "proposed_memory is required." });
+    }
+    try {
+      return res.status(201).json(createMemoryCandidate({
+        proposed_memory: body.proposed_memory,
+        rationale: body.rationale,
+        risk: body.risk,
+        autonomy_mode: body.autonomy_mode,
+      }));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-candidates/:candidateId/approve", (req: Request, res: Response) => {
+    const candidateId = getSingleParam(req.params.candidateId);
+    if (!candidateId || !getMemoryCandidate(candidateId)) {
+      return res.status(404).json({ code: "not_found", message: "Memory candidate not found." });
+    }
+    try {
+      return res.json(approveMemoryCandidate(candidateId, {
+        note: isPlainObject(req.body) ? req.body.note : undefined,
+      }));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-candidates/:candidateId/reject", (req: Request, res: Response) => {
+    const candidateId = getSingleParam(req.params.candidateId);
+    if (!candidateId || !getMemoryCandidate(candidateId)) {
+      return res.status(404).json({ code: "not_found", message: "Memory candidate not found." });
+    }
+    try {
+      return res.json(rejectMemoryCandidate(candidateId, {
+        note: isPlainObject(req.body) ? req.body.note : undefined,
+      }));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
   app.post("/api/diagnostics/doctor", async (req: Request, res: Response) => {
     const body = isPlainObject(req.body) ? req.body : {};
     const mode = (body.mode || "quick") as DoctorMode;
@@ -7465,16 +10893,18 @@ export function createApp(options?: {
       "codex",
       "claude-sdk",
       "kimi",
+      "glm",
     ];
     if (
       !validModes.includes(mode) ||
       (runtime !== undefined && !validRuntimes.includes(runtime)) ||
-      (body.model_probe !== undefined && typeof body.model_probe !== "boolean")
+      (body.model_probe !== undefined && typeof body.model_probe !== "boolean") ||
+      (body.provider_connection_id !== undefined && typeof body.provider_connection_id !== "string")
     ) {
       return res.status(400).json({
         code: "invalid_request",
         message:
-          "mode must be quick, docker, or model; runtime and model_probe must use supported values.",
+          "mode must be quick, docker, or model; runtime, provider_connection_id, and model_probe must use supported values.",
       });
     }
 
@@ -7482,6 +10912,9 @@ export function createApp(options?: {
       mode,
       runtime,
       model_probe: body.model_probe === true,
+      provider_connection_id: typeof body.provider_connection_id === "string"
+        ? body.provider_connection_id.trim() || undefined
+        : undefined,
     };
     const report = await runDoctor(request, {
       ...(options?.doctor || {}),
@@ -8108,6 +11541,143 @@ export function createApp(options?: {
     }
   });
 
+  app.get("/api/registry/capabilities", (_req: Request, res: Response) => {
+    getCapabilityPluginHost().ensureDiscovered();
+    return res.json({ items: getCapabilityRegistry().listCapabilities(getActiveWorkspaceId() || "default") });
+  });
+
+  app.get("/api/registry/plugins", (_req: Request, res: Response) => {
+    return res.json({ items: getCapabilityPluginHost().listPlugins() });
+  });
+
+  app.post("/api/registry/plugins/reload", (_req: Request, res: Response) => {
+    try {
+      return res.json({ items: getCapabilityPluginHost().discover() });
+    } catch (error) {
+      return res.status(400).json({
+        code: "capability_plugin_reload_failed",
+        message: error instanceof Error ? error.message : "Capability plugins could not be reloaded.",
+      });
+    }
+  });
+
+  app.post("/api/registry/plugins/:pluginId/enable", (req: Request, res: Response) => {
+    const pluginId = getSingleParam(req.params.pluginId);
+    if (!pluginId) return res.status(400).json({ code: "invalid_request", message: "pluginId is required." });
+    try {
+      const plugin = getCapabilityPluginHost().setEnabled(pluginId, true);
+      return plugin.status === "error" ? res.status(400).json(plugin) : res.json(plugin);
+    } catch (error) {
+      return res.status(400).json({
+        code: "capability_plugin_enable_failed",
+        message: error instanceof Error ? error.message : "Capability plugin could not be enabled.",
+      });
+    }
+  });
+
+  app.post("/api/registry/plugins/:pluginId/disable", (req: Request, res: Response) => {
+    const pluginId = getSingleParam(req.params.pluginId);
+    if (!pluginId) return res.status(400).json({ code: "invalid_request", message: "pluginId is required." });
+    try {
+      return res.json(getCapabilityPluginHost().setEnabled(pluginId, false));
+    } catch (error) {
+      return res.status(400).json({
+        code: "capability_plugin_disable_failed",
+        message: error instanceof Error ? error.message : "Capability plugin could not be disabled.",
+      });
+    }
+  });
+
+  app.get("/api/registry/mcp-connector-presets", (_req: Request, res: Response) => {
+    return res.json({ items: listMcpConnectorPresets() });
+  });
+
+  app.get("/api/registry/mcp-servers", (_req: Request, res: Response) => {
+    return res.json({ items: listMcpServers().map(publicMcpServer) });
+  });
+
+  app.post("/api/registry/mcp-servers", async (req: Request, res: Response) => {
+    const body = isPlainObject(req.body) ? req.body as unknown as UpsertMcpServerInput : null;
+    if (!body || typeof body.name !== "string" || typeof body.transport !== "string") {
+      return res.status(400).json({ code: "invalid_request", message: "MCP server name and transport are required." });
+    }
+    if (body.transport === "stdio") {
+      return res.status(403).json({
+        code: "desktop_authorization_required",
+        message: "Stdio MCP servers must be configured through My Mate Desktop confirmation.",
+      });
+    }
+    try {
+      const saved = upsertMcpServer(getActiveWorkspaceId() || "default", body);
+      if (saved.enabled) await getMcpHost().connect(saved.server_id).catch(() => undefined);
+      else await getMcpHost().disconnect(saved.server_id);
+      return res.status(201).json(publicMcpServer(getMcpServer(saved.server_id) || saved));
+    } catch (error) {
+      return res.status(400).json({
+        code: "mcp_server_invalid",
+        message: error instanceof Error ? error.message : "MCP server could not be saved.",
+      });
+    }
+  });
+
+  app.post("/api/registry/mcp-servers/reload", async (_req: Request, res: Response) => {
+    await getMcpHost().reload(getActiveWorkspaceId() || "default");
+    return res.json({ items: listMcpServers().map(publicMcpServer) });
+  });
+
+  app.post("/api/registry/mcp-servers/:serverId/test", async (req: Request, res: Response) => {
+    const serverId = getSingleParam(req.params.serverId) || "";
+    if (!serverId) return res.status(400).json({ code: "invalid_request", message: "serverId is required." });
+    if (getMcpServer(serverId)?.transport === "stdio") {
+      return res.status(403).json({
+        code: "desktop_authorization_required",
+        message: "Testing a stdio MCP server requires My Mate Desktop confirmation.",
+      });
+    }
+    try {
+      return res.json(publicMcpServer(await getMcpHost().connect(serverId)));
+    } catch (error) {
+      const current = getMcpServer(serverId);
+      return res.status(current ? 400 : 404).json({
+        code: current ? "mcp_connection_failed" : "not_found",
+        message: error instanceof Error ? error.message : "MCP server connection failed.",
+        ...(current ? { server: publicMcpServer(current) } : {}),
+      });
+    }
+  });
+
+  app.post("/api/registry/mcp-servers/:serverId/enable", async (req: Request, res: Response) => {
+    const serverId = getSingleParam(req.params.serverId) || "";
+    if (getMcpServer(serverId)?.transport === "stdio") {
+      return res.status(403).json({
+        code: "desktop_authorization_required",
+        message: "Enabling a stdio MCP server requires My Mate Desktop confirmation.",
+      });
+    }
+    try {
+      return res.json(publicMcpServer(await getMcpHost().setEnabled(serverId, true)));
+    } catch (error) {
+      const current = getMcpServer(serverId);
+      return res.status(current ? 400 : 404).json({
+        code: current ? "mcp_enable_failed" : "not_found",
+        message: error instanceof Error ? error.message : "MCP server could not be enabled.",
+      });
+    }
+  });
+
+  app.post("/api/registry/mcp-servers/:serverId/disable", async (req: Request, res: Response) => {
+    const serverId = getSingleParam(req.params.serverId) || "";
+    try {
+      return res.json(publicMcpServer(await getMcpHost().setEnabled(serverId, false)));
+    } catch (error) {
+      const current = getMcpServer(serverId);
+      return res.status(current ? 400 : 404).json({
+        code: current ? "mcp_disable_failed" : "not_found",
+        message: error instanceof Error ? error.message : "MCP server could not be disabled.",
+      });
+    }
+  });
+
   app.post("/api/planner/template-selection", async (req: Request, res: Response) => {
     const body = req.body as Partial<PlannerTemplateSelectionRequest>;
     if (typeof body.intent !== "string" || !body.intent.trim()) {
@@ -8267,7 +11837,7 @@ export function createApp(options?: {
     if (!isCreateSessionBody(req.body)) {
       return res.status(400).json({
         code: "invalid_request",
-        message: "title, initial_message, created_by, and orchestrator_profile_id must be strings when provided.",
+        message: "Session fields, Provider Connection id, and model must be strings when provided.",
       });
     }
     const requestedProfileId =
@@ -8279,6 +11849,18 @@ export function createApp(options?: {
         code: "orchestrator_profile_not_found",
         message: "Orchestrator profile not found.",
       });
+    }
+
+    const conversationSelection = validateConversationSelection(req.body);
+    if (!conversationSelection.ok) {
+      return res.status(conversationSelection.status).json({
+        code: conversationSelection.code,
+        message: conversationSelection.message,
+      });
+    }
+    if (conversationSelection.selection) {
+      req.body.provider_connection_id = conversationSelection.selection.provider_connection_id;
+      req.body.model = conversationSelection.selection.model;
     }
 
     const session = createSession(req.body);
@@ -8293,7 +11875,7 @@ export function createApp(options?: {
         },
         createdAt: session.created_at,
       });
-      const interpretation = interpretSessionMessage({
+      const interpretation = await interpretSessionMessage({
         sessionId: session.session_id,
         session,
         userText: initialUserText,
@@ -8308,17 +11890,34 @@ export function createApp(options?: {
         pending_decision: interpretation.pendingDecision,
         latest_orchestrator_intent: interpretation.intent,
       };
+      if (req.body.defer_conversation_reply === true) {
+        syncSessionWorkingState(session.session_id, session);
+        saveSession(session);
+        return res.status(201).json({
+          session: buildSessionSummary(session.session_id),
+          messages: buildSessionThreadMessages(session.session_id),
+          conversation_deferred: true,
+        });
+      }
+      const fallbackText = buildSessionConversationReply({
+        session,
+        sessionId: session.session_id,
+        userText: initialUserText,
+        seededGoal: true,
+      });
+      const conversationReply = await buildModelBackedSessionConversationReply({
+        session,
+        sessionId: session.session_id,
+        userText: initialUserText,
+        fallbackText,
+      });
       persistSessionDecisionArtifacts({
         session,
         sessionId: session.session_id,
         interpretation,
         userText: initialUserText,
-        orchestratorText: buildSessionConversationReply({
-          session,
-          sessionId: session.session_id,
-          userText: initialUserText,
-          seededGoal: true,
-        }),
+        orchestratorText: conversationReply.text,
+        conversationEvidence: conversationReply.evidence,
         turnSummaryText: interpretation.turnText,
       });
       if (interpretation.shouldAutoDraft && interpretation.workingGoal) {
@@ -8408,6 +12007,8 @@ export function createApp(options?: {
         message: "Session not found.",
       });
     }
+    if (action === "archive") archiveTaskWorkspace(sessionId);
+    if (action === "unarchive") restoreTaskWorkspace(sessionId);
     const summary = buildSessionSummary(sessionId);
     return res.json({
       session: summary,
@@ -8448,6 +12049,130 @@ export function createApp(options?: {
     }
 
     return res.json(mission);
+  });
+
+  app.get("/api/registry/provider-connections", (req: Request, res: Response) => {
+    const status = getSingleParam(req.query.status as string | string[] | undefined);
+    const items = listProviderConnections(status === "active" || status === "disabled" ? status : undefined)
+      .map((item) => ({ ...item, ...providerConnectionStatus(item) }));
+    return res.json({ items });
+  });
+
+  app.post("/api/registry/provider-connections", (req: Request, res: Response) => {
+    if (!isProviderConnectionBody(req.body)) {
+      return res.status(400).json({ code: "invalid_request", message: "Provider Connection fields are invalid." });
+    }
+    try {
+      const saved = upsertProviderConnection(req.body);
+      return res.status(201).json({ ...saved, ...providerConnectionStatus(saved) });
+    } catch (error) {
+      return res.status(400).json({
+        code: "invalid_provider_connection",
+        message: error instanceof Error ? error.message : "Provider Connection upsert failed.",
+      });
+    }
+  });
+
+  app.get("/api/registry/provider-connections/:connectionId", (req: Request, res: Response) => {
+    const connectionId = getSingleParam(req.params.connectionId);
+    const connection = connectionId ? getProviderConnection(connectionId) : null;
+    if (!connection) return res.status(404).json({ code: "not_found", message: "Provider Connection not found." });
+    return res.json({ ...connection, ...providerConnectionStatus(connection) });
+  });
+
+  app.post("/api/registry/provider-connections/:connectionId/test", async (req: Request, res: Response) => {
+    const connectionId = getSingleParam(req.params.connectionId);
+    if (!connectionId) return res.status(400).json({ code: "invalid_request", message: "connectionId is required." });
+    const connection = getProviderConnection(connectionId);
+    if (!connection) return res.status(404).json({ code: "not_found", message: "Provider Connection not found." });
+    if (connection.status !== "active") {
+      return res.status(409).json({ code: "connection_disabled", message: "Enable the Provider Connection before testing it." });
+    }
+
+    const report = await runDoctor({
+      mode: "model",
+      runtime: connection.agent_runtime as DoctorRuntime,
+      provider_connection_id: connection.connection_id,
+      model_probe: true,
+    }, {
+      ...(options?.doctor || {}),
+      runtimeStatus: runtimeEngine.getRuntimeStatus(),
+      executionAdapterKind: executionAdapter.kind,
+    });
+    const liveProbe = report.checks.find((check) => check.id === "provider.live_probe");
+    const verification = {
+      status: report.model_verified === true ? "verified" as const : "failed" as const,
+      tested_at: report.generated_at,
+      detail: liveProbe?.detail || liveProbe?.summary || "Provider test did not return a diagnostic detail.",
+      duration_ms: liveProbe?.duration_ms || 0,
+      model: connection.default_model,
+    };
+    const updated = recordProviderConnectionVerification(connection.connection_id, verification);
+    return res.json({
+      connection: { ...updated, ...providerConnectionStatus(updated) },
+      verification,
+      report,
+    });
+  });
+
+  app.post("/api/registry/provider-connections/:connectionId/disable", (req: Request, res: Response) => {
+    const connectionId = getSingleParam(req.params.connectionId);
+    if (!connectionId) return res.status(400).json({ code: "invalid_request", message: "connectionId is required." });
+    try {
+      const disabled = disableProviderConnection(connectionId);
+      return res.json({ ...disabled, ...providerConnectionStatus(disabled) });
+    } catch (error) {
+      if (error instanceof Error && error.message === "PROVIDER_CONNECTION_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Provider Connection not found." });
+      }
+      return res.status(400).json({ code: "invalid_provider_connection", message: String(error) });
+    }
+  });
+
+  app.get("/api/missions/:sessionId/materializer", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    if (!sessionId) return res.status(400).json({ code: "invalid_request", message: "sessionId is required." });
+    const source = buildMissionMaterializerSource(sessionId);
+    if (!source) return res.status(404).json({ code: "not_found", message: "Mission not found." });
+    const projection = synchronizeAndMaterializeMission(source);
+    const checkpoint = getMissionMaterializerCheckpoint(sessionId);
+    return res.json({
+      session_id: sessionId,
+      materializer_version: projection.materializer_version,
+      last_sequence: projection.last_sequence,
+      event_count: projection.event_count,
+      checkpoint_sequence: checkpoint?.last_sequence || null,
+      source_digest: projection.source_digest,
+      projection_digest: projection.projection_digest,
+      materialized_at: projection.materialized_at,
+    });
+  });
+
+  app.post("/api/missions/:sessionId/materializer/rebuild", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    if (!sessionId) return res.status(400).json({ code: "invalid_request", message: "sessionId is required." });
+    const source = buildMissionMaterializerSource(sessionId);
+    if (!source) return res.status(404).json({ code: "not_found", message: "Mission not found." });
+    const rebuilt = synchronizeAndMaterializeMission(source, { forceRebuild: true });
+    return res.json({
+      session_id: sessionId,
+      materializer_version: rebuilt.materializer_version,
+      rebuilt: true,
+      last_sequence: rebuilt.last_sequence,
+      event_count: rebuilt.event_count,
+      checkpoint_sequence: rebuilt.checkpoint_sequence,
+      source_digest: rebuilt.source_digest,
+      projection_digest: rebuilt.projection_digest,
+      materialized_at: rebuilt.materialized_at,
+    });
+  });
+
+  app.post("/api/missions/:sessionId/materializer/verify", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    if (!sessionId) return res.status(400).json({ code: "invalid_request", message: "sessionId is required." });
+    const source = buildMissionMaterializerSource(sessionId);
+    if (!source) return res.status(404).json({ code: "not_found", message: "Mission not found." });
+    return res.json(verifyMissionMaterialization(source));
   });
 
   app.get("/api/runtime/summary", (_req: Request, res: Response) => {
@@ -8505,42 +12230,151 @@ export function createApp(options?: {
     }
 
     const selectedRunId = getSingleParam(req.query.run_id);
-    if (selectedRunId && !resolveSessionWorkspaceRun(sessionId, selectedRunId)) {
+    if (selectedRunId && !resolveSessionWorkspaceRun(sessionId, selectedRunId, session)) {
       return res.status(404).json({
         code: "run_not_found",
         message: "Requested run is not linked to the session.",
       });
     }
 
-    const mission = buildMissionDetailResponse(sessionId, selectedRunId || null);
-    if (!mission) {
-      return res.status(404).json({
-        code: "not_found",
-        message: "Session not found.",
-      });
+    const workspace = buildSessionWorkspaceDetailResponse(
+      sessionId,
+      selectedRunId || null,
+      session,
+    );
+    if (!workspace) {
+      return res.status(404).json({ code: "not_found", message: "Session workspace not found." });
     }
-
-    const selectedRun = mission.latest_run;
     return res.json({
-      session: mission.session,
-      messages: mission.messages,
-      latest_run: selectedRun,
-      selected_run_id: selectedRun?.run_id || null,
-      attachments: mission.attachments,
-      workspace_state: mission.workspace_state || {},
-      next_actions: mission.next_actions || [],
-      workspace_contract_version: mission.workspace_contract_version || MISSION_WORKSPACE_CONTRACT_VERSION,
-      mission_spec: mission.mission_spec,
-      mission_spec_contract: mission.mission_spec_contract,
-      mission_snapshot: mission.mission_snapshot,
-      artifacts: selectedRun ? listArtifacts(selectedRun.run_id) : [],
-      pending_approvals: selectedRun ? listApprovals("pending").filter((item) => item.run_id === selectedRun.run_id) : [],
-      pending_human_inputs: selectedRun
-        ? listHumanInputs("pending").filter((item) => item.run_id === selectedRun.run_id)
-        : [],
+      ...workspace,
       interventions: listSessionInterventions(sessionId),
       dag_patches: listSessionDagPatches(sessionId),
+      task_checkpoint: getLatestTaskCheckpoint(sessionId),
     });
+  });
+
+  app.get("/api/sessions/:sessionId/memory-snapshot", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    return res.json(ensureCoreMemorySnapshot(session));
+  });
+
+  app.get("/api/sessions/:sessionId/memory-recommendations", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    const requestedLimit = Number(getSingleParam(req.query.limit) || 5);
+    if (!Number.isFinite(requestedLimit) || requestedLimit < 1 || requestedLimit > 8) {
+      return res.status(400).json({ code: "invalid_request", message: "limit must be between 1 and 8." });
+    }
+    const recommendations = listSessionMemoryRecommendations(session, { limit: requestedLimit });
+    return res.json({
+      schema_version: 1,
+      session_id: session.session_id,
+      count: recommendations.length,
+      recommendations,
+    });
+  });
+
+  app.post("/api/session-recall/search", (req: Request, res: Response) => {
+    const body = isPlainObject(req.body) ? req.body : {};
+    const query = typeof body.query === "string" ? body.query.trim() : "";
+    const currentSessionId = typeof body.current_session_id === "string"
+      ? body.current_session_id.trim()
+      : "";
+    if (!query || !currentSessionId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "query and current_session_id are required.",
+      });
+    }
+    if (!getSession(currentSessionId)) {
+      return res.status(404).json({ code: "not_found", message: "Current Session not found." });
+    }
+    try {
+      return res.json(recallSessions({
+        query,
+        currentSessionId,
+        limit: typeof body.limit === "number" ? body.limit : undefined,
+        contextRadius: typeof body.context_radius === "number" ? body.context_radius : undefined,
+      }));
+    } catch (error) {
+      return res.status(503).json({
+        code: "session_recall_unavailable",
+        message: error instanceof Error ? error.message : "Session Recall is unavailable.",
+      });
+    }
+  });
+
+  app.get("/api/sessions/:sessionId/checkpoints", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    if (!sessionId || !getSession(sessionId)) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    return res.json({ items: listTaskCheckpoints(sessionId) });
+  });
+
+  app.get("/api/sessions/:sessionId/checkpoints/latest", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    if (!sessionId || !getSession(sessionId)) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    const checkpoint = getLatestTaskCheckpoint(sessionId);
+    return checkpoint
+      ? res.json(checkpoint)
+      : res.status(404).json({ code: "not_found", message: "Task checkpoint not found." });
+  });
+
+  app.post("/api/sessions/:sessionId/checkpoints/:checkpointId/resume", async (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const checkpointId = getSingleParam(req.params.checkpointId);
+    if (!sessionId || !checkpointId) {
+      return res.status(404).json({ code: "not_found", message: "Task checkpoint not found." });
+    }
+    const session = getSession(sessionId);
+    const checkpoint = session
+      ? getTaskCheckpoint(sessionId, checkpointId, session.workspace_id)
+      : null;
+    if (!session || !checkpoint) {
+      return res.status(404).json({ code: "not_found", message: "Task checkpoint not found." });
+    }
+    const latest = getLatestTaskCheckpoint(sessionId, session.workspace_id);
+    if (latest?.checkpoint_id !== checkpoint.checkpoint_id || checkpoint.status !== "resumable") {
+      return res.status(409).json({
+        code: "task_checkpoint_not_resumable",
+        message: "Only the latest resumable Task checkpoint can be resumed.",
+      });
+    }
+    try {
+      const result = await streamSessionConversationTurn({
+        sessionId,
+        resumeLatestUser: true,
+        automaticResume: false,
+        providerConnectionId: isPlainObject(req.body) && typeof req.body.provider_connection_id === "string"
+          ? req.body.provider_connection_id
+          : undefined,
+        model: isPlainObject(req.body) && typeof req.body.model === "string" ? req.body.model : undefined,
+        onDelta: () => {},
+      });
+      return res.json({
+        checkpoint: getLatestTaskCheckpoint(sessionId, session.workspace_id),
+        assistant_message: result.assistantMessage,
+        session: result.session,
+      });
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code || "task_checkpoint_resume_failed")
+        : "task_checkpoint_resume_failed";
+      return res.status(code === "task_checkpoint_resume_limit" ? 409 : 503).json({
+        code,
+        message: error instanceof Error ? error.message : "Task checkpoint resume failed.",
+      });
+    }
   });
 
   app.get("/api/sessions/:sessionId/attachments", (req: Request, res: Response) => {
@@ -8560,7 +12394,7 @@ export function createApp(options?: {
     }
 
     return res.json({
-      items: listSessionAttachments(sessionId),
+      items: listSessionInputAttachments(sessionId),
     });
   });
 
@@ -8591,7 +12425,7 @@ export function createApp(options?: {
       sessionId,
       request: req.body,
     });
-    const attachments = listSessionAttachments(sessionId);
+    const attachments = listSessionInputAttachments(sessionId);
     const timestamp = nowIso();
     session.updated_at = timestamp;
     session.metadata = {
@@ -8604,6 +12438,139 @@ export function createApp(options?: {
     return res.status(201).json({
       attachment,
       items: attachments,
+    });
+  });
+
+  app.get("/api/sessions/:sessionId/artifacts/:artifactId/download", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const artifactId = getSingleParam(req.params.artifactId);
+    if (!sessionId || !artifactId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "sessionId and artifactId are required.",
+      });
+    }
+    if (!getSession(sessionId)) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    const artifact = listSessionAttachments(sessionId).find(
+      (item) => item.attachment_id === artifactId &&
+        item.kind === "generated_output" &&
+        item.metadata?.source === "conversation_generated_output",
+    );
+    const content = artifact?.metadata?.generated_text_content;
+    if (!artifact || typeof content !== "string") {
+      return res.status(404).json({ code: "not_found", message: "Generated artifact not found." });
+    }
+    const binaryBase64 = typeof artifact.metadata?.generated_binary_content_base64 === "string"
+      ? artifact.metadata.generated_binary_content_base64
+      : "";
+    const fallbackName = artifact.name.replace(/[^a-z0-9._-]+/giu, "-") || "generated-output.txt";
+    res.setHeader("content-type", artifact.mime_type || "text/plain; charset=utf-8");
+    const disposition = getSingleParam(req.query.inline) === "1" ? "inline" : "attachment";
+    res.setHeader(
+      "content-disposition",
+      `${disposition}; filename="${fallbackName.replace(/[^\x20-\x7e]/gu, "_")}"; filename*=UTF-8''${encodeURIComponent(artifact.name)}`,
+    );
+    res.setHeader("cache-control", "private, no-store");
+    const publishedPath = resolvePublishedSessionArtifactPath(sessionId, artifact);
+    if (publishedPath) return res.sendFile(publishedPath);
+    return res.send(binaryBase64 ? Buffer.from(binaryBase64, "base64") : content);
+  });
+
+  app.get("/api/sessions/:sessionId/artifacts/:artifactId", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const artifactId = getSingleParam(req.params.artifactId);
+    if (!sessionId || !artifactId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "sessionId and artifactId are required.",
+      });
+    }
+    if (!getSession(sessionId)) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    const artifact = listSessionAttachments(sessionId).find(
+      (item) => item.attachment_id === artifactId && isConversationGeneratedArtifact(item),
+    );
+    const content = artifact?.metadata?.generated_text_content;
+    if (!artifact || typeof content !== "string") {
+      return res.status(404).json({ code: "not_found", message: "Generated artifact not found." });
+    }
+    const versions = listGeneratedArtifactVersions(sessionId, artifact.name);
+    const versionIndex = versions.findIndex((item) => item.attachment_id === artifact.attachment_id);
+    const previousArtifact = versionIndex > 0 ? versions[versionIndex - 1] : null;
+    const spreadsheetPreview = typeof artifact.metadata?.generated_spreadsheet_preview_json === "string"
+      ? parseSpreadsheetPayload(artifact.metadata.generated_spreadsheet_preview_json)
+      : null;
+    return res.json({
+      artifact: generatedArtifactPublicMetadata(artifact, versionIndex + 1),
+      content,
+      preview_kind: spreadsheetPreview
+        ? "table"
+        : artifact.mime_type?.toLowerCase().includes("markdown")
+          ? "markdown"
+          : "text",
+      table_preview: spreadsheetPreview,
+      previous_artifact_id: previousArtifact?.attachment_id || null,
+      versions: versions.map((item, index) => generatedArtifactPublicMetadata(item, index + 1)),
+    });
+  });
+
+  app.get("/api/sessions/:sessionId/artifacts/:artifactId/compare", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const artifactId = getSingleParam(req.params.artifactId);
+    const requestedBaseArtifactId = getSingleParam(req.query.base_artifact_id);
+    if (!sessionId || !artifactId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "sessionId and artifactId are required.",
+      });
+    }
+    if (!getSession(sessionId)) {
+      return res.status(404).json({ code: "not_found", message: "Session not found." });
+    }
+    const attachments = listSessionAttachments(sessionId);
+    const artifact = attachments.find(
+      (item) => item.attachment_id === artifactId && isConversationGeneratedArtifact(item),
+    );
+    if (!artifact) {
+      return res.status(404).json({ code: "not_found", message: "Generated artifact not found." });
+    }
+    const versions = listGeneratedArtifactVersions(sessionId, artifact.name);
+    const versionIndex = versions.findIndex((item) => item.attachment_id === artifact.attachment_id);
+    const baseArtifact = requestedBaseArtifactId
+      ? attachments.find(
+          (item) => item.attachment_id === requestedBaseArtifactId && isConversationGeneratedArtifact(item),
+        ) || null
+      : versionIndex > 0
+        ? versions[versionIndex - 1] || null
+        : null;
+    if (!baseArtifact) {
+      return res.status(404).json({
+        code: "base_artifact_not_found",
+        message: "No previous generated artifact version is available for comparison.",
+      });
+    }
+    if (normalizeGeneratedArtifactName(baseArtifact.name) !== normalizeGeneratedArtifactName(artifact.name)) {
+      return res.status(400).json({
+        code: "invalid_base_artifact",
+        message: "The base artifact must be a version of the same generated file.",
+      });
+    }
+    const baseVersionIndex = versions.findIndex(
+      (item) => item.attachment_id === baseArtifact.attachment_id,
+    );
+    const baseContent = String(baseArtifact.metadata.generated_text_content || "");
+    const targetContent = String(artifact.metadata.generated_text_content || "");
+    const diff = buildGeneratedArtifactDiff(baseContent, targetContent);
+    return res.json({
+      base: generatedArtifactPublicMetadata(baseArtifact, baseVersionIndex + 1),
+      target: generatedArtifactPublicMetadata(artifact, versionIndex + 1),
+      additions: diff.additions,
+      deletions: diff.deletions,
+      changed: diff.additions > 0 || diff.deletions > 0,
+      lines: diff.lines,
     });
   });
 
@@ -8805,6 +12772,36 @@ export function createApp(options?: {
       });
     }
 
+    const conversationSelection = validateConversationSelection(req.body);
+    if (!conversationSelection.ok) {
+      return res.status(conversationSelection.status).json({
+        code: conversationSelection.code,
+        message: conversationSelection.message,
+      });
+    }
+    const metadataBeforeSelection = getSessionMetadataObject(session);
+    const previousConnectionId =
+      typeof metadataBeforeSelection.conversation_provider_connection_id === "string"
+        ? metadataBeforeSelection.conversation_provider_connection_id
+        : null;
+    const previousModel =
+      typeof metadataBeforeSelection.conversation_model === "string"
+        ? metadataBeforeSelection.conversation_model
+        : null;
+    if (conversationSelection.selection) {
+      session.metadata = {
+        ...metadataBeforeSelection,
+        conversation_provider_connection_id: conversationSelection.selection.provider_connection_id,
+        conversation_model: conversationSelection.selection.model,
+      };
+    }
+    const activeConnectionId =
+      conversationSelection.selection?.provider_connection_id || previousConnectionId;
+    const activeModel = conversationSelection.selection?.model || previousModel;
+    const modelSwitch =
+      !!conversationSelection.selection &&
+      (previousConnectionId !== activeConnectionId || previousModel !== activeModel);
+
     const userText = req.body.content.trim();
     const baselineMessageCount = buildSessionThreadMessages(sessionId).length;
     const message = appendSessionMessage({
@@ -8813,10 +12810,24 @@ export function createApp(options?: {
       kind: "text",
       content: {
         text: userText,
+        ...(req.body.target_artifact_id?.trim()
+          ? { target_artifact_id: req.body.target_artifact_id.trim() }
+          : {}),
+        ...(activeConnectionId && activeModel
+          ? {
+              provider_connection_id: activeConnectionId,
+              model: activeModel,
+              model_switch: modelSwitch,
+            }
+          : {}),
       },
     });
+    const taskCheckpoint = beginTaskCheckpoint({
+      session,
+      sourceUserMessageId: message.message_id,
+    });
     const seededGoal = !session.current_goal && !!userText;
-    const interpretation = interpretSessionMessage({
+    const interpretation = await interpretSessionMessage({
       sessionId,
       session,
       userText,
@@ -8844,28 +12855,198 @@ export function createApp(options?: {
       route_stale: nextRouteStale,
       stale_reason: nextStaleReason,
     };
-    let orchestratorText = interpretation.turnText;
+    let fallbackText = interpretation.turnText;
     if (
       !interpretation.shouldAutoDraft &&
       !interpretation.shouldAutoPlan &&
       !interpretation.shouldAutoRevise &&
       interpretation.intent !== "ask_run"
     ) {
-      orchestratorText = buildSessionConversationReply({
+      fallbackText = buildSessionConversationReply({
         session,
         sessionId,
         userText,
         seededGoal,
       });
     }
+    const fileDeliverableResolution = await resolveConversationFileDeliverable({
+      session,
+      sessionId,
+      userText,
+      explicitTargetArtifactId: req.body.target_artifact_id,
+      fetchImpl: options?.conversation?.fetchImpl,
+    });
+    const fileDeliverableRequest = fileDeliverableResolution?.kind === "request"
+      ? fileDeliverableResolution.request
+      : null;
+    const fileClarification = fileDeliverableResolution?.kind === "clarification"
+      ? fileDeliverableResolution
+      : null;
+    if (fileClarification) {
+      fallbackText = fileClarification.message;
+      session.status = "waiting_human";
+      session.metadata = {
+        ...getSessionMetadataObject(session),
+        pending_decision: "Select an explicit source file from Workboard.",
+        latest_orchestrator_intent: "file_target_clarification",
+        file_target_candidate_ids: fileClarification.candidateArtifactIds,
+      };
+    }
+    if (fileDeliverableRequest) {
+      if (fileDeliverableRequest.outputFormat === "worker") {
+        const autonomyMode = resolveSessionAutopilotMode(session);
+        const scheduled = autonomyMode === "autopilot";
+        fallbackText = conversationArtifactWorkerRequiredText(fileDeliverableRequest, scheduled);
+        session.status = scheduled ? "ready_to_run" : "waiting_human";
+        session.metadata = {
+          ...getSessionMetadataObject(session),
+          pending_decision: scheduled
+            ? "Autopilot will start and supervise the sandboxed Artifact Worker."
+            : "Start the sandboxed Artifact Worker for this binary deliverable.",
+          latest_orchestrator_intent: "artifact_worker_required",
+          requested_artifact_name: fileDeliverableRequest.outputName,
+          requested_artifact_mime_type: fileDeliverableRequest.mimeType,
+        };
+        if (scheduled) {
+          const controller = ensureAutopilotController({
+            sessionId,
+            workspaceId: session.workspace_id,
+            mode: autonomyMode,
+          });
+          saveAutopilotController({
+            ...controller,
+            status: "ready",
+            phase: "planning",
+            handoff_reason: null,
+            pending_gate: null,
+            updated_at: nowIso(),
+          });
+        }
+      } else try {
+        const generated = await generateConversationFileDeliverable({
+          session,
+          sessionId,
+          request: fileDeliverableRequest,
+        });
+        if (generated.file) {
+          const generatedMessage = await persistConversationFileDeliverable({
+            session,
+            sessionId,
+            userText,
+            request: fileDeliverableRequest,
+            file: generated.file,
+            evidence: generated.evidence,
+            semanticRepairRounds: generated.semanticRepairRounds,
+          });
+          transitionTaskCheckpoint(taskCheckpoint, {
+            status: "completed",
+            reason: "turn_completed",
+            detail: "The requested file deliverable was persisted.",
+            sourceAssistantMessageId: generatedMessage.message_id,
+            progressSummary: String(generatedMessage.content.text || "File deliverable completed."),
+            nextAction: "Review the generated artifact.",
+            providerEvidence: generated.evidence,
+          });
+          return res.status(201).json(
+            buildSessionMessageTurnResponse({
+              sessionId,
+              userMessage: message,
+              baselineMessageCount,
+            }),
+          );
+        }
+        fallbackText = /[\u3400-\u9fff]/u.test(userText)
+          ? "模型连续返回了说明性回复，但没有提供完整文件内容。本轮保持未完成，请重试文件生成。"
+          : "The model repeatedly returned explanatory text without the complete file. This task remains incomplete; retry file generation.";
+        session.status = "waiting_human";
+        session.metadata = {
+          ...getSessionMetadataObject(session),
+          pending_decision: "Retry the incomplete file deliverable.",
+          latest_orchestrator_intent: "deliver_file_incomplete",
+        };
+      } catch (error) {
+        fallbackText = /[\u3400-\u9fff]/u.test(userText)
+          ? `文件生成失败：${error instanceof Error ? error.message : "Provider request failed."}`
+          : `File generation failed: ${error instanceof Error ? error.message : "Provider request failed."}`;
+      }
+    }
+    let conversationReply = fileDeliverableRequest || fileClarification
+      ? {
+          text: fallbackText,
+          evidence: {
+            response_source: "deterministic_fallback" as const,
+            fallback_reason: fileClarification
+              ? "The source file target was missing or ambiguous."
+              : fileDeliverableRequest?.outputFormat === "worker"
+                ? "The requested binary format requires the sandboxed Artifact Worker."
+              : "The Provider did not return a complete file deliverable.",
+          },
+        }
+      : await buildModelBackedSessionConversationReply({
+          session,
+          sessionId,
+          userText,
+          fallbackText,
+        });
+    const guardedArtifactClaims = guardConversationArtifactClaims(sessionId, conversationReply.text);
+    if (guardedArtifactClaims.rejected) {
+      conversationReply = {
+        text: guardedArtifactClaims.text,
+        evidence: {
+          response_source: "deterministic_fallback" as const,
+          fallback_reason: "The Provider returned a download link for an artifact that does not exist.",
+        },
+      };
+      session.status = "waiting_human";
+      session.metadata = {
+        ...getSessionMetadataObject(session),
+        pending_decision: "Regenerate the file through the server-backed deliverable flow.",
+        latest_orchestrator_intent: "artifact_claim_rejected",
+        rejected_artifact_ids: guardedArtifactClaims.artifactIds,
+      };
+    }
     const orchestratorMessage = persistSessionDecisionArtifacts({
       session,
       sessionId,
       interpretation,
       userText,
-      orchestratorText,
+      orchestratorText: conversationReply.text,
+      conversationEvidence: conversationReply.evidence,
       turnSummaryText: interpretation.turnText,
     });
+    const httpProviderEvidence = conversationReply.evidence.response_source === "provider"
+      ? conversationReply.evidence
+      : null;
+    if (httpProviderEvidence?.continuation_limit_reached) {
+      transitionTaskCheckpoint(taskCheckpoint, {
+        status: "resumable",
+        reason: "continuation_limit",
+        detail: "The Provider reached its bounded continuation limit before the task finished.",
+        sourceAssistantMessageId: orchestratorMessage.message_id,
+        progressSummary: conversationReply.text,
+        contextSummary: typeof session.metadata?.conversation_context_summary === "string"
+          ? session.metadata.conversation_context_summary
+          : null,
+        nextAction: "Continue the unfinished response from this checkpoint.",
+        providerEvidence: httpProviderEvidence,
+      });
+    } else {
+      const waitingHuman = session.status === "waiting_human";
+      transitionTaskCheckpoint(taskCheckpoint, {
+        status: waitingHuman ? "waiting_human" : "completed",
+        reason: waitingHuman ? "waiting_input" : "turn_completed",
+        detail: waitingHuman
+          ? "The task requires user input or approval before it can continue."
+          : "The Conversation turn reached a complete response.",
+        sourceAssistantMessageId: orchestratorMessage.message_id,
+        progressSummary: conversationReply.text,
+        contextSummary: typeof session.metadata?.conversation_context_summary === "string"
+          ? session.metadata.conversation_context_summary
+          : null,
+        nextAction: waitingHuman ? String(session.metadata?.pending_decision || "Provide the requested input.") : null,
+        providerEvidence: httpProviderEvidence,
+      });
+    }
     if (session.status === "completed" || session.status === "failed" || session.status === "cancelled") {
       session.status = "draft";
       syncSessionWorkingState(sessionId, session);
@@ -10236,6 +14417,39 @@ export function createApp(options?: {
     });
   });
 
+  app.delete("/api/sessions/:sessionId/attachments/:attachmentId", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const attachmentId = getSingleParam(req.params.attachmentId);
+    if (!sessionId || !attachmentId) {
+      return res.status(400).json({ code: "invalid_request", message: "sessionId and attachmentId are required." });
+    }
+    const session = getSession(sessionId);
+    if (!session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    const requestedAttachment = listSessionAttachments(sessionId).find(
+      (item) => item.attachment_id === attachmentId,
+    );
+    if (
+      requestedAttachment?.kind === "generated_output" ||
+      requestedAttachment?.metadata?.source === "conversation_generated_output"
+    ) {
+      return res.status(409).json({
+        code: "generated_artifact_protected",
+        message: "Generated artifacts cannot be removed through the input attachment API.",
+      });
+    }
+    const attachment = deleteSessionAttachment(sessionId, attachmentId);
+    if (!attachment) return res.status(404).json({ code: "not_found", message: "Attachment not found." });
+    const attachments = listSessionInputAttachments(sessionId);
+    session.updated_at = nowIso();
+    session.metadata = {
+      ...getSessionMetadataObject(session),
+      attachment_count: attachments.length,
+      latest_attachment_at: attachments.at(-1)?.created_at || null,
+    };
+    saveSession(session);
+    return res.json({ attachment, items: attachments });
+  });
+
   app.post("/api/sessions/:sessionId/dag-proposals", async (req: Request, res: Response) => {
     const sessionId = getSingleParam(req.params.sessionId);
     if (!sessionId) {
@@ -10793,6 +15007,7 @@ export function createApp(options?: {
       finished_at: run.finished_at,
       last_event_id: run.last_event_id,
       inputs: run.inputs,
+      workspace_binding_id: run.workspace_binding_id || null,
       proposal_id: run.proposal_id,
       source_run_id: run.source_run_id || null,
       rerun_reason: run.rerun_reason || null,
@@ -11185,7 +15400,85 @@ export function createApp(options?: {
     }
 
     return res.json({
-      items: listArtifacts(runId),
+      items: listArtifacts(runId).map((artifact) => ({
+        ...artifact,
+        storage_uri: runtimeArtifactDownloadUri(runId, artifact.artifact_id),
+      })),
+    });
+  });
+
+  app.get("/api/runs/:runId/artifacts/:artifactId/download", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const artifactId = getSingleParam(req.params.artifactId);
+    if (!runId || !artifactId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId and artifactId are required." });
+    }
+    if (!getRun(runId)) {
+      return res.status(404).json({ code: "not_found", message: "Run not found." });
+    }
+    const artifact = listArtifacts(runId).find((item) => item.artifact_id === artifactId);
+    if (!artifact) {
+      return res.status(404).json({ code: "not_found", message: "Artifact not found." });
+    }
+    const filePath = resolveRuntimeArtifactPath(runId, artifact);
+    if (!filePath) {
+      return res.status(404).json({ code: "artifact_file_unavailable", message: "Artifact file is no longer available in the Worker workspace." });
+    }
+    const fallbackName = artifact.name.replace(/[^a-z0-9._-]+/giu, "-") || "artifact.bin";
+    res.setHeader("content-type", artifact.mime_type || "application/octet-stream");
+    res.setHeader(
+      "content-disposition",
+      `attachment; filename="${fallbackName.replace(/[^\x20-\x7e]/gu, "_")}"; filename*=UTF-8''${encodeURIComponent(artifact.name)}`,
+    );
+    res.setHeader("cache-control", "private, no-store");
+    return res.sendFile(filePath);
+  });
+
+  app.get("/api/runs/:runId/artifacts/:artifactId", (req: Request, res: Response) => {
+    const runId = getSingleParam(req.params.runId);
+    const artifactId = getSingleParam(req.params.artifactId);
+    if (!runId || !artifactId) {
+      return res.status(400).json({ code: "invalid_request", message: "runId and artifactId are required." });
+    }
+    if (!getRun(runId)) {
+      return res.status(404).json({ code: "not_found", message: "Run not found." });
+    }
+    const artifact = listArtifacts(runId).find((item) => item.artifact_id === artifactId);
+    if (!artifact) {
+      return res.status(404).json({ code: "not_found", message: "Artifact not found." });
+    }
+    const filePath = resolveRuntimeArtifactPath(runId, artifact);
+    if (!filePath) {
+      return res.status(404).json({ code: "artifact_file_unavailable", message: "Artifact file is no longer available in the Worker workspace." });
+    }
+    const mimeType = artifact.mime_type.toLowerCase();
+    const textPreview =
+      mimeType.startsWith("text/") ||
+      /(?:json|xml|yaml|toml|javascript|typescript|sql|svg)/u.test(mimeType);
+    const content = textPreview && artifact.size_bytes <= 1024 * 1024
+      ? fs.readFileSync(filePath, "utf8")
+      : "";
+    const previewKind = textPreview
+      ? mimeType.includes("markdown") ? "markdown" : "text"
+      : mimeType.startsWith("image/")
+        ? "image"
+        : mimeType === "application/pdf"
+          ? "pdf"
+          : "binary";
+    return res.json({
+      artifact: {
+        ...artifact,
+        storage_uri: runtimeArtifactDownloadUri(runId, artifact.artifact_id),
+      },
+      content,
+      preview_kind: previewKind,
+      download_uri: runtimeArtifactDownloadUri(runId, artifact.artifact_id),
+      preview_uri: `${runtimeArtifactDownloadUri(runId, artifact.artifact_id)}?inline=1`,
+      previous_artifact_id: null,
+      versions: [{
+        ...artifact,
+        storage_uri: runtimeArtifactDownloadUri(runId, artifact.artifact_id),
+      }],
     });
   });
 
@@ -11544,6 +15837,141 @@ export function createApp(options?: {
     });
   });
 
+  app.get("/api/runtime/workspace-change-sets", (req: Request, res: Response) => {
+    const rawStatus = typeof req.query.status === "string" ? req.query.status.trim() : "";
+    const allowedStatuses = new Set(["pending", "applied", "rejected", "blocked", "apply_failed"]);
+    if (rawStatus && !allowedStatuses.has(rawStatus)) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "Unsupported workspace change set status.",
+      });
+    }
+    const status = rawStatus
+      ? rawStatus as "pending" | "applied" | "rejected" | "blocked" | "apply_failed"
+      : undefined;
+    return res.json({
+      items: listRuntimeWorkspaceChangeSets(status),
+    });
+  });
+
+  app.get("/api/runtime/workspace-change-sets/:changeSetId", (req: Request, res: Response) => {
+    const changeSetId = getSingleParam(req.params.changeSetId);
+    const changeSet = changeSetId ? getRuntimeWorkspaceChangeSet(changeSetId) : null;
+    if (!changeSet) {
+      return res.status(404).json({ code: "not_found", message: "Workspace change set not found." });
+    }
+    return res.json(changeSet);
+  });
+
+  app.post("/api/runtime/workspace-change-sets/:changeSetId/apply", (req: Request, res: Response) => {
+    const changeSetId = getSingleParam(req.params.changeSetId);
+    if (!changeSetId) {
+      return res.status(400).json({ code: "invalid_request", message: "changeSetId is required." });
+    }
+    const protectedChangeSet = getRuntimeWorkspaceChangeSet(changeSetId);
+    const protectedRun = protectedChangeSet ? getRun(protectedChangeSet.run_id) : null;
+    if (protectedRun?.workspace_binding_id) {
+      return res.status(409).json({
+        code: "desktop_apply_required",
+        message: "This local Workspace Change Set must be applied through the Desktop confirmation boundary.",
+      });
+    }
+    try {
+      return res.json(applyRuntimeWorkspaceChangeSet({
+        changeSetId,
+        actor: requestActor(req),
+        comment: isPlainObject(req.body) && typeof req.body.comment === "string" ? req.body.comment : undefined,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Workspace change set application failed.";
+      if (message === "WORKSPACE_CHANGE_SET_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Workspace change set not found." });
+      }
+      if (message === "WORKSPACE_CHANGE_SET_NOT_PENDING") {
+        return res.status(409).json({ code: "invalid_change_set_state", message: "Workspace change set is not pending." });
+      }
+      if (message.startsWith("WORKSPACE_CONFLICT:") || message.startsWith("SANDBOX_CHANGED:")) {
+        return res.status(409).json({ code: "workspace_conflict", message });
+      }
+      return res.status(500).json({ code: "workspace_apply_failed", message });
+    }
+  });
+
+  app.post("/api/internal/desktop/workspace-change-sets/:changeSetId/apply", (req: Request, res: Response) => {
+    if (!desktopBridgeToken || !hasBearerToken(req, desktopBridgeToken)) {
+      return res.status(401).json({ code: "unauthorized", message: "Invalid Desktop bridge token." });
+    }
+    const changeSetId = getSingleParam(req.params.changeSetId);
+    const changeSet = changeSetId ? getRuntimeWorkspaceChangeSet(changeSetId) : null;
+    const run = changeSet ? getRun(changeSet.run_id) : null;
+    const binding = run?.workspace_binding_id ? getWorkspaceBinding(run.workspace_binding_id) : null;
+    const body = isPlainObject(req.body) ? req.body : {};
+    if (!changeSet || !run || !binding) {
+      return res.status(404).json({ code: "not_found", message: "Desktop Workspace Change Set not found." });
+    }
+    if (
+      binding.status !== "active" ||
+      binding.access !== "sandbox-write" ||
+      binding.root_path !== changeSet.source_root ||
+      body.desktop_instance_id !== binding.desktop_instance_id ||
+      workspaceCapabilityDigest(typeof body.capability_id === "string" ? body.capability_id : "") !== binding.capability_digest
+    ) {
+      return res.status(409).json({
+        code: "workspace_binding_invalid",
+        message: "The Desktop Workspace Binding no longer authorizes this source folder.",
+      });
+    }
+    try {
+      const applied = applyRuntimeWorkspaceChangeSet({
+        changeSetId: changeSet.change_set_id,
+        actor: `desktop:${binding.desktop_instance_id}`,
+        comment: typeof body.comment === "string" ? body.comment : "Reviewed in My Mate Desktop",
+      });
+      for (const sessionId of getSessionIdsLinkedToRun(run.run_id)) {
+        const controller = getAutopilotController(sessionId);
+        if (controller?.pending_gate === "change_review") {
+          saveAutopilotController({
+            ...controller,
+            status: "ready",
+            phase: "quality",
+            pending_gate: null,
+            handoff_reason: null,
+            next_tick_at: nowIso(),
+            updated_at: nowIso(),
+          });
+        }
+      }
+      return res.json(applied);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Workspace change set application failed.";
+      const status = message.startsWith("WORKSPACE_CONFLICT:") || message.startsWith("SANDBOX_CHANGED:") ? 409 : 500;
+      return res.status(status).json({ code: status === 409 ? "workspace_conflict" : "workspace_apply_failed", message });
+    }
+  });
+
+  app.post("/api/runtime/workspace-change-sets/:changeSetId/reject", (req: Request, res: Response) => {
+    const changeSetId = getSingleParam(req.params.changeSetId);
+    if (!changeSetId) {
+      return res.status(400).json({ code: "invalid_request", message: "changeSetId is required." });
+    }
+    try {
+      return res.json(rejectRuntimeWorkspaceChangeSet({
+        changeSetId,
+        actor: requestActor(req),
+        comment: isPlainObject(req.body) && typeof req.body.comment === "string" ? req.body.comment : undefined,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Workspace change set rejection failed.";
+      if (message === "WORKSPACE_CHANGE_SET_NOT_FOUND") {
+        return res.status(404).json({ code: "not_found", message: "Workspace change set not found." });
+      }
+      if (message === "WORKSPACE_CHANGE_SET_NOT_PENDING") {
+        return res.status(409).json({ code: "invalid_change_set_state", message: "Workspace change set is not pending." });
+      }
+      return res.status(500).json({ code: "workspace_reject_failed", message });
+    }
+  });
+
   app.post("/api/approvals/:approvalId/approve", (req: Request, res: Response) => {
     const approvalId = getSingleParam(req.params.approvalId);
     if (!approvalId) {
@@ -11586,6 +16014,26 @@ export function createApp(options?: {
       created_at: timestamp,
     });
 
+    const nativeGate = approval.gate_id
+      ? getRuntimeHumanGate(approval.run_id, approval.gate_id)
+      : null;
+    const nativeResume =
+      nativeGate?.transport === "worker_native" && options?.dispatcher?.resumeHumanGate
+        ? options.dispatcher.resumeHumanGate({
+            runId: approval.run_id,
+            nodeRunId: approval.node_run_id || "",
+            gateId: nativeGate.gate_id,
+            decision: "resume",
+            payload: {
+              approval_id: approval.approval_id,
+              comment:
+                isPlainObject(req.body) && typeof req.body.comment === "string"
+                  ? req.body.comment
+                  : "",
+            },
+          })
+        : null;
+
     if (approval.node_run_id) {
       const run = getRun(approval.run_id);
       const plan = getRunPlan(approval.run_id);
@@ -11594,6 +16042,24 @@ export function createApp(options?: {
       const node = plan?.compiled_nodes.find((item) => item.node_run_id === approval.node_run_id);
 
       if (run && plan && nodeRun && node) {
+        if (nativeResume?.delivered) {
+          node.status = "running";
+          nodeRun.status = "running";
+          nodeRun.progress = {
+            percent: nodeRun.progress.percent,
+            message: "Approval granted; resuming active Runtime Worker job",
+            updated_at: timestamp,
+          };
+          run.status = "running";
+          run.waiting_reason = null;
+          run.current_summary = `Approval granted: ${node.name}`;
+          run.updated_at = timestamp;
+          run.last_event_id = event.event_id;
+          plan.status = "running";
+          saveRun(run);
+          saveRunPlan(plan);
+          saveNodeRuns(approval.run_id, nodeRuns);
+        } else {
         node.status = "ready";
         node.execution_ref = createEmptyExecutionRef();
         node.retry_policy.attempt = nodeRun.attempt;
@@ -11614,6 +16080,7 @@ export function createApp(options?: {
         saveRunPlan(plan);
         saveNodeRuns(approval.run_id, nodeRuns);
         executionAdapter.notifyNodeAction(approval.run_id, approval.node_run_id, "retry");
+        }
       }
     }
 
@@ -11664,6 +16131,22 @@ export function createApp(options?: {
       },
       created_at: timestamp,
     });
+
+    if (approval.gate_id && approval.node_run_id && options?.dispatcher?.resumeHumanGate) {
+      options.dispatcher.resumeHumanGate({
+        runId: approval.run_id,
+        nodeRunId: approval.node_run_id,
+        gateId: approval.gate_id,
+        decision: "reject",
+        payload: {
+          approval_id: approval.approval_id,
+          comment:
+            isPlainObject(req.body) && typeof req.body.comment === "string"
+              ? req.body.comment
+              : "",
+        },
+      });
+    }
 
     const run = getRun(approval.run_id);
     const plan = getRunPlan(approval.run_id);
@@ -11744,6 +16227,22 @@ export function createApp(options?: {
       created_at: timestamp,
     });
 
+    const nativeGate = inputRequest.gate_id
+      ? getRuntimeHumanGate(inputRequest.run_id, inputRequest.gate_id)
+      : null;
+    const submittedPayload =
+      isPlainObject(req.body) && isPlainObject(req.body.payload) ? req.body.payload : {};
+    const nativeResume =
+      nativeGate?.transport === "worker_native" && options?.dispatcher?.resumeHumanGate
+        ? options.dispatcher.resumeHumanGate({
+            runId: inputRequest.run_id,
+            nodeRunId: inputRequest.node_run_id || "",
+            gateId: nativeGate.gate_id,
+            decision: "resume",
+            payload: submittedPayload,
+          })
+        : null;
+
     if (inputRequest.node_run_id) {
       const run = getRun(inputRequest.run_id);
       const plan = getRunPlan(inputRequest.run_id);
@@ -11752,6 +16251,24 @@ export function createApp(options?: {
       const node = plan?.compiled_nodes.find((item) => item.node_run_id === inputRequest.node_run_id);
 
       if (run && plan && nodeRun && node) {
+        if (nativeResume?.delivered) {
+          node.status = "running";
+          nodeRun.status = "running";
+          nodeRun.progress = {
+            percent: nodeRun.progress.percent,
+            message: "Human input submitted; resuming active Runtime Worker job",
+            updated_at: timestamp,
+          };
+          run.status = "running";
+          run.waiting_reason = null;
+          run.current_summary = `Human input submitted: ${node.name}`;
+          run.updated_at = timestamp;
+          run.last_event_id = event.event_id;
+          plan.status = "running";
+          saveRun(run);
+          saveRunPlan(plan);
+          saveNodeRuns(inputRequest.run_id, nodeRuns);
+        } else {
         node.status = "ready";
         node.execution_ref = createEmptyExecutionRef();
         node.retry_policy.attempt = nodeRun.attempt;
@@ -11782,6 +16299,7 @@ export function createApp(options?: {
         saveRunPlan(plan);
         saveNodeRuns(inputRequest.run_id, nodeRuns);
         executionAdapter.notifyNodeAction(inputRequest.run_id, inputRequest.node_run_id, "retry");
+        }
       }
     }
 
@@ -11838,6 +16356,29 @@ export function createApp(options?: {
       });
     }
   });
+
+  if (options?.productIntelligenceWatchdog) {
+    let scanning = false;
+    const intervalMs = Math.max(1_000, Number(process.env.MY_MATE_PRODUCT_INTELLIGENCE_INTERVAL_MS || 5_000));
+    const watchdog = setInterval(() => {
+      if (scanning) return;
+      scanning = true;
+      void (async () => {
+        runProactiveSupervisionScan();
+        for (const controller of listAutopilotControllers()) {
+          if (controller.mode === "autopilot" && ["ready", "running"].includes(controller.status)) {
+            await tickSessionAutopilot(controller.session_id);
+          }
+        }
+      })()
+        .catch((error) => console.error("Product intelligence watchdog failed:", error))
+        .finally(() => {
+          scanning = false;
+        });
+    }, intervalMs);
+    watchdog.unref();
+    app.locals.productIntelligenceWatchdog = watchdog;
+  }
 
   return app;
 }

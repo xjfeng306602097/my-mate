@@ -237,7 +237,9 @@ function buildWorkPackages(nodes: RuntimeGraphNode[]): RuntimeGraphWorkPackage[]
     const completedCount = groupNodes.filter(
       (node) => isDoneStatus(node.status) || node.markers.includes("recovered_failure"),
     ).length;
-    const blockedCount = groupNodes.filter((node) => node.markers.includes("blocked")).length;
+    const blockedCount = groupNodes.filter(
+      (node) => node.status === "waiting_human" || node.markers.includes("blocked"),
+    ).length;
     const allDone = groupNodes.length > 0 && groupNodes.every(
       (node) => isDoneStatus(node.status) || node.markers.includes("recovered_failure"),
     );

@@ -65,6 +65,7 @@ export function createRuntimeWorkerServer(): http.Server {
           writeJson(res, 202, {
             worker_id: "runtime-worker-local",
             events: result.events,
+            evidence: result.evidence,
           });
         } catch (error) {
           writeJson(res, 500, {

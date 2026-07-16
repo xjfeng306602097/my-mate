@@ -5,6 +5,7 @@ import type { NodeAction, RunAction } from "../src/control-actions.js";
 import { createApp } from "../src/app.js";
 import type { RuntimeDispatcher } from "../src/runtime-dispatcher.js";
 import type { SecurityOptions } from "../src/request-security.js";
+import type { DoctorServiceOptions } from "../src/diagnostics/doctor-service.js";
 import {
   APPROVALS_DIR,
   ARTIFACTS_DIR,
@@ -285,7 +286,12 @@ export function createStubExecutionAdapter(options?: {
 export async function startTestServer(input?: {
   executionAdapter?: ExecutionAdapter;
   dispatcher?: RuntimeDispatcher;
+  doctor?: Omit<DoctorServiceOptions, "runtimeStatus" | "executionAdapterKind">;
   security?: SecurityOptions;
+  desktopBridgeToken?: string;
+  conversation?: {
+    fetchImpl?: typeof fetch;
+  };
 }) {
   const app = createApp(input);
   return await new Promise<{

@@ -1,6 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { runLocalHarness } from "./local.js";
 import { runOpenClawHarness } from "./openclaw.js";
 import { runCommandHarness } from "./command.js";
+import { createClaudeAgentSdkHarness } from "./claude-agent-sdk.js";
+import { createCodexAppServerHarness } from "./codex-appserver.js";
 import {
   emitSyntheticResultEvidence,
   emitUnavailableNativeUsage,
@@ -10,27 +13,43 @@ import type { HarnessClient, HarnessResult, RuntimeWorkerJob } from "../types.js
 
 export type RuntimeWorkerHarness = HarnessClient;
 
+function commandAvailable(command: string): boolean {
+  const result = spawnSync(process.platform === "win32" ? "where.exe" : "which", [command], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
 const COMMAND_ENV_BY_RUNTIME: Record<string, string> = {
   codex: "MY_MATE_CODEX_COMMAND",
   "claude-sdk": "MY_MATE_CLAUDE_SDK_COMMAND",
   kimi: "MY_MATE_KIMI_COMMAND",
+  glm: "MY_MATE_GLM_COMMAND",
 };
 
 export function getSupportedHarnesses(): string[] {
-  const supported = ["local"];
+  const supported = ["local", "claude-sdk", "glm"];
   if (process.env.MY_MATE_OPENCLAW_WORKER_BRIDGE_URL) {
     supported.push("openclaw");
   }
-  if (process.env.MY_MATE_CODEX_COMMAND) {
+  if (process.env.MY_MATE_CODEX_BIN || process.env.MY_MATE_CODEX_COMMAND || commandAvailable("codex")) {
     supported.push("codex");
-  }
-  if (process.env.MY_MATE_CLAUDE_SDK_COMMAND) {
-    supported.push("claude-sdk");
   }
   if (process.env.MY_MATE_KIMI_COMMAND) {
     supported.push("kimi");
   }
   return supported;
+}
+
+export function getHarnessCapabilities(): Record<string, {
+  controls: Array<"pause" | "resume" | "cancel">;
+  native_human_gate: boolean;
+}> {
+  return Object.fromEntries(getSupportedHarnesses().map((runtime) => [runtime, {
+    controls: runtime === "local" ? ["resume", "cancel"] : ["cancel"],
+    native_human_gate: runtime === "local",
+  }]));
 }
 
 function aggregateHarness(
@@ -116,6 +135,20 @@ export function getHarness(job: RuntimeWorkerJob): RuntimeWorkerHarness {
 
   if (job.harness.agent_runtime === "openclaw") {
     return nativeOpenClawHarness();
+  }
+
+  if (
+    job.harness.agent_runtime === "codex" &&
+    (process.env.MY_MATE_CODEX_HARNESS || "app-server") !== "command"
+  ) {
+    return createCodexAppServerHarness();
+  }
+
+  if (job.harness.agent_runtime === "claude-sdk" || job.harness.agent_runtime === "glm") {
+    const mode = job.harness.agent_runtime === "glm"
+      ? process.env.MY_MATE_GLM_HARNESS
+      : process.env.MY_MATE_CLAUDE_HARNESS;
+    if ((mode || "agent-sdk") !== "command") return createClaudeAgentSdkHarness();
   }
 
   const commandEnv = COMMAND_ENV_BY_RUNTIME[job.harness.agent_runtime];

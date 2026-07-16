@@ -12,6 +12,11 @@ export const WORKSPACE_PERMISSIONS = [
   "run.control",
   "run.evaluate",
   "gate.resolve",
+  "memory.read",
+  "memory.propose",
+  "memory.write",
+  "memory.review",
+  "memory.manage",
   "audit.read",
 ] as const;
 export type WorkspacePermission = (typeof WORKSPACE_PERMISSIONS)[number];
@@ -27,9 +32,13 @@ export const ROLE_PERMISSIONS: Readonly<Record<WorkspaceRole, readonly Workspace
     "run.control",
     "run.evaluate",
     "gate.resolve",
+    "memory.read",
+    "memory.propose",
+    "memory.write",
+    "memory.review",
     "audit.read",
   ],
-  viewer: ["workspace.read", "audit.read"],
+  viewer: ["workspace.read", "memory.read", "audit.read"],
 };
 
 export interface WorkspaceMembership {

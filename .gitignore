@@ -8,6 +8,7 @@ Thumbs.db
 
 # Local assistant/tool state
 .codex-logs/
+.codex-tmp/
 .claude/*.local.json
 
 # Environment and secrets
@@ -83,6 +84,9 @@ services/control-plane/data/events/
 services/control-plane/data/human-inputs/
 services/control-plane/data/_storage/
 services/control-plane/data/node-runs/
+services/control-plane/data/provider-connections/
+services/control-plane/data/provider-secrets/
+services/control-plane/data/memory-secrets/
 services/control-plane/data/diagnostics/
 services/control-plane/data/evaluation-snapshots/
 services/control-plane/data/node-handoffs/
@@ -92,6 +96,7 @@ services/control-plane/data/run-plans/
 services/control-plane/data/run-routes/
 services/control-plane/data/runs/
 services/control-plane/data/runtime-event-cursors/
+services/control-plane/data/runtime-secret-envs/
 services/control-plane/data/runtime-jobs/
 services/control-plane/data/runtime-workers/
 services/control-plane/data/runtime-workspaces/
@@ -102,3 +107,26 @@ services/control-plane/data/session-messages/
 services/control-plane/data/sessions/
 services/control-plane/data/worker-evidence/
 services/control-plane/data/worker-leases/
+services/control-plane/data/.control-plane.lock/
+services/control-plane/data/_indexes/
+services/control-plane/data/audit-events/
+services/control-plane/data/conversation-actions/
+services/control-plane/data/evaluations/
+services/control-plane/data/local-projects/
+services/control-plane/data/memories/
+services/control-plane/data/memory-maintenance/
+services/control-plane/data/memory-observability/
+services/control-plane/data/memory-reviews/
+services/control-plane/data/memory-snapshots/
+services/control-plane/data/mission-materializer-checkpoints/
+services/control-plane/data/mission-materializer-events/
+services/control-plane/data/mission-materializer-projections/
+services/control-plane/data/observability-dirty/
+services/control-plane/data/observability-run-index/
+services/control-plane/data/supervision-alerts/
+services/control-plane/data/task-checkpoints/
+services/control-plane/data/task-workspaces/
+services/control-plane/data/workspace-bindings/
+services/control-plane/data/workspace-members/
+services/control-plane/data/workspaces/
+services/control-plane/data/agent-profiles/default-agent.json

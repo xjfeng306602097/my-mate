@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "id": "web.core",
+  "name": "Web Search And Fetch",
+  "version": "1.0.0",
+  "description": "Public web search and bounded webpage extraction with SSRF-safe DNS and redirect handling.",
+  "runtime": "control-plane",
+  "entrypoint": "builtin:web.core",
+  "enabled_by_default": true,
+  "capabilities": [
+    {
+      "id": "web_search",
+      "kind": "tool",
+      "name": "Search the public web",
+      "description": "Search the public web for current information. Returns titles, URLs, and descriptions. Use web_fetch to read a selected result in detail.",
+      "risk_level": "T1",
+      "permission_scopes": ["network.public.read"],
+      "executor": "control-plane",
+      "timeout_ms": 30000,
+      "progress_label": "Searching the web",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Search query."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 5
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "web_fetch",
+      "kind": "tool",
+      "name": "Read a public webpage",
+      "description": "Fetch a public HTTP or HTTPS URL and return bounded text or HTML. Private, local, reserved, and non-routable addresses are blocked before every request and redirect.",
+      "risk_level": "T1",
+      "permission_scopes": ["network.public.read"],
+      "executor": "control-plane",
+      "timeout_ms": 30000,
+      "progress_label": "Reading a webpage",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 2048,
+            "description": "Absolute public HTTP or HTTPS URL."
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 100000,
+            "default": 30000
+          },
+          "format": {
+            "type": "string",
+            "enum": ["text", "html"],
+            "default": "text"
+          }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "metadata": {
+    "provider_config": "MY_MATE_WEB_SEARCH_PROVIDER",
+    "providers": ["auto", "brave", "tavily", "bing", "duckduckgo"]
+  }
+}

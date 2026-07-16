@@ -89,6 +89,10 @@ export type EventType =
   | "job.completed"
   | "job.failed"
   | "job.cancelled"
+  | "job.control_applied"
+  | "job.control_rejected"
+  | "human_gate.control_sent"
+  | "human_gate.control_failed"
   | "worker.expected"
   | "worker.registered"
   | "worker.status_changed"
@@ -103,6 +107,7 @@ export type EventType =
   | "handoff.recorded"
   | "evidence.recorded"
   | "runtime.patch_applied"
+  | "runtime.fanout_materialized"
   | "runtime.quiescent"
   | "recovery.timeout_detected"
   | "recovery.compensation_started"
@@ -510,6 +515,652 @@ export interface SessionWorkspaceDetailResponse {
   mission_spec_contract: MissionSpecContract | null;
   mission_snapshot: MissionSnapshot | null;
   runtime_projection?: Record<string, unknown> | null;
+  artifacts?: ArtifactRecord[];
+  pending_approvals?: ApprovalRecord[];
+  pending_human_inputs?: HumanInputRecord[];
+  supervision_alerts?: SupervisionAlertRecord[];
+  autopilot?: AutopilotControllerRecord | null;
+  ui_plan?: MissionUiPlan;
+  workspace_binding?: PublicWorkspaceBinding | null;
+  task_workspace?: PublicTaskWorkspace | null;
+}
+
+export type SupervisionAlertSeverity = "info" | "warning" | "critical";
+export type SupervisionAlertStatus = "open" | "resolved";
+export type SupervisionAlertCategory =
+  | "human_decision"
+  | "runtime_failure"
+  | "runtime_stalled"
+  | "quality_gap"
+  | "configuration"
+  | "autopilot"
+  | "memory_recommendation";
+
+export interface SupervisionAlertRecord {
+  alert_id: string;
+  workspace_id: string;
+  session_id: string;
+  run_id: string | null;
+  category: SupervisionAlertCategory;
+  severity: SupervisionAlertSeverity;
+  status: SupervisionAlertStatus;
+  fingerprint: string;
+  title: string;
+  detail: string;
+  recommended_action: string;
+  recommended_action_label: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  resolved_at: string | null;
+  occurrence_count: number;
+  metadata: Record<string, unknown>;
+}
+
+export type AutopilotMode = "review_first" | "assisted" | "autopilot";
+export type AutopilotPendingGate =
+  | "start_confirmation"
+  | "workspace_authorization"
+  | "runtime_approval"
+  | "human_input"
+  | "change_review";
+export type AutopilotStatus =
+  | "disabled"
+  | "ready"
+  | "running"
+  | "waiting_human"
+  | "blocked"
+  | "paused"
+  | "completed"
+  | "failed";
+
+export interface AutopilotControllerRecord {
+  session_id: string;
+  workspace_id: string;
+  mode: AutopilotMode;
+  status: AutopilotStatus;
+  phase: string;
+  iteration: number;
+  max_iterations: number;
+  max_runtime_minutes: number;
+  started_at: string | null;
+  paused_at: string | null;
+  completed_at: string | null;
+  last_tick_at: string | null;
+  next_tick_at: string | null;
+  last_action: string | null;
+  last_detail: string | null;
+  handoff_reason: string | null;
+  pending_gate?: AutopilotPendingGate | null;
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export type MemoryScopeKind = "user" | "workspace" | "project" | "agent";
+export type MemoryKind = "preference" | "fact" | "convention" | "decision" | "lesson";
+export type MemorySensitivity = "normal" | "private" | "restricted";
+export type MemoryStatus = "active" | "superseded" | "expired" | "deleted";
+export type MemorySourceOrigin =
+  | "explicit_user"
+  | "inferred"
+  | "background_review"
+  | "imported"
+  | "system";
+
+export interface MemorySource {
+  origin: MemorySourceOrigin;
+  session_id: string | null;
+  message_ids: string[];
+  action_id: string | null;
+  provider_id: string | null;
+  note: string | null;
+}
+
+export interface MemoryRecord {
+  schema_version: 1;
+  memory_id: string;
+  workspace_id: string;
+  scope_kind: MemoryScopeKind;
+  scope_id: string;
+  kind: MemoryKind;
+  content: string;
+  confidence: number;
+  importance: number;
+  sensitivity: MemorySensitivity;
+  status: MemoryStatus;
+  tags: string[];
+  source: MemorySource;
+  valid_from: string | null;
+  valid_until: string | null;
+  expires_at: string | null;
+  supersedes_memory_id: string | null;
+  version: number;
+  created_by: string;
+  created_at: string;
+  updated_by: string;
+  updated_at: string;
+}
+
+export interface MemoryProposal {
+  scope_kind: MemoryScopeKind;
+  scope_id: string;
+  kind: MemoryKind;
+  content: string;
+  confidence: number;
+  importance: number;
+  sensitivity: MemorySensitivity;
+  tags: string[];
+  source: MemorySource;
+  valid_from: string | null;
+  valid_until: string | null;
+  expires_at: string | null;
+  supersedes_memory_id: string | null;
+}
+
+export type MemoryCandidateStatus = "pending" | "approved" | "rejected";
+export type MemoryCandidateRisk = "low" | "medium" | "high";
+export type MemoryCandidateOperation = "create" | "update" | "delete";
+
+export interface MemoryCandidateRecord {
+  schema_version: 1;
+  candidate_id: string;
+  workspace_id: string;
+  operation: MemoryCandidateOperation;
+  target_memory_id: string | null;
+  proposed_memory: MemoryProposal | null;
+  source: MemorySource;
+  rationale: string;
+  risk: MemoryCandidateRisk;
+  autonomy_mode: AutopilotMode;
+  status: MemoryCandidateStatus;
+  proposed_by: string;
+  proposed_at: string;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  committed_memory_id: string | null;
+}
+
+export interface CoreMemorySnapshotEntry {
+  memory_id: string;
+  memory_version: number;
+  scope_kind: MemoryScopeKind;
+  scope_id: string;
+  kind: MemoryKind;
+  content: string;
+  confidence: number;
+  importance: number;
+  sensitivity: Exclude<MemorySensitivity, "restricted">;
+  tags: string[];
+  source: MemorySource;
+  updated_at: string;
+}
+
+export interface CoreMemorySnapshot {
+  schema_version: 1;
+  snapshot_id: string;
+  session_id: string;
+  workspace_id: string;
+  owner_principal_id: string;
+  entries: CoreMemorySnapshotEntry[];
+  memory_versions: Record<string, number>;
+  character_budget: number;
+  estimated_token_budget: number;
+  digest: string;
+  created_at: string;
+  project_binding: {
+    project_id: string;
+    bound_at: string;
+  } | null;
+  project_entries: CoreMemorySnapshotEntry[];
+}
+
+export interface MemorySettings {
+  schema_version: 1;
+  workspace_id: string;
+  background_review: {
+    enabled: boolean;
+    min_user_characters: number;
+    max_candidates_per_review: number;
+  };
+  automatic_recall: {
+    enabled: boolean;
+    max_results: number;
+    character_budget: number;
+    cache_ttl_seconds: number;
+  };
+  intelligence: {
+    extraction_mode: "deterministic" | "hybrid";
+    intent_model_enabled: boolean;
+    provider_connection_id: string | null;
+    model: string | null;
+    max_turn_characters: number;
+    min_confidence: number;
+    model_timeout_ms: number;
+  };
+  scope_policy: {
+    project_memory_enabled: boolean;
+    agent_memory_enabled: boolean;
+  };
+  retention: {
+    resolved_candidate_days: number;
+    journal_max_records: number;
+    maintenance_interval_minutes: number;
+  };
+  embedding: {
+    provider: "disabled" | "openai-compatible";
+    provider_connection_id: string | null;
+    model: string | null;
+    dimensions: number | null;
+  };
+  knowledge_graph: {
+    provider: "disabled" | "mempalace";
+    palace_path: string | null;
+    python_bin: string | null;
+    sync_canonical: boolean;
+  };
+  updated_by: string;
+  updated_at: string;
+}
+
+export interface MemoryObservability {
+  schema_version: 1;
+  workspace_id: string;
+  retrieval_queries: number;
+  retrieval_failures: number;
+  retrieval_total_latency_ms: number;
+  retrieval_last_latency_ms: number | null;
+  lexical_hits: number;
+  ngram_hits: number;
+  embedding_hits: number;
+  embedding_fallbacks: number;
+  index_rebuilds: number;
+  background_reviews: number;
+  background_candidates: number;
+  background_commits: number;
+  model_extraction_attempts: number;
+  model_extraction_successes: number;
+  model_extraction_fallbacks: number;
+  model_proposed_creates: number;
+  model_proposed_updates: number;
+  model_proposed_supersedes: number;
+  model_proposed_deletes: number;
+  automatic_recall_queries: number;
+  automatic_recall_hits: number;
+  automatic_recall_failures: number;
+  automatic_recall_cache_hits: number;
+  automatic_recall_cache_misses: number;
+  automatic_recall_total_latency_ms: number;
+  automatic_recall_last_latency_ms: number | null;
+  intent_model_attempts: number;
+  intent_model_successes: number;
+  intent_model_fallbacks: number;
+  candidates_approved: number;
+  candidates_rejected: number;
+  imported_memories: number;
+  exported_memories: number;
+  maintenance_runs: number;
+  maintenance_sweeps: number;
+  maintenance_workspace_failures: number;
+  private_memory_migrations: number;
+  private_candidate_migrations: number;
+  last_query_at: string | null;
+  last_review_at: string | null;
+  last_maintenance_at: string | null;
+  updated_at: string;
+}
+
+export interface MemoryReviewRecord {
+  schema_version: 1;
+  workspace_id: string;
+  session_id: string;
+  message_digest: string;
+  status: "completed" | "skipped" | "failed";
+  reviewed_message_ids: string[];
+  candidate_ids: string[];
+  committed_memory_ids: string[];
+  extractor: "deterministic" | "model";
+  provider_connection_id: string | null;
+  proposed_operations: {
+    create: number;
+    update: number;
+    supersede: number;
+    delete: number;
+  };
+  reason: string | null;
+  reviewed_at: string;
+}
+
+export type MemoryIntelligenceOperation = "create" | "update" | "supersede" | "delete" | "ignore";
+
+export interface MemoryIntelligenceProposal {
+  operation: MemoryIntelligenceOperation;
+  target_memory_id: string | null;
+  scope_kind: MemoryScopeKind;
+  scope_id: string;
+  kind: MemoryKind;
+  content: string;
+  confidence: number;
+  importance: number;
+  sensitivity: MemorySensitivity;
+  tags: string[];
+  rationale: string;
+}
+
+export interface ConversationIntentRoute {
+  schema_version: 1;
+  intent: "capture_goal" | "clarify" | "ask_status" | "add_constraint" | "ask_draft" | "ask_plan" | "ask_revise" | "ask_confirm" | "ask_run";
+  confidence: number;
+  source: "deterministic" | "model";
+  entities: Record<string, string | number | boolean | null>;
+  risk: "low" | "medium" | "high";
+  required_capability: string | null;
+  directive_text: string | null;
+  reason: string;
+}
+
+export interface ConversationIntentEvaluationResult {
+  schema_version: 1;
+  suite: string;
+  total: number;
+  passed: number;
+  accuracy: number;
+  average_confidence: number;
+  per_intent: Array<{
+    intent: ConversationIntentRoute["intent"];
+    total: number;
+    passed: number;
+    accuracy: number;
+  }>;
+  cases: Array<{
+    fixture_id: string;
+    expected_intent: ConversationIntentRoute["intent"];
+    actual_intent: ConversationIntentRoute["intent"];
+    confidence: number;
+    passed: boolean;
+  }>;
+  memory_operations: {
+    total: number;
+    passed: number;
+    accuracy: number;
+    per_operation: Array<{
+      operation: MemoryIntelligenceOperation;
+      total: number;
+      passed: number;
+      accuracy: number;
+    }>;
+    cases: Array<{
+      fixture_id: string;
+      expected_operation: MemoryIntelligenceOperation;
+      actual_operation: MemoryIntelligenceOperation;
+      passed: boolean;
+    }>;
+  };
+  evaluated_at: string;
+}
+
+export interface MemoryMaintenanceResult {
+  schema_version: 1;
+  workspace_id: string;
+  expired_memories: number;
+  pruned_candidates: number;
+  retrieval_rebuilt: boolean;
+  canonical_memories: number;
+  private_memories_migrated: number;
+  private_candidates_migrated: number;
+  duration_ms: number;
+  completed_at: string;
+}
+
+export interface MemoryMaintenanceSweepResult {
+  schema_version: 1;
+  workspace_count: number;
+  maintained_workspaces: number;
+  skipped_workspaces: number;
+  failed_workspaces: Array<{ workspace_id: string; error: string }>;
+  results: MemoryMaintenanceResult[];
+  completed_at: string;
+}
+
+export interface MemoryExportBundle {
+  schema_version: 1;
+  exported_at: string;
+  workspace_id: string;
+  count: number;
+  memories: MemoryRecord[];
+}
+
+export interface MemoryImportResult {
+  dry_run: boolean;
+  strategy: "skip" | "merge" | "replace";
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  rejected: number;
+  errors: Array<{ index: number; message: string }>;
+  memory_ids: string[];
+}
+
+export interface SessionRecallContextMessage {
+  message_id: string;
+  role: SessionMessageRole;
+  kind: SessionMessageKind;
+  text: string;
+  created_at: string;
+  matched: boolean;
+}
+
+export interface SessionRecallHit {
+  session_id: string;
+  session_title: string;
+  matched_message_id: string;
+  matched_at: string;
+  score: number;
+  context: SessionRecallContextMessage[];
+}
+
+export interface SessionRecallResult {
+  query: string;
+  workspace_id: string;
+  current_session_id: string;
+  count: number;
+  index_rebuilt: boolean;
+  hits: SessionRecallHit[];
+}
+
+export type MemoryRetrievalMode =
+  | "hybrid_lexical_ngram_v1"
+  | "hybrid_lexical_embedding_v1";
+
+export interface MemoryRetrievalEvidence {
+  lexical_score: number;
+  semantic_score: number;
+  fused_score: number;
+  lexical_rank: number | null;
+  semantic_rank: number | null;
+  matched_by: Array<"lexical" | "ngram" | "embedding">;
+}
+
+export interface MemoryRetrievalHit {
+  memory: MemoryRecord;
+  evidence: MemoryRetrievalEvidence;
+}
+
+export interface MemoryRecommendation {
+  schema_version: 1;
+  session_id: string;
+  memory_id: string;
+  memory_version: number;
+  scope_kind: MemoryScopeKind;
+  scope_id: string;
+  kind: MemoryKind;
+  sensitivity: Exclude<MemorySensitivity, "restricted">;
+  title: string;
+  summary: string;
+  reason: string;
+  score: number;
+  already_in_snapshot: boolean;
+  applied_automatically: boolean;
+  snapshot_version: number | null;
+  updated_at: string;
+}
+
+export interface MemoryEmbeddingProviderStatus {
+  provider_id: string;
+  state: "disabled" | "ready" | "degraded";
+  model: string | null;
+  dimensions: number | null;
+  fingerprint: string | null;
+  cached_vectors: number;
+  last_error: string | null;
+}
+
+export interface MemoryRetrievalIndexStatus {
+  schema_version: 1;
+  retrieval: MemoryRetrievalMode;
+  workspace_id: string;
+  journal_records: number;
+  indexed_records: number;
+  active_records: number;
+  database_bytes: number;
+  last_rebuilt_at: string | null;
+  embedding: MemoryEmbeddingProviderStatus;
+}
+
+export interface MemoryRetrievalResult {
+  query: string;
+  workspace_id: string;
+  count: number;
+  retrieval: MemoryRetrievalMode;
+  index_rebuilt: boolean;
+  embedding_fallback: boolean;
+  hits: MemoryRetrievalHit[];
+}
+
+export interface MemoryKnowledgeProviderStatus {
+  provider_id: "disabled" | "mempalace";
+  state: "disabled" | "ready" | "unavailable" | "degraded";
+  read_only: boolean;
+  palace_path: string | null;
+  canonical_source: "my_mate_memory_records";
+  last_error: string | null;
+}
+
+export interface MemoryKnowledgeRelation {
+  subject: string;
+  predicate: string;
+  object: string;
+  valid_from: string | null;
+  valid_until: string | null;
+  memory_id: string | null;
+}
+
+export interface MemoryKnowledgeQueryResult {
+  provider: MemoryKnowledgeProviderStatus;
+  entity: string;
+  count: number;
+  relations: MemoryKnowledgeRelation[];
+}
+
+export type TaskCheckpointStatus =
+  | "in_progress"
+  | "resumable"
+  | "waiting_human"
+  | "completed"
+  | "failed"
+  | "superseded";
+
+export type TaskCheckpointReason =
+  | "turn_started"
+  | "manual_resume"
+  | "automatic_resume"
+  | "context_compacted"
+  | "continuation_limit"
+  | "tool_round_limit"
+  | "provider_interrupted"
+  | "client_disconnected"
+  | "server_restart"
+  | "waiting_approval"
+  | "waiting_input"
+  | "turn_completed"
+  | "resume_limit"
+  | "new_user_turn"
+  | "unrecoverable_error";
+
+export interface TaskCheckpointTransition {
+  version: number;
+  status: TaskCheckpointStatus;
+  reason: TaskCheckpointReason;
+  detail: string | null;
+  created_at: string;
+}
+
+export interface TaskCheckpointProviderState {
+  finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | "unknown" | null;
+  continuation_rounds: number;
+  continuation_limit_reached: boolean;
+  context_compacted: boolean;
+  compaction_count: number;
+  tool_rounds: number;
+  tool_round_limit_reached: boolean;
+  action_ids: string[];
+}
+
+export interface TaskCheckpointRecord {
+  schema_version: 1;
+  checkpoint_id: string;
+  workspace_id: string;
+  session_id: string;
+  autonomy_mode: AutopilotMode;
+  status: TaskCheckpointStatus;
+  reason: TaskCheckpointReason;
+  version: number;
+  goal: string | null;
+  source_user_message_id: string;
+  source_assistant_message_id: string | null;
+  resume_from_checkpoint_id: string | null;
+  resume_attempts: number;
+  max_resume_attempts: number;
+  auto_resume_eligible: boolean;
+  progress_summary: string | null;
+  context_summary: string | null;
+  next_action: string | null;
+  provider_state: TaskCheckpointProviderState | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  transitions: TaskCheckpointTransition[];
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export type MissionUiComponent =
+  | "task_guidance"
+  | "decision_queue"
+  | "progress_summary"
+  | "result_gallery"
+  | "quality_summary"
+  | "repair_recommendation"
+  | "conversation"
+  | "technical_details";
+
+export interface MissionUiBlock {
+  block_id: string;
+  component: MissionUiComponent;
+  priority: number;
+  visibility: "primary" | "secondary" | "advanced";
+  title: string;
+  data: Record<string, unknown>;
+}
+
+export interface MissionUiPlan {
+  version: 1;
+  phase: string;
+  generated_at: string;
+  primary_action: string | null;
+  blocks: MissionUiBlock[];
+  fallback_component: "task_guidance";
 }
 
 export interface AgentHostingSummary {
@@ -643,6 +1294,10 @@ export interface SessionWorkspaceStreamSnapshot {
   pending_human_inputs: HumanInputRecord[];
   interventions: SessionInterventionRecord[];
   dag_patches: DagPatchRecord[];
+  supervision_alerts: SupervisionAlertRecord[];
+  autopilot: AutopilotControllerRecord | null;
+  ui_plan: MissionUiPlan;
+  workspace_binding?: PublicWorkspaceBinding | null;
 }
 
 export interface SessionWorkspaceStreamEvent {
@@ -660,6 +1315,9 @@ export interface SessionWorkspaceStreamEvent {
     | "human_inputs.updated"
     | "interventions.updated"
     | "dag_patches.updated"
+    | "supervision.updated"
+    | "autopilot.updated"
+    | "ui_plan.updated"
     | "heartbeat";
   session_id: string;
   occurred_at: string;
@@ -853,15 +1511,140 @@ export interface SessionMessageRecord {
   linked_node_run_id: string | null;
 }
 
+export type ConversationActionRiskLevel = "T0" | "T1" | "T2" | "T3";
+export type ConversationActionStatus = "running" | "succeeded" | "failed" | "pending_approval";
+
+export interface ConversationActionRecord {
+  action_id: string;
+  workspace_id: string;
+  session_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  arguments_digest: string;
+  risk_level: ConversationActionRiskLevel;
+  executor: "control-plane" | "runtime-worker" | "desktop" | "browser" | "mcp";
+  status: ConversationActionStatus;
+  approval_id: string | null;
+  result: Record<string, unknown> | null;
+  error_code: string | null;
+  created_at: string;
+  started_at: string;
+  completed_at: string | null;
+  updated_at: string;
+}
+
 export interface CreateSessionRequest {
   title?: string;
   initial_message?: string;
   created_by?: string;
   orchestrator_profile_id?: string;
+  provider_connection_id?: string;
+  model?: string;
+  defer_conversation_reply?: boolean;
+  autonomy_mode?: AutopilotMode;
 }
+
+export type WorkspaceBindingAccess = "snapshot-read" | "sandbox-write";
+export type WorkspaceBindingScope = "run" | "session" | "persistent";
+export type WorkspaceBindingStatus = "active" | "expired" | "revoked" | "invalid";
+
+export type LocalProjectStatus = "active" | "archived" | "unavailable";
+
+export interface LocalProjectRecord {
+  project_id: string;
+  workspace_id: string;
+  desktop_instance_id: string;
+  capability_digest: string;
+  root_path: string;
+  root_fingerprint: string;
+  name: string;
+  description: string | null;
+  status: LocalProjectStatus;
+  default_output_relative_path: string;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export type PublicLocalProject = Pick<
+  LocalProjectRecord,
+  | "project_id"
+  | "name"
+  | "description"
+  | "status"
+  | "default_output_relative_path"
+  | "created_at"
+  | "updated_at"
+  | "archived_at"
+>;
+
+export type TaskWorkspaceStatus = "active" | "archived";
+
+export interface TaskWorkspaceRecord {
+  task_workspace_id: string;
+  workspace_id: string;
+  session_id: string;
+  project_id: string;
+  binding_id: string;
+  output_relative_path: string;
+  status: TaskWorkspaceStatus;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface PublicTaskWorkspace {
+  task_workspace_id: string;
+  session_id: string;
+  project: PublicLocalProject;
+  binding_id: string;
+  output_relative_path: string;
+  status: TaskWorkspaceStatus;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+}
+
+export interface WorkspaceBindingRecord {
+  binding_id: string;
+  workspace_id: string;
+  session_id: string;
+  desktop_instance_id: string;
+  capability_digest: string;
+  root_path: string;
+  root_fingerprint: string;
+  display_name: string;
+  access: WorkspaceBindingAccess;
+  scope: WorkspaceBindingScope;
+  status: WorkspaceBindingStatus;
+  created_at: string;
+  updated_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_validated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export type PublicWorkspaceBinding = Pick<
+  WorkspaceBindingRecord,
+  | "binding_id"
+  | "session_id"
+  | "display_name"
+  | "access"
+  | "scope"
+  | "status"
+  | "expires_at"
+  | "updated_at"
+>;
 
 export interface CreateSessionMessageRequest {
   content: string;
+  provider_connection_id?: string;
+  model?: string;
+  target_artifact_id?: string;
 }
 
 export interface CreateSessionMessageResponse {
@@ -1064,6 +1847,7 @@ export interface AgentProfileRecord {
   runtime_agent_ref?: string;
   agent_runtime?: string;
   harness_profile?: string | null;
+  provider_connection_id?: string | null;
   openclaw_agent_id: string;
   default_skills: string[];
   allowed_tools: string[];
@@ -1111,6 +1895,7 @@ export interface UpsertAgentProfileRequest {
   runtime_agent_ref?: string;
   agent_runtime?: string;
   harness_profile?: string | null;
+  provider_connection_id?: string | null;
   openclaw_agent_id?: string;
   default_skills?: string[];
   allowed_tools?: string[];
@@ -1118,6 +1903,70 @@ export interface UpsertAgentProfileRequest {
   policy_tags?: string[];
   status?: RegistryStatus;
   metadata?: Record<string, unknown>;
+}
+
+export interface ProviderConnectionRecord {
+  connection_id: string;
+  workspace_id: string;
+  name: string;
+  agent_runtime: string;
+  provider: string;
+  protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible" | "openclaw-bridge";
+  base_url: string | null;
+  models: string[];
+  default_model: string | null;
+  max_input_tokens: number;
+  max_output_tokens: number;
+  context_compression_enabled: boolean;
+  context_compression_threshold_percent: number;
+  max_continuation_rounds: number;
+  credential_source: "managed" | "environment";
+  credential_env: string;
+  verification: ProviderConnectionVerification | null;
+  status: RegistryStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderConnectionVerification {
+  status: "verified" | "failed";
+  tested_at: string;
+  detail: string;
+  duration_ms: number;
+  model: string | null;
+}
+
+export interface UpsertProviderConnectionRequest {
+  connection_id?: string;
+  name: string;
+  agent_runtime: string;
+  provider?: string;
+  protocol?: ProviderConnectionRecord["protocol"];
+  base_url?: string | null;
+  models?: string[];
+  default_model?: string | null;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  context_compression_enabled?: boolean;
+  context_compression_threshold_percent?: number;
+  max_continuation_rounds?: number;
+  credential_source?: ProviderConnectionRecord["credential_source"];
+  credential_env?: string;
+  api_key?: string;
+  status?: RegistryStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProviderConnectionSnapshot {
+  connection_id: string;
+  agent_runtime: string;
+  provider: string;
+  protocol: ProviderConnectionRecord["protocol"];
+  base_url: string | null;
+  model: string | null;
+  credential_source: ProviderConnectionRecord["credential_source"];
+  credential_env: string;
 }
 
 export interface SkillRecord {
@@ -1234,6 +2083,9 @@ export interface ArtifactRecord extends ExecutionArtifactRecord {
   run_id: string;
   node_run_id: string | null;
   created_at: string;
+  publication_status?: "published" | "unpublished" | "failed";
+  published_relative_path?: string | null;
+  publication_error?: string | null;
 }
 
 export interface SessionAttachmentRecord {
@@ -1270,6 +2122,7 @@ export interface ApprovalRecord {
   summary: string;
   requested_at: string;
   resolved_at: string | null;
+  gate_id?: string | null;
 }
 
 export interface HumanInputRecord {
@@ -1281,6 +2134,27 @@ export interface HumanInputRecord {
   input_schema: Record<string, unknown>;
   requested_at: string;
   submitted_at: string | null;
+  gate_id?: string | null;
+}
+
+export interface RuntimeHumanGateRecord {
+  gate_id: string;
+  kind: "approval" | "human_input";
+  status: "requested" | "suspended" | "resuming" | "resumed" | "rejected" | "cancelled";
+  transport: "worker_native" | "manager_requeue";
+  run_id: string;
+  node_run_id: string;
+  job_id: string;
+  worker_id: string | null;
+  summary: string;
+  input_schema: Record<string, unknown> | null;
+  request_payload: Record<string, unknown> | null;
+  response_payload: Record<string, unknown> | null;
+  requested_at: string;
+  suspended_at: string | null;
+  resolved_at: string | null;
+  control_id: string | null;
+  last_error: string | null;
 }
 
 export interface CompiledNodeRecord {
@@ -1292,6 +2166,7 @@ export interface CompiledNodeRecord {
   runtime_agent_ref: string | null;
   agent_runtime?: string | null;
   harness_profile?: string | null;
+  provider_connection?: ProviderConnectionSnapshot | null;
   openclaw_agent_id: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
@@ -1309,6 +2184,14 @@ export interface CompiledNodeRecord {
   execution_ref: ExecutionRef;
   registry_provenance: RegistryProvenance;
   work_package?: CompiledWorkPackageBinding;
+  dynamic_fanout?: {
+    source_node_id: string;
+    source_node_run_id: string;
+    source_handoff_id: string;
+    template_node_id: string;
+    item_index: number;
+    item_count: number;
+  };
 }
 
 export type RunRouteSourceKind =
@@ -1538,6 +2421,7 @@ export interface NodeRunRecord {
   attempt: number;
   started_at: string | null;
   finished_at: string | null;
+  dynamic_fanout?: CompiledNodeRecord["dynamic_fanout"];
 }
 
 export interface EventRecord {
@@ -1869,6 +2753,7 @@ export interface RunRecord {
   created_at: string;
   updated_at: string;
   inputs: Record<string, unknown>;
+  workspace_binding_id?: string | null;
   proposal_id: string | null;
   source_run_id?: string | null;
   rerun_reason?: string | null;
@@ -1890,6 +2775,7 @@ export interface DispatchEnvelope {
   runtime_agent_ref: string | null;
   agent_runtime: string | null;
   harness_profile: string | null;
+  provider_connection?: ProviderConnectionSnapshot | null;
   openclaw_agent_id?: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
@@ -2005,6 +2891,13 @@ export interface NormalizedExecutionReport {
     openclaw_task_id: string | null;
     openclaw_session_id: string | null;
   };
+  human_gate?: {
+    gate_id: string;
+    kind: "approval" | "human_input";
+    summary: string;
+    input_schema: Record<string, unknown> | null;
+    requested_at: string;
+  } | null;
   created_at: string;
 }
 

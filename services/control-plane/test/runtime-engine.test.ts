@@ -4,6 +4,9 @@ import { listApprovals } from "../src/approval-store.js";
 import { listArtifacts } from "../src/artifact-store.js";
 import { createEmptyExecutionRef } from "../src/execution-ref.js";
 import { listRunEvents } from "../src/event-store.js";
+import { saveRunRoute } from "../src/run-route-store.js";
+import { createSession } from "../src/session-store.js";
+import { createSessionAttachment } from "../src/session-attachment-store.js";
 import { listNodeRuns, saveNodeRuns } from "../src/node-run-store.js";
 import { saveRunPlan, getRunPlan } from "../src/run-plan-store.js";
 import { createRun, getRun, saveRun } from "../src/run-store.js";
@@ -12,6 +15,7 @@ import type {
   RuntimeDispatcher,
 } from "../src/runtime-dispatcher.js";
 import { listRuntimeJobRecords } from "../src/runtime/runtime-job-store.js";
+import { getRuntimeHumanGate } from "../src/runtime/human-gate-store.js";
 import { getRuntimeEventCursor } from "../src/runtime/runtime-event-cursor-store.js";
 import { RuntimeEngine } from "../src/runtime/runtime-engine.js";
 import { buildRuntimeRunProjection } from "../src/runtime/runtime-run-projection.js";
@@ -467,7 +471,17 @@ test("RuntimeEngine applyExecutionReport creates approval gate for waiting_human
       openclaw_task_id: "task_runtime_wait_a",
       openclaw_session_id: "sess_runtime_wait_a",
     },
+    human_gate: {
+      gate_id: "gate-runtime-a",
+      kind: "approval",
+      summary: "Need approval before continuing",
+      input_schema: null,
+      requested_at: timestamp,
+    },
     created_at: timestamp,
+  }, {
+    jobId: "job-runtime-wait-a",
+    workerId: "worker-runtime-wait-a",
   });
 
   const refreshedRun = getRun(run.run_id);
@@ -478,6 +492,11 @@ test("RuntimeEngine applyExecutionReport creates approval gate for waiting_human
   assert.equal(approvals.length, 1);
   assert.equal(approvals[0]?.run_id, run.run_id);
   assert.equal(approvals[0]?.node_run_id, "node-run-a");
+  assert.equal(approvals[0]?.gate_id, "gate-runtime-a");
+  const gate = getRuntimeHumanGate(run.run_id, "gate-runtime-a");
+  assert.equal(gate?.status, "suspended");
+  assert.equal(gate?.job_id, "job-runtime-wait-a");
+  assert.equal(gate?.worker_id, "worker-runtime-wait-a");
 
   const eventTypes = listRunEvents(run.run_id).map((event) => event.type);
   assert.ok(eventTypes.includes("approval.requested"));
@@ -566,6 +585,45 @@ test("RuntimeEngine queueReadyNodes dispatches RuntimeWorkerJob through dispatch
     },
     validation_mode: "bypass",
   });
+  const session = createSession({
+    title: "Runtime context session",
+    initial_message: "Use the attached local brief.",
+  });
+  createSessionAttachment({
+    sessionId: session.session_id,
+    createdAt: timestamp,
+    request: {
+      name: "brief.md",
+      storage_uri: "file:///workspace/docs/brief.md",
+      mime_type: "text/markdown",
+      size_bytes: 22,
+      kind: "context",
+      created_by: "studio-desktop",
+      metadata: {
+        source: "desktop_workspace",
+        relative_path: "docs/brief.md",
+        desktop_text_content: "Runtime context brief.\n",
+      },
+    },
+  });
+  saveRunRoute({
+    schema_version: 1,
+    run_id: run.run_id,
+    route_id: `template:${run.template_id}@${run.template_version}`,
+    source_kind: "direct_template",
+    session_id: session.session_id,
+    proposal_id: null,
+    plan_revision: null,
+    plan_option: null,
+    source_run_id: null,
+    template_id: run.template_id,
+    template_version: run.template_version,
+    template_name: "Runtime Engine Template",
+    node_count: 1,
+    edge_count: 0,
+    work_packages: [],
+    created_at: run.created_at,
+  });
 
   const plan: RunPlanRecord = {
     run_id: run.run_id,
@@ -636,6 +694,9 @@ test("RuntimeEngine queueReadyNodes dispatches RuntimeWorkerJob through dispatch
   assert.equal(job.harness.runtime_agent_ref, "codex-runtime");
   assert.equal(job.provision.target_kind, "docker-worker");
   assert.equal(job.provision.required, true);
+  assert.equal(job.provision.workspace.context?.source_session_id, session.session_id);
+  assert.equal(job.provision.workspace.context?.files[0]?.relative_path, "docs/brief.md");
+  assert.equal(job.provision.workspace.context?.files[0]?.content, "Runtime context brief.\n");
 
   const jobRecords = listRuntimeJobRecords(run.run_id);
   assert.equal(jobRecords.length, 1);
@@ -653,6 +714,8 @@ test("RuntimeEngine queueReadyNodes dispatches RuntimeWorkerJob through dispatch
   assert.equal(startedEvent.payload.target_kind, "docker-worker");
   assert.equal(startedEvent.payload.agent_runtime, "codex");
   assert.equal(startedEvent.payload.runtime_agent_ref, "codex-runtime");
+  const createdEvent = events.find((event) => event.type === "job.created");
+  assert.equal((createdEvent?.payload.workspace_context as Record<string, unknown>)?.file_count, 1);
 
   assert.equal(dispatcher.reports.length, 1);
   assert.equal(dispatcher.reports[0]?.status, "accepted");

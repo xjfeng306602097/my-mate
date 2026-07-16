@@ -10,6 +10,7 @@ Current scope:
 - template publish flow
 - template derivation, archive, lineage, and next-version draft flow
 - agent / skill registry
+- non-secret Provider Connection registry and Agent Harness bindings
 - rule-based planner template selection
 - candidate run plan preview without creating a real run
 - create run
@@ -54,8 +55,23 @@ Current scope:
   baseline drift detection, and evidence-bearing apply
 - indexed model-cost attribution by Agent Profile, provider/model, and work
   package with explicit provider/estimate/unavailable completeness
+- independently rebuildable Mission materialization with ordered events,
+  checkpoints, and digest-based consistency verification
 
 This service is intentionally small and deterministic.
+
+Mission materializer operations:
+
+- `GET /api/missions/:sessionId/materializer` returns sequence, checkpoint,
+  source digest, and projection digest.
+- `POST /api/missions/:sessionId/materializer/verify` compares the materialized
+  projection with a direct canonical-store projection.
+- `POST /api/missions/:sessionId/materializer/rebuild` ignores the checkpoint
+  and rebuilds exclusively from the Mission event log.
+- event, checkpoint, and projection records are stored independently under
+  `MY_MATE_DATA_DIR`; the Mission Workspace response contract is unchanged.
+- architecture and operating details are in
+  `docs/35-mw-04-live-01-materializer-and-live-acceptance-closure.md`.
 
 Persistence:
 
@@ -121,6 +137,36 @@ Registry governance:
   - `POST /api/governance/changes/:changeId/apply`
 - full protocol and operating guidance are documented in
   `docs/29-data-03-registry-governance.md`
+
+Provider Connections:
+
+- `GET/POST /api/registry/provider-connections`
+- `GET /api/registry/provider-connections/:connectionId`
+- `POST /api/registry/provider-connections/:connectionId/disable`
+- records contain protocol, endpoint, multiple model IDs, one default model,
+  Agent Runtime, and credential source metadata
+- Studio creates and edits Connections in a modal; Provider presets derive the
+  normal protocol/runtime defaults, while protocol and environment details stay
+  under Advanced settings
+- when a workspace has no active Connection, Studio opens a two-step first-run
+  setup for the default model and local environment; the minimal model form
+  creates a default Agent Profile automatically
+- the environment step reuses Doctor evidence for Git Bash/host shell, Docker
+  CLI and daemon, Runtime Worker image, workspace mount, and Worker registration
+- the write-only `api_key` input is encrypted with AES-256-GCM in
+  `<MY_MATE_DATA_DIR>/provider-secrets`; it is never returned by the API or
+  serialized into a Connection, RunPlan, RuntimeWorkerJob, or evidence record
+- set `MY_MATE_PROVIDER_SECRET_KEY` to a stable deployment key; local
+  development otherwise creates a private master key beside encrypted secrets
+- `credential_source=environment` remains available for deployments that inject
+  an allowlisted host environment variable instead of using managed storage
+- storage snapshots exclude `provider-secrets`; backup and restore deployment
+  secrets through the platform secret manager, not the data snapshot command
+- Agent Profiles bind `agent_runtime`, `harness_profile`, and
+  `provider_connection_id`, then select a model from that Connection; RunPlan
+  compilation freezes a non-secret snapshot
+- Doctor accepts `provider_connection_id`; `model_probe` remains explicit and
+  potentially billable
 
 Additional current behavior:
 
@@ -408,8 +454,11 @@ Runtime configuration:
 
 Node config can provide `worker_image`, `worker_env`, `required_capabilities`,
 and `resource_limits` (`cpus`, `memory_mb`, `pids`). A run input named
-`project_local_repo` is mounted as `/workspace`; otherwise the provisioner uses
-a per-run workspace under the Control Plane data directory.
+`project_local_repo` is copied into a per-Job sandbox and that copy is mounted as
+`/workspace`; the original project directory is never mounted into the Worker.
+When the Worker terminates, the Control Plane records added, modified, and
+deleted files as a pending workspace Change Set. Applying the Change Set is a
+separate explicit operation and fails if the source files changed after dispatch.
 
 Docker provisioning uses a global FIFO capacity queue. Run and node actions
 cancel matching queued work, and capacity is returned only after Docker confirms
@@ -498,8 +547,9 @@ remains honestly unavailable.
 
 ## P1-D2 Provider Adapters And Cost Projection
 
-The Worker now supplies provider-native Evidence V2 for Codex, Claude SDK,
-Kimi, and OpenClaw. On persistence, the Control Plane keeps provider-reported
+The Worker now supplies Provider-native Evidence V2 for Codex app-server,
+Claude Agent SDK, Anthropic-compatible GLM, Kimi, and OpenClaw. On persistence,
+the Control Plane keeps Provider-reported
 cost separate and may add an estimate from an exact provider/model match in a
 versioned pricing catalog. The built-in catalog is intentionally empty; set
 `MY_MATE_PRICING_CATALOG_PATH` to a validated JSON catalog to enable estimates.
@@ -511,7 +561,7 @@ token/provider-cost/estimated-cost completeness, tool calls/results, and open
 tool-call IDs. Frozen evidence snapshots mark cost complete only when every
 model job has either provider-reported or catalog-estimated cost.
 
-Recorded fixtures cover all four adapters without credentials. Live provider
+Recorded fixtures cover all five Provider identities without credentials. Live Provider
 tests remain opt-in and independent of Doctor deterministic readiness.
 
 ## P1-C1 Policy And Evaluation

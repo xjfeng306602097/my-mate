@@ -2,6 +2,7 @@ import path from "node:path";
 import { SESSION_MESSAGES_DIR } from "./config.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getSession } from "./session-store.js";
+import { appendSessionRecallJournal } from "./session-recall-store.js";
 import type {
   SessionMessageKind,
   SessionMessageRecord,
@@ -23,9 +24,15 @@ function sessionMessagePath(sessionId: string, messageId: string): string {
 }
 
 export function saveSessionMessage(message: SessionMessageRecord): SessionMessageRecord {
-  if (!getSession(message.session_id)) throw new Error("SESSION_NOT_FOUND");
+  const session = getSession(message.session_id);
+  if (!session) throw new Error("SESSION_NOT_FOUND");
   ensureDir(sessionMessageDir(message.session_id));
   writeJsonAtomic(sessionMessagePath(message.session_id, message.message_id), message);
+  try {
+    appendSessionRecallJournal(session, message);
+  } catch {
+    // Recall is a rebuildable derived index and must not invalidate canonical message writes.
+  }
   return message;
 }
 

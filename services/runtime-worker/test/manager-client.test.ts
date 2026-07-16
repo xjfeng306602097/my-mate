@@ -120,3 +120,92 @@ test("manager hub and runtime worker client complete the websocket job lifecycle
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("runtime worker suspends and resumes the same websocket job at a native human gate", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "my-mate-worker-gate-"));
+  const previousDataDir = process.env.MY_MATE_DATA_DIR;
+  process.env.MY_MATE_DATA_DIR = dataDir;
+  const hubModule = await import(new URL(
+    "../../control-plane/src/runtime-worker-hub.ts",
+    import.meta.url,
+  ).href);
+  const hub = new hubModule.RuntimeWorkerHub();
+  const server = http.createServer((_req, res) => res.end("ok"));
+  hub.attach(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const workerId = "worker-native-gate-001";
+  hub.expectWorker({ workerId, token: "gate-token" });
+  const client = new RuntimeWorkerManagerClient({
+    managerUrl: hubModule.runtimeWorkerWebSocketUrl(
+      `http://127.0.0.1:${address.port}`,
+      workerId,
+    ),
+    workerId,
+    token: "gate-token",
+    reconnectDelayMs: 50,
+    exitOnRelease: false,
+  });
+  const events: WorkerEvent[] = [];
+  let resume: (() => void) | null = null;
+  let complete: (() => void) | null = null;
+  const waiting = new Promise<void>((resolve) => { resume = resolve; });
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  hub.setEventHandler(async (event: WorkerEvent) => {
+    events.push(event);
+    if (event.kind === "worker.waiting_human") resume?.();
+    if (event.kind === "worker.completed") complete?.();
+  });
+
+  try {
+    client.start();
+    await hub.waitForWorker(workerId, 3000);
+    const job = buildJob();
+    (job.envelope.input_payload as Record<string, unknown>).node_config = {
+      deterministic_human_gate: {
+        gate_id: "gate-native-001",
+        kind: "human_input",
+        summary: "Choose a release channel",
+        input_schema: { type: "object", required: ["channel"] },
+      },
+    };
+    const ack = await hub.dispatchJob(workerId, job, 3000);
+    assert.equal(ack.status, "accepted");
+    await waiting;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(events.some((event) => event.kind === "worker.completed"), false);
+    assert.equal(hub.sendControl({
+      workerId,
+      jobId: job.job_id,
+      controlId: "control-native-001",
+      action: "resume",
+      gateId: "gate-native-001",
+      payload: { channel: "stable" },
+      reason: "test_resume",
+    }), true);
+    await Promise.race([
+      completed,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("Native human gate did not resume.")), 3000),
+      ),
+    ]);
+    assert.deepEqual(events.map((event) => event.kind), [
+      "worker.accepted",
+      "worker.progress",
+      "worker.handoff",
+      "worker.waiting_human",
+      "worker.completed",
+    ]);
+    assert.equal(events.every((event) => event.job_id === job.job_id), true);
+  } finally {
+    client.stop();
+    hub.close();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    if (previousDataDir === undefined) delete process.env.MY_MATE_DATA_DIR;
+    else process.env.MY_MATE_DATA_DIR = previousDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});

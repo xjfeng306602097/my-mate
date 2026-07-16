@@ -19,6 +19,7 @@ import {
   executeGovernancePropose,
 } from "../src/commands/governance.js";
 import { executeCostReport } from "../src/commands/cost-report.js";
+import { executeMissionMaterializer } from "../src/commands/mission-materializer.js";
 import type { CommandIo } from "../src/output.js";
 
 function captureIo(): CommandIo & { out: string[]; err: string[] } {
@@ -65,10 +66,53 @@ function supervision(status: string, settled: boolean, cursor: string): Supervis
   };
 }
 
+test("mission materializer command exposes status, rebuild, and drift exit semantics", async () => {
+  const paths: string[] = [];
+  const client = stubClient({
+    get: (path) => {
+      paths.push(path);
+      return {
+        session_id: "session-cli",
+        materializer_version: 1,
+        last_sequence: 4,
+        event_count: 4,
+        checkpoint_sequence: 4,
+        source_digest: "sha256:source",
+        projection_digest: "sha256:projection",
+      };
+    },
+    post: (path) => {
+      paths.push(path);
+      return {
+        session_id: "session-cli",
+        status: "drifted",
+        last_sequence: 4,
+        event_count: 4,
+        checkpoint_sequence: 4,
+        source_digest: "sha256:source",
+        differing_sections: ["missionSnapshot"],
+      };
+    },
+  });
+  const io = captureIo();
+  assert.equal((await executeMissionMaterializer(client, "session-cli", {}, io)).exitCode, 0);
+  assert.equal(
+    (await executeMissionMaterializer(client, "session-cli", { verify: true }, io)).exitCode,
+    3,
+  );
+  assert.deepEqual(paths, [
+    "/api/missions/session-cli/materializer",
+    "/api/missions/session-cli/materializer/verify",
+  ]);
+});
+
 test("doctor exit code follows the readiness dimension requested by mode", async () => {
   const io = captureIo();
+  const requests: unknown[] = [];
   const client = stubClient({
-    post: () => ({
+    post: (_path, body) => {
+      requests.push(body);
+      return ({
       runtime_ready: true,
       deterministic_ready: true,
       model_ready: false,
@@ -76,10 +120,22 @@ test("doctor exit code follows the readiness dimension requested by mode", async
       storage_backend: "file-json",
       runtime_dispatcher: "docker-runtime-worker",
       checks: [],
-    }),
+      });
+    },
   });
   assert.equal(await executeDoctor(client, { mode: "docker", json: true }, io), 0);
-  assert.equal(await executeDoctor(client, { mode: "model", json: true }, io), 3);
+  assert.equal(await executeDoctor(client, {
+    mode: "model",
+    runtime: "glm",
+    providerConnection: "glm-primary",
+    json: true,
+  }, io), 3);
+  assert.deepEqual(requests[1], {
+    mode: "model",
+    runtime: "glm",
+    model_probe: false,
+    provider_connection_id: "glm-primary",
+  });
 });
 
 test("supervise follow advances the opaque cursor and emits JSON Lines until settled", async () => {

@@ -46,6 +46,10 @@ function normalizeRunRecord(record: RunRecord): RunRecord {
       typeof record.rerun_idempotency_key === "string" && record.rerun_idempotency_key.trim()
         ? record.rerun_idempotency_key.trim()
         : null,
+    workspace_binding_id:
+      typeof record.workspace_binding_id === "string" && record.workspace_binding_id.trim()
+        ? record.workspace_binding_id.trim()
+        : null,
   };
 }
 
@@ -92,6 +96,7 @@ export function buildRunRecord(
     created_at: timestamp,
     updated_at: timestamp,
     inputs: input.inputs,
+    workspace_binding_id: null,
     proposal_id: input.proposal_id || null,
     source_run_id: null,
     rerun_reason: null,

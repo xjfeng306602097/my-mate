@@ -4,8 +4,11 @@ import {
   type RequestAuthContext,
   type WorkspaceMembership,
 } from "@my-mate/shared-types/identity";
-import type { Request } from "express";
 import type { GatewayConfig, GatewayIdentity } from "./config.js";
+
+export interface HeaderRequest {
+  header(name: string): string | undefined;
+}
 
 export type IdentityResolution =
   | { ok: true; context: RequestAuthContext }
@@ -21,7 +24,7 @@ const developmentIdentity: GatewayIdentity = {
   memberships: [{ workspace_id: "default", workspace_name: "Default", role: "owner" }],
 };
 
-function bearerToken(req: Request): string | null {
+function bearerToken(req: HeaderRequest): string | null {
   const match = /^Bearer\s+(.+)$/i.exec(req.header("authorization") || "");
   return match?.[1]?.trim() || null;
 }
@@ -44,7 +47,7 @@ function selectWorkspace(
     : memberships[0] || null;
 }
 
-export function resolveRequestIdentity(req: Request, config: GatewayConfig): IdentityResolution {
+export function resolveRequestIdentity(req: HeaderRequest, config: GatewayConfig): IdentityResolution {
   const identities = configuredIdentities(config);
   const token = bearerToken(req);
   const identity = identities.length > 0

@@ -5,6 +5,7 @@ import type {
 import type {
   NodeHandoff as SharedNodeHandoff,
   RuntimeAgentRuntime as SharedRuntimeAgentRuntime,
+  RuntimeExecutionPolicy as SharedRuntimeExecutionPolicy,
   RuntimeHarnessSpec as SharedRuntimeHarnessSpec,
   RuntimeWorkerJob as SharedRuntimeWorkerJob,
   WorkerEvent as SharedWorkerEvent,
@@ -13,6 +14,8 @@ import type {
   WorkerProvisionSpec as SharedWorkerProvisionSpec,
   WorkerTargetKind as SharedWorkerTargetKind,
   WorkerWorkspaceSpec as SharedWorkerWorkspaceSpec,
+  WorkerWorkspaceContext as SharedWorkerWorkspaceContext,
+  WorkerWorkspaceContextFile as SharedWorkerWorkspaceContextFile,
 } from "@my-mate/shared-types/runtime-protocol";
 
 export {
@@ -25,11 +28,13 @@ export {
 export type {
   JobAckMessage,
   JobAckStatus,
+  JobControlAckMessage,
   JobControlMessage,
   JobDispatchMessage,
   ManagerToWorkerMessage,
   ProtocolErrorMessage,
   RuntimeControlAction,
+  RuntimeHumanGate,
   RuntimeSocketMessageBase,
   WorkerEvidence,
   WorkerEvidenceKind,
@@ -42,10 +47,13 @@ export type {
 } from "@my-mate/shared-types/runtime-protocol";
 
 export type RuntimeAgentRuntime = SharedRuntimeAgentRuntime;
+export type RuntimeExecutionPolicy = SharedRuntimeExecutionPolicy;
 export type WorkerTargetKind = SharedWorkerTargetKind;
 export type WorkerEventKind = SharedWorkerEventKind;
 export type RuntimeHarnessSpec = SharedRuntimeHarnessSpec;
 export type WorkerWorkspaceSpec = SharedWorkerWorkspaceSpec;
+export type WorkerWorkspaceContext = SharedWorkerWorkspaceContext;
+export type WorkerWorkspaceContextFile = SharedWorkerWorkspaceContextFile;
 export type WorkerProvisionSpec = SharedWorkerProvisionSpec;
 export type RuntimeWorkerJob = SharedRuntimeWorkerJob<DispatchEnvelope>;
 export type WorkerLease = SharedWorkerLease;
@@ -85,7 +93,9 @@ function inferAgentRuntime(envelope: DispatchEnvelope): RuntimeAgentRuntime {
   return "local";
 }
 
-function inferTargetKind(envelope: DispatchEnvelope): WorkerTargetKind {
+const HIGH_RISK_TOOL_PATTERN = /(?:^|[-_.])(write|edit|patch|apply_patch|save|delete|remove|rename|move|shell|terminal|exec|command|bash|powershell|cmd|git)(?:$|[-_.])/i;
+
+function requestedTargetKind(envelope: DispatchEnvelope): WorkerTargetKind | null {
   const nodeConfig = getNodeConfig(envelope);
   const explicitTarget = asNonEmptyString(nodeConfig.worker_target_kind);
   if (
@@ -97,30 +107,75 @@ function inferTargetKind(envelope: DispatchEnvelope): WorkerTargetKind {
     return explicitTarget;
   }
 
-  const runtime = inferAgentRuntime(envelope);
-  const configuredDefault = asNonEmptyString(
-    process.env.MY_MATE_RUNTIME_DEFAULT_TARGET_KIND,
-  );
-  if (
-    configuredDefault === "local" ||
-    configuredDefault === "external-bridge" ||
-    configuredDefault === "docker-worker" ||
-    configuredDefault === "node-worker"
-  ) {
-    if (runtime !== "openclaw" || configuredDefault === "external-bridge") {
-      return configuredDefault;
-    }
-  }
-  if (runtime === "local") {
-    return "local";
-  }
-  if (runtime === "openclaw") {
-    return "external-bridge";
-  }
-  return "docker-worker";
+  return null;
 }
 
-function buildWorkspaceSpec(envelope: DispatchEnvelope): WorkerWorkspaceSpec {
+function resolveExecutionPolicy(envelope: DispatchEnvelope): RuntimeExecutionPolicy {
+  const requestedTarget = requestedTargetKind(envelope);
+  const runtime = inferAgentRuntime(envelope);
+  const projectLocalRepo = asNonEmptyString(envelope.input_payload.project_local_repo);
+  const highRiskTools = envelope.allowed_tools.filter((tool) => HIGH_RISK_TOOL_PATTERN.test(tool));
+  const hasMutableProjectAccess = !!projectLocalRepo && highRiskTools.length > 0;
+  const reasons: string[] = [];
+
+  let resolvedTarget: WorkerTargetKind;
+  if (runtime === "openclaw") {
+    resolvedTarget = "external-bridge";
+    reasons.push("OpenClaw execution remains behind the configured external bridge.");
+  } else if (hasMutableProjectAccess) {
+    resolvedTarget = "docker-worker";
+    reasons.push(`Mutable project tools require sandbox execution: ${highRiskTools.join(", ")}.`);
+    if (requestedTarget === "local") {
+      reasons.push("The requested local target was overridden by workspace safety policy.");
+    }
+  } else if (projectLocalRepo) {
+    resolvedTarget = "docker-worker";
+    reasons.push("Live project paths are staged into a Docker sandbox even for declared read-only tools.");
+  } else if (requestedTarget === "local" && runtime !== "local") {
+    resolvedTarget = "docker-worker";
+    reasons.push(`Runtime ${runtime} has no approved host harness and cannot use the local target.`);
+  } else if (requestedTarget) {
+    resolvedTarget = requestedTarget;
+    reasons.push(`Using explicitly requested target ${requestedTarget}.`);
+  } else {
+    const configuredDefault = asNonEmptyString(
+      process.env.MY_MATE_RUNTIME_DEFAULT_TARGET_KIND,
+    );
+    if (
+      configuredDefault === "local" ||
+      configuredDefault === "external-bridge" ||
+      configuredDefault === "docker-worker" ||
+      configuredDefault === "node-worker"
+    ) {
+      resolvedTarget = configuredDefault;
+      reasons.push(`Using configured default target ${configuredDefault}.`);
+    } else if (runtime === "local") {
+      resolvedTarget = "local";
+      reasons.push("Local deterministic runtime does not request mutable project access.");
+    } else {
+      resolvedTarget = "docker-worker";
+      reasons.push(`Agent runtime ${runtime} defaults to an isolated Docker worker.`);
+    }
+  }
+
+  return {
+    risk_level: hasMutableProjectAccess ? "high" : projectLocalRepo ? "elevated" : "low",
+    workspace_access: projectLocalRepo ? "sandbox-write" : "none",
+    requires_change_approval: !!projectLocalRepo,
+    requested_target_kind: requestedTarget,
+    resolved_target_kind: resolvedTarget,
+    reasons,
+  };
+}
+
+function inferTargetKind(envelope: DispatchEnvelope): WorkerTargetKind {
+  return resolveExecutionPolicy(envelope).resolved_target_kind;
+}
+
+function buildWorkspaceSpec(
+  envelope: DispatchEnvelope,
+  context?: WorkerWorkspaceContext | null,
+): WorkerWorkspaceSpec {
   const projectSlug = asNonEmptyString(envelope.input_payload.project_slug);
   const projectLocalRepo = asNonEmptyString(envelope.input_payload.project_local_repo);
   const nodeConfig = getNodeConfig(envelope);
@@ -137,6 +192,7 @@ function buildWorkspaceSpec(envelope: DispatchEnvelope): WorkerWorkspaceSpec {
           : "unknown",
     project_slug: projectSlug,
     project_local_repo: projectLocalRepo,
+    context: context || null,
     metadata: workspace,
   };
 }
@@ -160,6 +216,25 @@ function buildProvisionEnv(envelope: DispatchEnvelope): Record<string, string> {
   const runtimeAgentRef = asNonEmptyString(envelope.runtime_agent_ref);
   if (runtimeAgentRef) {
     env.MY_MATE_RUNTIME_AGENT_REF = runtimeAgentRef;
+  }
+  const connection = envelope.provider_connection;
+  if (connection) {
+    const model = connection.model || runtimeAgentRef;
+    if (connection.agent_runtime === "glm") {
+      if (connection.base_url) env.MY_MATE_GLM_ANTHROPIC_BASE_URL = connection.base_url;
+      if (model) env.MY_MATE_GLM_MODEL = model;
+    } else if (connection.agent_runtime === "claude-sdk") {
+      if (connection.base_url) env.ANTHROPIC_BASE_URL = connection.base_url;
+      if (model) env.MY_MATE_CLAUDE_MODEL = model;
+    } else if (connection.agent_runtime === "codex") {
+      if (connection.base_url) env.OPENAI_BASE_URL = connection.base_url;
+      if (model) env.MY_MATE_CODEX_MODEL = model;
+    } else if (connection.agent_runtime === "kimi") {
+      if (connection.base_url) env.KIMI_BASE_URL = connection.base_url;
+      if (model) env.MY_MATE_KIMI_MODEL = model;
+    } else if (connection.agent_runtime === "openclaw") {
+      if (connection.base_url) env.MY_MATE_OPENCLAW_WORKER_BRIDGE_URL = connection.base_url;
+    }
   }
   const configuredEnv = isRecord(nodeConfig.worker_env)
     ? nodeConfig.worker_env
@@ -209,10 +284,17 @@ export function buildRuntimeWorkerJob(
     dispatchSequence?: number;
     createdAt?: string;
     targetKind?: WorkerTargetKind;
+    workspaceContext?: WorkerWorkspaceContext | null;
   },
 ): RuntimeWorkerJob {
   const nodeConfig = getNodeConfig(envelope);
-  const targetKind = options?.targetKind ?? inferTargetKind(envelope);
+  const executionPolicy = resolveExecutionPolicy(envelope);
+  const targetOverride = options?.targetKind;
+  const unsafeLocalOverride = targetOverride === "local" &&
+    (executionPolicy.requires_change_approval || inferAgentRuntime(envelope) !== "local");
+  const targetKind = targetOverride && !unsafeLocalOverride
+    ? targetOverride
+    : executionPolicy.resolved_target_kind;
   const dispatchSequence = Math.max(1, Math.floor(options?.dispatchSequence ?? 1));
   const image =
     asNonEmptyString(nodeConfig.worker_image) ||
@@ -235,17 +317,30 @@ export function buildRuntimeWorkerJob(
       agent_runtime: inferAgentRuntime(envelope),
       runtime_agent_ref: asNonEmptyString(envelope.runtime_agent_ref),
       harness_profile: asNonEmptyString(envelope.harness_profile),
+      provider_connection: envelope.provider_connection,
       allowed_skills: [...envelope.allowed_skills],
       allowed_tools: [...envelope.allowed_tools],
     },
     provision: {
       required: targetKind === "docker-worker" || targetKind === "node-worker",
       target_kind: targetKind,
+      execution_policy: {
+        ...executionPolicy,
+        resolved_target_kind: targetKind,
+        reasons: targetOverride
+          ? [
+              ...executionPolicy.reasons,
+              unsafeLocalOverride
+                ? "An unsafe dispatcher local override was ignored."
+                : `Dispatcher selected target ${targetKind}.`,
+            ]
+          : executionPolicy.reasons,
+      },
       image,
       container_group: asNonEmptyString(nodeConfig.container_group),
       required_capabilities: asStringArray(nodeConfig.required_capabilities),
       env: buildProvisionEnv(envelope),
-      workspace: buildWorkspaceSpec(envelope),
+      workspace: buildWorkspaceSpec(envelope, options?.workspaceContext),
       resource_limits: buildResourceLimits(nodeConfig),
     },
     trace_context: envelope.trace_context,

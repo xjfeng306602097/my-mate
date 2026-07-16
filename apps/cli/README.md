@@ -88,11 +88,14 @@ npm run my-mate -- doctor --mode quick
 npm run my-mate -- doctor --mode docker
 npm run my-mate -- doctor --mode model --runtime codex
 npm run my-mate -- doctor --mode model --runtime codex --model-probe
+npm run my-mate -- doctor --mode model --runtime glm --provider-connection glm-primary
 ```
 
 `--model-probe` is opt-in because it can make a provider request. Docker
 deterministic readiness, model configuration readiness, and live model
-verification are reported separately.
+verification are reported separately. `--provider-connection` resolves the
+workspace Connection's non-secret endpoint/model settings and checks the named
+credential environment variable without returning its value.
 
 Create and optionally follow a published template run:
 
@@ -170,6 +173,18 @@ npm run my-mate -- failure-replay <run-id> <node-run-id> --idempotency-key stabl
 plan/input/runtime identity. It does not invoke audit projection replay or
 create a linked Run.
 
+Inspect, verify, or rebuild a Mission materializer:
+
+```bash
+npm run my-mate -- mission-materializer <session-id>
+npm run my-mate -- mission-materializer <session-id> --verify
+npm run my-mate -- mission-materializer <session-id> --rebuild --json
+```
+
+Verification compares the evented read model with the direct canonical-store
+projection. A drift result exits `3` and reports the differing projection
+sections.
+
 ## Output And Exit Codes
 
 - `--json` prints one structured result.
@@ -177,7 +192,8 @@ create a linked Run.
 - `0`: operation and requested readiness/verdict succeeded.
 - `1`: run, scorecard, evaluation, replay verification, or requested quality gate failed.
 - `2`: invalid CLI configuration, arguments, or local command failure.
-- `3`: API/connectivity failure or requested Doctor readiness failed.
+- `3`: API/connectivity failure, requested Doctor readiness failure, or
+  Mission materializer drift.
 - `4`: follow timeout or interruption.
 
 ## Verification

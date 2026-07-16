@@ -28,6 +28,9 @@
     "harness_profile": {
       "type": ["string", "null"]
     },
+    "provider_connection_id": {
+      "type": ["string", "null"]
+    },
     "openclaw_agent_id": {
       "type": "string"
     },

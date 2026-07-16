@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/agent/provider-connection.schema.json",
+  "title": "Provider Connection",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "connection_id": { "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "agent_runtime": {
+      "enum": ["codex", "claude-sdk", "glm", "kimi", "openclaw"]
+    },
+    "provider": { "type": "string", "minLength": 1 },
+    "protocol": {
+      "enum": ["codex-appserver", "anthropic-messages", "openai-compatible", "openclaw-bridge"]
+    },
+    "base_url": { "type": ["string", "null"] },
+    "models": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "default_model": { "type": ["string", "null"] },
+    "max_input_tokens": { "type": "integer", "minimum": 4096, "maximum": 1048576 },
+    "max_output_tokens": { "type": "integer", "minimum": 1024, "maximum": 131072 },
+    "context_compression_enabled": { "type": "boolean" },
+    "context_compression_threshold_percent": { "type": "integer", "minimum": 50, "maximum": 95 },
+    "max_continuation_rounds": { "type": "integer", "minimum": 0, "maximum": 32 },
+    "credential_source": { "enum": ["managed", "environment"] },
+    "credential_env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+    "verification": {
+      "type": ["object", "null"],
+      "properties": {
+        "status": { "enum": ["verified", "failed"] },
+        "tested_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+        "detail": { "type": "string" },
+        "duration_ms": { "type": "number", "minimum": 0 },
+        "model": { "type": ["string", "null"] }
+      },
+      "required": ["status", "tested_at", "detail", "duration_ms", "model"],
+      "additionalProperties": false
+    },
+    "status": { "enum": ["active", "disabled"] },
+    "metadata": { "type": "object" },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "updated_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }
+  },
+  "required": [
+    "connection_id", "workspace_id", "name", "agent_runtime", "provider", "protocol",
+    "base_url", "models", "default_model", "max_input_tokens", "max_output_tokens", "context_compression_enabled", "context_compression_threshold_percent", "max_continuation_rounds", "credential_source", "credential_env", "verification", "status", "metadata",
+    "created_at", "updated_at"
+  ]
+}

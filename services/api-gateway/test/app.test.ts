@@ -90,6 +90,16 @@ async function startUpstreamServer() {
     idempotencyKey?: string | undefined;
   }> = [];
 
+  app.all(/^\/api\/(?:memory-settings|memory-observability|memory-maintenance|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-review)$/u, (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ ok: true, method: req.method, path: req.path, items: [] });
+  });
+
   app.get("/api/mobile/home", (req, res) => {
     requests.push({
       method: req.method,
@@ -489,6 +499,66 @@ async function startUpstreamServer() {
     });
   });
 
+  app.get("/api/missions/sess_gateway_test/materializer", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      session_id: "sess_gateway_test",
+      materializer_version: 1,
+      last_sequence: 4,
+      event_count: 4,
+      checkpoint_sequence: 4,
+      source_digest: "sha256:source",
+      projection_digest: "sha256:projection",
+      materialized_at: "2026-07-12T00:00:00.000Z",
+    });
+  });
+
+  app.post("/api/missions/sess_gateway_test/materializer/rebuild", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      session_id: "sess_gateway_test",
+      materializer_version: 1,
+      rebuilt: true,
+      last_sequence: 4,
+      event_count: 4,
+      checkpoint_sequence: 4,
+      source_digest: "sha256:source",
+      projection_digest: "sha256:projection",
+      materialized_at: "2026-07-12T00:00:00.000Z",
+    });
+  });
+
+  app.post("/api/missions/sess_gateway_test/materializer/verify", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      session_id: "sess_gateway_test",
+      status: "consistent",
+      source_digest: "sha256:source",
+      direct_projection_digest: "sha256:projection",
+      materialized_projection_digest: "sha256:projection",
+      last_sequence: 4,
+      event_count: 4,
+      checkpoint_sequence: 4,
+      differing_sections: [],
+      verified_at: "2026-07-12T00:00:00.000Z",
+    });
+  });
+
   app.get("/api/sessions/sess_gateway_test", (req, res) => {
     requests.push({
       method: req.method,
@@ -616,6 +686,128 @@ async function startUpstreamServer() {
     });
   });
 
+  app.get("/api/projects", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      items: [
+        {
+          project_id: "project_gateway_test",
+          name: "Gateway Project",
+          description: "Durable task workspace",
+          output_relative_path: "outputs",
+          archived: false,
+          created_at: "2026-07-14T00:00:00.000Z",
+          updated_at: "2026-07-14T00:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  app.get("/api/sessions/sess_gateway_test/task-workspace", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      task_workspace: {
+        task_workspace_id: "taskws_gateway_test",
+        session_id: "sess_gateway_test",
+        project_id: "project_gateway_test",
+        binding_id: "binding_gateway_test",
+        output_relative_path: "outputs",
+        status: "active",
+        created_at: "2026-07-14T00:00:00.000Z",
+        updated_at: "2026-07-14T00:00:00.000Z",
+        project: {
+          project_id: "project_gateway_test",
+          name: "Gateway Project",
+          description: "Durable task workspace",
+          output_relative_path: "outputs",
+          archived: false,
+          created_at: "2026-07-14T00:00:00.000Z",
+          updated_at: "2026-07-14T00:00:00.000Z",
+        },
+      },
+    });
+  });
+
+  app.get("/api/sessions/sess_gateway_test/memory-snapshot", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      schema_version: 1,
+      snapshot_id: "memsnap_gateway_test",
+      session_id: "sess_gateway_test",
+      entries: [],
+    });
+  });
+
+  app.post("/api/session-recall/search", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      query: req.body.query,
+      current_session_id: req.body.current_session_id,
+      count: 0,
+      hits: [],
+    });
+  });
+
+  app.get("/api/memory-retrieval/status", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ schema_version: 1, retrieval: "hybrid_lexical_ngram_v1", active_records: 2 });
+  });
+
+  app.post("/api/memory-retrieval/search", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ query: req.body.query, retrieval: "hybrid_lexical_ngram_v1", count: 0, hits: [] });
+  });
+
+  app.post("/api/memory-retrieval/rebuild", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ records: 2 });
+  });
+
+  app.get("/api/memory-knowledge/status", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ provider_id: "disabled", state: "disabled" });
+  });
+
+  app.post("/api/memory-knowledge/query", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ entity: req.body.entity, count: 0, relations: [] });
+  });
+
+  app.get("/api/sessions/sess_gateway_test/checkpoints", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ items: [] });
+  });
+
+  app.get("/api/sessions/sess_gateway_test/checkpoints/latest", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ checkpoint_id: "taskcp_gateway_test", status: "resumable" });
+  });
+
+  app.post("/api/sessions/sess_gateway_test/checkpoints/taskcp_gateway_test/resume", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ checkpoint: { checkpoint_id: "taskcp_gateway_test", status: "completed" } });
+  });
+
   function handleSessionVisibilityAction(req: Request, res: Response, archived: boolean) {
     requests.push({
       method: req.method,
@@ -690,6 +882,43 @@ async function startUpstreamServer() {
       },
       items: [],
     });
+  });
+
+  app.delete("/api/sessions/sess_gateway_test/attachments/att_gateway_test", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      attachment: { attachment_id: "att_gateway_test", name: "brief.md" },
+      items: [],
+    });
+  });
+
+  app.get("/api/sessions/sess_gateway_test/artifacts/art_gateway_test/download", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.setHeader("content-type", "text/markdown; charset=utf-8");
+    res.setHeader("content-disposition", 'attachment; filename="guide-zh.md"');
+    res.send("# 中文文件");
+  });
+
+  app.get("/api/runs/run_gateway_test/artifacts/art_runtime_test", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ artifact: { artifact_id: "art_runtime_test", name: "report.pdf" }, preview_kind: "pdf" });
+  });
+
+  app.get("/api/runs/run_gateway_test/artifacts/art_runtime_test/download", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.setHeader("content-type", "application/pdf");
+    res.setHeader("content-disposition", 'attachment; filename="report.pdf"');
+    res.send(Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x10]));
   });
 
   app.get("/api/sessions/sess_gateway_test/compare", (req, res) => {
@@ -825,6 +1054,46 @@ async function startUpstreamServer() {
         draft_template_count: 0,
       },
     });
+  });
+
+  app.get("/api/runtime/workspace-change-sets", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ items: [{ change_set_id: "wschange_gateway", status: "pending" }] });
+  });
+
+  app.get("/api/runtime/workspace-change-sets/wschange_gateway", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ change_set_id: "wschange_gateway", status: "pending" });
+  });
+
+  app.post("/api/runtime/workspace-change-sets/wschange_gateway/apply", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ change_set_id: "wschange_gateway", status: "applied" });
+  });
+
+  app.post("/api/runtime/workspace-change-sets/wschange_gateway/reject", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({ change_set_id: "wschange_gateway", status: "rejected" });
   });
 
   app.get("/api/governance/policy", (req, res) => {
@@ -1120,13 +1389,16 @@ async function startUpstreamServer() {
     res.end();
   });
 
-  app.post("/api/sessions/sess_gateway_test/messages", (req, res) => {
+  app.post("/api/sessions/sess_gateway_test/messages", async (req, res) => {
     requests.push({
       method: req.method,
       path: req.path,
       body: req.body,
       gatewayHeader: req.header("x-my-mate-gateway"),
     });
+    if (req.body?.content === "slow file delivery") {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     res.status(201).json({
       session: {
         session_id: "sess_gateway_test",
@@ -1663,6 +1935,62 @@ async function startUpstreamServer() {
     });
   });
 
+  app.get("/api/registry/provider-connections", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ items: [{ connection_id: "glm-primary", agent_runtime: "glm", credential_configured: true }] });
+  });
+
+  app.post("/api/registry/provider-connections", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.status(201).json({ ...req.body, connection_id: req.body.connection_id || "glm-primary", credential_configured: true });
+  });
+
+  app.get("/api/registry/provider-connections/glm-primary", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ connection_id: "glm-primary", agent_runtime: "glm", credential_configured: true });
+  });
+
+  app.post("/api/registry/provider-connections/glm-primary/test", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({
+      connection: { connection_id: "glm-primary", verification: { status: "verified" } },
+      verification: { status: "verified" },
+      report: { model_verified: true },
+    });
+  });
+
+  app.post("/api/registry/provider-connections/glm-primary/disable", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ connection_id: "glm-primary", agent_runtime: "glm", status: "disabled", credential_configured: true });
+  });
+
+  app.get("/api/registry/mcp-connector-presets", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ items: [{ preset_id: "github", name: "GitHub", transport: "streamable-http" }] });
+  });
+
+  app.get("/api/registry/mcp-servers", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ items: [{ server_id: "github", transport: "streamable-http", status: "ready" }] });
+  });
+
+  app.post("/api/registry/mcp-servers", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.status(201).json({ ...req.body, server_id: req.body.server_id || "github", status: "ready" });
+  });
+
+  app.post("/api/registry/mcp-servers/reload", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ items: [] });
+  });
+
+  for (const operation of ["test", "enable", "disable"]) {
+    app.post(`/api/registry/mcp-servers/github/${operation}`, (req, res) => {
+      requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+      res.json({ server_id: "github", status: operation === "disable" ? "disabled" : "ready" });
+    });
+  }
+
   app.get("/api/orchestrator-profiles", (req, res) => {
     requests.push({
       method: req.method,
@@ -1691,6 +2019,31 @@ async function startUpstreamServer() {
       orchestrator_id: req.body?.orchestrator_id || "studio-orchestrator",
       name: req.body?.name || "Studio Orchestrator",
     });
+  });
+
+  app.get("/api/supervision/alerts", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ items: [] });
+  });
+  app.post("/api/supervision/scan", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ scanned_sessions: 1, open_alerts: [], resolved_alerts: [] });
+  });
+  app.post("/api/supervision/alerts/alert-1/resolve", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ alert_id: "alert-1", status: "resolved" });
+  });
+  app.get("/api/sessions/session-1/autopilot", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ session_id: "session-1", mode: "assisted", status: "ready" });
+  });
+  app.put("/api/sessions/session-1/autopilot", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ session_id: "session-1", ...req.body, status: "ready" });
+  });
+  app.post("/api/sessions/session-1/autopilot/tick", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ session_id: "session-1", mode: "autopilot", status: "running" });
   });
 
   return await new Promise<{
@@ -1943,6 +2296,44 @@ test("proxies planner candidate plan requests", async () => {
     assert.equal(upstream.requests[0].path, "/api/planner/candidate-plan");
     assert.equal(upstream.requests[0].gatewayHeader, "api-gateway");
     assert.deepEqual(upstream.requests[0].body, payload);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies mission materializer status, verify, and rebuild routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+
+  try {
+    const status = await getJson(
+      `${server.baseUrl}/api/missions/sess_gateway_test/materializer`,
+    );
+    const verification = await postJson(
+      `${server.baseUrl}/api/missions/sess_gateway_test/materializer/verify`,
+      {},
+    );
+    const rebuild = await postJson(
+      `${server.baseUrl}/api/missions/sess_gateway_test/materializer/rebuild`,
+      {},
+    );
+
+    assert.equal(status.status, 200);
+    assert.equal(status.body.materializer_version, 1);
+    assert.equal(verification.status, 200);
+    assert.equal(verification.body.status, "consistent");
+    assert.equal(rebuild.status, 200);
+    assert.equal(rebuild.body.rebuilt, true);
+    assert.deepEqual(
+      upstream.requests.map((request) => `${request.method} ${request.path}`),
+      [
+        "GET /api/missions/sess_gateway_test/materializer",
+        "POST /api/missions/sess_gateway_test/materializer/verify",
+        "POST /api/missions/sess_gateway_test/materializer/rebuild",
+      ],
+    );
+    assert.ok(upstream.requests.every((request) => request.gatewayHeader === "api-gateway"));
   } finally {
     await server.close();
     await upstream.close();
@@ -2268,6 +2659,187 @@ test("proxies session routes with body payloads", async () => {
       "/api/sessions/sess_gateway_test/dag-proposals/prop_gateway_test/supersede",
     );
     assert.deepEqual(upstream.requests[23].body, proposalSupersedePayload);
+
+    const removedAttachmentResponse = await fetch(
+      `${server.baseUrl}/api/sessions/sess_gateway_test/attachments/att_gateway_test`,
+      { method: "DELETE" },
+    );
+    assert.equal(removedAttachmentResponse.status, 200);
+    const removedAttachment = await removedAttachmentResponse.json();
+    assert.equal(removedAttachment.attachment.attachment_id, "att_gateway_test");
+    assert.equal(upstream.requests[24].method, "DELETE");
+    assert.equal(
+      upstream.requests[24].path,
+      "/api/sessions/sess_gateway_test/attachments/att_gateway_test",
+    );
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies Project and Task Workspace read routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+
+  try {
+    const projects = await getJson(`${server.baseUrl}/api/projects`);
+    const taskWorkspace = await getJson(
+      `${server.baseUrl}/api/sessions/sess_gateway_test/task-workspace`,
+    );
+
+    assert.equal(projects.status, 200);
+    assert.equal(projects.body.items[0].project_id, "project_gateway_test");
+    assert.equal("root_path" in projects.body.items[0], false);
+    assert.equal(taskWorkspace.status, 200);
+    assert.equal(taskWorkspace.body.task_workspace.project_id, "project_gateway_test");
+    assert.equal(taskWorkspace.body.task_workspace.output_relative_path, "outputs");
+    assert.deepEqual(
+      upstream.requests.slice(-2).map((request) => `${request.method} ${request.path}`),
+      [
+        "GET /api/projects",
+        "GET /api/sessions/sess_gateway_test/task-workspace",
+      ],
+    );
+    assert.ok(upstream.requests.slice(-2).every((request) => request.gatewayHeader === "api-gateway"));
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies Core Memory snapshot and Session Recall routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const snapshot = await getJson(
+      `${server.baseUrl}/api/sessions/sess_gateway_test/memory-snapshot`,
+    );
+    const recallPayload = {
+      query: "release checklist",
+      current_session_id: "sess_gateway_test",
+      limit: 3,
+    };
+    const recall = await postJson(`${server.baseUrl}/api/session-recall/search`, recallPayload);
+
+    assert.equal(snapshot.status, 200);
+    assert.equal(recall.status, 200);
+    assert.equal(upstream.requests.at(-2)?.path, "/api/sessions/sess_gateway_test/memory-snapshot");
+    assert.equal(upstream.requests.at(-1)?.path, "/api/session-recall/search");
+    assert.deepEqual(upstream.requests.at(-1)?.body, recallPayload);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies M5 memory retrieval and optional knowledge provider routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const status = await getJson(`${server.baseUrl}/api/memory-retrieval/status`);
+    const searchPayload = { query: "release evidence", limit: 5 };
+    const search = await postJson(`${server.baseUrl}/api/memory-retrieval/search`, searchPayload);
+    const rebuilt = await postJson(`${server.baseUrl}/api/memory-retrieval/rebuild`, {});
+    const knowledge = await getJson(`${server.baseUrl}/api/memory-knowledge/status`);
+    const query = await postJson(`${server.baseUrl}/api/memory-knowledge/query`, { entity: "workspace:default" });
+
+    assert.equal(status.status, 200);
+    assert.equal(search.status, 200);
+    assert.equal(rebuilt.status, 200);
+    assert.equal(knowledge.status, 200);
+    assert.equal(query.status, 200);
+    assert.deepEqual(upstream.requests.slice(-5).map((request) => request.path), [
+      "/api/memory-retrieval/status",
+      "/api/memory-retrieval/search",
+      "/api/memory-retrieval/rebuild",
+      "/api/memory-knowledge/status",
+      "/api/memory-knowledge/query",
+    ]);
+    assert.deepEqual(upstream.requests.at(-4)?.body, searchPayload);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies Task checkpoint list, latest, and explicit resume routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const listed = await getJson(`${server.baseUrl}/api/sessions/sess_gateway_test/checkpoints`);
+    const latest = await getJson(`${server.baseUrl}/api/sessions/sess_gateway_test/checkpoints/latest`);
+    const resumePayload = { provider_connection_id: "checkpoint-provider", model: "checkpoint-model" };
+    const resumed = await postJson(
+      `${server.baseUrl}/api/sessions/sess_gateway_test/checkpoints/taskcp_gateway_test/resume`,
+      resumePayload,
+    );
+
+    assert.equal(listed.status, 200);
+    assert.equal(latest.status, 200);
+    assert.equal(resumed.status, 200);
+    assert.deepEqual(upstream.requests.slice(-3).map((request) => request.path), [
+      "/api/sessions/sess_gateway_test/checkpoints",
+      "/api/sessions/sess_gateway_test/checkpoints/latest",
+      "/api/sessions/sess_gateway_test/checkpoints/taskcp_gateway_test/resume",
+    ]);
+    assert.deepEqual(upstream.requests.at(-1)?.body, resumePayload);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies generated Session artifact downloads", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/api/sessions/sess_gateway_test/artifacts/art_gateway_test/download`,
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-disposition") || "", /guide-zh\.md/);
+    assert.equal(await response.text(), "# 中文文件");
+    assert.equal(upstream.requests.at(-1)?.path, "/api/sessions/sess_gateway_test/artifacts/art_gateway_test/download");
+    assert.equal(upstream.requests.at(-1)?.gatewayHeader, "api-gateway");
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies runtime artifact preview and binary downloads without byte corruption", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const preview = await fetch(`${server.baseUrl}/api/runs/run_gateway_test/artifacts/art_runtime_test`);
+    assert.equal(preview.status, 200);
+    assert.equal((await preview.json()).preview_kind, "pdf");
+
+    const download = await fetch(`${server.baseUrl}/api/runs/run_gateway_test/artifacts/art_runtime_test/download`);
+    assert.equal(download.status, 200);
+    assert.equal(download.headers.get("content-type"), "application/pdf");
+    assert.match(download.headers.get("content-disposition") || "", /report\.pdf/);
+    assert.deepEqual([...new Uint8Array(await download.arrayBuffer())], [0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x10]);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("keeps Session message generation alive beyond the default proxy timeout", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({
+    controlPlaneBaseUrl: upstream.baseUrl,
+    requestTimeoutMs: 10,
+  });
+  try {
+    const response = await postJson(
+      `${server.baseUrl}/api/sessions/sess_gateway_test/messages`,
+      { content: "slow file delivery" },
+    );
+    assert.equal(response.status, 201);
+    assert.equal(response.body.user_message.content.text, "slow file delivery");
   } finally {
     await server.close();
     await upstream.close();
@@ -2579,6 +3151,101 @@ test("proxies template versioning registry and orchestrator profile requests", a
   }
 });
 
+test("proxies Provider Connection lifecycle routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const payload = {
+      connection_id: "glm-primary",
+      name: "GLM Primary",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      protocol: "anthropic-messages",
+      base_url: "https://glm.example.test/anthropic",
+      models: ["glm-5.2", "glm-5.2-air"],
+      default_model: "glm-5.2",
+      credential_source: "managed",
+      credential_env: "GLM_API_KEY",
+      api_key: "gateway-provider-test-key",
+    };
+    const listed = await getJson(`${server.baseUrl}/api/registry/provider-connections`);
+    const saved = await postJson(`${server.baseUrl}/api/registry/provider-connections`, payload);
+    const loaded = await getJson(`${server.baseUrl}/api/registry/provider-connections/glm-primary`);
+    const tested = await postJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-primary/test`,
+      {},
+    );
+    const disabled = await postJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-primary/disable`,
+      {},
+    );
+
+    assert.equal(listed.status, 200);
+    assert.equal(saved.status, 201);
+    assert.equal(loaded.body.connection_id, "glm-primary");
+    assert.equal(tested.body.verification.status, "verified");
+    assert.equal(disabled.body.status, "disabled");
+    assert.deepEqual(
+      upstream.requests.slice(-5).map((request) => `${request.method} ${request.path}`),
+      [
+        "GET /api/registry/provider-connections",
+        "POST /api/registry/provider-connections",
+        "GET /api/registry/provider-connections/glm-primary",
+        "POST /api/registry/provider-connections/glm-primary/test",
+        "POST /api/registry/provider-connections/glm-primary/disable",
+      ],
+    );
+    assert.deepEqual(upstream.requests.at(-4)?.body, payload);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies public MCP registry lifecycle routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const payload = {
+      server_id: "github",
+      name: "GitHub MCP",
+      transport: "streamable-http",
+      url: "https://mcp.example.test/mcp",
+    };
+    const presets = await getJson(`${server.baseUrl}/api/registry/mcp-connector-presets`);
+    const listed = await getJson(`${server.baseUrl}/api/registry/mcp-servers`);
+    const saved = await postJson(`${server.baseUrl}/api/registry/mcp-servers`, payload);
+    const reloaded = await postJson(`${server.baseUrl}/api/registry/mcp-servers/reload`, {});
+    const tested = await postJson(`${server.baseUrl}/api/registry/mcp-servers/github/test`, {});
+    const enabled = await postJson(`${server.baseUrl}/api/registry/mcp-servers/github/enable`, {});
+    const disabled = await postJson(`${server.baseUrl}/api/registry/mcp-servers/github/disable`, {});
+
+    assert.equal(presets.status, 200);
+    assert.equal(presets.body.items[0].preset_id, "github");
+    assert.equal(listed.status, 200);
+    assert.equal(saved.status, 201);
+    assert.equal(reloaded.status, 200);
+    assert.equal(tested.body.status, "ready");
+    assert.equal(enabled.body.status, "ready");
+    assert.equal(disabled.body.status, "disabled");
+    assert.deepEqual(
+      upstream.requests.slice(-7).map((request) => `${request.method} ${request.path}`),
+      [
+        "GET /api/registry/mcp-connector-presets",
+        "GET /api/registry/mcp-servers",
+        "POST /api/registry/mcp-servers",
+        "POST /api/registry/mcp-servers/reload",
+        "POST /api/registry/mcp-servers/github/test",
+        "POST /api/registry/mcp-servers/github/enable",
+        "POST /api/registry/mcp-servers/github/disable",
+      ],
+    );
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
 test("proxies runtime summary and session stream requests", async () => {
   const upstream = await startUpstreamServer();
   const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
@@ -2587,6 +3254,20 @@ test("proxies runtime summary and session stream requests", async () => {
     const runtime = await getJson(`${server.baseUrl}/api/runtime/summary`);
     assert.equal(runtime.status, 200);
     assert.equal(runtime.body.execution_runtime.adapter_kind, "openclaw");
+    const workspaceChanges = await getJson(`${server.baseUrl}/api/runtime/workspace-change-sets`);
+    const workspaceChange = await getJson(`${server.baseUrl}/api/runtime/workspace-change-sets/wschange_gateway`);
+    const appliedWorkspaceChange = await postJson(
+      `${server.baseUrl}/api/runtime/workspace-change-sets/wschange_gateway/apply`,
+      { comment: "Reviewed" },
+    );
+    const rejectedWorkspaceChange = await postJson(
+      `${server.baseUrl}/api/runtime/workspace-change-sets/wschange_gateway/reject`,
+      { comment: "Rejected after review" },
+    );
+    assert.equal(workspaceChanges.body.items[0].change_set_id, "wschange_gateway");
+    assert.equal(workspaceChange.body.status, "pending");
+    assert.equal(appliedWorkspaceChange.body.status, "applied");
+    assert.equal(rejectedWorkspaceChange.body.status, "rejected");
 
     const hosting = await getJson(`${server.baseUrl}/api/agents/hosting`);
     assert.equal(hosting.status, 200);
@@ -2713,6 +3394,31 @@ test("blocks routes outside the gateway allowlist", async () => {
   }
 });
 
+test("proxies the complete M6 and M7 memory management surface", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const settings = await getJson(`${server.baseUrl}/api/memory-settings`);
+    const saved = await putJson(`${server.baseUrl}/api/memory-settings`, { background_review: { enabled: true } });
+    const memories = await getJson(`${server.baseUrl}/api/memories?status=all`);
+    const review = await postJson(`${server.baseUrl}/api/sessions/session-m6/memory-review`, {});
+    const approved = await postJson(`${server.baseUrl}/api/memory-candidates/candidate-m6/approve`, {});
+    const maintenance = await postJson(`${server.baseUrl}/api/memory-maintenance`, {});
+    const intelligence = await getJson(`${server.baseUrl}/api/memory-intelligence/evaluation`);
+    assert.equal(settings.status, 200);
+    assert.equal(saved.body.method, "PUT");
+    assert.equal(memories.status, 200);
+    assert.equal(review.body.path, "/api/sessions/session-m6/memory-review");
+    assert.equal(approved.body.path, "/api/memory-candidates/candidate-m6/approve");
+    assert.equal(maintenance.body.path, "/api/memory-maintenance");
+    assert.equal(intelligence.body.path, "/api/memory-intelligence/evaluation");
+    assert.ok(upstream.requests.slice(-7).every((request) => request.gatewayHeader === "api-gateway"));
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
 test("enforces optional bearer token auth", async () => {
   const upstream = await startUpstreamServer();
   const server = await startTestServer({
@@ -2778,6 +3484,29 @@ test("resolves configured identities, rejects foreign workspaces, and signs upst
     const context = JSON.parse(Buffer.from(observed.authContext!, "base64url").toString("utf-8"));
     assert.equal(context.principal.principal_id, "alpha-user");
     assert.equal(context.selected_workspace.role, "operator");
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies SUP-01 and AI-01 product intelligence routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const alerts = await getJson(`${server.baseUrl}/api/supervision/alerts?status=open`);
+    const scan = await postJson(`${server.baseUrl}/api/supervision/scan`, {});
+    const resolve = await postJson(`${server.baseUrl}/api/supervision/alerts/alert-1/resolve`, {});
+    const controller = await getJson(`${server.baseUrl}/api/sessions/session-1/autopilot`);
+    const configured = await putJson(`${server.baseUrl}/api/sessions/session-1/autopilot`, { mode: "autopilot" });
+    const tick = await postJson(`${server.baseUrl}/api/sessions/session-1/autopilot/tick`, {});
+    assert.equal(alerts.status, 200);
+    assert.equal(scan.body.scanned_sessions, 1);
+    assert.equal(resolve.body.status, "resolved");
+    assert.equal(controller.body.mode, "assisted");
+    assert.equal(configured.body.mode, "autopilot");
+    assert.equal(tick.body.status, "running");
+    assert.ok(upstream.requests.slice(-6).every((request) => request.gatewayHeader === "api-gateway"));
   } finally {
     await server.close();
     await upstream.close();

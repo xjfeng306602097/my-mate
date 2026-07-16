@@ -73,7 +73,7 @@ export function normalizeUsage(
     "cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens",
   ]);
   const reasoningTokens = firstNumber([root, outputDetails], [
-    "reasoning_tokens", "reasoningTokens",
+    "reasoning_tokens", "reasoningTokens", "reasoningOutputTokens",
   ]);
   const suppliedTotal = firstNumber(records, ["total_tokens", "totalTokens", "totalTokenCount"]);
   const totalTokens = suppliedTotal ?? (

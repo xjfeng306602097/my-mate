@@ -85,9 +85,25 @@ jobs:
           path: tmp/release/runtime-worker/**
           if-no-files-found: error
 
-  publish:
-    if: github.ref_type == 'tag'
+  live-acceptance:
+    if: vars.MY_MATE_ENABLE_LIVE_RELEASE_ACCEPTANCE == 'true'
     needs: release-gate
+    uses: ./.github/workflows/live-provider-acceptance.yml
+    with:
+      providers: auto
+      run_judge: true
+      require_configured: true
+    secrets: inherit
+
+  publish:
+    if: >-
+      always() &&
+      github.ref_type == 'tag' &&
+      needs.release-gate.result == 'success' &&
+      (needs.live-acceptance.result == 'success' || needs.live-acceptance.result == 'skipped')
+    needs:
+      - release-gate
+      - live-acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

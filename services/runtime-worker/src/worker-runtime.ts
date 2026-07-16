@@ -8,6 +8,11 @@ import {
   type WorkerEvidence,
   type WorkerEvent,
 } from "./types.js";
+import { materializeWorkspaceContext } from "./workspace-context.js";
+import {
+  collectArtifactOutputs,
+  prepareArtifactOutputDirectory,
+} from "./artifact-collector.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -54,6 +59,8 @@ export async function runRuntimeWorkerJob(
   },
 ): Promise<RuntimeWorkerRunResult> {
   const workerId = options?.workerId || "runtime-worker-local";
+  prepareArtifactOutputDirectory(job);
+  const materializedContext = materializeWorkspaceContext(job);
   const harness = getHarness(job);
   const signal = options?.signal || new AbortController().signal;
   const evidence: WorkerEvidence[] = [];
@@ -84,9 +91,30 @@ export async function runRuntimeWorkerJob(
       runtime_agent_ref: job.harness.runtime_agent_ref,
       allowed_skills: job.harness.allowed_skills,
       allowed_tools: job.harness.allowed_tools,
+      workspace_context: materializedContext
+        ? {
+            manifest_path: materializedContext.relative_manifest_path,
+            file_count: materializedContext.file_count,
+            total_size_bytes: materializedContext.total_size_bytes,
+            manifest_sha256: materializedContext.manifest_sha256,
+          }
+        : null,
     },
   });
   const result = await harness.execute(job, emitEvidence, signal);
+  const deliverables = collectArtifactOutputs(job);
+  if (deliverables.length) {
+    for (const report of result.reports) {
+      if (report.status === "completed") report.artifacts = deliverables;
+    }
+    for (const handoff of result.handoffs || []) {
+      const content = handoff.content && typeof handoff.content === "object" && !Array.isArray(handoff.content)
+        ? handoff.content as Record<string, unknown>
+        : { summary: handoff.content };
+      handoff.content = { ...content, artifacts: deliverables };
+      handoff.content_ref = deliverables[0]?.storage_uri || null;
+    }
+  }
   const timeline: Array<
     | { kind: "report"; report: NormalizedExecutionReport }
     | { kind: "handoff"; handoff: NonNullable<typeof result.handoffs>[number] }

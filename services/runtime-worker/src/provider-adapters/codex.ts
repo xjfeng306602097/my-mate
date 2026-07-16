@@ -156,6 +156,16 @@ export class CodexProviderSession extends BaseProviderSession {
       return events;
     }
 
+    if (normalized === "thread.tokenUsage.updated" || normalized === "thread.token_usage.updated") {
+      this.begin(value);
+      const tokenUsage = asRecord(payload.tokenUsage) || asRecord(payload.token_usage);
+      const usageValue = tokenUsage?.total || tokenUsage?.last || tokenUsage;
+      const usage = normalizeUsage(usageValue);
+      return usage.availability === "unavailable" ? [] : [
+        this.emit("usage", "Codex provider usage reported.", { usage, payload: usage }),
+      ];
+    }
+
     if (normalized === "error" || normalized.endsWith(".error")) {
       this.begin(value);
       const error = asRecord(payload.error);

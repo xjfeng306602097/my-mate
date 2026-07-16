@@ -4,11 +4,14 @@ import {
   findPendingApprovalForNode,
   saveApproval,
 } from "../approval-store.js";
+import { saveRuntimeHumanGate } from "./human-gate-store.js";
+import { materializeDynamicFanout } from "./dynamic-fanout.js";
 import {
   createArtifactRecord,
   listArtifacts,
   upsertArtifacts,
 } from "../artifact-store.js";
+import { publishRuntimeArtifact } from "../durable-artifact-publisher.js";
 import type { ExecutionAdapter } from "../execution-adapter.js";
 import { appendRunEvent } from "../event-store.js";
 import {
@@ -31,6 +34,8 @@ import {
 import { listNodeRuns, saveNodeRuns } from "../node-run-store.js";
 import { getRunPlan, saveRunPlan } from "../run-plan-store.js";
 import { getRun, saveRun } from "../run-store.js";
+import { getWorkspaceBinding } from "../workspace-binding-store.js";
+import { finalizeRunWorkspace } from "./run-workspace.js";
 import {
   ExecutionAdapterRuntimeDispatcher,
   type RuntimeDispatchResult,
@@ -83,6 +88,7 @@ import {
   findExecutionReplayByJobId,
   saveExecutionReplay,
 } from "./execution-replay-store.js";
+import { getWorkspaceContextSnapshotForRun } from "./workspace-context-snapshot.js";
 
 export type RuntimeQueueReason =
   | "run_created"
@@ -167,6 +173,23 @@ function areAllNodesCompletedOrRecovered(runId: string, nodeRuns: NodeRunRecord[
       ),
     recovered_failed_node_run_ids: recovered,
   };
+}
+
+function finalizeBoundRunWorkspace(
+  run: RunRecord,
+  nodeRunId: string,
+  jobId: string,
+): { ok: true; changeSetId: string | null } | { ok: false; error: string } {
+  if (!run.workspace_binding_id) return { ok: true, changeSetId: null };
+  try {
+    const changeSet = finalizeRunWorkspace({ runId: run.run_id, nodeRunId, jobId });
+    return { ok: true, changeSetId: changeSet?.change_set_id || null };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Run Workspace finalization failed.",
+    };
+  }
 }
 
 interface NodeHandoffRoutingResult {
@@ -361,6 +384,33 @@ export class RuntimeEngine {
       throw new Error("NODE_NOT_FOUND");
     }
 
+    const timestamp = event.handoff.created_at || event.created_at || this.getNow();
+    const fanout = materializeDynamicFanout({
+      plan,
+      nodeRuns,
+      source,
+      handoffId: event.handoff.handoff_id || `handoff:${event.event_id}`,
+      content: event.handoff.content,
+      timestamp,
+    });
+    if (fanout.applied) {
+      appendRunEvent({
+        run_id: run.run_id,
+        node_run_id: source.node_run_id,
+        type: "runtime.fanout_materialized",
+        actor_type: "system",
+        actor_id: "runtime-fanout",
+        payload: {
+          handoff_id: event.handoff.handoff_id || `handoff:${event.event_id}`,
+          template_node_id: fanout.template_node_id,
+          item_count: fanout.item_count,
+          generated_node_run_ids: fanout.generated_node_run_ids,
+        },
+        created_at: timestamp,
+        idempotency_key: `runtime.fanout:${run.run_id}:${event.handoff.handoff_id || event.event_id}`,
+      });
+    }
+
     const outgoing = plan.edges.filter((edge) => edge.from === source.node_id);
     const hasExplicitPorts = outgoing.some(
       (edge) => typeof edge.from_port === "string" && !!edge.from_port.trim(),
@@ -427,7 +477,6 @@ export class RuntimeEngine {
     const routingDecisions = evaluatedEdges.map((entry) => entry.decision);
     const routedNodeRunIds: string[] = [];
     const skippedNodeRunIds: string[] = [];
-    const timestamp = event.handoff.created_at || event.created_at || this.getNow();
 
     for (const edge of activatedEdges) {
       const target = plan.compiled_nodes.find((candidate) => candidate.node_id === edge.to);
@@ -629,6 +678,7 @@ export class RuntimeEngine {
     } else if ("report" in event) {
       await this.applyExecutionReport(event.report, {
         actorId: event.worker_id ? `runtime-worker:${event.worker_id}` : "runtime-worker",
+        workerId: event.worker_id,
         workerEventId: event.event_id,
         jobId: event.job_id,
       });
@@ -807,6 +857,7 @@ export class RuntimeEngine {
       actorId?: string;
       workerEventId?: string;
       jobId?: string;
+      workerId?: string | null;
     },
   ): Promise<void> {
     const run = getRun(report.run_id);
@@ -844,6 +895,7 @@ export class RuntimeEngine {
             : 50;
     const routingJobId =
       context?.jobId || `${run.run_id}:${node.node_run_id}:attempt-${nodeRun.attempt}`;
+    const humanGate = "human_gate" in report ? report.human_gate : null;
 
     if (report.raw_ref) {
       node.execution_ref = createExecutionRefFromRawRef(report.raw_ref, node.execution_ref);
@@ -899,6 +951,28 @@ export class RuntimeEngine {
         "node.progress";
       let shouldAutoResumeNode = false;
       if (report.status === "waiting_human") {
+        const nativeGate = humanGate;
+        if (nativeGate && context?.jobId) {
+          saveRuntimeHumanGate({
+            gate_id: nativeGate.gate_id,
+            kind: nativeGate.kind,
+            status: "suspended",
+            transport: "worker_native",
+            run_id: run.run_id,
+            node_run_id: report.node_run_id,
+            job_id: context.jobId,
+            worker_id: context.workerId || null,
+            summary: nativeGate.summary,
+            input_schema: nativeGate.input_schema,
+            request_payload: null,
+            response_payload: null,
+            requested_at: nativeGate.requested_at,
+            suspended_at: timestamp,
+            resolved_at: null,
+            control_id: null,
+            last_error: null,
+          });
+        }
         if ((process.env.MY_MATE_AUTO_APPROVE_HUMAN_GATES || "false").toLowerCase() === "true") {
           shouldAutoResumeNode = true;
           eventType = node.human_input_schema ? "human_input.submitted" : "approval.granted";
@@ -914,6 +988,7 @@ export class RuntimeEngine {
                   summary: normalizedMessage,
                   inputSchema: node.human_input_schema,
                   requestedAt: timestamp,
+                  gateId: nativeGate?.gate_id || null,
                 }),
               );
             }
@@ -928,6 +1003,7 @@ export class RuntimeEngine {
                   kind: node.approval_kind || "human_review",
                   summary: normalizedMessage,
                   requestedAt: timestamp,
+                  gateId: nativeGate?.gate_id || null,
                 }),
               );
             }
@@ -949,6 +1025,7 @@ export class RuntimeEngine {
           auto_approved: shouldAutoResumeNode,
           job_id: context?.jobId || null,
           worker_event_id: context?.workerEventId || null,
+          gate_id: humanGate?.gate_id || null,
         },
         created_at: timestamp,
       });
@@ -1189,6 +1266,18 @@ export class RuntimeEngine {
           return;
         }
       }
+      const partialWorkspaceFinalization = finalizeBoundRunWorkspace(
+        run,
+        report.node_run_id,
+        report.raw_ref?.job_id || `run:${run.run_id}:partial`,
+      );
+      if (partialWorkspaceFinalization.ok && partialWorkspaceFinalization.changeSetId) {
+        run.current_summary = `${run.current_summary}; partial Workspace changes are ready for review`;
+        saveRun(run);
+      } else if (!partialWorkspaceFinalization.ok) {
+        run.blocked_reason = `${run.blocked_reason || normalizedMessage}; ${partialWorkspaceFinalization.error}`;
+        saveRun(run);
+      }
       this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
       return;
     }
@@ -1283,12 +1372,12 @@ export class RuntimeEngine {
     );
 
     const artifactRecords = (report.artifacts || []).map((artifact) =>
-      createArtifactRecord({
+      publishRuntimeArtifact(run.run_id, createArtifactRecord({
         runId: run.run_id,
         nodeRunId: report.node_run_id,
         artifact,
         createdAt: timestamp,
-      }),
+      })),
     );
     if (artifactRecords.length > 0) {
       upsertArtifacts(artifactRecords);
@@ -1370,6 +1459,33 @@ export class RuntimeEngine {
 
     const completion = areAllNodesCompletedOrRecovered(run.run_id, nodeRuns);
     if (completion.completed) {
+      const workspaceFinalization = finalizeBoundRunWorkspace(
+        run,
+        report.node_run_id,
+        report.raw_ref?.job_id || `run:${run.run_id}:finalize`,
+      );
+      if (!workspaceFinalization.ok) {
+        const blockedEvent = appendRunEvent({
+          run_id: run.run_id,
+          node_run_id: report.node_run_id,
+          type: "run.paused",
+          actor_type: "system",
+          actor_id: "workspace-finalizer",
+          payload: { reason: workspaceFinalization.error },
+          created_at: timestamp,
+        });
+        run.status = "blocked";
+        run.blocked_reason = workspaceFinalization.error;
+        run.current_summary = "Run Workspace finalization failed";
+        run.updated_at = timestamp;
+        run.last_event_id = blockedEvent.event_id;
+        plan.status = "blocked";
+        saveRun(run);
+        saveRunPlan(plan);
+        saveNodeRuns(run.run_id, nodeRuns);
+        this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
+        return;
+      }
       const completedEvent = appendRunEvent({
         run_id: run.run_id,
         type: "run.completed",
@@ -1378,6 +1494,7 @@ export class RuntimeEngine {
         payload: {
           completed_nodes: nodeRuns.length,
           recovered_failed_node_run_ids: completion.recovered_failed_node_run_ids,
+          workspace_change_set_id: workspaceFinalization.changeSetId,
         },
         created_at: timestamp,
       });
@@ -1452,7 +1569,7 @@ export class RuntimeEngine {
       return skipped("no_ready_nodes");
     }
 
-    const maxParallelNodes = resolveMaxParallelNodes(plan);
+    const maxParallelNodes = run.workspace_binding_id ? 1 : resolveMaxParallelNodes(plan);
     const activeDispatchNodes = countActiveDispatchNodes(plan);
     const availableSlots = Math.max(0, maxParallelNodes - activeDispatchNodes);
     if (availableSlots <= 0) {
@@ -1532,6 +1649,39 @@ export class RuntimeEngine {
 
         const completion = areAllNodesCompletedOrRecovered(runId, nodeRuns);
         if (completion.completed) {
+          const workspaceFinalization = finalizeBoundRunWorkspace(
+            run,
+            node.node_run_id,
+            `run:${run.run_id}:finalize`,
+          );
+          if (!workspaceFinalization.ok) {
+            const blockedEvent = appendRunEvent({
+              run_id: runId,
+              node_run_id: node.node_run_id,
+              type: "run.paused",
+              actor_type: "system",
+              actor_id: "workspace-finalizer",
+              payload: { reason: workspaceFinalization.error },
+              created_at: dispatchTime,
+            });
+            run.status = "blocked";
+            run.blocked_reason = workspaceFinalization.error;
+            run.current_summary = "Run Workspace finalization failed";
+            run.updated_at = dispatchTime;
+            run.last_event_id = blockedEvent.event_id;
+            plan.status = "blocked";
+            saveRun(run);
+            saveRunPlan(plan);
+            saveNodeRuns(runId, nodeRuns);
+            this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
+            return {
+              run_id: runId,
+              scanned_ready_nodes: readyNodes.length,
+              dispatched_nodes: dispatchedNodes,
+              completed_end_nodes: completedEndNodes,
+              skipped_reason: "workspace_finalization_failed",
+            };
+          }
           const runCompletedEvent = appendRunEvent({
             run_id: runId,
             type: "run.completed",
@@ -1540,6 +1690,7 @@ export class RuntimeEngine {
             payload: {
               completed_nodes: nodeRuns.length,
               recovered_failed_node_run_ids: completion.recovered_failed_node_run_ids,
+              workspace_change_set_id: workspaceFinalization.changeSetId,
             },
             created_at: dispatchTime,
           });
@@ -1624,10 +1775,19 @@ export class RuntimeEngine {
                   /^[a-z0-9_-]+$/i.test(run.inputs.subject.trim())
                 ? run.inputs.subject.trim()
                 : null;
-          const explicitProjectLocalRepo =
-            typeof run.inputs.project_local_repo === "string" && run.inputs.project_local_repo.trim()
+          const workspaceBinding = run.workspace_binding_id
+            ? getWorkspaceBinding(run.workspace_binding_id)
+            : null;
+          if (
+            run.workspace_binding_id &&
+            (!workspaceBinding || workspaceBinding.status !== "active" || workspaceBinding.access !== "sandbox-write")
+          ) {
+            throw new Error("The Run Workspace Binding is missing, expired, or revoked.");
+          }
+          const explicitProjectLocalRepo = workspaceBinding?.root_path ||
+            (typeof run.inputs.project_local_repo === "string" && run.inputs.project_local_repo.trim()
               ? run.inputs.project_local_repo.trim()
-              : null;
+              : null);
 
           if (explicitProjectSlug) {
             value.project_slug = explicitProjectSlug;
@@ -1650,11 +1810,14 @@ export class RuntimeEngine {
           }
         : buildDispatchEnvelope(run, plan, node, { extraInputPayload });
       const dispatchSequence = nextRuntimeDispatchSequence(runId, node.node_run_id);
+      const workspaceContext = failureReplay?.frozen_job.provision.workspace.context ||
+        getWorkspaceContextSnapshotForRun(runId, dispatchTime);
       const job = buildRuntimeWorkerJob(envelope, {
         jobId: failureReplay ? `${runId}:${node.node_run_id}:replay-${failureReplay.replay_id.split(":").at(-1)}` : undefined,
         createdAt: dispatchTime,
         dispatchSequence,
         targetKind: failureReplay?.frozen_job.provision.target_kind,
+        workspaceContext,
       });
       const jobCreatedEvent = appendRunEvent({
         run_id: runId,
@@ -1671,6 +1834,15 @@ export class RuntimeEngine {
           execution_kind: failureReplay ? "failure_replay" : nodeRun.attempt > 1 ? "retry" : "standard",
           replay_id: failureReplay?.replay_id || null,
           source_job_id: failureReplay?.source_job_id || null,
+          workspace_context: workspaceContext
+            ? {
+                schema_version: workspaceContext.schema_version,
+                source_session_id: workspaceContext.source_session_id,
+                file_count: workspaceContext.files.length,
+                total_size_bytes: workspaceContext.total_size_bytes,
+                manifest_sha256: workspaceContext.manifest_sha256,
+              }
+            : null,
         },
         created_at: dispatchTime,
         idempotency_key: `job.created:${job.job_id}`,

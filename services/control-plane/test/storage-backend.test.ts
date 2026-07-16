@@ -13,8 +13,16 @@ import {
   RUN_PLAN_INITIAL_DIR,
   RUN_ROUTES_DIR,
   SCORECARDS_DIR,
+  MEMORIES_DIR,
+  MEMORY_CANDIDATES_DIR,
   overrideDataDir,
 } from "../src/config.js";
+import {
+  approveMemoryCandidate,
+  createMemory,
+  createMemoryCandidate,
+  listMemories,
+} from "../src/memory-store.js";
 import { getNodeRun, listNodeRuns, saveNodeRuns } from "../src/node-run-store.js";
 import { upsertAgentProfile, upsertSkill, listAgentProfiles, listSkills } from "../src/registry-store.js";
 import {
@@ -241,6 +249,23 @@ test("json storage backend replacement drives store persistence reads and writes
       ["coding-agent"],
     );
 
+    const memory = createMemory({
+      content: "The storage abstraction keeps memory records backend-independent.",
+      kind: "decision",
+    });
+    const candidate = createMemoryCandidate({
+      proposed_memory: {
+        content: "Candidate records share the same storage abstraction.",
+        kind: "fact",
+      },
+    });
+    const approved = approveMemoryCandidate(candidate.candidate_id);
+    assert.equal(approved?.candidate.status, "approved");
+    assert.deepEqual(
+      listMemories().map((item) => item.memory_id).sort(),
+      [memory.memory_id, approved!.memory.memory_id].sort(),
+    );
+
     assert.equal(
       memoryBackend.exists(path.join(NODE_RUNS_DIR, "run-storage-test", "node-run-001.json")),
       true,
@@ -255,6 +280,14 @@ test("json storage backend replacement drives store persistence reads and writes
     );
     assert.equal(
       memoryBackend.exists(path.join(SKILLS_DIR, "coding-agent.json")),
+      true,
+    );
+    assert.equal(
+      memoryBackend.exists(path.join(MEMORIES_DIR, "default", `${memory.memory_id}.json`)),
+      true,
+    );
+    assert.equal(
+      memoryBackend.exists(path.join(MEMORY_CANDIDATES_DIR, "default", `${candidate.candidate_id}.json`)),
       true,
     );
   } finally {
@@ -316,9 +349,17 @@ test("json storage snapshots export and import nested store records", () => {
       path.join(SCORECARDS_DIR, "run-snapshot-test", "scorecard.json"),
       { scorecard_id: "scorecard:run-snapshot-test:digest" },
     );
+    sourceBackend.writeJson(path.join(DATA_DIR, ".control-plane.lock", "owner.json"), {
+      pid: 1234,
+      port: 4010,
+    });
 
     const snapshot = exportJsonStorageSnapshot();
     assert.equal(snapshot.source_backend_kind, "memory-test");
+    assert.equal(
+      snapshot.entries.some((entry) => entry.relative_path.startsWith(".control-plane.lock/")),
+      false,
+    );
     assert.ok(
       snapshot.entries.some(
         (entry) =>
@@ -345,6 +386,13 @@ test("json storage snapshots export and import nested store records", () => {
     const targetBackend = new MemoryJsonStorageBackend();
     setJsonStorageBackend(targetBackend);
     const importResult = importJsonStorageSnapshot(snapshot);
+    assert.throws(
+      () => importJsonStorageSnapshot({
+        ...snapshot,
+        entries: [{ relative_path: ".control-plane.lock/owner.json", data: {} }],
+      }),
+      /runtime lease files are not importable/,
+    );
 
     assert.equal(importResult.written_entries, snapshot.entries.length);
     assert.equal(
@@ -425,6 +473,10 @@ test("sqlite storage backend round-trips snapshot-imported records through store
       agent_profile_bindings: {},
       metadata: {},
     });
+    const sqliteMemory = createMemory({
+      content: "Memory records survive file-to-SQLite storage migration.",
+      kind: "fact",
+    });
 
     const snapshot = exportJsonStorageSnapshot();
     assert.ok(fs.existsSync(path.join(testDataDir, "node-runs", "run-sqlite-test", "node-run-sqlite-001.json")));
@@ -456,6 +508,10 @@ test("sqlite storage backend round-trips snapshot-imported records through store
     assert.equal(
       getTemplate("sqlite-template")?.description,
       "Verifies sqlite storage import",
+    );
+    assert.deepEqual(
+      listMemories().map((item) => item.memory_id),
+      [sqliteMemory.memory_id],
     );
     const sqliteBackend = getJsonStorageBackend();
     const removablePath = path.join(testDataDir, "observability-dirty", "run-sqlite-test.json");

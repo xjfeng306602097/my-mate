@@ -34,6 +34,18 @@ Skills:
 
 ## Acceptance Flow
 
+Before feature-specific acceptance, run the conversation regression against
+the active Studio stack:
+
+```text
+npm --prefix apps/studio run visual:conversation -- --studio-url http://127.0.0.1:5174
+```
+
+The gate fails when a plain-language question receives legacy workflow
+guidance, lacks visible Provider/model evidence, creates a technical plan, or
+emits a frontend error. Each run writes a screenshot and structured summary to
+`tmp/conversation-ui-regression/` and archives its disposable Session.
+
 1. Open Studio at `http://127.0.0.1:5174`.
 2. Select `Acceptance Phone Collaboration Demo` in the left template list.
 3. Confirm the template badge is `published v1`.

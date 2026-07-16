@@ -16,11 +16,15 @@
     "storage:import": "tsx src/storage-snapshot-cli.ts import"
   },
   "dependencies": {
-    "@my-mate/shared-types": "file:../../packages/shared-types",
     "@anthropic-ai/sdk": "^0.104.1",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@my-mate/shared-types": "file:../../packages/shared-types",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "express": "^4.21.2",
+    "fflate": "^0.8.2",
+    "linkedom": "^0.18.12",
+    "undici": "^6.27.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

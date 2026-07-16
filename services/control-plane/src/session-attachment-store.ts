@@ -71,3 +71,10 @@ export function listSessionAttachments(sessionId: string): SessionAttachmentReco
   });
   return items;
 }
+
+export function deleteSessionAttachment(sessionId: string, attachmentId: string): SessionAttachmentRecord | null {
+  const attachment = listSessionAttachments(sessionId).find((item) => item.attachment_id === attachmentId);
+  if (!attachment) return null;
+  getJsonStorageBackend().removeJson(sessionAttachmentPath(sessionId, attachment.attachment_id));
+  return attachment;
+}

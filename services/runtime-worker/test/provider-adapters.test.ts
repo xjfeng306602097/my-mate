@@ -72,6 +72,31 @@ test("Codex app-server direct tool call retains provider arguments", () => {
   });
 });
 
+test("Codex app-server token usage notification maps current protocol totals", () => {
+  const adapter = createProviderAdapterSession("codex");
+  assert.ok(adapter);
+  const [event] = adapter.ingest({
+    method: "thread/tokenUsage/updated",
+    params: {
+      threadId: "thread-live",
+      turnId: "turn-live",
+      tokenUsage: {
+        total: {
+          inputTokens: 120,
+          cachedInputTokens: 20,
+          outputTokens: 15,
+          reasoningOutputTokens: 5,
+          totalTokens: 135,
+        },
+      },
+    },
+  });
+  assert.equal(event?.kind, "usage");
+  assert.equal(event?.usage?.availability, "available");
+  assert.equal(event?.usage?.total_tokens, 135);
+  assert.equal(event?.usage?.reasoning_tokens, 5);
+});
+
 test("Claude streaming tool input is emitted only after complete JSON arrives", () => {
   const adapter = createProviderAdapterSession("claude-sdk");
   assert.ok(adapter);

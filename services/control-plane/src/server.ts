@@ -1,11 +1,15 @@
 import http from "node:http";
-import { PORT, PUBLIC_BASE_URL } from "./config.js";
+import { DATA_DIR, PORT, PUBLIC_BASE_URL } from "./config.js";
 import { RUNTIME_DISPATCHER_KIND } from "./config.js";
+import { acquireDataDirectoryLease } from "./data-directory-lease.js";
 import { createApp } from "./app.js";
+import { ConversationWebSocketHub } from "./conversation-websocket.js";
 import { getExecutionAdapter } from "./execution-adapter-factory.js";
 import { DockerWorkerProvisioner } from "./node-provisioner.js";
 import { RuntimeWorkerHub } from "./runtime-worker-hub.js";
 import { WorkerRuntimeDispatcher } from "./worker-runtime-dispatcher.js";
+import { initializeCapabilityPluginHost } from "./plugin-host.js";
+import { getMcpHost } from "./mcp-host.js";
 import type { RuntimeEngine } from "./runtime/runtime-engine.js";
 import { recoverRuntimeState } from "./runtime/runtime-recovery.js";
 import { recoverPendingEvaluations } from "./evaluation/evaluation-engine.js";
@@ -13,8 +17,10 @@ import {
   resumeRequestedFailureReplays,
   scanRuntimeTimeouts,
 } from "./runtime/runtime-recovery-service.js";
+import { runMemoryMaintenanceSweep } from "./memory-lifecycle.js";
 
 export function createControlPlaneRuntimeServer() {
+  initializeCapabilityPluginHost();
   const executionAdapter = getExecutionAdapter();
   const workerMode = ["docker", "docker-worker", "runtime-worker", "worker"].includes(
     RUNTIME_DISPATCHER_KIND,
@@ -37,9 +43,15 @@ export function createControlPlaneRuntimeServer() {
     onRuntimeEngine: (engine) => {
       runtimeEngine = engine;
     },
+    productIntelligenceWatchdog: true,
   });
   const server = http.createServer(app);
   workerHub?.attach(server);
+  const conversationHub = new ConversationWebSocketHub({
+    security: app.locals.conversationSecurity,
+    turnHandler: app.locals.streamConversationTurn,
+  });
+  conversationHub.attach(server);
   return {
     app,
     server,
@@ -47,14 +59,25 @@ export function createControlPlaneRuntimeServer() {
     provisioner,
     dispatcher,
     runtimeEngine,
+    conversationHub,
   };
 }
 
-const runtime = createControlPlaneRuntimeServer();
+const dataDirectoryLease = acquireDataDirectoryLease(DATA_DIR, PORT);
+let runtime: ReturnType<typeof createControlPlaneRuntimeServer>;
+try {
+  runtime = createControlPlaneRuntimeServer();
+} catch (error) {
+  dataDirectoryLease.release();
+  throw error;
+}
 let recoveryWatchdog: NodeJS.Timeout | null = null;
 let recoveryScanRunning = false;
+let memoryMaintenanceWatchdog: NodeJS.Timeout | null = null;
+let memoryMaintenanceRunning = false;
 
 async function startControlPlane(): Promise<void> {
+  await getMcpHost().initialize();
   const evaluationRecovery = recoverPendingEvaluations();
   if (evaluationRecovery.queued || evaluationRecovery.recovered || evaluationRecovery.failed) {
     console.log(
@@ -97,6 +120,14 @@ async function startControlPlane(): Promise<void> {
     console.log(
       `Runtime dispatcher: ${runtime.dispatcher?.kind || "legacy-execution-adapter"}`,
     );
+    void runtime.app.locals.recoverConversationCheckpoints?.().then((summary: {
+      recovered?: number;
+      results?: unknown[];
+    }) => {
+      if (summary?.recovered) {
+        console.log(`Conversation recovery: ${summary.recovered} interrupted checkpoint(s) inspected.`);
+      }
+    }).catch((error: unknown) => console.error("Conversation checkpoint recovery failed:", error));
   });
   if (runtime.runtimeEngine) {
     const engine = runtime.runtimeEngine;
@@ -116,18 +147,44 @@ async function startControlPlane(): Promise<void> {
     }, intervalMs);
     recoveryWatchdog.unref();
   }
+  memoryMaintenanceWatchdog = setInterval(() => {
+    if (memoryMaintenanceRunning) return;
+    memoryMaintenanceRunning = true;
+    try {
+      runMemoryMaintenanceSweep({ dueOnly: true });
+    } catch (error) {
+      console.error("Memory maintenance failed:", error);
+    } finally {
+      memoryMaintenanceRunning = false;
+    }
+  }, 60_000);
+  memoryMaintenanceWatchdog.unref();
 }
 
 void startControlPlane().catch((error) => {
+  dataDirectoryLease.release();
   console.error("Control Plane startup failed:", error);
   process.exitCode = 1;
 });
 
-function shutdown(): void {
+let shutdownStarted = false;
+async function shutdown(): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   if (recoveryWatchdog) clearInterval(recoveryWatchdog);
+  if (memoryMaintenanceWatchdog) clearInterval(memoryMaintenanceWatchdog);
+  if (runtime.app.locals.productIntelligenceWatchdog) {
+    clearInterval(runtime.app.locals.productIntelligenceWatchdog);
+  }
+  await getMcpHost().shutdown();
   runtime.workerHub?.close();
-  runtime.server.close(() => process.exit(0));
+  runtime.conversationHub.close();
+  runtime.server.close(() => {
+    dataDirectoryLease.release();
+    process.exit(0);
+  });
 }
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });
+process.once("exit", () => dataDirectoryLease.release());

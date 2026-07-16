@@ -3,6 +3,7 @@ import path from "node:path";
 import { AGENT_PROFILES_DIR, SKILLS_DIR } from "./config.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getActiveWorkspaceId } from "./request-security.js";
+import { getProviderConnection } from "./provider-connection-store.js";
 import type {
   AgentProfileRecord,
   RegistryStatus,
@@ -47,6 +48,7 @@ function normalizeAgentProfile(profile: AgentProfileRecord): AgentProfileRecord 
     runtime_agent_ref: runtimeAgentRef,
     agent_runtime: agentRuntime,
     harness_profile: profile.harness_profile ?? null,
+    provider_connection_id: profile.provider_connection_id ?? null,
     openclaw_agent_id: profile.openclaw_agent_id || runtimeAgentRef,
   };
 }
@@ -136,6 +138,16 @@ export function upsertAgentProfile(input: UpsertAgentProfileRequest): AgentProfi
     current?.agent_runtime ??
     "openclaw"
   ).trim() || "openclaw";
+  const providerConnectionId = input.provider_connection_id === undefined
+    ? current?.provider_connection_id ?? null
+    : input.provider_connection_id?.trim() || null;
+  const providerConnection = providerConnectionId ? getProviderConnection(providerConnectionId) : null;
+  if (providerConnectionId && (!providerConnection || providerConnection.status !== "active")) {
+    throw new Error("Provider Connection must exist and be active.");
+  }
+  if (providerConnection && providerConnection.agent_runtime !== agentRuntime) {
+    throw new Error("Agent runtime must match its Provider Connection runtime.");
+  }
   const profile: AgentProfileRecord = {
     profile_id: profileId,
     workspace_id: getActiveWorkspaceId() || current?.workspace_id || "default",
@@ -147,6 +159,7 @@ export function upsertAgentProfile(input: UpsertAgentProfileRequest): AgentProfi
       input.harness_profile === undefined
         ? current?.harness_profile ?? null
         : input.harness_profile?.trim() || null,
+    provider_connection_id: providerConnectionId,
     openclaw_agent_id: (input.openclaw_agent_id ?? runtimeAgentRef).trim(),
     default_skills: uniqueStrings(input.default_skills),
     allowed_tools: uniqueStrings(input.allowed_tools),

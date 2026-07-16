@@ -32,11 +32,17 @@ import {
 } from "./runtime/worker-lease-store.js";
 import { nowIso } from "./utils.js";
 import { appendRunEvent } from "./event-store.js";
+import {
+  getRuntimeHumanGate,
+  saveRuntimeHumanGate,
+} from "./runtime/human-gate-store.js";
+import { InProcessRuntimeWorkerClient } from "./in-process-runtime-worker-client.js";
 
 export class WorkerRuntimeDispatcher implements RuntimeDispatcher {
   readonly kind = "docker-runtime-worker";
 
   private workerEventHandler: (event: WorkerEvent) => Promise<void> = async () => {};
+  private readonly localWorkerClient = new InProcessRuntimeWorkerClient();
 
   constructor(
     private readonly workerHub: RuntimeWorkerHub,
@@ -134,9 +140,87 @@ export class WorkerRuntimeDispatcher implements RuntimeDispatcher {
     this.fallbackAdapterBridge.notifyNodeAction(runId, nodeRunId, action);
   }
 
+  resumeHumanGate(input: {
+    runId: string;
+    nodeRunId: string;
+    gateId: string;
+    decision: "resume" | "reject";
+    payload: Record<string, unknown>;
+  }): { delivered: boolean; controlId: string | null } {
+    const gate = getRuntimeHumanGate(input.runId, input.gateId);
+    if (!gate || gate.node_run_id !== input.nodeRunId || gate.transport !== "worker_native") {
+      return { delivered: false, controlId: null };
+    }
+    const lease = findActiveWorkerLeaseForJob(gate.job_id);
+    if (!lease) {
+      gate.last_error = "Active Runtime Worker lease was not found.";
+      saveRuntimeHumanGate(gate);
+      return { delivered: false, controlId: null };
+    }
+    const controlId = `control:${gate.job_id}:${Date.now().toString(36)}`;
+    const delivered = this.workerHub.sendControl({
+      workerId: lease.worker_id,
+      jobId: gate.job_id,
+      controlId,
+      action: input.decision === "resume" ? "resume" : "cancel",
+      gateId: gate.gate_id,
+      payload: input.payload,
+      reason: input.decision === "resume" ? "human_gate_resolved" : "human_gate_rejected",
+    });
+    gate.status = delivered
+      ? input.decision === "resume" ? "resuming" : "rejected"
+      : gate.status;
+    gate.response_payload = input.payload;
+    gate.control_id = delivered ? controlId : null;
+    gate.resolved_at = input.decision === "reject" && delivered ? nowIso() : null;
+    gate.last_error = delivered ? null : "Runtime Worker control channel is unavailable.";
+    saveRuntimeHumanGate(gate);
+    appendRunEvent({
+      run_id: gate.run_id,
+      node_run_id: gate.node_run_id,
+      type: delivered ? "human_gate.control_sent" : "human_gate.control_failed",
+      actor_type: "system",
+      actor_id: "runtime-dispatcher",
+      payload: {
+        gate_id: gate.gate_id,
+        job_id: gate.job_id,
+        control_id: delivered ? controlId : null,
+        decision: input.decision,
+        transport: gate.transport,
+      },
+      created_at: nowIso(),
+      idempotency_key: delivered ? `human_gate.control:${controlId}` : undefined,
+    });
+    return { delivered, controlId: delivered ? controlId : null };
+  }
+
   async dispatchJob(job: RuntimeWorkerJob): Promise<RuntimeDispatchResult> {
     if (job.provision.target_kind === "external-bridge") {
       return await this.fallbackAdapterBridge.dispatchJob(job);
+    }
+    if (job.provision.target_kind === "local") {
+      if (job.harness.agent_runtime !== "local") {
+        throw new Error(`Local execution is unavailable for runtime ${job.harness.agent_runtime}.`);
+      }
+      const result = await this.localWorkerClient.runJob(job);
+      return {
+        status: "accepted",
+        dispatch_id: `runtime-worker:${job.job_id}`,
+        job,
+        target_kind: "local",
+        worker_id: result.worker_id,
+        lease_id: null,
+        accepted_at: result.events[0]?.created_at || null,
+        worker_events: result.events,
+        compatibility: {
+          adapter_kind: "in-process-runtime-worker",
+          raw_ref: {
+            dispatch_id: `runtime-worker:${job.job_id}`,
+            openclaw_task_id: `local-task:${job.node_run_id}`,
+            openclaw_session_id: `local-session:${job.node_run_id}`,
+          },
+        },
+      };
     }
 
     const provision = await this.nodeProvisioner.provisionWorker(

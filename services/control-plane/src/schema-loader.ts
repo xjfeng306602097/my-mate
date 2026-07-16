@@ -48,6 +48,7 @@ const schemaPaths = [
   path.join(SCHEMAS_ROOT, "workflow", "human-input.schema.json"),
   path.join(SCHEMAS_ROOT, "runtime", "worker-evidence.schema.json"),
   path.join(SCHEMAS_ROOT, "agent", "agent-profile.schema.json"),
+  path.join(SCHEMAS_ROOT, "agent", "provider-connection.schema.json"),
   path.join(SCHEMAS_ROOT, "agent", "skill.schema.json"),
   path.join(SCHEMAS_ROOT, "evaluation", "run-evidence-snapshot.schema.json"),
   path.join(SCHEMAS_ROOT, "evaluation", "scorecard-result.schema.json"),

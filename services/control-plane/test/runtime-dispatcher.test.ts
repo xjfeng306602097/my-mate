@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   DockerWorkerProvisioner,
@@ -14,9 +17,16 @@ import { saveRuntimeWorkerRecord } from "../src/runtime/runtime-worker-store.js"
 import {
   getWorkerLeaseRecord,
   listWorkerLeaseRecords,
+  saveWorkerLeaseRecord,
 } from "../src/runtime/worker-lease-store.js";
+import {
+  getRuntimeHumanGate,
+  saveRuntimeHumanGate,
+} from "../src/runtime/human-gate-store.js";
 import type { DispatchEnvelope, NormalizedExecutionReport } from "../src/types.js";
 import { createStubExecutionAdapter, resetTestRoot } from "./helpers.js";
+import { setManagedProviderCredential } from "../src/provider-secret-store.js";
+import { finalizeRunWorkspace } from "../src/runtime/run-workspace.js";
 
 function buildEnvelope(overrides: Partial<DispatchEnvelope> = {}): DispatchEnvelope {
   return {
@@ -135,12 +145,49 @@ test("ExecutionAdapterRuntimeDispatcher forwards worker report events to legacy 
   assert.deepEqual(reports, [report]);
 });
 
+test("WorkerRuntimeDispatcher executes low-risk local jobs without provisioning Docker", async () => {
+  let provisionCalls = 0;
+  const workerHub = {
+    setEventHandler() {},
+    setStaleHandler() {},
+  } as unknown as RuntimeWorkerHub;
+  const provisioner: NodeProvisioner = {
+    kind: "test-provisioner",
+    async provisionWorker() {
+      provisionCalls += 1;
+      throw new Error("Local jobs must not provision a container.");
+    },
+  };
+  const dispatcher = new WorkerRuntimeDispatcher(workerHub, provisioner, createStubExecutionAdapter());
+  const job = buildRuntimeWorkerJob(buildEnvelope({
+    agent_runtime: "local",
+    runtime_agent_ref: null,
+    openclaw_agent_id: null,
+    allowed_tools: ["read"],
+    input_payload: { node_config: { worker_target_kind: "local" } },
+  }));
+
+  const result = await dispatcher.dispatchJob(job);
+  assert.equal(result.target_kind, "local");
+  assert.equal(result.compatibility.adapter_kind, "in-process-runtime-worker");
+  assert.equal(result.worker_events?.at(-1)?.kind, "worker.completed");
+  assert.equal(provisionCalls, 0);
+});
+
 test("DockerWorkerProvisioner builds an isolated worker container and filters secret env", async () => {
   resetTestRoot();
+  const sourceWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "my-mate-runtime-source-"));
+  fs.writeFileSync(path.join(sourceWorkspace, "README.md"), "sandbox source\n", "utf8");
+  fs.writeFileSync(path.join(sourceWorkspace, ".env"), "SECRET=blocked\n", "utf8");
   const previousPassthrough = process.env.MY_MATE_RUNTIME_WORKER_PASSTHROUGH_ENV;
   const previousOpenAiKey = process.env.OPENAI_API_KEY;
   process.env.MY_MATE_RUNTIME_WORKER_PASSTHROUGH_ENV = "OPENAI_API_KEY";
   process.env.OPENAI_API_KEY = "host-secret-value";
+  setManagedProviderCredential({
+    connectionId: "glm-docker-test",
+    workspaceId: "default",
+    apiKey: "connection-secret-value",
+  });
   const expectedWorkers: Array<{ workerId: string; token: string }> = [];
   const releasedWorkers: Array<{ workerId: string; reason: string }> = [];
   const workerHub = {
@@ -168,12 +215,18 @@ test("DockerWorkerProvisioner builds an isolated worker container and filters se
     },
   } as unknown as RuntimeWorkerHub;
   const commands: Array<{ command: string; args: string[]; timeoutMs: number }> = [];
+  let managedEnvFile = "";
+  let managedEnvFileContents = "";
   const commandRunner = async (
     command: string,
     args: string[],
     timeoutMs: number,
   ): Promise<DockerCommandResult> => {
     commands.push({ command, args, timeoutMs });
+    if (args[0] === "run" && args.includes("--env-file")) {
+      managedEnvFile = args[args.indexOf("--env-file") + 1] || "";
+      managedEnvFileContents = fs.readFileSync(managedEnvFile, "utf8");
+    }
     return {
       exitCode: 0,
       stdout: args[0] === "run" ? "container-runtime-001" : "",
@@ -182,8 +235,18 @@ test("DockerWorkerProvisioner builds an isolated worker container and filters se
   };
   const job = buildRuntimeWorkerJob(
     buildEnvelope({
-      agent_runtime: "codex",
+      agent_runtime: "glm",
       openclaw_agent_id: null,
+      provider_connection: {
+        connection_id: "glm-docker-test",
+        agent_runtime: "glm",
+        provider: "anthropic-compatible",
+        protocol: "anthropic-messages",
+        base_url: "https://glm.example.test/anthropic",
+        model: "glm-5.2",
+        credential_source: "managed",
+        credential_env: "GLM_API_KEY",
+      },
     }),
     { createdAt: "2026-07-10T00:00:00.000Z" },
   );
@@ -191,7 +254,7 @@ test("DockerWorkerProvisioner builds an isolated worker container and filters se
     PUBLIC_FLAG: "enabled",
     API_KEY: "must-not-be-forwarded",
   };
-  job.provision.workspace.project_local_repo = process.cwd();
+  job.provision.workspace.project_local_repo = sourceWorkspace;
   job.provision.resource_limits = { cpus: 1.5, memory_mb: 768, pids: 128 };
   const provisioner = new DockerWorkerProvisioner(workerHub, {
     commandRunner,
@@ -219,9 +282,18 @@ test("DockerWorkerProvisioner builds an isolated worker container and filters se
   assert.ok(dockerRun.args.includes("PUBLIC_FLAG=enabled"));
   assert.ok(!dockerRun.args.some((arg) => arg.includes("must-not-be-forwarded")));
   assert.ok(dockerRun.args.includes("OPENAI_API_KEY"));
+  assert.ok(dockerRun.args.includes("--env-file"));
+  assert.equal(managedEnvFileContents, "GLM_API_KEY=connection-secret-value\n");
   assert.ok(!dockerRun.args.some((arg) => arg.includes("host-secret-value")));
+  assert.ok(!dockerRun.args.some((arg) => arg.includes("connection-secret-value")));
+  assert.equal(fs.existsSync(managedEnvFile), false);
   assert.ok(dockerRun.args.some((arg) => arg.includes("host.docker.internal")));
-  assert.ok(dockerRun.args.some((arg) => arg.includes(`source=${process.cwd()}`)));
+  const mount = dockerRun.args[dockerRun.args.indexOf("--mount") + 1] || "";
+  assert.ok(mount.includes("target=/workspace"));
+  assert.ok(!mount.includes(`source=${sourceWorkspace},`));
+  const sandboxPath = mount.match(/source=([^,]+),target=\/workspace/u)?.[1] || "";
+  assert.equal(fs.readFileSync(path.join(sandboxPath, "README.md"), "utf8"), "sandbox source\n");
+  assert.equal(fs.existsSync(path.join(sandboxPath, ".env")), false);
   assert.ok(dockerRun.args.includes("--init"));
   assert.ok(dockerRun.args.some((arg) => arg.startsWith("my-mate.manager-id=manager-")));
   assert.deepEqual(
@@ -248,12 +320,24 @@ test("DockerWorkerProvisioner builds an isolated worker container and filters se
   }
 
   if (result.status === "ready") {
+    fs.writeFileSync(path.join(sandboxPath, "README.md"), "worker edit\n", "utf8");
     await provisioner.releaseWorker(result.lease, "test_complete");
   }
   assert.deepEqual(commands[2]?.args.slice(0, 2), ["rm", "-f"]);
   assert.deepEqual(releasedWorkers, [
     { workerId: result.status === "ready" ? result.lease.worker_id : "", reason: "test_complete" },
   ]);
+  if (result.status === "ready") {
+    const persisted = getWorkerLeaseRecord(result.lease.run_id, result.lease.lease_id);
+    assert.equal(persisted?.metadata.workspace_change_set_id, undefined);
+    const changeSet = finalizeRunWorkspace({
+      runId: result.lease.run_id,
+      nodeRunId: result.lease.node_run_id,
+      jobId: result.lease.job_id || "test-job",
+    });
+    assert.equal(changeSet?.status, "pending");
+    assert.equal(fs.readFileSync(path.join(sourceWorkspace, "README.md"), "utf8"), "sandbox source\n");
+  }
   if (previousPassthrough === undefined) {
     delete process.env.MY_MATE_RUNTIME_WORKER_PASSTHROUGH_ENV;
   } else {
@@ -264,6 +348,7 @@ test("DockerWorkerProvisioner builds an isolated worker container and filters se
   } else {
     process.env.OPENAI_API_KEY = previousOpenAiKey;
   }
+  fs.rmSync(sourceWorkspace, { recursive: true, force: true });
 });
 
 function createReadyWorkerHub(releasedWorkers: Array<{ workerId: string; reason: string }> = []) {
@@ -301,7 +386,7 @@ function buildDockerTestJob(jobId: string) {
     }),
     { jobId, createdAt: "2026-07-10T00:00:00.000Z" },
   );
-  job.provision.workspace.project_local_repo = process.cwd();
+  job.provision.workspace.project_local_repo = null;
   return job;
 }
 
@@ -389,6 +474,44 @@ test("DockerWorkerProvisioner cancels queued work without launching Docker", asy
   assert.match(queued.reason, /operator cancelled/);
   assert.equal(commands.filter((args) => args[0] === "run").length, 1);
   if (first.status === "ready") await provisioner.releaseWorker(first.lease, "test_complete");
+});
+
+test("DockerWorkerProvisioner cancels active provisioning before dispatch can proceed", async () => {
+  resetTestRoot();
+  let markDockerRunStarted: (() => void) | null = null;
+  const dockerRunStarted = new Promise<void>((resolve) => { markDockerRunStarted = resolve; });
+  const dockerRunGate = { resolve: () => {} };
+  const dockerRunCanFinish = new Promise<void>((resolve) => { dockerRunGate.resolve = resolve; });
+  const commands: string[][] = [];
+  const provisioner = new DockerWorkerProvisioner(createReadyWorkerHub(), {
+    commandRunner: async (_command, args) => {
+      commands.push(args);
+      if (args[0] === "run") {
+        markDockerRunStarted?.();
+        await dockerRunCanFinish;
+        return { exitCode: 0, stdout: "cancelled-provision-container", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  const job = buildDockerTestJob("job-active-provision-cancel");
+  const pending = provisioner.provisionWorker(
+    buildWorkerProvisionRequest({ requestId: "active-cancel", job }),
+  );
+  await dockerRunStarted;
+  assert.equal(provisioner.cancelQueued({
+    runId: job.run_id,
+    nodeRunId: job.node_run_id,
+    reason: "operator paused during provisioning",
+  }), 1);
+  dockerRunGate.resolve();
+  const result = await pending;
+  if (result.status === "ready") assert.fail("Cancelled provisioning returned a ready lease.");
+  assert.equal(result.status, "failed");
+  assert.equal(result.retryable, false);
+  assert.match(result.reason, /operator paused during provisioning/);
+  assert.equal(commands.some((args) => args[0] === "exec"), false);
+  assert.equal(provisioner.getCapacityStatus().active_workers, 0);
 });
 
 test("DockerWorkerProvisioner defers queued work after its capacity timeout", async () => {
@@ -763,4 +886,74 @@ test("WorkerRuntimeDispatcher releases provisioned workers when capability or AC
   await assert.rejects(dispatcher.dispatchJob(ackJob), /worker rejected test job/);
   assert.deepEqual(released, ["capability_mismatch", "dispatch_failed"]);
   assert.equal(dispatchCalls, 1);
+});
+
+test("WorkerRuntimeDispatcher resumes a persisted native human gate on its active lease", () => {
+  resetTestRoot();
+  const controls: Array<Record<string, unknown>> = [];
+  const workerHub = {
+    setEventHandler() {},
+    setStaleHandler() {},
+    sendControl(input: Record<string, unknown>) {
+      controls.push(input);
+      return true;
+    },
+  } as unknown as RuntimeWorkerHub;
+  const dispatcher = new WorkerRuntimeDispatcher(
+    workerHub,
+    { kind: "test", async provisionWorker() { throw new Error("not used"); } },
+    createStubExecutionAdapter(),
+  );
+  saveWorkerLeaseRecord({
+    lease_id: "lease:gate-job",
+    worker_id: "worker-gate",
+    job_id: "gate-job",
+    target_kind: "docker-worker",
+    run_id: "run-gate",
+    node_run_id: "node-gate",
+    container_id: "container-gate",
+    execution_ref: null,
+    acquired_at: "2026-07-12T00:00:00.000Z",
+    last_heartbeat_at: null,
+    expires_at: null,
+    released_at: null,
+    release_reason: null,
+    status: "active",
+    last_error: null,
+    metadata: {},
+  });
+  saveRuntimeHumanGate({
+    gate_id: "gate-001",
+    kind: "human_input",
+    status: "suspended",
+    transport: "worker_native",
+    run_id: "run-gate",
+    node_run_id: "node-gate",
+    job_id: "gate-job",
+    worker_id: "worker-gate",
+    summary: "Select channel",
+    input_schema: { type: "object" },
+    request_payload: null,
+    response_payload: null,
+    requested_at: "2026-07-12T00:00:00.000Z",
+    suspended_at: "2026-07-12T00:00:01.000Z",
+    resolved_at: null,
+    control_id: null,
+    last_error: null,
+  });
+
+  const resumed = dispatcher.resumeHumanGate({
+    runId: "run-gate",
+    nodeRunId: "node-gate",
+    gateId: "gate-001",
+    decision: "resume",
+    payload: { channel: "stable" },
+  });
+  assert.equal(resumed.delivered, true);
+  assert.equal(controls.length, 1);
+  assert.deepEqual(controls[0]?.payload, { channel: "stable" });
+  assert.equal(controls[0]?.gateId, "gate-001");
+  const persisted = getRuntimeHumanGate("run-gate", "gate-001");
+  assert.equal(persisted?.status, "resuming");
+  assert.equal(persisted?.control_id, resumed.controlId);
 });

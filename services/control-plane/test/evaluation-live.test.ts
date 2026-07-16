@@ -21,4 +21,14 @@ test("opt-in Anthropic evaluator returns a structured quality verdict", { skip: 
   const result = await anthropicEvaluator.evaluate({ snapshot: {} as RunEvidenceSnapshot, view });
   assert.ok(result.quality_verdict === "pass" || result.quality_verdict === "fail");
   assert.equal(result.usage?.availability, "available");
+  console.log(`LIVE_ACCEPTANCE_EVIDENCE ${JSON.stringify({
+    scenario: "model_judge_quality_verdict",
+    output_verified: true,
+    native_evidence_count: 1,
+    tool_call_count: 0,
+    tool_result_count: 0,
+    tool_correlation_verified: false,
+    usage_availability: result.usage.availability,
+    quality_verdict: result.quality_verdict,
+  })}`);
 });

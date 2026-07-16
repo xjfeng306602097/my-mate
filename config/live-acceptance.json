@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "id": "codex",
+      "harness_builtin": true,
+      "harness_name": "codex-appserver",
+      "credential_envs": ["OPENAI_API_KEY", "CODEX_API_KEY"],
+      "credential_optional": true,
+      "credential_mode": "agent_session",
+      "model_env": "MY_MATE_CODEX_MODEL"
+    },
+    {
+      "id": "claude-sdk",
+      "harness_builtin": true,
+      "harness_name": "claude-agent-sdk",
+      "credential_envs": ["ANTHROPIC_API_KEY"],
+      "credential_optional": true,
+      "credential_mode": "agent_session",
+      "model_env": "MY_MATE_CLAUDE_MODEL"
+    },
+    {
+      "id": "kimi",
+      "harness_env": "MY_MATE_KIMI_COMMAND",
+      "credential_envs": ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
+      "credential_optional": true,
+      "credential_mode": "cli_session",
+      "command_probe": "kimi",
+      "default_command": "kimi --print --output-format stream-json --max-steps-per-turn 4{model_arg}",
+      "model_env": "MY_MATE_KIMI_MODEL"
+    },
+    {
+      "id": "openclaw",
+      "harness_env": "MY_MATE_OPENCLAW_WORKER_BRIDGE_URL",
+      "credential_envs": ["MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY", "MY_MATE_OPENCLAW_BRIDGE_API_KEY"],
+      "credential_optional": true,
+      "credential_mode": "bridge_session",
+      "model_env": "MY_MATE_OPENCLAW_MODEL"
+    },
+    {
+      "id": "glm",
+      "harness_builtin": true,
+      "harness_name": "claude-agent-sdk",
+      "required_envs": ["MY_MATE_GLM_ANTHROPIC_BASE_URL"],
+      "credential_envs": ["GLM_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY"],
+      "model_env": "MY_MATE_GLM_MODEL",
+      "default_model": "glm-5.2"
+    }
+  ],
+  "judges": [
+    {
+      "id": "anthropic",
+      "evaluator_id": "model-v1",
+      "credential_envs": ["ANTHROPIC_API_KEY"],
+      "model_env": "MY_MATE_EVALUATOR_MODEL"
+    }
+  ]
+}

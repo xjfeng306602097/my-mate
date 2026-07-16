@@ -15,6 +15,7 @@ import { saveScorecard } from "../src/evaluation/scorecard-store.js";
 import { saveRuntimeJobRecord } from "../src/runtime/runtime-job-store.js";
 import { saveWorkerEvidence } from "../src/runtime/worker-evidence-store.js";
 import { buildDispatchEnvelope } from "../src/adapter-contracts.js";
+import { buildRuntimeWorkerJob } from "../src/runtime-protocol.js";
 import { buildLocalRuntimeWorkerDispatcher } from "../src/local-runtime-worker-dispatcher.js";
 import { InProcessRuntimeWorkerClient } from "../src/in-process-runtime-worker-client.js";
 import type { RuntimeDispatcher } from "../src/runtime-dispatcher.js";
@@ -1312,6 +1313,15 @@ test("session APIs create thread append messages plan and create linked run", as
     assert.equal(missionAfterAttachment.body.attachments.length, 1);
     assert.equal(missionAfterAttachment.body.attachments[0].name, "account-notes.md");
 
+    const removedAttachmentResponse = await fetch(
+      `${server.baseUrl}/api/sessions/${sessionId}/attachments/${attachment.body.attachment.attachment_id}`,
+      { method: "DELETE" },
+    );
+    assert.equal(removedAttachmentResponse.status, 200);
+    const removedAttachment = await removedAttachmentResponse.json();
+    assert.equal(removedAttachment.attachment.name, "account-notes.md");
+    assert.equal(removedAttachment.items.length, 0);
+
     const planned = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/plan`, {
       inputs: {
         audience: "key accounts",
@@ -1969,10 +1979,12 @@ test("session creation treats the initial message as the task goal even when it 
       created.body.session.current_goal,
       "Prepare a partner recovery plan for this week, keep it concise, and show me the safest execution route first.",
     );
-    assert.equal(created.body.session.latest_orchestrator_intent, "draft_ready");
-    assert.equal(created.body.session.workspace_state.stage, "draft");
-    assert.ok(
+    assert.equal(created.body.session.latest_orchestrator_intent, "capture_goal");
+    assert.equal(created.body.session.workspace_state.stage, "understand");
+    assert.equal(created.body.session.workspace_state.next_recommended_action, "clarify");
+    assert.equal(
       created.body.messages.some((message: { kind: string }) => message.kind === "draft_card"),
+      false,
     );
 
     const latestOrchestratorTurn = [...created.body.messages]
@@ -1990,7 +2002,7 @@ test("session creation treats the initial message as the task goal even when it 
   }
 });
 
-test("session creation auto-generates a draft when the initial brief is already actionable", async () => {
+test("session creation keeps an actionable initial brief conversation-first", async () => {
   resetTestRoot();
   configureEnv();
   seedTemplate();
@@ -2006,10 +2018,12 @@ test("session creation auto-generates a draft when the initial brief is already 
     });
     assert.equal(created.status, 201);
     sessionId = created.body.session.session_id;
-    assert.equal(created.body.session.workspace_state.stage, "draft");
-    assert.equal(created.body.session.latest_orchestrator_intent, "draft_ready");
-    assert.ok(
+    assert.equal(created.body.session.workspace_state.stage, "understand");
+    assert.equal(created.body.session.latest_orchestrator_intent, "capture_goal");
+    assert.equal(created.body.session.workspace_state.next_recommended_action, "clarify");
+    assert.equal(
       created.body.messages.some((message: { kind: string }) => message.kind === "draft_card"),
+      false,
     );
   } finally {
     await server.close();
@@ -2223,6 +2237,11 @@ test("session draft projection clears the draft-vs-plan meta question once a dra
     });
     assert.equal(created.status, 201);
     sessionId = created.body.session.session_id;
+
+    const drafted = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/messages`, {
+      content: "Draft DAG for this task",
+    });
+    assert.equal(drafted.status, 201);
 
     const detail = await getJson(`${server.baseUrl}/api/sessions/${sessionId}`);
     assert.equal(detail.status, 200);
@@ -4625,6 +4644,255 @@ test("orchestrator profiles persist and drive planner invocation context", async
   }
 });
 
+test("Provider Connections close the Studio-to-RunPlan path without persisting secrets", async () => {
+  resetTestRoot();
+  configureEnv();
+  const previousGlmKey = process.env.GLM_API_KEY;
+  const secret = "provider-connection-secret-value";
+  const managedSecret = "managed-provider-secret-value";
+  let providerProbeStatus = 200;
+  let providerProbeUrl = "";
+  process.env.GLM_API_KEY = secret;
+  seedTemplate(
+    buildPublishedTemplate({
+      template_id: "provider-connection-template",
+      agent_profile_bindings: {},
+      nodes: [
+        {
+          id: "node_provider",
+          name: "Provider Bound Node",
+          type: "agent_task",
+          agent_profile: "provider-agent",
+          allowed_skills: [],
+          config: { allowed_tools: ["read"] },
+          retry_policy: { max_attempts: 1, backoff_seconds: 1 },
+          timeout_seconds: 900,
+          parallelism: 1,
+          approval_kind: null,
+          human_input_schema: null,
+        },
+      ],
+    }),
+  );
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+    doctor: {
+      fetchImpl: async (input, init) => {
+        providerProbeUrl = String(input);
+        const headers = new Headers(init?.headers);
+        assert.equal(headers.get("x-api-key"), managedSecret);
+        return new Response(providerProbeStatus === 200 ? "{}" : "invalid key", {
+          status: providerProbeStatus,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    },
+  });
+  let runId = "";
+  try {
+    const connection = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      connection_id: "glm-primary",
+      name: "GLM Primary",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      base_url: "https://glm.example.test/anthropic",
+      default_model: "glm-5.2",
+      credential_env: "GLM_API_KEY",
+      metadata: { region: "test" },
+    });
+    assert.equal(connection.status, 201);
+    assert.equal(connection.body.credential_configured, true);
+    assert.equal(connection.body.credential_env, "GLM_API_KEY");
+    assert.equal(connection.body.max_input_tokens, 524_288);
+    assert.equal(connection.body.max_output_tokens, 65_536);
+    assert.equal(connection.body.context_compression_enabled, true);
+    assert.equal(connection.body.context_compression_threshold_percent, 75);
+    assert.equal(connection.body.max_continuation_rounds, 8);
+    assert.equal(JSON.stringify(connection.body).includes(secret), false);
+
+    const managed = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      connection_id: "glm-managed",
+      name: "GLM Managed",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      protocol: "anthropic-messages",
+      base_url: "https://glm.example.test/anthropic",
+      models: ["glm-5.2", "glm-5.2-air"],
+      default_model: "glm-5.2",
+      max_input_tokens: 262_144,
+      max_output_tokens: 65_536,
+      credential_source: "managed",
+      api_key: managedSecret,
+    });
+    assert.equal(managed.status, 201);
+    assert.equal(managed.body.credential_configured, true);
+    assert.deepEqual(managed.body.models, ["glm-5.2", "glm-5.2-air"]);
+    assert.equal(managed.body.protocol, "anthropic-messages");
+    assert.equal(managed.body.max_input_tokens, 262_144);
+    assert.equal(managed.body.max_output_tokens, 65_536);
+    assert.equal("api_key" in managed.body, false);
+    assert.equal(JSON.stringify(managed.body).includes(managedSecret), false);
+
+    const verified = await postJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-managed/test`,
+      {},
+    );
+    assert.equal(verified.status, 200);
+    assert.equal(verified.body.verification.status, "verified");
+    assert.equal(verified.body.connection.verification.status, "verified");
+    assert.equal(verified.body.report.model_verified, true);
+    assert.equal(providerProbeUrl, "https://glm.example.test/anthropic/v1/messages");
+    assert.equal(JSON.stringify(verified.body).includes(managedSecret), false);
+
+    const persistedVerification = await getJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-managed`,
+    );
+    assert.equal(persistedVerification.body.verification.status, "verified");
+
+    providerProbeStatus = 401;
+    const failed = await postJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-managed/test`,
+      {},
+    );
+    assert.equal(failed.status, 200);
+    assert.equal(failed.body.verification.status, "failed");
+    assert.equal(failed.body.report.model_verified, false);
+    assert.match(failed.body.verification.detail, /HTTP 401/);
+    assert.equal(JSON.stringify(failed.body).includes(managedSecret), false);
+
+    const unknownSecretField = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      name: "Unsafe",
+      agent_runtime: "glm",
+      base_url: "https://glm.example.test",
+      credential_env: "GLM_API_KEY",
+      token: secret,
+    });
+    assert.equal(unknownSecretField.status, 400);
+
+    const secretMetadata = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      name: "Unsafe Metadata",
+      agent_runtime: "glm",
+      base_url: "https://glm.example.test",
+      credential_env: "GLM_API_KEY",
+      metadata: { api_key: secret },
+    });
+    assert.equal(secretMetadata.status, 400);
+
+    const invalidEnv = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      name: "Invalid Env",
+      agent_runtime: "glm",
+      base_url: "https://glm.example.test",
+      credential_env: "ARBITRARY_SECRET",
+    });
+    assert.equal(invalidEnv.status, 400);
+
+    const missingEndpoint = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      name: "Missing Endpoint",
+      agent_runtime: "glm",
+      credential_env: "GLM_API_KEY",
+    });
+    assert.equal(missingEndpoint.status, 400);
+
+    const mismatch = await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
+      profile_id: "provider-agent-mismatch",
+      name: "Provider Agent Mismatch",
+      runtime_agent_ref: "",
+      openclaw_agent_id: "",
+      agent_runtime: "codex",
+      provider_connection_id: "glm-primary",
+    });
+    assert.equal(mismatch.status, 400);
+
+    const profile = await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
+      profile_id: "provider-agent",
+      name: "Provider Agent",
+      runtime_agent_ref: "",
+      openclaw_agent_id: "",
+      agent_runtime: "glm",
+      harness_profile: "agent-harness-v1",
+      provider_connection_id: "glm-primary",
+      allowed_tools: ["read"],
+    });
+    assert.equal(profile.status, 201);
+
+    const created = await createRunForTest(server.baseUrl, {
+      intent: "Freeze Provider Connection",
+      templateId: "provider-connection-template",
+    });
+    assert.equal(created.status, 201);
+    runId = created.body.run_id;
+    const initialPlan = getRunPlan(runId);
+    const initialNode = initialPlan?.compiled_nodes[0];
+    assert.deepEqual(initialNode?.provider_connection, {
+      connection_id: "glm-primary",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      protocol: "anthropic-messages",
+      base_url: "https://glm.example.test/anthropic",
+      model: "glm-5.2",
+      credential_source: "environment",
+      credential_env: "GLM_API_KEY",
+    });
+
+    const run = getRun(runId);
+    assert.ok(run && initialPlan && initialNode);
+    const envelope = buildDispatchEnvelope(run!, initialPlan!, initialNode!);
+    const job = buildRuntimeWorkerJob(envelope);
+    assert.equal(job.harness.provider_connection?.credential_env, "GLM_API_KEY");
+    assert.equal(job.provision.env.MY_MATE_GLM_ANTHROPIC_BASE_URL, "https://glm.example.test/anthropic");
+    assert.equal(job.provision.env.MY_MATE_GLM_MODEL, "glm-5.2");
+    assert.equal(JSON.stringify(job).includes(secret), false);
+
+    const updated = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      connection_id: "glm-primary",
+      name: "GLM Primary",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      base_url: "https://glm-v2.example.test/anthropic",
+      default_model: "glm-5.2-updated",
+      credential_env: "GLM_API_KEY",
+    });
+    assert.equal(updated.status, 201);
+    assert.deepEqual(getRunPlan(runId)?.compiled_nodes[0]?.provider_connection, initialNode?.provider_connection);
+
+    const betaList = await getJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      "x-my-mate-workspace-id": "beta",
+    });
+    assert.equal(betaList.status, 200);
+    assert.deepEqual(betaList.body.items, []);
+    const betaConflict = await postJson(
+      `${server.baseUrl}/api/registry/provider-connections`,
+      {
+        connection_id: "glm-primary",
+        name: "Conflicting Connection",
+        agent_runtime: "glm",
+        base_url: "https://beta.example.test",
+        credential_env: "GLM_API_KEY",
+      },
+      { "x-my-mate-workspace-id": "beta" },
+    );
+    assert.equal(betaConflict.status, 400);
+
+    const listed = await getJson(`${server.baseUrl}/api/registry/provider-connections`);
+    assert.equal(JSON.stringify(listed.body).includes(secret), false);
+    const disabled = await postJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-primary/disable`,
+      {},
+    );
+    assert.equal(disabled.status, 200);
+    assert.equal(disabled.body.status, "disabled");
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "provider-connection-template",
+      runId,
+      agentProfileId: "provider-agent",
+    });
+    if (previousGlmKey === undefined) delete process.env.GLM_API_KEY;
+    else process.env.GLM_API_KEY = previousGlmKey;
+  }
+});
+
 test("orchestrator planning policy drives registry synthesis defaults", async () => {
   resetTestRoot();
   configureEnv({
@@ -6050,8 +6318,8 @@ test("mobile home projects focus mission and recent mission summaries", async ()
     assert.equal(home.body.focus_session.mission_snapshot.spec.constraints[0], "Use a practical tone and include next actions");
     assert.equal(home.body.recent_sessions.length, 1);
     assert.equal(home.body.recent_sessions[0].session_id, sessionId);
-    assert.equal(home.body.recent_sessions[0].mission_snapshot.nextActionLabel, "Draft a workflow");
-    assert.equal(home.body.recent_sessions[0].mission_view.nextActionLabel, "Draft a workflow");
+    assert.equal(home.body.recent_sessions[0].mission_snapshot.nextActionLabel, "Continue the conversation");
+    assert.equal(home.body.recent_sessions[0].mission_view.nextActionLabel, "Continue the conversation");
     assert.equal(home.body.focus_run, null);
   } finally {
     await server.close();
@@ -6211,6 +6479,62 @@ test("mission detail returns mission-first top-level payload with session rail i
     await server.close();
     cleanupTestArtifacts({
       templateId: "mobile-test-template",
+    });
+  }
+});
+
+test("mission materializer status, verify, and rebuild endpoints preserve projection consistency", async () => {
+  resetTestRoot();
+  configureEnv();
+  seedTemplate();
+  const server = await startTestServer({
+    executionAdapter: createStubExecutionAdapter(),
+  });
+  let sessionId = "";
+
+  try {
+    const created = await postJson(`${server.baseUrl}/api/sessions`, {
+      initial_message: "Materialize this mission from durable events",
+    });
+    assert.equal(created.status, 201);
+    sessionId = created.body.session.session_id;
+
+    const status = await getJson(`${server.baseUrl}/api/missions/${sessionId}/materializer`);
+    assert.equal(status.status, 200);
+    assert.equal(status.body.session_id, sessionId);
+    assert.equal(status.body.materializer_version, 1);
+    assert.ok(status.body.event_count >= 4);
+    assert.equal(status.body.last_sequence, status.body.event_count);
+    assert.match(status.body.source_digest, /^sha256:[a-f0-9]{64}$/);
+    assert.match(status.body.projection_digest, /^sha256:[a-f0-9]{64}$/);
+
+    const verification = await postJson(
+      `${server.baseUrl}/api/missions/${sessionId}/materializer/verify`,
+      {},
+    );
+    assert.equal(verification.status, 200);
+    assert.equal(verification.body.status, "consistent");
+    assert.deepEqual(verification.body.differing_sections, []);
+    assert.equal(
+      verification.body.direct_projection_digest,
+      verification.body.materialized_projection_digest,
+    );
+
+    const rebuild = await postJson(
+      `${server.baseUrl}/api/missions/${sessionId}/materializer/rebuild`,
+      {},
+    );
+    assert.equal(rebuild.status, 200);
+    assert.equal(rebuild.body.rebuilt, true);
+    assert.equal(rebuild.body.materializer_version, 1);
+    assert.equal(rebuild.body.session_id, sessionId);
+    assert.equal(rebuild.body.projection_digest, status.body.projection_digest);
+    assert.equal(rebuild.body.checkpoint_sequence, rebuild.body.last_sequence);
+  } finally {
+    await server.close();
+    cleanupTestArtifacts({
+      templateId: "mobile-test-template",
+      sessionId,
     });
   }
 });
@@ -6957,6 +7281,19 @@ test("explicit runtime dispatcher owns new run dispatch even with a local compat
   const template = buildPublishedTemplate();
   (template.nodes[0]!.config as Record<string, unknown>).worker_target_kind =
     "docker-worker";
+  seedSkill({
+    skill_id: "coding-agent",
+    name: "Coding Agent",
+  });
+  seedAgentProfile({
+    profile_id: "backend",
+    name: "Backend",
+    agent_runtime: "codex",
+    runtime_agent_ref: "codex:test",
+    openclaw_agent_id: "codex:test",
+    default_skills: ["coding-agent"],
+    allowed_tools: ["read", "write", "shell"],
+  });
   seedTemplate(template);
   const jobs: RuntimeWorkerJob[] = [];
   const dispatcher: RuntimeDispatcher = {
@@ -7065,6 +7402,8 @@ test("explicit runtime dispatcher owns new run dispatch even with a local compat
     cleanupTestArtifacts({
       templateId: "mobile-test-template",
       runId,
+      agentProfileId: "backend",
+      skillId: "coding-agent",
     });
   }
 });

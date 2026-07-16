@@ -17,6 +17,10 @@ export interface SecurityOptions {
   allowDevelopmentIdentity?: boolean;
 }
 
+export interface HeaderRequest {
+  header(name: string): string | undefined;
+}
+
 export type AuthResolution =
   | { ok: true; context: RequestAuthContext }
   | { ok: false; status: 401 | 403; code: string; message: string };
@@ -64,7 +68,7 @@ function parseContext(payload: string): RequestAuthContext | null {
 }
 
 export function resolveTrustedRequestContext(
-  req: Request,
+  req: HeaderRequest,
   options: SecurityOptions,
 ): AuthResolution {
   const payload = req.header("x-my-mate-auth-context");
@@ -119,6 +123,10 @@ export function runWithRequestContext<T>(context: RequestAuthContext, callback: 
   return requestContext.run(context, callback);
 }
 
+export function runWithSystemWorkspaceContext<T>(workspaceId: string, callback: () => T): T {
+  return runWithRequestContext(developmentContext(workspaceId), callback);
+}
+
 export function getRequestAuthContext(): RequestAuthContext | null {
   return requestContext.getStore() || null;
 }
@@ -139,6 +147,22 @@ export function hasPermission(permission: WorkspacePermission): boolean {
 export function requiredPermission(req: Request): WorkspacePermission {
   const method = req.method.toUpperCase();
   const path = req.path;
+  if (path.startsWith("/memory-candidates")) {
+    if (method === "GET" || /\/(approve|reject)$/.test(path)) return "memory.review";
+    return "memory.propose";
+  }
+  if (path.startsWith("/memories")) {
+    return method === "GET" ? "memory.read" : "memory.write";
+  }
+  if (path === "/memory-settings" || path.startsWith("/memory-maintenance")) {
+    return method === "GET" ? "memory.read" : "memory.write";
+  }
+  if (path === "/memory-observability") return "memory.read";
+  if (/^\/sessions\/[^/]+\/memory-review$/u.test(path)) return "memory.review";
+  if (path.startsWith("/memory-retrieval") || path.startsWith("/memory-knowledge")) {
+    return path.endsWith("/rebuild") ? "memory.write" : "memory.read";
+  }
+  if (path.startsWith("/session-recall")) return "memory.read";
   if (method === "GET") return path === "/audit-events" ? "audit.read" : "workspace.read";
   if (path === "/diagnostics/doctor") return "workspace.read";
   if (path.startsWith("/workspaces")) return "workspace.manage_members";

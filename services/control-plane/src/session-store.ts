@@ -2,6 +2,7 @@ import path from "node:path";
 import { SESSIONS_DIR } from "./config.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getActivePrincipalId, getActiveWorkspaceId } from "./request-security.js";
+import { ensureCoreMemorySnapshot } from "./memory-snapshot-store.js";
 import type { CreateSessionRequest, SessionRecord } from "./types.js";
 import { ensureDir, generateSessionId, nowIso, writeJsonAtomic } from "./utils.js";
 
@@ -48,6 +49,14 @@ export function createSession(input: CreateSessionRequest): SessionRecord {
     typeof input.orchestrator_profile_id === "string" && input.orchestrator_profile_id.trim()
       ? input.orchestrator_profile_id.trim()
       : null;
+  const providerConnectionId =
+    typeof input.provider_connection_id === "string" && input.provider_connection_id.trim()
+      ? input.provider_connection_id.trim()
+      : null;
+  const conversationModel =
+    typeof input.model === "string" && input.model.trim()
+      ? input.model.trim()
+      : null;
 
   const session: SessionRecord = {
     session_id: generateSessionId(),
@@ -83,11 +92,19 @@ export function createSession(input: CreateSessionRequest): SessionRecord {
         : "Describe the task so the orchestrator can frame the objective.",
       latest_orchestrator_intent: currentGoal ? "capture_goal" : "idle",
       orchestrator_profile_id: orchestratorProfileId,
+      conversation_provider_connection_id: providerConnectionId,
+      conversation_model: conversationModel,
+      autonomy_mode:
+        input.autonomy_mode === "review_first" || input.autonomy_mode === "autopilot"
+          ? input.autonomy_mode
+          : "assisted",
       workspace_state: null,
     },
   };
 
-  return saveSession(session);
+  const saved = saveSession(session);
+  ensureCoreMemorySnapshot(saved);
+  return saved;
 }
 
 function normalizeSessionRecord(record: SessionRecord): SessionRecord {

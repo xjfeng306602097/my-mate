@@ -1,8 +1,13 @@
 {
   "profile_id": "backend",
+  "workspace_id": "default",
   "name": "Backend",
   "description": "Demo backend profile for mobile acceptance",
-  "openclaw_agent_id": "backend",
+  "runtime_agent_ref": "",
+  "agent_runtime": "glm",
+  "harness_profile": null,
+  "provider_connection_id": "openai-default",
+  "openclaw_agent_id": "",
   "default_skills": [
     "coding-agent"
   ],
@@ -14,8 +19,13 @@
   "policy_tags": [],
   "status": "active",
   "metadata": {
-    "demo": "acceptance"
+    "demo": "acceptance",
+    "openclaw": {
+      "provider": "anthropic-compatible",
+      "model": null,
+      "runtime_mode": null
+    }
   },
   "created_at": "2026-06-09T07:51:53.469Z",
-  "updated_at": "2026-06-09T07:51:53.469Z"
+  "updated_at": "2026-07-16T14:20:20.312Z"
 }

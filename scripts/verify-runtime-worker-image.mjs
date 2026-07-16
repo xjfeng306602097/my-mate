@@ -8,12 +8,14 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function run(command, args) {
+function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf-8",
     windowsHide: true,
+    ...options,
   });
+  if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(result.stderr || result.stdout || `${command} failed.`);
   }
@@ -46,6 +48,51 @@ expect("Worker protocol", labels["io.my-mate.runtime-protocol"], "my_mate_runtim
 expect("Worker version env", environment.get("MY_MATE_RUNTIME_WORKER_VERSION"), runtimeWorkerReleaseVersion);
 expect("Worker image env", environment.get("MY_MATE_RUNTIME_WORKER_IMAGE"), image);
 
+const codexEntrypoint = "/app/services/runtime-worker/node_modules/.bin/codex";
+const codexVersion = run(dockerBin, [
+  "run", "--rm", "--entrypoint", codexEntrypoint, image, "--version",
+]);
+if (!/^codex-cli \d+\.\d+\.\d+/.test(codexVersion)) {
+  failures.push(`Codex Agent Harness binary is invalid: ${codexVersion || "<empty>"}`);
+}
+
+const initializeRequest = {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: {
+    clientInfo: {
+      name: "my_mate_runtime_worker_image_verify",
+      title: "My Mate Runtime Worker Image Verify",
+      version: runtimeWorkerReleaseVersion,
+    },
+    capabilities: { experimentalApi: true },
+  },
+};
+let initializeResponse = null;
+let initializeOutput = "";
+for (let attempt = 1; attempt <= 3 && !initializeResponse; attempt += 1) {
+  initializeOutput = run(dockerBin, [
+    "run", "--rm", "-i", "--entrypoint", codexEntrypoint,
+    image, "app-server", "--stdio",
+  ], {
+    input: `${JSON.stringify(initializeRequest)}\n`,
+    timeout: 30_000,
+  });
+  for (const line of initializeOutput.split(/\r?\n/)) {
+    try {
+      const value = JSON.parse(line);
+      if (value?.id === 1) initializeResponse = value;
+    } catch {}
+  }
+}
+if (!initializeResponse?.result || initializeResponse.error) {
+  failures.push(
+    "Codex app-server did not complete the image verification JSON-RPC handshake: " +
+      (initializeOutput.slice(-500) || "<no stdout>"),
+  );
+}
+
 const created = labels["org.opencontainers.image.created"];
 if (!created || Number.isNaN(Date.parse(created))) failures.push("OCI created label is missing or invalid.");
 const source = labels["org.opencontainers.image.source"];
@@ -57,5 +104,16 @@ if (failures.length > 0) {
 }
 
 process.stdout.write(
-  `${JSON.stringify({ image, image_id: inspected.Id, version: runtimeWorkerReleaseVersion, revision: expectedRevision, created, source })}\n`,
+  `${JSON.stringify({
+    image,
+    image_id: inspected.Id,
+    version: runtimeWorkerReleaseVersion,
+    revision: expectedRevision,
+    created,
+    source,
+    agent_harness: {
+      codex_version: codexVersion,
+      app_server_initialize: initializeResponse?.result ? "passed" : "failed",
+    },
+  })}\n`,
 );

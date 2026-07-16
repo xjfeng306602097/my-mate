@@ -8,8 +8,8 @@ export class ClaudeSdkProviderSession extends BaseProviderSession {
   private readonly toolIds = new Map<number, string>();
   private readonly toolNames = new Map<number, string>();
 
-  constructor(model?: string | null) {
-    super("claude-sdk", model);
+  constructor(model?: string | null, provider = "claude-sdk") {
+    super(provider, model);
   }
 
   ingest(value: unknown): HarnessEvidenceEvent[] {

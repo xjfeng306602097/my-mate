@@ -13,6 +13,7 @@ tags:
   - name: Runs
   - name: Mobile
   - name: Approvals
+  - name: RuntimeWorkspaceChanges
   - name: HumanInputs
   - name: Planner
   - name: Agents
@@ -23,6 +24,7 @@ tags:
   - name: Identity
   - name: Workspaces
   - name: Governance
+  - name: Memory
   - name: InternalOps
 
 components:
@@ -40,12 +42,809 @@ components:
         message:
           type: string
       required: [code, message]
+    SessionGeneratedArtifact:
+      type: object
+      properties:
+        artifact_id: { type: string }
+        session_id: { type: string }
+        name: { type: string }
+        storage_uri: { type: string }
+        mime_type: { type: [string, "null"] }
+        size_bytes: { type: [integer, "null"], minimum: 0 }
+        summary: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        source_attachment_id: { type: [string, "null"] }
+        version: { type: integer, minimum: 1 }
+      required: [artifact_id, session_id, name, storage_uri, mime_type, size_bytes, summary, created_at, source_attachment_id, version]
+    SessionGeneratedArtifactDiffLine:
+      type: object
+      properties:
+        type: { type: string, enum: [context, added, removed] }
+        text: { type: string }
+        old_line: { type: [integer, "null"], minimum: 1 }
+        new_line: { type: [integer, "null"], minimum: 1 }
+      required: [type, text, old_line, new_line]
+    SessionGeneratedArtifactComparison:
+      type: object
+      properties:
+        base: { $ref: "#/components/schemas/SessionGeneratedArtifact" }
+        target: { $ref: "#/components/schemas/SessionGeneratedArtifact" }
+        additions: { type: integer, minimum: 0 }
+        deletions: { type: integer, minimum: 0 }
+        changed: { type: boolean }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/SessionGeneratedArtifactDiffLine" }
+      required: [base, target, additions, deletions, changed, lines]
+    MissionMaterializerStatus:
+      type: object
+      properties:
+        session_id: { type: string }
+        materializer_version: { type: integer, const: 1 }
+        last_sequence: { type: integer, minimum: 1 }
+        event_count: { type: integer, minimum: 1 }
+        checkpoint_sequence: { type: [integer, "null"], minimum: 1 }
+        source_digest: { type: string }
+        projection_digest: { type: string }
+        materialized_at: { type: string, format: date-time }
+      required: [session_id, materializer_version, last_sequence, event_count, checkpoint_sequence, source_digest, projection_digest, materialized_at]
+    MissionMaterializerRebuildResponse:
+      allOf:
+        - $ref: "#/components/schemas/MissionMaterializerStatus"
+        - type: object
+          properties:
+            rebuilt: { type: boolean, const: true }
+          required: [rebuilt]
+    MissionMaterializerConsistencyReport:
+      type: object
+      properties:
+        session_id: { type: string }
+        status:
+          type: string
+          enum: [consistent, drifted]
+        source_digest: { type: string }
+        direct_projection_digest: { type: string }
+        materialized_projection_digest: { type: string }
+        last_sequence: { type: integer, minimum: 1 }
+        event_count: { type: integer, minimum: 1 }
+        checkpoint_sequence: { type: [integer, "null"], minimum: 1 }
+        differing_sections:
+          type: array
+          items:
+            type: string
+            enum: [missionSpec, missionSpecContract, missionSnapshot]
+        verified_at: { type: string, format: date-time }
+      required: [session_id, status, source_digest, direct_projection_digest, materialized_projection_digest, last_sequence, event_count, checkpoint_sequence, differing_sections, verified_at]
     WorkspaceRole:
       type: string
       enum: [owner, admin, operator, viewer]
     WorkspacePermission:
       type: string
-      enum: [workspace.read, workspace.manage_members, registry.manage, governance.review, mission.create, mission.edit, run.create, run.control, run.evaluate, gate.resolve, audit.read]
+      enum: [workspace.read, workspace.manage_members, registry.manage, governance.review, mission.create, mission.edit, run.create, run.control, run.evaluate, gate.resolve, memory.read, memory.propose, memory.write, memory.review, memory.manage, audit.read]
+    MemoryScopeKind:
+      type: string
+      enum: [user, workspace, project, agent]
+    MemoryKind:
+      type: string
+      enum: [preference, fact, convention, decision, lesson]
+    MemorySensitivity:
+      type: string
+      enum: [normal, private, restricted]
+    MemoryStatus:
+      type: string
+      enum: [active, superseded, expired, deleted]
+    MemorySourceOrigin:
+      type: string
+      enum: [explicit_user, inferred, background_review, imported, system]
+    MemorySource:
+      type: object
+      properties:
+        origin:
+          $ref: "#/components/schemas/MemorySourceOrigin"
+        session_id: { type: [string, "null"] }
+        message_ids:
+          type: array
+          items: { type: string }
+        action_id: { type: [string, "null"] }
+        provider_id: { type: [string, "null"] }
+        note: { type: [string, "null"] }
+      required: [origin, session_id, message_ids, action_id, provider_id, note]
+    MemoryProposal:
+      type: object
+      properties:
+        scope_kind:
+          $ref: "#/components/schemas/MemoryScopeKind"
+        scope_id: { type: string }
+        kind:
+          $ref: "#/components/schemas/MemoryKind"
+        content: { type: string, minLength: 1, maxLength: 4000 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        importance: { type: number, minimum: 0, maximum: 1 }
+        sensitivity:
+          $ref: "#/components/schemas/MemorySensitivity"
+        tags:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 64 }
+        source:
+          $ref: "#/components/schemas/MemorySource"
+        valid_from: { type: [string, "null"], format: date-time }
+        valid_until: { type: [string, "null"], format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+        supersedes_memory_id: { type: [string, "null"] }
+      required: [scope_kind, scope_id, kind, content, confidence, importance, sensitivity, tags, source, valid_from, valid_until, expires_at, supersedes_memory_id]
+    MemoryRecord:
+      allOf:
+        - $ref: "#/components/schemas/MemoryProposal"
+        - type: object
+          properties:
+            schema_version: { type: integer, const: 1 }
+            memory_id: { type: string }
+            workspace_id: { type: string }
+            status:
+              $ref: "#/components/schemas/MemoryStatus"
+            version: { type: integer, minimum: 1 }
+            created_by: { type: string }
+            created_at: { type: string, format: date-time }
+            updated_by: { type: string }
+            updated_at: { type: string, format: date-time }
+          required: [schema_version, memory_id, workspace_id, status, version, created_by, created_at, updated_by, updated_at]
+    MemoryWriteFields:
+      type: object
+      properties:
+        scope_kind:
+          $ref: "#/components/schemas/MemoryScopeKind"
+        scope_id: { type: string }
+        kind:
+          $ref: "#/components/schemas/MemoryKind"
+        content: { type: string, minLength: 1, maxLength: 4000 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        importance: { type: number, minimum: 0, maximum: 1 }
+        sensitivity:
+          $ref: "#/components/schemas/MemorySensitivity"
+        tags:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 64 }
+        source:
+          type: object
+          additionalProperties: true
+        valid_from: { type: [string, "null"], format: date-time }
+        valid_until: { type: [string, "null"], format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+        supersedes_memory_id: { type: [string, "null"] }
+      additionalProperties: false
+    CreateMemoryRequest:
+      allOf:
+        - $ref: "#/components/schemas/MemoryWriteFields"
+        - type: object
+          required: [content]
+    UpdateMemoryRequest:
+      $ref: "#/components/schemas/MemoryWriteFields"
+      minProperties: 1
+    MemoryCandidateStatus:
+      type: string
+      enum: [pending, approved, rejected]
+    MemoryCandidateRisk:
+      type: string
+      enum: [low, medium, high]
+    MemoryCandidateOperation:
+      type: string
+      enum: [create, update, delete]
+    MemoryCandidateRecord:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        candidate_id: { type: string }
+        workspace_id: { type: string }
+        operation:
+          $ref: "#/components/schemas/MemoryCandidateOperation"
+        target_memory_id: { type: [string, "null"] }
+        proposed_memory:
+          oneOf:
+            - $ref: "#/components/schemas/MemoryProposal"
+            - type: "null"
+        source:
+          $ref: "#/components/schemas/MemorySource"
+        rationale: { type: string }
+        risk:
+          $ref: "#/components/schemas/MemoryCandidateRisk"
+        autonomy_mode:
+          type: string
+          enum: [review_first, assisted, autopilot]
+        status:
+          $ref: "#/components/schemas/MemoryCandidateStatus"
+        proposed_by: { type: string }
+        proposed_at: { type: string, format: date-time }
+        resolved_by: { type: [string, "null"] }
+        resolved_at: { type: [string, "null"], format: date-time }
+        resolution_note: { type: [string, "null"] }
+        committed_memory_id: { type: [string, "null"] }
+      required: [schema_version, candidate_id, workspace_id, operation, target_memory_id, proposed_memory, source, rationale, risk, autonomy_mode, status, proposed_by, proposed_at, resolved_by, resolved_at, resolution_note, committed_memory_id]
+    CreateMemoryCandidateRequest:
+      type: object
+      properties:
+        proposed_memory:
+          $ref: "#/components/schemas/CreateMemoryRequest"
+        rationale: { type: string, maxLength: 1000 }
+        risk:
+          $ref: "#/components/schemas/MemoryCandidateRisk"
+        autonomy_mode:
+          type: string
+          enum: [review_first, assisted, autopilot]
+      required: [proposed_memory]
+      additionalProperties: false
+    ResolveMemoryCandidateRequest:
+      type: object
+      properties:
+        note: { type: string, maxLength: 500 }
+      additionalProperties: false
+    CoreMemorySnapshotEntry:
+      type: object
+      properties:
+        memory_id: { type: string }
+        memory_version: { type: integer, minimum: 1 }
+        scope_kind: { $ref: "#/components/schemas/MemoryScopeKind" }
+        scope_id: { type: string }
+        kind: { $ref: "#/components/schemas/MemoryKind" }
+        content: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        importance: { type: number, minimum: 0, maximum: 1 }
+        sensitivity: { type: string, enum: [normal, private] }
+        tags:
+          type: array
+          items: { type: string }
+        source: { $ref: "#/components/schemas/MemorySource" }
+        updated_at: { type: string, format: date-time }
+      required: [memory_id, memory_version, scope_kind, scope_id, kind, content, confidence, importance, sensitivity, tags, source, updated_at]
+    CoreMemorySnapshot:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        snapshot_id: { type: string }
+        session_id: { type: string }
+        workspace_id: { type: string }
+        owner_principal_id: { type: string }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/CoreMemorySnapshotEntry" }
+        memory_versions:
+          type: object
+          additionalProperties: { type: integer, minimum: 1 }
+        character_budget: { type: integer, minimum: 1 }
+        estimated_token_budget: { type: integer, minimum: 1 }
+        digest: { type: string }
+        created_at: { type: string, format: date-time }
+        project_binding:
+          oneOf:
+            - type: object
+              properties:
+                project_id: { type: string }
+                bound_at: { type: string, format: date-time }
+              required: [project_id, bound_at]
+            - type: "null"
+        project_entries:
+          type: array
+          items: { $ref: "#/components/schemas/CoreMemorySnapshotEntry" }
+      required: [schema_version, snapshot_id, session_id, workspace_id, owner_principal_id, entries, memory_versions, character_budget, estimated_token_budget, digest, created_at, project_binding, project_entries]
+    MemorySettings:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        background_review:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            min_user_characters: { type: integer, minimum: 1, maximum: 10000 }
+            max_candidates_per_review: { type: integer, minimum: 1, maximum: 20 }
+          required: [enabled, min_user_characters, max_candidates_per_review]
+        automatic_recall:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            max_results: { type: integer, minimum: 1, maximum: 20 }
+            character_budget: { type: integer, minimum: 500, maximum: 20000 }
+            cache_ttl_seconds: { type: integer, minimum: 0, maximum: 3600 }
+          required: [enabled, max_results, character_budget, cache_ttl_seconds]
+        intelligence:
+          type: object
+          properties:
+            extraction_mode: { type: string, enum: [deterministic, hybrid] }
+            intent_model_enabled: { type: boolean }
+            provider_connection_id: { type: [string, "null"] }
+            model: { type: [string, "null"] }
+            max_turn_characters: { type: integer, minimum: 1000, maximum: 100000 }
+            min_confidence: { type: number, minimum: 0.5, maximum: 1 }
+            model_timeout_ms: { type: integer, minimum: 1000, maximum: 180000 }
+          required: [extraction_mode, intent_model_enabled, provider_connection_id, model, max_turn_characters, min_confidence, model_timeout_ms]
+        scope_policy:
+          type: object
+          properties:
+            project_memory_enabled: { type: boolean }
+            agent_memory_enabled: { type: boolean }
+          required: [project_memory_enabled, agent_memory_enabled]
+        retention:
+          type: object
+          properties:
+            resolved_candidate_days: { type: integer, minimum: 1, maximum: 3650 }
+            journal_max_records: { type: integer, minimum: 100, maximum: 1000000 }
+            maintenance_interval_minutes: { type: integer, minimum: 1, maximum: 10080 }
+          required: [resolved_candidate_days, journal_max_records, maintenance_interval_minutes]
+        embedding:
+          type: object
+          properties:
+            provider: { type: string, enum: [disabled, openai-compatible] }
+            provider_connection_id: { type: [string, "null"] }
+            model: { type: [string, "null"] }
+            dimensions: { type: [integer, "null"], minimum: 1 }
+          required: [provider, provider_connection_id, model, dimensions]
+        knowledge_graph:
+          type: object
+          properties:
+            provider: { type: string, enum: [disabled, mempalace] }
+            palace_path: { type: [string, "null"] }
+            python_bin: { type: [string, "null"] }
+            sync_canonical: { type: boolean }
+          required: [provider, palace_path, python_bin, sync_canonical]
+        updated_by: { type: string }
+        updated_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, background_review, automatic_recall, intelligence, scope_policy, retention, embedding, knowledge_graph, updated_by, updated_at]
+    MemoryObservability:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        retrieval_queries: { type: integer, minimum: 0 }
+        retrieval_failures: { type: integer, minimum: 0 }
+        retrieval_total_latency_ms: { type: integer, minimum: 0 }
+        retrieval_last_latency_ms: { type: [integer, "null"], minimum: 0 }
+        lexical_hits: { type: integer, minimum: 0 }
+        ngram_hits: { type: integer, minimum: 0 }
+        embedding_hits: { type: integer, minimum: 0 }
+        embedding_fallbacks: { type: integer, minimum: 0 }
+        index_rebuilds: { type: integer, minimum: 0 }
+        background_reviews: { type: integer, minimum: 0 }
+        background_candidates: { type: integer, minimum: 0 }
+        background_commits: { type: integer, minimum: 0 }
+        model_extraction_attempts: { type: integer, minimum: 0 }
+        model_extraction_successes: { type: integer, minimum: 0 }
+        model_extraction_fallbacks: { type: integer, minimum: 0 }
+        model_proposed_creates: { type: integer, minimum: 0 }
+        model_proposed_updates: { type: integer, minimum: 0 }
+        model_proposed_supersedes: { type: integer, minimum: 0 }
+        model_proposed_deletes: { type: integer, minimum: 0 }
+        automatic_recall_queries: { type: integer, minimum: 0 }
+        automatic_recall_hits: { type: integer, minimum: 0 }
+        automatic_recall_failures: { type: integer, minimum: 0 }
+        automatic_recall_cache_hits: { type: integer, minimum: 0 }
+        automatic_recall_cache_misses: { type: integer, minimum: 0 }
+        automatic_recall_total_latency_ms: { type: integer, minimum: 0 }
+        automatic_recall_last_latency_ms: { type: [integer, "null"], minimum: 0 }
+        intent_model_attempts: { type: integer, minimum: 0 }
+        intent_model_successes: { type: integer, minimum: 0 }
+        intent_model_fallbacks: { type: integer, minimum: 0 }
+        candidates_approved: { type: integer, minimum: 0 }
+        candidates_rejected: { type: integer, minimum: 0 }
+        imported_memories: { type: integer, minimum: 0 }
+        exported_memories: { type: integer, minimum: 0 }
+        maintenance_runs: { type: integer, minimum: 0 }
+        maintenance_sweeps: { type: integer, minimum: 0 }
+        maintenance_workspace_failures: { type: integer, minimum: 0 }
+        private_memory_migrations: { type: integer, minimum: 0 }
+        private_candidate_migrations: { type: integer, minimum: 0 }
+        last_query_at: { type: [string, "null"], format: date-time }
+        last_review_at: { type: [string, "null"], format: date-time }
+        last_maintenance_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, retrieval_queries, retrieval_failures, retrieval_total_latency_ms, retrieval_last_latency_ms, lexical_hits, ngram_hits, embedding_hits, embedding_fallbacks, index_rebuilds, background_reviews, background_candidates, background_commits, model_extraction_attempts, model_extraction_successes, model_extraction_fallbacks, model_proposed_creates, model_proposed_updates, model_proposed_supersedes, model_proposed_deletes, automatic_recall_queries, automatic_recall_hits, automatic_recall_failures, automatic_recall_cache_hits, automatic_recall_cache_misses, automatic_recall_total_latency_ms, automatic_recall_last_latency_ms, intent_model_attempts, intent_model_successes, intent_model_fallbacks, candidates_approved, candidates_rejected, imported_memories, exported_memories, maintenance_runs, maintenance_sweeps, maintenance_workspace_failures, private_memory_migrations, private_candidate_migrations, last_query_at, last_review_at, last_maintenance_at, updated_at]
+    MemoryReviewRecord:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        message_digest: { type: string }
+        status: { type: string, enum: [completed, skipped, failed] }
+        reviewed_message_ids: { type: array, items: { type: string } }
+        candidate_ids: { type: array, items: { type: string } }
+        committed_memory_ids: { type: array, items: { type: string } }
+        extractor: { type: string, enum: [deterministic, model] }
+        provider_connection_id: { type: [string, "null"] }
+        proposed_operations:
+          type: object
+          properties:
+            create: { type: integer, minimum: 0 }
+            update: { type: integer, minimum: 0 }
+            supersede: { type: integer, minimum: 0 }
+            delete: { type: integer, minimum: 0 }
+          required: [create, update, supersede, delete]
+        reason: { type: [string, "null"] }
+        reviewed_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, session_id, message_digest, status, reviewed_message_ids, candidate_ids, committed_memory_ids, extractor, provider_connection_id, proposed_operations, reason, reviewed_at]
+    ConversationIntentEvaluationResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        suite: { type: string }
+        total: { type: integer, minimum: 0 }
+        passed: { type: integer, minimum: 0 }
+        accuracy: { type: number, minimum: 0, maximum: 1 }
+        average_confidence: { type: number, minimum: 0, maximum: 1 }
+        per_intent:
+          type: array
+          items:
+            type: object
+            properties:
+              intent: { type: string, enum: [capture_goal, clarify, ask_status, add_constraint, ask_draft, ask_plan, ask_revise, ask_confirm, ask_run] }
+              total: { type: integer, minimum: 0 }
+              passed: { type: integer, minimum: 0 }
+              accuracy: { type: number, minimum: 0, maximum: 1 }
+            required: [intent, total, passed, accuracy]
+        cases:
+          type: array
+          items:
+            type: object
+            properties:
+              fixture_id: { type: string }
+              expected_intent: { type: string, enum: [capture_goal, clarify, ask_status, add_constraint, ask_draft, ask_plan, ask_revise, ask_confirm, ask_run] }
+              actual_intent: { type: string, enum: [capture_goal, clarify, ask_status, add_constraint, ask_draft, ask_plan, ask_revise, ask_confirm, ask_run] }
+              confidence: { type: number, minimum: 0, maximum: 1 }
+              passed: { type: boolean }
+            required: [fixture_id, expected_intent, actual_intent, confidence, passed]
+        memory_operations:
+          type: object
+          properties:
+            total: { type: integer, minimum: 0 }
+            passed: { type: integer, minimum: 0 }
+            accuracy: { type: number, minimum: 0, maximum: 1 }
+            per_operation:
+              type: array
+              items:
+                type: object
+                properties:
+                  operation: { type: string, enum: [create, update, supersede, delete, ignore] }
+                  total: { type: integer, minimum: 0 }
+                  passed: { type: integer, minimum: 0 }
+                  accuracy: { type: number, minimum: 0, maximum: 1 }
+                required: [operation, total, passed, accuracy]
+            cases:
+              type: array
+              items:
+                type: object
+                properties:
+                  fixture_id: { type: string }
+                  expected_operation: { type: string, enum: [create, update, supersede, delete, ignore] }
+                  actual_operation: { type: string, enum: [create, update, supersede, delete, ignore] }
+                  passed: { type: boolean }
+                required: [fixture_id, expected_operation, actual_operation, passed]
+          required: [total, passed, accuracy, per_operation, cases]
+        evaluated_at: { type: string, format: date-time }
+      required: [schema_version, suite, total, passed, accuracy, average_confidence, per_intent, cases, memory_operations, evaluated_at]
+    MemoryMaintenanceResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        expired_memories: { type: integer, minimum: 0 }
+        pruned_candidates: { type: integer, minimum: 0 }
+        retrieval_rebuilt: { type: boolean }
+        canonical_memories: { type: integer, minimum: 0 }
+        private_memories_migrated: { type: integer, minimum: 0 }
+        private_candidates_migrated: { type: integer, minimum: 0 }
+        duration_ms: { type: integer, minimum: 0 }
+        completed_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, expired_memories, pruned_candidates, retrieval_rebuilt, canonical_memories, private_memories_migrated, private_candidates_migrated, duration_ms, completed_at]
+    MemoryMaintenanceSweepResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_count: { type: integer, minimum: 0 }
+        maintained_workspaces: { type: integer, minimum: 0 }
+        skipped_workspaces: { type: integer, minimum: 0 }
+        failed_workspaces:
+          type: array
+          items:
+            type: object
+            properties:
+              workspace_id: { type: string }
+              error: { type: string }
+            required: [workspace_id, error]
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryMaintenanceResult" }
+        completed_at: { type: string, format: date-time }
+      required: [schema_version, workspace_count, maintained_workspaces, skipped_workspaces, failed_workspaces, results, completed_at]
+    MemoryImportRequest:
+      type: object
+      properties:
+        payload: {}
+        memories: { type: array, items: { type: object, additionalProperties: true } }
+        dry_run: { type: boolean, default: false }
+        strategy: { type: string, enum: [skip, merge, replace], default: skip }
+      additionalProperties: true
+    MemoryImportResult:
+      type: object
+      properties:
+        dry_run: { type: boolean }
+        strategy: { type: string, enum: [skip, merge, replace] }
+        total: { type: integer, minimum: 0 }
+        created: { type: integer, minimum: 0 }
+        updated: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        rejected: { type: integer, minimum: 0 }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer, minimum: 0 }
+              message: { type: string }
+            required: [index, message]
+        memory_ids: { type: array, items: { type: string } }
+      required: [dry_run, strategy, total, created, updated, skipped, rejected, errors, memory_ids]
+    SessionRecallContextMessage:
+      type: object
+      properties:
+        message_id: { type: string }
+        role: { type: string, enum: [user, orchestrator, system] }
+        kind: { type: string }
+        text: { type: string }
+        created_at: { type: string, format: date-time }
+        matched: { type: boolean }
+      required: [message_id, role, kind, text, created_at, matched]
+    SessionRecallHit:
+      type: object
+      properties:
+        session_id: { type: string }
+        session_title: { type: string }
+        matched_message_id: { type: string }
+        matched_at: { type: string, format: date-time }
+        score: { type: number }
+        context:
+          type: array
+          items: { $ref: "#/components/schemas/SessionRecallContextMessage" }
+      required: [session_id, session_title, matched_message_id, matched_at, score, context]
+    SessionRecallResult:
+      type: object
+      properties:
+        query: { type: string }
+        workspace_id: { type: string }
+        current_session_id: { type: string }
+        count: { type: integer, minimum: 0 }
+        index_rebuilt: { type: boolean }
+        hits:
+          type: array
+          items: { $ref: "#/components/schemas/SessionRecallHit" }
+      required: [query, workspace_id, current_session_id, count, index_rebuilt, hits]
+    SessionRecallRequest:
+      type: object
+      properties:
+        query: { type: string, minLength: 1, maxLength: 500 }
+        current_session_id: { type: string, minLength: 1 }
+        limit: { type: integer, minimum: 1, maximum: 10, default: 5 }
+        context_radius: { type: integer, minimum: 0, maximum: 4, default: 2 }
+      required: [query, current_session_id]
+      additionalProperties: false
+    MemoryRetrievalMode:
+      type: string
+      enum: [hybrid_lexical_ngram_v1, hybrid_lexical_embedding_v1]
+    MemoryRetrievalEvidence:
+      type: object
+      properties:
+        lexical_score: { type: number }
+        semantic_score: { type: number }
+        fused_score: { type: number }
+        lexical_rank: { type: [integer, "null"], minimum: 1 }
+        semantic_rank: { type: [integer, "null"], minimum: 1 }
+        matched_by:
+          type: array
+          items: { type: string, enum: [lexical, ngram, embedding] }
+      required: [lexical_score, semantic_score, fused_score, lexical_rank, semantic_rank, matched_by]
+    MemoryRetrievalHit:
+      type: object
+      properties:
+        memory: { $ref: "#/components/schemas/MemoryRecord" }
+        evidence: { $ref: "#/components/schemas/MemoryRetrievalEvidence" }
+      required: [memory, evidence]
+    MemoryRecommendation:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        session_id: { type: string }
+        memory_id: { type: string }
+        memory_version: { type: integer, minimum: 1 }
+        scope_kind: { $ref: "#/components/schemas/MemoryScopeKind" }
+        scope_id: { type: string }
+        kind: { $ref: "#/components/schemas/MemoryKind" }
+        sensitivity: { type: string, enum: [normal, private] }
+        title: { type: string }
+        summary: { type: string }
+        reason: { type: string }
+        score: { type: number, minimum: 0, maximum: 1 }
+        already_in_snapshot: { type: boolean }
+        applied_automatically: { type: boolean }
+        snapshot_version: { type: [integer, "null"], minimum: 1 }
+        updated_at: { type: string, format: date-time }
+      required: [schema_version, session_id, memory_id, memory_version, scope_kind, scope_id, kind, sensitivity, title, summary, reason, score, already_in_snapshot, applied_automatically, snapshot_version, updated_at]
+    MemoryRecommendationResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        session_id: { type: string }
+        count: { type: integer, minimum: 0 }
+        recommendations:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryRecommendation" }
+      required: [schema_version, session_id, count, recommendations]
+    MemoryRetrievalRequest:
+      type: object
+      properties:
+        query: { type: string, minLength: 1, maxLength: 500 }
+        scope_kind: { $ref: "#/components/schemas/MemoryScopeKind" }
+        scope_id: { type: string }
+        kind: { $ref: "#/components/schemas/MemoryKind" }
+        limit: { type: integer, minimum: 1, maximum: 20, default: 8 }
+      required: [query]
+      additionalProperties: false
+    MemoryRetrievalResult:
+      type: object
+      properties:
+        query: { type: string }
+        workspace_id: { type: string }
+        count: { type: integer, minimum: 0 }
+        retrieval: { $ref: "#/components/schemas/MemoryRetrievalMode" }
+        index_rebuilt: { type: boolean }
+        embedding_fallback: { type: boolean }
+        hits:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryRetrievalHit" }
+      required: [query, workspace_id, count, retrieval, index_rebuilt, embedding_fallback, hits]
+    MemoryEmbeddingProviderStatus:
+      type: object
+      properties:
+        provider_id: { type: string }
+        state: { type: string, enum: [disabled, ready, degraded] }
+        model: { type: [string, "null"] }
+        dimensions: { type: [integer, "null"], minimum: 1 }
+        fingerprint: { type: [string, "null"] }
+        cached_vectors: { type: integer, minimum: 0 }
+        last_error: { type: [string, "null"] }
+      required: [provider_id, state, model, dimensions, fingerprint, cached_vectors, last_error]
+    MemoryRetrievalIndexStatus:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        retrieval: { $ref: "#/components/schemas/MemoryRetrievalMode" }
+        workspace_id: { type: string }
+        journal_records: { type: integer, minimum: 0 }
+        indexed_records: { type: integer, minimum: 0 }
+        active_records: { type: integer, minimum: 0 }
+        database_bytes: { type: integer, minimum: 0 }
+        last_rebuilt_at: { type: [string, "null"], format: date-time }
+        embedding: { $ref: "#/components/schemas/MemoryEmbeddingProviderStatus" }
+      required: [schema_version, retrieval, workspace_id, journal_records, indexed_records, active_records, database_bytes, last_rebuilt_at, embedding]
+    MemoryKnowledgeProviderStatus:
+      type: object
+      properties:
+        provider_id: { type: string, enum: [disabled, mempalace] }
+        state: { type: string, enum: [disabled, ready, unavailable, degraded] }
+        read_only: { type: boolean }
+        palace_path: { type: [string, "null"] }
+        canonical_source: { type: string, const: my_mate_memory_records }
+        last_error: { type: [string, "null"] }
+      required: [provider_id, state, read_only, palace_path, canonical_source, last_error]
+    MemoryKnowledgeRelation:
+      type: object
+      properties:
+        subject: { type: string }
+        predicate: { type: string }
+        object: { type: string }
+        valid_from: { type: [string, "null"], format: date-time }
+        valid_until: { type: [string, "null"], format: date-time }
+        memory_id: { type: [string, "null"] }
+      required: [subject, predicate, object, valid_from, valid_until, memory_id]
+    MemoryKnowledgeQueryRequest:
+      type: object
+      properties:
+        entity: { type: string, minLength: 1, maxLength: 500 }
+        as_of: { type: [string, "null"], format: date-time }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      required: [entity]
+      additionalProperties: false
+    MemoryKnowledgeQueryResult:
+      type: object
+      properties:
+        provider: { $ref: "#/components/schemas/MemoryKnowledgeProviderStatus" }
+        entity: { type: string }
+        count: { type: integer, minimum: 0 }
+        relations:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryKnowledgeRelation" }
+      required: [provider, entity, count, relations]
+    TaskCheckpointStatus:
+      type: string
+      enum: [in_progress, resumable, waiting_human, completed, failed, superseded]
+    TaskCheckpointReason:
+      type: string
+      enum: [turn_started, manual_resume, automatic_resume, context_compacted, continuation_limit, tool_round_limit, provider_interrupted, client_disconnected, server_restart, waiting_approval, waiting_input, turn_completed, resume_limit, new_user_turn, unrecoverable_error]
+    TaskCheckpointTransition:
+      type: object
+      properties:
+        version: { type: integer, minimum: 1 }
+        status: { $ref: "#/components/schemas/TaskCheckpointStatus" }
+        reason: { $ref: "#/components/schemas/TaskCheckpointReason" }
+        detail: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+      required: [version, status, reason, detail, created_at]
+    TaskCheckpointProviderState:
+      type: object
+      properties:
+        finish_reason: { type: [string, "null"], enum: [stop, length, tool_calls, content_filter, unknown, null] }
+        continuation_rounds: { type: integer, minimum: 0 }
+        continuation_limit_reached: { type: boolean }
+        context_compacted: { type: boolean }
+        compaction_count: { type: integer, minimum: 0 }
+        tool_rounds: { type: integer, minimum: 0 }
+        tool_round_limit_reached: { type: boolean }
+        action_ids:
+          type: array
+          items: { type: string }
+      required: [finish_reason, continuation_rounds, continuation_limit_reached, context_compacted, compaction_count, tool_rounds, tool_round_limit_reached, action_ids]
+    TaskCheckpoint:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        checkpoint_id: { type: string }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        autonomy_mode: { type: string, enum: [review_first, assisted, autopilot] }
+        status: { $ref: "#/components/schemas/TaskCheckpointStatus" }
+        reason: { $ref: "#/components/schemas/TaskCheckpointReason" }
+        version: { type: integer, minimum: 1 }
+        goal: { type: [string, "null"] }
+        source_user_message_id: { type: string }
+        source_assistant_message_id: { type: [string, "null"] }
+        resume_from_checkpoint_id: { type: [string, "null"] }
+        resume_attempts: { type: integer, minimum: 0 }
+        max_resume_attempts: { type: integer, minimum: 1 }
+        auto_resume_eligible: { type: boolean }
+        progress_summary: { type: [string, "null"] }
+        context_summary: { type: [string, "null"] }
+        next_action: { type: [string, "null"] }
+        provider_state:
+          oneOf:
+            - $ref: "#/components/schemas/TaskCheckpointProviderState"
+            - type: "null"
+        last_error_code: { type: [string, "null"] }
+        last_error_message: { type: [string, "null"] }
+        transitions:
+          type: array
+          items: { $ref: "#/components/schemas/TaskCheckpointTransition" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+      required: [schema_version, checkpoint_id, workspace_id, session_id, autonomy_mode, status, reason, version, goal, source_user_message_id, source_assistant_message_id, resume_from_checkpoint_id, resume_attempts, max_resume_attempts, auto_resume_eligible, progress_summary, context_summary, next_action, provider_state, last_error_code, last_error_message, transitions, created_at, updated_at, completed_at]
+    TaskCheckpointListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/TaskCheckpoint" }
+      required: [items]
+    ResumeTaskCheckpointRequest:
+      type: object
+      properties:
+        provider_connection_id: { type: string }
+        model: { type: string }
+      additionalProperties: false
+    ResumeTaskCheckpointResponse:
+      type: object
+      properties:
+        checkpoint: { $ref: "#/components/schemas/TaskCheckpoint" }
+        assistant_message: { type: object, additionalProperties: true }
+        session: { type: object, additionalProperties: true }
+      required: [checkpoint, assistant_message, session]
     AuthenticatedPrincipal:
       type: object
       properties:
@@ -681,6 +1480,14 @@ components:
           type: string
         name:
           type: string
+        runtime_agent_ref:
+          type: string
+        agent_runtime:
+          type: string
+        harness_profile:
+          type: [string, "null"]
+        provider_connection_id:
+          type: [string, "null"]
         openclaw_agent_id:
           type: string
         default_skills:
@@ -705,6 +1512,198 @@ components:
         metadata:
           type: object
       required: [profile_id, name, openclaw_agent_id, default_skills, allowed_tools, status]
+    ProviderConnection:
+      type: object
+      properties:
+        connection_id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        agent_runtime:
+          type: string
+          enum: [codex, claude-sdk, glm, kimi, openclaw]
+        provider: { type: string }
+        protocol:
+          type: string
+          enum: [codex-appserver, anthropic-messages, openai-compatible, openclaw-bridge]
+        base_url: { type: [string, "null"] }
+        models:
+          type: array
+          items: { type: string }
+        default_model: { type: [string, "null"] }
+        max_input_tokens: { type: integer, minimum: 4096, maximum: 1048576, default: 524288 }
+        max_output_tokens: { type: integer, minimum: 1024, maximum: 131072, default: 65536 }
+        context_compression_enabled: { type: boolean, default: true }
+        context_compression_threshold_percent: { type: integer, minimum: 50, maximum: 95, default: 75 }
+        max_continuation_rounds: { type: integer, minimum: 0, maximum: 32, default: 8 }
+        credential_source:
+          type: string
+          enum: [managed, environment]
+        credential_env: { type: string }
+        credential_configured: { type: boolean }
+        verification:
+          type: [object, "null"]
+          properties:
+            status:
+              type: string
+              enum: [verified, failed]
+            tested_at: { type: string, format: date-time }
+            detail: { type: string }
+            duration_ms: { type: number, minimum: 0 }
+            model: { type: [string, "null"] }
+          required: [status, tested_at, detail, duration_ms, model]
+        status:
+          type: string
+          enum: [active, disabled]
+        metadata: { type: object }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [connection_id, workspace_id, name, agent_runtime, provider, protocol, base_url, models, default_model, max_input_tokens, max_output_tokens, context_compression_enabled, context_compression_threshold_percent, max_continuation_rounds, credential_source, credential_env, credential_configured, verification, status, metadata, created_at, updated_at]
+    UpsertProviderConnectionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        connection_id: { type: string }
+        name: { type: string }
+        agent_runtime:
+          type: string
+          enum: [codex, claude-sdk, glm, kimi, openclaw]
+        provider: { type: string }
+        protocol:
+          type: string
+          enum: [codex-appserver, anthropic-messages, openai-compatible, openclaw-bridge]
+        base_url: { type: [string, "null"] }
+        models:
+          type: array
+          items: { type: string }
+        default_model: { type: [string, "null"] }
+        max_input_tokens: { type: integer, minimum: 4096, maximum: 1048576, default: 524288 }
+        max_output_tokens: { type: integer, minimum: 1024, maximum: 131072, default: 65536 }
+        context_compression_enabled: { type: boolean, default: true }
+        context_compression_threshold_percent: { type: integer, minimum: 50, maximum: 95, default: 75 }
+        max_continuation_rounds: { type: integer, minimum: 0, maximum: 32, default: 8 }
+        credential_source:
+          type: string
+          enum: [managed, environment]
+        credential_env: { type: string }
+        api_key:
+          type: string
+          writeOnly: true
+        status:
+          type: string
+          enum: [active, disabled]
+        metadata: { type: object }
+      required: [name, agent_runtime]
+    McpConnectorPresetSecret:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        label: { type: string }
+        description: { type: string }
+        required: { type: boolean }
+        placeholder: { type: string }
+        help_url: { type: [string, "null"], format: uri }
+      required: [name, label, description, required, placeholder, help_url]
+    McpConnectorPreset:
+      type: object
+      additionalProperties: false
+      properties:
+        schema_version: { type: integer, const: 1 }
+        preset_id: { type: string }
+        name: { type: string }
+        provider: { type: string }
+        description: { type: string }
+        documentation_url: { type: string, format: uri }
+        transport: { type: string, enum: [stdio, streamable-http] }
+        server: { $ref: "#/components/schemas/UpsertMcpServerRequest" }
+        secrets:
+          type: array
+          items: { $ref: "#/components/schemas/McpConnectorPresetSecret" }
+      required: [schema_version, preset_id, name, provider, description, documentation_url, transport, server, secrets]
+    McpDiscoveredTool:
+      type: object
+      properties:
+        capability_id: { type: string }
+        tool_name: { type: string }
+        description: { type: string }
+        risk_level: { type: string, enum: [T0, T1, T2, T3] }
+        read_only: { type: boolean }
+        destructive: { type: boolean }
+      required: [capability_id, tool_name, description, risk_level, read_only, destructive]
+    McpServer:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        server_id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        transport: { type: string, enum: [stdio, streamable-http] }
+        command: { type: [string, "null"] }
+        args: { type: array, items: { type: string } }
+        url: { type: [string, "null"] }
+        headers: { type: object, additionalProperties: { type: string } }
+        environment: { type: object, additionalProperties: { type: string } }
+        enabled: { type: boolean }
+        status: { type: string, enum: [disabled, disconnected, connecting, ready, error] }
+        last_error: { type: [string, "null"] }
+        connect_timeout_ms: { type: integer, minimum: 1000, maximum: 120000 }
+        tool_timeout_ms: { type: integer, minimum: 1000, maximum: 300000 }
+        tool_filter:
+          type: object
+          properties:
+            include: { type: array, items: { type: string } }
+            exclude: { type: array, items: { type: string } }
+          required: [include, exclude]
+        default_risk_level: { type: [string, "null"], enum: [T0, T1, T2, T3, null] }
+        tool_risk_overrides:
+          type: object
+          additionalProperties: { type: string, enum: [T0, T1, T2, T3] }
+        discovered_tools:
+          type: array
+          items: { $ref: "#/components/schemas/McpDiscoveredTool" }
+        server_version:
+          type: [object, "null"]
+          properties:
+            name: { type: string }
+            version: { type: string }
+          required: [name, version]
+        secret_names: { type: array, items: { type: string } }
+        secret_configured: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        last_connected_at: { type: [string, "null"], format: date-time }
+      required: [schema_version, server_id, workspace_id, name, description, transport, command, args, url, headers, environment, enabled, status, last_error, connect_timeout_ms, tool_timeout_ms, tool_filter, default_risk_level, tool_risk_overrides, discovered_tools, server_version, secret_names, secret_configured, created_at, updated_at, last_connected_at]
+    UpsertMcpServerRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        server_id: { type: string }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        transport: { type: string, enum: [stdio, streamable-http] }
+        command: { type: [string, "null"] }
+        args: { type: array, items: { type: string } }
+        url: { type: [string, "null"] }
+        headers: { type: object, additionalProperties: { type: string } }
+        environment: { type: object, additionalProperties: { type: string } }
+        enabled: { type: boolean }
+        connect_timeout_ms: { type: integer, minimum: 1000, maximum: 120000 }
+        tool_timeout_ms: { type: integer, minimum: 1000, maximum: 300000 }
+        tool_filter:
+          type: object
+          properties:
+            include: { type: array, items: { type: string } }
+            exclude: { type: array, items: { type: string } }
+        default_risk_level: { type: [string, "null"], enum: [T0, T1, T2, T3, null] }
+        tool_risk_overrides:
+          type: object
+          additionalProperties: { type: string, enum: [T0, T1, T2, T3] }
+        secrets:
+          type: object
+          writeOnly: true
+          additionalProperties: { type: string }
+      required: [name, transport]
     AgentHostingSummary:
       type: object
       properties:
@@ -904,6 +1903,7 @@ components:
         - created_at
     DoctorRequest:
       type: object
+      additionalProperties: false
       properties:
         mode:
           type: string
@@ -911,10 +1911,12 @@ components:
           default: quick
         runtime:
           type: string
-          enum: [local, docker-worker, openclaw, codex, claude-sdk, kimi]
+          enum: [local, docker-worker, openclaw, codex, claude-sdk, kimi, glm]
         model_probe:
           type: boolean
           default: false
+        provider_connection_id:
+          type: string
     DoctorCheck:
       type: object
       properties:
@@ -1033,6 +2035,66 @@ components:
         requested_at: { type: string, format: date-time }
         resolved_at: { type: [string, "null"], format: date-time }
       required: [approval_id, run_id, node_run_id, kind, status, summary, requested_at, resolved_at]
+    RuntimeWorkspaceChange:
+      type: object
+      properties:
+        relative_path: { type: string }
+        kind:
+          type: string
+          enum: [added, modified, deleted]
+        before_sha256: { type: [string, "null"] }
+        after_sha256: { type: [string, "null"] }
+        before_size_bytes: { type: [integer, "null"], minimum: 0 }
+        after_size_bytes: { type: [integer, "null"], minimum: 0 }
+        mode: { type: [integer, "null"] }
+        diff:
+          $ref: "#/components/schemas/RuntimeWorkspaceTextDiff"
+      required: [relative_path, kind, before_sha256, after_sha256, before_size_bytes, after_size_bytes, mode, diff]
+    RuntimeWorkspaceDiffLine:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [context, added, deleted, skip]
+        text: { type: string }
+        old_line: { type: [integer, "null"], minimum: 1 }
+        new_line: { type: [integer, "null"], minimum: 1 }
+      required: [kind, text, old_line, new_line]
+    RuntimeWorkspaceTextDiff:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [available, binary, too_large]
+        truncated: { type: boolean }
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeWorkspaceDiffLine"
+      required: [status, truncated, lines]
+    RuntimeWorkspaceChangeSet:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        change_set_id: { type: string }
+        run_id: { type: string }
+        node_run_id: { type: string }
+        job_id: { type: string }
+        source_root: { type: string }
+        sandbox_root: { type: string }
+        status:
+          type: string
+          enum: [pending, applied, rejected, blocked, apply_failed]
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeWorkspaceChange"
+        blocked_reason: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        resolved_at: { type: [string, "null"], format: date-time }
+        resolved_by: { type: [string, "null"] }
+        resolution_comment: { type: [string, "null"] }
+      required: [schema_version, change_set_id, run_id, node_run_id, job_id, source_root, sandbox_root, status, changes, blocked_reason, created_at, resolved_at, resolved_by, resolution_comment]
     HumanInputRecord:
       type: object
       properties:
@@ -2169,6 +3231,13 @@ components:
         created_at:
           type: string
           format: date-time
+        publication_status:
+          type: string
+          enum: [published, unpublished, failed]
+        published_relative_path:
+          type: [string, "null"]
+        publication_error:
+          type: [string, "null"]
       required:
         - artifact_id
         - run_id
@@ -2993,11 +4062,428 @@ components:
         - artifacts
         - artifact_count
         - next_actions
+    SupervisionAlert:
+      type: object
+      properties:
+        alert_id: { type: string }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        run_id: { type: [string, "null"] }
+        category:
+          type: string
+          enum: [human_decision, runtime_failure, runtime_stalled, quality_gap, configuration, autopilot, memory_recommendation]
+        severity: { type: string, enum: [info, warning, critical] }
+        status: { type: string, enum: [open, resolved] }
+        fingerprint: { type: string }
+        title: { type: string }
+        detail: { type: string }
+        recommended_action: { type: string }
+        recommended_action_label: { type: string }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        resolved_at: { type: [string, "null"], format: date-time }
+        occurrence_count: { type: integer, minimum: 1 }
+        metadata: { type: object }
+      required: [alert_id, workspace_id, session_id, run_id, category, severity, status, fingerprint, title, detail, recommended_action, recommended_action_label, first_seen_at, last_seen_at, resolved_at, occurrence_count, metadata]
+    SupervisionScanResult:
+      type: object
+      properties:
+        scanned_sessions: { type: integer, minimum: 0 }
+        open_alerts:
+          type: array
+          items: { $ref: "#/components/schemas/SupervisionAlert" }
+        resolved_alerts:
+          type: array
+          items: { type: string }
+      required: [scanned_sessions, open_alerts, resolved_alerts]
+    AutopilotController:
+      type: object
+      properties:
+        session_id: { type: string }
+        workspace_id: { type: string }
+        mode: { type: string, enum: [review_first, assisted, autopilot] }
+        status: { type: string, enum: [disabled, ready, running, waiting_human, blocked, paused, completed, failed] }
+        phase: { type: string }
+        iteration: { type: integer, minimum: 0 }
+        max_iterations: { type: integer, minimum: 1 }
+        max_runtime_minutes: { type: integer, minimum: 1 }
+        started_at: { type: [string, "null"], format: date-time }
+        paused_at: { type: [string, "null"], format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+        last_tick_at: { type: [string, "null"], format: date-time }
+        next_tick_at: { type: [string, "null"], format: date-time }
+        last_action: { type: [string, "null"] }
+        last_detail: { type: [string, "null"] }
+        handoff_reason: { type: [string, "null"] }
+        pending_gate:
+          type: [string, "null"]
+          enum: [start_confirmation, workspace_authorization, runtime_approval, human_input, change_review, null]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        metadata: { type: object }
+      required: [session_id, workspace_id, mode, status, phase, iteration, max_iterations, max_runtime_minutes, started_at, paused_at, completed_at, last_tick_at, next_tick_at, last_action, last_detail, handoff_reason, created_at, updated_at, metadata]
+    PublicWorkspaceBinding:
+      type: object
+      properties:
+        binding_id: { type: string }
+        session_id: { type: string }
+        display_name: { type: string }
+        access: { type: string, enum: [snapshot-read, sandbox-write] }
+        scope: { type: string, enum: [run, session, persistent] }
+        status: { type: string, enum: [active, expired, revoked, invalid] }
+        expires_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [binding_id, session_id, display_name, access, scope, status, expires_at, updated_at]
+    WorkspaceBindingResponse:
+      type: object
+      properties:
+        binding:
+          anyOf:
+            - $ref: "#/components/schemas/PublicWorkspaceBinding"
+            - type: "null"
+      required: [binding]
+    LocalProject:
+      type: object
+      properties:
+        project_id: { type: string }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        status: { type: string, enum: [active, archived, unavailable] }
+        default_output_relative_path: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: [string, "null"], format: date-time }
+      required: [project_id, name, description, status, default_output_relative_path, created_at, updated_at, archived_at]
+    LocalProjectListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/LocalProject" }
+      required: [items]
+    TaskWorkspace:
+      type: object
+      properties:
+        task_workspace_id: { type: string }
+        session_id: { type: string }
+        project: { $ref: "#/components/schemas/LocalProject" }
+        binding_id: { type: string }
+        output_relative_path: { type: string }
+        status: { type: string, enum: [active, archived] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: [string, "null"], format: date-time }
+      required: [task_workspace_id, session_id, project, binding_id, output_relative_path, status, created_at, updated_at, archived_at]
+    TaskWorkspaceResponse:
+      type: object
+      properties:
+        task_workspace:
+          anyOf:
+            - $ref: "#/components/schemas/TaskWorkspace"
+            - type: "null"
+      required: [task_workspace]
+    UpdateAutopilotRequest:
+      type: object
+      properties:
+        mode: { type: string, enum: [review_first, assisted, autopilot] }
+        max_iterations: { type: integer, minimum: 1, maximum: 100 }
+        max_runtime_minutes: { type: integer, minimum: 1, maximum: 1440 }
+      required: [mode]
+    MissionUiBlock:
+      type: object
+      properties:
+        block_id: { type: string }
+        component: { type: string, enum: [task_guidance, decision_queue, progress_summary, result_gallery, quality_summary, repair_recommendation, conversation, technical_details] }
+        priority: { type: integer }
+        visibility: { type: string, enum: [primary, secondary, advanced] }
+        title: { type: string }
+        data: { type: object }
+      required: [block_id, component, priority, visibility, title, data]
+    MissionUiPlan:
+      type: object
+      properties:
+        version: { type: integer, const: 1 }
+        phase: { type: string }
+        generated_at: { type: string, format: date-time }
+        primary_action: { type: [string, "null"] }
+        blocks:
+          type: array
+          items: { $ref: "#/components/schemas/MissionUiBlock" }
+        fallback_component: { type: string, const: task_guidance }
+      required: [version, phase, generated_at, primary_action, blocks, fallback_component]
 
 security:
   - bearerAuth: []
 
 paths:
+  /api/supervision/alerts:
+    get:
+      operationId: listSupervisionAlerts
+      tags: [Supervision]
+      parameters:
+        - in: query
+          name: session_id
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string, enum: [open, resolved] }
+      responses:
+        "200":
+          description: Persistent proactive supervision alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/SupervisionAlert" }
+                required: [items]
+  /api/supervision/scan:
+    post:
+      operationId: scanProactiveSupervision
+      tags: [Supervision]
+      responses:
+        "200":
+          description: Supervision scan result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisionScanResult" }
+  /api/supervision/alerts/{alertId}/resolve:
+    post:
+      operationId: resolveSupervisionAlert
+      tags: [Supervision]
+      parameters:
+        - in: path
+          name: alertId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Resolved alert
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisionAlert" }
+        "404":
+          description: Alert not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/sessions/{sessionId}/artifacts/{artifactId}:
+    get:
+      operationId: getSessionGeneratedArtifact
+      tags: [Sessions]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: artifactId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Generated artifact metadata, preview content, and version lineage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifact: { $ref: "#/components/schemas/SessionGeneratedArtifact" }
+                  content: { type: string }
+                  preview_kind: { type: string, enum: [markdown, text] }
+                  previous_artifact_id: { type: [string, "null"] }
+                  versions:
+                    type: array
+                    items: { $ref: "#/components/schemas/SessionGeneratedArtifact" }
+                required: [artifact, content, preview_kind, previous_artifact_id, versions]
+        "404":
+          description: Generated artifact or Session not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/sessions/{sessionId}/artifacts/{artifactId}/compare:
+    get:
+      operationId: compareSessionGeneratedArtifact
+      tags: [Sessions]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: artifactId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: base_artifact_id
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Line-level comparison between two versions of a generated artifact
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionGeneratedArtifactComparison" }
+        "404":
+          description: Generated artifact, Session, or previous version not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/sessions/{sessionId}/artifacts/{artifactId}/download:
+    get:
+      operationId: downloadSessionGeneratedArtifact
+      tags: [Sessions]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: artifactId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: UTF-8 content of a generated Session artifact
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            text/plain:
+              schema: { type: string }
+            text/markdown:
+              schema: { type: string }
+        "404":
+          description: Generated artifact or Session not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/sessions/{sessionId}/workspace-binding:
+    get:
+      operationId: getSessionWorkspaceBinding
+      tags: [Sessions]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Public state of the active Desktop Workspace Binding
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceBindingResponse" }
+  /api/sessions/{sessionId}/task-workspace:
+    get:
+      operationId: getSessionTaskWorkspace
+      tags: [Sessions]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Durable Project and output-directory binding for the Task
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskWorkspaceResponse" }
+  /api/projects:
+    get:
+      operationId: listLocalProjects
+      tags: [Sessions]
+      parameters:
+        - in: query
+          name: visibility
+          required: false
+          schema: { type: string, enum: [active, all] }
+      responses:
+        "200":
+          description: Local Projects registered by an authenticated Desktop Host
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LocalProjectListResponse" }
+  /api/sessions/{sessionId}/autopilot:
+    get:
+      operationId: getSessionAutopilot
+      tags: [Autopilot]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Durable Session Autopilot controller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutopilotController" }
+    put:
+      operationId: updateSessionAutopilot
+      tags: [Autopilot]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateAutopilotRequest" }
+      responses:
+        "200":
+          description: Updated Session Autopilot controller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutopilotController" }
+  /api/sessions/{sessionId}/autopilot/tick:
+    post:
+      operationId: tickSessionAutopilot
+      tags: [Autopilot]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Advanced Session Autopilot controller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutopilotController" }
+  /api/sessions/{sessionId}/autopilot/pause:
+    post:
+      operationId: pauseSessionAutopilot
+      tags: [Autopilot]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Paused Session Autopilot controller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutopilotController" }
+  /api/sessions/{sessionId}/autopilot/resume:
+    post:
+      operationId: resumeSessionAutopilot
+      tags: [Autopilot]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Resumed Session Autopilot controller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutopilotController" }
   /api/dashboard/summary:
     get:
       tags: [Observability]
@@ -3221,6 +4707,222 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PublishTemplateResponse"
+
+  /api/registry/provider-connections:
+    get:
+      tags: [Agents]
+      summary: List Provider Connections without secret values
+      responses:
+        "200":
+          description: Provider Connections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProviderConnection"
+                required: [items]
+    post:
+      tags: [Agents]
+      summary: Upsert a multi-model Provider Connection with a managed or environment credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertProviderConnectionRequest"
+      responses:
+        "201":
+          description: Provider Connection saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderConnection"
+
+  /api/registry/provider-connections/{connectionId}:
+    get:
+      tags: [Agents]
+      summary: Get a Provider Connection
+      parameters:
+        - in: path
+          name: connectionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Provider Connection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderConnection"
+
+  /api/registry/provider-connections/{connectionId}/test:
+    post:
+      tags: [Agents]
+      summary: Send a minimal live request to verify a Provider Connection
+      parameters:
+        - in: path
+          name: connectionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Provider Connection test completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connection:
+                    $ref: "#/components/schemas/ProviderConnection"
+                  verification:
+                    type: object
+                    properties:
+                      status: { type: string, enum: [verified, failed] }
+                      tested_at: { type: string, format: date-time }
+                      detail: { type: string }
+                      duration_ms: { type: number, minimum: 0 }
+                      model: { type: [string, "null"] }
+                    required: [status, tested_at, detail, duration_ms, model]
+                  report:
+                    $ref: "#/components/schemas/DoctorReport"
+                required: [connection, verification, report]
+
+  /api/registry/provider-connections/{connectionId}/disable:
+    post:
+      tags: [Agents]
+      summary: Disable a Provider Connection
+      parameters:
+        - in: path
+          name: connectionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Disabled Provider Connection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderConnection"
+
+  /api/registry/mcp-connector-presets:
+    get:
+      tags: [Agents]
+      summary: List built-in MCP connector presets without secret values
+      responses:
+        "200":
+          description: MCP connector presets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/McpConnectorPreset" }
+                required: [items]
+
+  /api/registry/mcp-servers:
+    get:
+      tags: [Agents]
+      summary: List Workspace-scoped MCP servers without secret values
+      responses:
+        "200":
+          description: MCP servers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/McpServer" }
+                required: [items]
+    post:
+      tags: [Agents]
+      summary: Upsert a public Streamable HTTP MCP server
+      description: Stdio servers require the Desktop-only authenticated configuration route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpsertMcpServerRequest" }
+      responses:
+        "201":
+          description: MCP server saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpServer" }
+        "403":
+          description: Desktop authorization is required for stdio
+
+  /api/registry/mcp-servers/reload:
+    post:
+      tags: [Agents]
+      summary: Reload MCP servers in the selected Workspace
+      responses:
+        "200":
+          description: Reloaded MCP servers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/McpServer" }
+                required: [items]
+
+  /api/registry/mcp-servers/{serverId}/test:
+    post:
+      tags: [Agents]
+      summary: Connect and rediscover a Streamable HTTP MCP server
+      parameters:
+        - in: path
+          name: serverId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: MCP connection tested
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpServer" }
+
+  /api/registry/mcp-servers/{serverId}/enable:
+    post:
+      tags: [Agents]
+      summary: Enable a Streamable HTTP MCP server
+      parameters:
+        - in: path
+          name: serverId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: MCP server enabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpServer" }
+
+  /api/registry/mcp-servers/{serverId}/disable:
+    post:
+      tags: [Agents]
+      summary: Disable an MCP server and unregister its tools
+      parameters:
+        - in: path
+          name: serverId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: MCP server disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpServer" }
 
   /api/registry/agent-profiles:
     get:
@@ -3927,6 +5629,656 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/GovernanceChangeRecord"
                   - $ref: "#/components/schemas/Error"
+
+  /api/sessions/{sessionId}/memory-snapshot:
+    get:
+      operationId: getSessionCoreMemorySnapshot
+      tags: [Memory]
+      summary: Get or lazily create the frozen Core Memory snapshot for a Session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Frozen Core Memory snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CoreMemorySnapshot"
+        "404":
+          description: Session not found in the selected Workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/sessions/{sessionId}/memory-recommendations:
+    get:
+      operationId: listSessionMemoryRecommendations
+      tags: [Memory]
+      summary: List explainable relevant Memory recommendations for the current Session goal
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 8, default: 5 }
+      responses:
+        "200":
+          description: Scoped and explainable Memory recommendations
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryRecommendationResult" }
+        "404":
+          description: Session not found in the selected Workspace
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/sessions/{sessionId}/memory-review:
+    post:
+      operationId: reviewSessionMemory
+      tags: [Memory]
+      summary: Run idempotent background durable-memory extraction for the latest user turn
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Background review result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryReviewRecord" }
+
+  /api/memory-settings:
+    get:
+      operationId: getMemorySettings
+      tags: [Memory]
+      summary: Get Workspace memory settings
+      responses:
+        "200":
+          description: Memory settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemorySettings" }
+    put:
+      operationId: updateMemorySettings
+      tags: [Memory]
+      summary: Update Workspace memory settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Updated memory settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemorySettings" }
+
+  /api/memory-observability:
+    get:
+      operationId: getMemoryObservability
+      tags: [Memory]
+      summary: Get persisted memory subsystem counters and latency
+      responses:
+        "200":
+          description: Memory observability
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryObservability" }
+  /api/memory-intelligence/evaluation:
+    get:
+      operationId: evaluateMemoryIntelligence
+      tags: [Memory]
+      summary: Run the built-in deterministic Conversation intent quality suite
+      responses:
+        "200":
+          description: Intent routing quality metrics and fixture results
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationIntentEvaluationResult" }
+
+  /api/memory-maintenance:
+    get:
+      operationId: getMemoryMaintenance
+      tags: [Memory]
+      summary: Get the latest memory maintenance result
+      responses:
+        "200":
+          description: Latest maintenance result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  last_run:
+                    oneOf:
+                      - $ref: "#/components/schemas/MemoryMaintenanceResult"
+                      - type: "null"
+                required: [last_run]
+    post:
+      operationId: runMemoryMaintenance
+      tags: [Memory]
+      summary: Expire canonical memories and compact derived data under retention policy
+      responses:
+        "200":
+          description: Maintenance result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryMaintenanceResult" }
+
+  /api/memory-maintenance/sweep:
+    post:
+      operationId: runMemoryMaintenanceSweep
+      tags: [Memory]
+      summary: Run due memory maintenance independently across all discovered Workspaces
+      responses:
+        "200":
+          description: Multi-Workspace maintenance sweep result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryMaintenanceSweepResult" }
+
+  /api/session-recall/search:
+    post:
+      operationId: searchHistoricalSessions
+      tags: [Memory]
+      summary: Search exact evidence in earlier Sessions from the selected Workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionRecallRequest"
+      responses:
+        "200":
+          description: Anchored historical Session matches
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRecallResult"
+        "503":
+          description: The rebuildable Session Recall index is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memory-retrieval/search:
+    post:
+      operationId: searchLongTermMemory
+      tags: [Memory]
+      summary: Search visible canonical memories with rebuildable hybrid retrieval
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryRetrievalRequest" }
+      responses:
+        "200":
+          description: Hybrid memory results with retrieval evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryRetrievalResult" }
+        "503":
+          description: Rebuildable memory retrieval index is unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/memory-retrieval/status:
+    get:
+      operationId: getMemoryRetrievalStatus
+      tags: [Memory]
+      summary: Inspect derived memory index and embedding provider status
+      responses:
+        "200":
+          description: Memory retrieval status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryRetrievalIndexStatus" }
+
+  /api/memory-retrieval/rebuild:
+    post:
+      operationId: rebuildMemoryRetrieval
+      tags: [Memory]
+      summary: Rebuild all derived memory retrieval data from canonical Memory records
+      responses:
+        "200":
+          description: Rebuild result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records: { type: integer, minimum: 0 }
+                  status: { $ref: "#/components/schemas/MemoryRetrievalIndexStatus" }
+                required: [records, status]
+
+  /api/memory-knowledge/status:
+    get:
+      operationId: getMemoryKnowledgeProviderStatus
+      tags: [Memory]
+      summary: Inspect the optional MemPalace knowledge graph provider
+      responses:
+        "200":
+          description: Knowledge provider status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryKnowledgeProviderStatus" }
+
+  /api/memory-knowledge/query:
+    post:
+      operationId: queryMemoryKnowledgeGraph
+      tags: [Memory]
+      summary: Query Workspace-filtered derived relations from the optional provider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryKnowledgeQueryRequest" }
+      responses:
+        "200":
+          description: Provenance-filtered knowledge graph relations
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryKnowledgeQueryResult" }
+
+  /api/memory-knowledge/rebuild:
+    post:
+      operationId: rebuildMemoryKnowledgeGraph
+      tags: [Memory]
+      summary: Re-sync eligible canonical Memory records into the optional provider
+      responses:
+        "200":
+          description: Optional provider rebuild summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/sessions/{sessionId}/checkpoints:
+    get:
+      operationId: listTaskCheckpoints
+      tags: [Memory]
+      summary: List durable Task checkpoints for a Session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Task checkpoint history
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskCheckpointListResponse" }
+
+  /api/sessions/{sessionId}/checkpoints/latest:
+    get:
+      operationId: getLatestTaskCheckpoint
+      tags: [Memory]
+      summary: Get the latest durable Task checkpoint for a Session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Latest Task checkpoint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskCheckpoint" }
+        "404":
+          description: Session or checkpoint not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/sessions/{sessionId}/checkpoints/{checkpointId}/resume:
+    post:
+      operationId: resumeTaskCheckpoint
+      tags: [Memory]
+      summary: Explicitly resume the latest resumable Task checkpoint
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: checkpointId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResumeTaskCheckpointRequest" }
+      responses:
+        "200":
+          description: Checkpoint resumed and Conversation advanced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResumeTaskCheckpointResponse" }
+        "409":
+          description: Checkpoint is not the latest resumable state or its budget is exhausted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/memories:
+    get:
+      operationId: listMemories
+      tags: [Memory]
+      summary: List durable memories in the selected Workspace
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, superseded, expired, deleted, all]
+        - in: query
+          name: scope_kind
+          schema:
+            $ref: "#/components/schemas/MemoryScopeKind"
+        - in: query
+          name: scope_id
+          schema: { type: string }
+        - in: query
+          name: kind
+          schema:
+            $ref: "#/components/schemas/MemoryKind"
+        - in: query
+          name: query
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Workspace memory list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemoryRecord"
+                required: [items]
+    post:
+      operationId: createMemory
+      tags: [Memory]
+      summary: Store an explicit durable memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMemoryRequest"
+      responses:
+        "201":
+          description: Memory created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryRecord"
+        "422":
+          description: Secret or credential content was rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/{memoryId}:
+    parameters:
+      - in: path
+        name: memoryId
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getMemory
+      tags: [Memory]
+      summary: Read one durable memory
+      responses:
+        "200":
+          description: Memory record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryRecord"
+        "404":
+          description: Memory not found in this Workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateMemory
+      tags: [Memory]
+      summary: Update a durable memory and increment its version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemoryRequest"
+      responses:
+        "200":
+          description: Updated memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryRecord"
+        "409":
+          description: Deleted memory cannot be updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteMemory
+      tags: [Memory]
+      summary: Soft-delete a durable memory
+      responses:
+        "200":
+          description: Deleted memory record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryRecord"
+
+  /api/memories/{memoryId}/restore:
+    post:
+      operationId: restoreMemory
+      tags: [Memory]
+      summary: Restore a soft-deleted or expired canonical memory
+      parameters:
+        - in: path
+          name: memoryId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Restored memory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryRecord" }
+
+  /api/memories/export:
+    get:
+      operationId: exportMemories
+      tags: [Memory]
+      summary: Export canonical memories as JSON or JSONL
+      parameters:
+        - in: query
+          name: format
+          schema: { type: string, enum: [json, jsonl], default: json }
+        - in: query
+          name: status
+          schema: { type: string, enum: [active, superseded, expired, deleted, all], default: all }
+      responses:
+        "200":
+          description: Portable memory export
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+            application/x-ndjson:
+              schema: { type: string }
+
+  /api/memories/import:
+    post:
+      operationId: importMemories
+      tags: [Memory]
+      summary: Validate or import portable memories without preserving foreign canonical ids
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryImportRequest" }
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryImportResult" }
+
+  /api/memory-candidates:
+    get:
+      operationId: listMemoryCandidates
+      tags: [Memory]
+      summary: List proposed memory writes awaiting or after review
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+      responses:
+        "200":
+          description: Memory candidate list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemoryCandidateRecord"
+                required: [items]
+    post:
+      operationId: createMemoryCandidate
+      tags: [Memory]
+      summary: Propose an inferred memory for governed review
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMemoryCandidateRequest"
+      responses:
+        "201":
+          description: Memory candidate created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryCandidateRecord"
+
+  /api/memory-candidates/{candidateId}/approve:
+    post:
+      operationId: approveMemoryCandidate
+      tags: [Memory]
+      summary: Approve a candidate and atomically create its durable memory
+      parameters:
+        - in: path
+          name: candidateId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveMemoryCandidateRequest"
+      responses:
+        "200":
+          description: Candidate approved and memory committed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidate:
+                    $ref: "#/components/schemas/MemoryCandidateRecord"
+                  memory:
+                    $ref: "#/components/schemas/MemoryRecord"
+                required: [candidate, memory]
+        "409":
+          description: Candidate was already resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memory-candidates/{candidateId}:
+    get:
+      operationId: getMemoryCandidate
+      tags: [Memory]
+      summary: Read one governed memory candidate
+      parameters:
+        - in: path
+          name: candidateId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Memory candidate
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryCandidateRecord" }
+
+  /api/memory-candidates/{candidateId}/reject:
+    post:
+      operationId: rejectMemoryCandidate
+      tags: [Memory]
+      summary: Reject a candidate without writing durable memory
+      parameters:
+        - in: path
+          name: candidateId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveMemoryCandidateRequest"
+      responses:
+        "200":
+          description: Candidate rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryCandidateRecord"
+        "409":
+          description: Candidate was already resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/audit-events:
     get:
@@ -4847,6 +7199,97 @@ paths:
                       type: object
                 required: [items]
 
+  /api/runtime/workspace-change-sets:
+    get:
+      tags: [RuntimeWorkspaceChanges]
+      summary: List Runtime Worker workspace change sets
+      parameters:
+        - in: query
+          name: status
+          required: false
+          schema:
+            type: string
+            enum: [pending, applied, rejected, blocked, apply_failed]
+      responses:
+        "200":
+          description: Workspace change set list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RuntimeWorkspaceChangeSet"
+                required: [items]
+
+  /api/runtime/workspace-change-sets/{changeSetId}:
+    get:
+      tags: [RuntimeWorkspaceChanges]
+      summary: Get a Runtime Worker workspace change set
+      parameters:
+        - in: path
+          name: changeSetId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Workspace change set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeWorkspaceChangeSet"
+        "404": { description: Not found }
+
+  /api/runtime/workspace-change-sets/{changeSetId}/apply:
+    post:
+      tags: [RuntimeWorkspaceChanges]
+      summary: Apply a reviewed workspace change set to its source workspace
+      parameters:
+        - in: path
+          name: changeSetId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentRequest"
+      responses:
+        "200":
+          description: Applied change set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeWorkspaceChangeSet"
+        "409": { description: Source workspace changed or change set is not pending }
+
+  /api/runtime/workspace-change-sets/{changeSetId}/reject:
+    post:
+      tags: [RuntimeWorkspaceChanges]
+      summary: Reject a pending workspace change set
+      parameters:
+        - in: path
+          name: changeSetId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentRequest"
+      responses:
+        "200":
+          description: Rejected change set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeWorkspaceChangeSet"
+        "409": { description: Change set is not pending }
+
   /api/approvals/{approvalId}/approve:
     post:
       tags: [Approvals]
@@ -5040,6 +7483,78 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Template not published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/missions/{sessionId}/materializer:
+    get:
+      operationId: getMissionMaterializerStatus
+      tags: [Sessions]
+      summary: Return the evented Mission materializer status and digests
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Mission materializer status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissionMaterializerStatus"
+        "404":
+          description: Mission not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/missions/{sessionId}/materializer/rebuild:
+    post:
+      operationId: rebuildMissionMaterializer
+      tags: [Sessions]
+      summary: Rebuild the Mission projection exclusively from its event log
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Rebuilt Mission materializer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissionMaterializerRebuildResponse"
+        "404":
+          description: Mission not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/missions/{sessionId}/materializer/verify:
+    post:
+      operationId: verifyMissionMaterializer
+      tags: [Sessions]
+      summary: Compare the event-rebuilt and current direct Mission projections
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Mission materializer consistency report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissionMaterializerConsistencyReport"
+        "404":
+          description: Mission not found
           content:
             application/json:
               schema:

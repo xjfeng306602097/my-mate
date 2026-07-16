@@ -8,9 +8,14 @@
     "check": "node scripts/check.mjs",
     "check:runtime-graph": "node scripts/runtime-graph-visual-check.mjs --layout-only",
     "visual:chrome": "node scripts/visual-check.mjs",
+    "visual:conversation": "node scripts/conversation-ui-regression.mjs",
     "visual:runtime-graph": "node scripts/runtime-graph-visual-check.mjs",
     "visual:openclaw": "node scripts/openclaw-visual-acceptance.mjs"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "@highlightjs/cdn-assets": "^11.11.1",
+    "dompurify": "^3.2.6",
+    "marked": "^15.0.12",
+    "mermaid": "11.16.0"
+  }
 }

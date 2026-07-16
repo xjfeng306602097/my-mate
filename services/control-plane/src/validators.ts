@@ -40,6 +40,10 @@ export const validateAgentProfile = compileValidator(
   "https://my-mate.local/schemas/agent/agent-profile.schema.json",
 );
 
+export const validateProviderConnection = compileValidator(
+  "https://my-mate.local/schemas/agent/provider-connection.schema.json",
+);
+
 export const validateSkill = compileValidator(
   "https://my-mate.local/schemas/agent/skill.schema.json",
 );

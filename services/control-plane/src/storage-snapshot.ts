@@ -39,6 +39,9 @@ function resolveSnapshotPath(relativePath: string): string {
   if (!normalized.endsWith(".json")) {
     throw new Error(`Invalid storage snapshot path "${relativePath}": only JSON files are supported.`);
   }
+  if (normalizeRelativePath(normalized).startsWith(".control-plane.lock/")) {
+    throw new Error(`Invalid storage snapshot path "${relativePath}": runtime lease files are not importable.`);
+  }
   return path.join(DATA_DIR, normalized);
 }
 
@@ -65,7 +68,10 @@ export function exportJsonStorageSnapshot(
   storage = getJsonStorageBackend(),
 ): JsonStorageSnapshot {
   const dataDir = path.resolve(DATA_DIR);
-  const files = collectJsonFiles(storage, dataDir);
+  const files = collectJsonFiles(storage, dataDir).filter((filePath) => {
+    const relativePath = normalizeRelativePath(path.relative(dataDir, filePath));
+    return !relativePath.startsWith("provider-secrets/") && !relativePath.startsWith(".control-plane.lock/");
+  });
   const entries = files.map((filePath) => ({
     relative_path: normalizeRelativePath(path.relative(dataDir, filePath)),
     data: storage.readJson<unknown>(filePath),

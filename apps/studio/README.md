@@ -43,6 +43,9 @@ Current MVP scope:
   and independently approve, reject, or apply proposals
 - inspect effective model cost and evidence completeness by Agent, model, or
   work package from the unified Dashboard
+- review Docker workspace Change Sets in a three-pane visual diff, including
+  bounded text lines, binary/oversized metadata, and explicit Apply or Reject
+  confirmation from the Inbox
 
 This MVP is intentionally dependency-free. It runs a small Node static server and proxies same-origin `/api/*` requests to the API gateway, avoiding browser CORS setup during local development.
 
@@ -79,6 +82,20 @@ Generic Mission Workspace visual check:
 ```bash
 npm run visual:chrome
 ```
+
+Provider-backed conversation UI regression:
+
+```bash
+npm run visual:conversation -- --studio-url http://127.0.0.1:5174
+```
+
+This browser acceptance follows the user path from `New task` through the
+first assistant reply. It requires a verified model connection and asserts
+that the reply exposes Provider/model evidence, does not create a workflow,
+does not contain legacy workflow-guidance text, and produces no frontend
+errors. The disposable Session is archived after the screenshot and summary
+are written under `tmp/conversation-ui-regression/`. Chrome must expose CDP on
+`CHROME_CDP_PORT` or port `9223`.
 
 Runtime graph fixture and responsive visual check:
 

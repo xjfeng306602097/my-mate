@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 import { createEmptyExecutionRef } from "./execution-ref.js";
 import { getAgentProfile, getSkill } from "./registry-store.js";
+import { snapshotProviderConnection } from "./provider-connection-store.js";
 import { generateNodeRunId, isPlainObject, slugify } from "./utils.js";
 import { compileWorkPackage } from "./work-package.js";
 
@@ -303,6 +304,10 @@ export function compileRunPlan(
       agentProfile: node.agent_profile,
       registryProfile,
     });
+    const providerConnection = snapshotProviderConnection(
+      registryProfile?.provider_connection_id,
+      runtimeAgentRef,
+    );
 
     return {
       node_run_id: nodeRunId,
@@ -313,6 +318,7 @@ export function compileRunPlan(
       runtime_agent_ref: runtimeAgentRef,
       agent_runtime: registryProfile?.agent_runtime ?? null,
       harness_profile: registryProfile?.harness_profile ?? null,
+      provider_connection: providerConnection,
       openclaw_agent_id: runtimeAgentRef,
       allowed_skills: resolveAllowedSkills({
         nodeSkills: node.allowed_skills,

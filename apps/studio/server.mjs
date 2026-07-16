@@ -1,6 +1,7 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,7 @@ const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
 };
@@ -53,8 +55,12 @@ async function proxyApi(req, res) {
     const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
     const isSse = (req.url || "").match(/^\/api\/sessions\/[^/]+\/stream$/);
 
+    const contentDisposition = upstream.headers.get("content-disposition");
+    const cacheControl = upstream.headers.get("cache-control");
     res.writeHead(upstream.status, {
       "content-type": contentType,
+      ...(contentDisposition ? { "content-disposition": contentDisposition } : {}),
+      ...(cacheControl ? { "cache-control": cacheControl } : {}),
       ...(isSse ? { "cache-control": "no-cache", connection: "keep-alive" } : {}),
     });
 
@@ -78,6 +84,53 @@ async function proxyApi(req, res) {
       message: error instanceof Error ? error.message : "Gateway proxy failed.",
     });
   }
+}
+
+function writeUpgradeResponse(socket, response) {
+  const statusMessage = response.statusMessage || "Switching Protocols";
+  socket.write(`HTTP/1.1 ${response.statusCode || 101} ${statusMessage}\r\n`);
+  for (const [name, value] of Object.entries(response.headers)) {
+    if (Array.isArray(value)) {
+      for (const item of value) socket.write(`${name}: ${item}\r\n`);
+    } else if (value !== undefined) {
+      socket.write(`${name}: ${value}\r\n`);
+    }
+  }
+  socket.write("\r\n");
+}
+
+function proxyWebSocket(req, socket, head) {
+  const gateway = new URL(GATEWAY_BASE_URL);
+  const requestImpl = gateway.protocol === "https:" ? https.request : http.request;
+  const upstreamRequest = requestImpl({
+    protocol: gateway.protocol,
+    hostname: gateway.hostname,
+    port: gateway.port || (gateway.protocol === "https:" ? 443 : 80),
+    method: "GET",
+    path: req.url,
+    headers: {
+      ...req.headers,
+      host: gateway.host,
+    },
+  });
+
+  upstreamRequest.on("upgrade", (response, upstreamSocket, upstreamHead) => {
+    writeUpgradeResponse(socket, response);
+    if (upstreamHead.length) socket.write(upstreamHead);
+    if (head.length) upstreamSocket.write(head);
+    socket.pipe(upstreamSocket).pipe(socket);
+  });
+  upstreamRequest.on("response", (response) => {
+    writeUpgradeResponse(socket, response);
+    response.pipe(socket);
+  });
+  upstreamRequest.on("error", () => {
+    if (!socket.destroyed) {
+      socket.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+    }
+  });
+  upstreamRequest.end();
 }
 
 function resolveStaticPath(urlPath) {
@@ -111,6 +164,16 @@ const server = http.createServer((req, res) => {
     return;
   }
   void serveStatic(req, res);
+});
+
+server.on("upgrade", (req, socket, head) => {
+  const pathname = new URL(req.url || "/", "http://studio.local").pathname;
+  if (/^\/api\/sessions\/[^/]+\/conversation$/u.test(pathname)) {
+    proxyWebSocket(req, socket, head);
+    return;
+  }
+  socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+  socket.destroy();
 });
 
 server.listen(PORT, "127.0.0.1", () => {
