@@ -1577,3 +1577,11 @@ Suggested maintenance rhythm:
 - [x] Expanded 36-case bilingual intent and 8-case Memory operation quality suite
 - [x] Control Plane, Gateway, OpenAPI, generated types, Studio settings, and observability
 - [x] Final full regression and desktop/mobile browser acceptance
+
+# M9 Memory Activation completion (2026-07-17)
+
+- [x] M9.1 immutable per-turn Memory context snapshots and retry/continuation reuse
+- [x] M9.2 session overlays, deterministic recommendation IDs, and feedback lifecycle
+- [x] M9.3 resumable guided onboarding with explicit preference capture and candidate preview
+- [x] M9.4 bounded feedback reranking and effectiveness correlation
+- [x] M9.5 Gateway/OpenAPI/Studio/observability and full acceptance

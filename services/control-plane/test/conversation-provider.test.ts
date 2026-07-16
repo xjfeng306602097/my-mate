@@ -123,6 +123,7 @@ test("new task conversation uses the verified Provider Connection without auto-c
     assert.equal(firstReply?.content.response_source, "provider");
     assert.equal(firstReply?.content.provider_connection_id, "conversation-glm");
     assert.equal(firstReply?.content.model, "glm-5.2");
+    assert.match(firstReply?.content.memory_context_id || "", /^memctx_/);
     assert.deepEqual(firstReply?.content.usage, { input_tokens: 42, output_tokens: 18 });
     assert.equal(initialMessages.some((message) => message.kind === "draft_card"), false);
     assert.equal(initialMessages.some((message) => message.kind === "plan_card"), false);
@@ -153,6 +154,8 @@ test("new task conversation uses the verified Provider Connection without auto-c
       .find((message) => message.role === "orchestrator" && message.kind === "text");
     assert.equal(followUpReply?.content.text, "I have added that constraint and will keep the implementation scoped.");
     assert.equal(followUpReply?.content.response_source, "provider");
+    assert.match(followUpReply?.content.memory_context_id || "", /^memctx_/);
+    assert.notEqual(followUpReply?.content.memory_context_id, firstReply?.content.memory_context_id);
     const followUpSystem = String(providerRequests.filter((request) => Number(request.max_tokens) === 24_000).at(-1)?.system || "");
     assert.match(followUpSystem, /release-notes\.md/);
     assert.match(followUpSystem, /zero regressions/);

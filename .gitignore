@@ -118,6 +118,10 @@ services/control-plane/data/memory-maintenance/
 services/control-plane/data/memory-observability/
 services/control-plane/data/memory-reviews/
 services/control-plane/data/memory-snapshots/
+services/control-plane/data/memory-turn-contexts/
+services/control-plane/data/memory-overlays/
+services/control-plane/data/memory-feedback/
+services/control-plane/data/memory-onboarding/
 services/control-plane/data/mission-materializer-checkpoints/
 services/control-plane/data/mission-materializer-events/
 services/control-plane/data/mission-materializer-projections/

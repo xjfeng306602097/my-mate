@@ -6,7 +6,12 @@ import { listSessionAttachments } from "./session-attachment-store.js";
 import { saveSession } from "./session-store.js";
 import { ensureCoreMemorySnapshot, renderCoreMemorySnapshot } from "./memory-snapshot-store.js";
 import { getMemorySettings } from "./memory-settings-store.js";
-import { buildAutomaticMemoryRecall } from "./memory-auto-recall.js";
+import { buildAutomaticMemoryRecallContext } from "./memory-auto-recall.js";
+import {
+  contextEntryFromCore,
+  freezeTurnMemoryContext,
+  renderActivatedMemoryContext,
+} from "./memory-activation-store.js";
 import {
   executeConversationTool,
   getConversationToolDefinitions,
@@ -39,6 +44,7 @@ export interface ConversationProviderEvidence {
   tool_rounds: number;
   tool_round_limit_reached: boolean;
   action_ids: string[];
+  memory_context_id: string | null;
 }
 
 export interface ConversationProviderReply {
@@ -645,6 +651,7 @@ async function conversationRequestContext(input: {
   history: Array<{ role: "user" | "assistant"; content: string }>;
   contextCompacted: boolean;
   compactionCount: number;
+  memoryContextId: string | null;
 }> {
   const connection = resolveConnection(input.session);
   if (!connection) {
@@ -676,16 +683,36 @@ async function conversationRequestContext(input: {
     input.toolsEnabled !== false,
   );
   const automaticRecall = input.memoryRecall === false
-    ? null
-    : await buildAutomaticMemoryRecall(input.session, input.messages);
+    ? { text: null, entries: [] }
+    : await buildAutomaticMemoryRecallContext(input.session, input.messages);
+  let memoryContextId: string | null = null;
+  let activatedMemory: string | null = automaticRecall.text;
+  if (input.memoryRecall !== false) {
+    const latestUser = [...input.messages].reverse().find((message) => message.role === "user");
+    if (latestUser) {
+      const core = ensureCoreMemorySnapshot(input.session);
+      const frozen = freezeTurnMemoryContext({
+        session: input.session,
+        sourceUserMessageId: latestUser.message_id,
+        providerConnectionId: connection.connection_id,
+        model,
+        coreEntries: [...core.entries, ...core.project_entries].map(contextEntryFromCore),
+        automaticEntries: automaticRecall.entries,
+        prompt: prompt.system,
+      });
+      memoryContextId = frozen.snapshot.context_id;
+      activatedMemory = renderActivatedMemoryContext(frozen.snapshot);
+    }
+  }
   return {
     connection,
     apiKey,
     model,
-    system: [prompt.system, automaticRecall].filter(Boolean).join("\n\n"),
+    system: [prompt.system, activatedMemory].filter(Boolean).join("\n\n"),
     history: prompt.history,
     contextCompacted: compaction.contextCompacted,
     compactionCount: compaction.compactionCount,
+    memoryContextId,
   };
 }
 
@@ -1102,6 +1129,7 @@ export async function streamProviderConversationReply(
     history,
     contextCompacted,
     compactionCount,
+    memoryContextId,
   } = await conversationRequestContext(input);
   const fetchImpl = input.fetchImpl || providerFetch;
   let responseModel: string | null = null;
@@ -1200,6 +1228,7 @@ export async function streamProviderConversationReply(
       tool_rounds: toolRounds,
       tool_round_limit_reached: toolRoundLimitReached,
       action_ids: actionIds,
+      memory_context_id: memoryContextId,
     },
   };
 }
@@ -1224,6 +1253,7 @@ export async function generateProviderConversationReply(input: {
     history,
     contextCompacted,
     compactionCount,
+    memoryContextId,
   } = await conversationRequestContext(input);
   const fetchImpl = input.fetchImpl || providerFetch;
   let responseModel: string | null = null;
@@ -1319,6 +1349,7 @@ export async function generateProviderConversationReply(input: {
       tool_rounds: toolRounds,
       tool_round_limit_reached: toolRoundLimitReached,
       action_ids: actionIds,
+      memory_context_id: memoryContextId,
     },
   };
 }

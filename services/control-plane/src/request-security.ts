@@ -158,6 +158,12 @@ export function requiredPermission(req: Request): WorkspacePermission {
     return method === "GET" ? "memory.read" : "memory.write";
   }
   if (path === "/memory-observability") return "memory.read";
+  if (path === "/memory-effectiveness" || path.startsWith("/memory-onboarding")) {
+    return method === "GET" ? "memory.read" : "memory.write";
+  }
+  if (/^\/sessions\/[^/]+\/memory-(?:recommendations|overlay|contexts)/u.test(path)) {
+    return method === "GET" ? "memory.read" : "memory.write";
+  }
   if (/^\/sessions\/[^/]+\/memory-review$/u.test(path)) return "memory.review";
   if (path.startsWith("/memory-retrieval") || path.startsWith("/memory-knowledge")) {
     return path.endsWith("/rebuild") ? "memory.write" : "memory.read";

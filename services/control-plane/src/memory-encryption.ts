@@ -2,7 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { MEMORY_SECRETS_DIR } from "./config.js";
-import type { CoreMemorySnapshot, MemoryCandidateRecord, MemoryRecord } from "./types.js";
+import type {
+  CoreMemorySnapshot,
+  MemoryCandidateRecord,
+  MemoryOnboardingRecord,
+  MemoryOverlayRecord,
+  MemoryRecord,
+  TurnMemoryContextSnapshot,
+} from "./types.js";
 import { nowIso } from "./utils.js";
 
 interface EncryptedPayload {
@@ -35,7 +42,30 @@ interface PersistedPrivateSnapshot {
   private_snapshot: EncryptedPayload;
 }
 
-type EncryptedKind = "memory" | "candidate" | "snapshot";
+interface PersistedPrivateContext {
+  schema_version: 1;
+  context_id: string;
+  session_id: string;
+  workspace_id: string;
+  private_context: EncryptedPayload;
+}
+
+interface PersistedPrivateOverlay {
+  schema_version: 1;
+  overlay_id: string;
+  session_id: string;
+  workspace_id: string;
+  private_overlay: EncryptedPayload;
+}
+
+interface PersistedPrivateOnboarding {
+  schema_version: 1;
+  workspace_id: string;
+  principal_id: string;
+  private_onboarding: EncryptedPayload;
+}
+
+type EncryptedKind = "memory" | "candidate" | "snapshot" | "turn-context" | "overlay" | "onboarding";
 
 const MASTER_KEY_FILE = ".memory-master-key";
 
@@ -206,6 +236,107 @@ export function deserializeCoreMemorySnapshot(value: unknown): {
   }
   return {
     snapshot: decrypt<CoreMemorySnapshot>("snapshot", raw.workspace_id, raw.snapshot_id, raw.private_snapshot),
+    legacyPlaintext: false,
+  };
+}
+
+export function serializeTurnMemoryContext(
+  snapshot: TurnMemoryContextSnapshot,
+): TurnMemoryContextSnapshot | PersistedPrivateContext {
+  if (!snapshot.entries.some((entry) => entry.sensitivity === "private")) return snapshot;
+  return {
+    schema_version: 1,
+    context_id: snapshot.context_id,
+    session_id: snapshot.session_id,
+    workspace_id: snapshot.workspace_id,
+    private_context: encrypt("turn-context", snapshot.workspace_id, snapshot.context_id, snapshot),
+  };
+}
+
+export function deserializeTurnMemoryContext(value: unknown): {
+  snapshot: TurnMemoryContextSnapshot;
+  legacyPlaintext: boolean;
+} {
+  const raw = value as TurnMemoryContextSnapshot & { private_context?: EncryptedPayload };
+  if (!raw.private_context) {
+    return {
+      snapshot: raw,
+      legacyPlaintext: (raw.entries || []).some((entry) => entry.sensitivity === "private"),
+    };
+  }
+  return {
+    snapshot: decrypt<TurnMemoryContextSnapshot>(
+      "turn-context",
+      raw.workspace_id,
+      raw.context_id,
+      raw.private_context,
+    ),
+    legacyPlaintext: false,
+  };
+}
+
+export function serializeMemoryOverlay(
+  overlay: MemoryOverlayRecord,
+): MemoryOverlayRecord | PersistedPrivateOverlay {
+  if (overlay.entry.sensitivity !== "private") return overlay;
+  return {
+    schema_version: 1,
+    overlay_id: overlay.overlay_id,
+    session_id: overlay.session_id,
+    workspace_id: overlay.workspace_id,
+    private_overlay: encrypt("overlay", overlay.workspace_id, overlay.overlay_id, overlay),
+  };
+}
+
+export function deserializeMemoryOverlay(value: unknown): {
+  overlay: MemoryOverlayRecord;
+  legacyPlaintext: boolean;
+} {
+  const raw = value as MemoryOverlayRecord & { private_overlay?: EncryptedPayload };
+  if (!raw.private_overlay) {
+    return { overlay: raw, legacyPlaintext: raw.entry?.sensitivity === "private" };
+  }
+  return {
+    overlay: decrypt<MemoryOverlayRecord>("overlay", raw.workspace_id, raw.overlay_id, raw.private_overlay),
+    legacyPlaintext: false,
+  };
+}
+
+export function serializeMemoryOnboarding(
+  record: MemoryOnboardingRecord,
+): MemoryOnboardingRecord | PersistedPrivateOnboarding {
+  if (!record.draft_entries.some((entry) => entry.sensitivity === "private")) return record;
+  return {
+    schema_version: 1,
+    workspace_id: record.workspace_id,
+    principal_id: record.principal_id,
+    private_onboarding: encrypt(
+      "onboarding",
+      record.workspace_id,
+      `${record.principal_id}:${record.workspace_id}`,
+      record,
+    ),
+  };
+}
+
+export function deserializeMemoryOnboarding(value: unknown): {
+  record: MemoryOnboardingRecord;
+  legacyPlaintext: boolean;
+} {
+  const raw = value as MemoryOnboardingRecord & { private_onboarding?: EncryptedPayload };
+  if (!raw.private_onboarding) {
+    return {
+      record: raw,
+      legacyPlaintext: (raw.draft_entries || []).some((entry) => entry.sensitivity === "private"),
+    };
+  }
+  return {
+    record: decrypt<MemoryOnboardingRecord>(
+      "onboarding",
+      raw.workspace_id,
+      `${raw.principal_id}:${raw.workspace_id}`,
+      raw.private_onboarding,
+    ),
     legacyPlaintext: false,
   };
 }

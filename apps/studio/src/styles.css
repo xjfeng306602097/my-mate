@@ -297,6 +297,55 @@ textarea:disabled {
   transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
 }
 
+.task-memory-recommendations:empty {
+  display: none;
+}
+
+.task-memory-recommendations {
+  flex: 0 0 auto;
+  border-top: 1px solid #dbe3ec;
+  background: #f8fafc;
+}
+
+.task-memory-recommendation {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 12px;
+  border-bottom: 1px solid #e5eaf0;
+}
+
+.task-memory-recommendation > div:first-child {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 7px;
+  align-items: center;
+}
+
+.task-memory-recommendation strong,
+.task-memory-recommendation small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-memory-recommendation small {
+  grid-column: 2;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.task-memory-actions,
+.memory-recommendation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .task-conversation-panel .orchestrator-composer.dragging {
   border-color: #2f6fed;
   background: #eff6ff;
@@ -10552,10 +10601,86 @@ button.dashboard-correlation-row:hover {
 .memory-record-list,
 .memory-review-section,
 .memory-recommendation-section,
+.memory-onboarding-section,
+.memory-onboarding-flow,
 .memory-advanced-section {
   min-width: 0;
   border-top: 1px solid #dbe3ec;
   padding-top: 12px;
+}
+
+.memory-onboarding-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.memory-onboarding-section > div,
+.memory-onboarding-flow {
+  min-width: 0;
+}
+
+.memory-onboarding-section > div {
+  display: grid;
+  gap: 4px;
+}
+
+.memory-onboarding-section small,
+.memory-onboarding-flow .muted {
+  color: #64748b;
+}
+
+.memory-onboarding-flow {
+  display: grid;
+  gap: 12px;
+}
+
+.memory-onboarding-flow label {
+  display: grid;
+  gap: 7px;
+}
+
+.memory-onboarding-flow textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.memory-recommendation-actions {
+  flex-wrap: wrap;
+  max-width: 260px;
+}
+
+.memory-context-list,
+.memory-context-row {
+  display: grid;
+  gap: 10px;
+}
+
+.memory-context-row {
+  padding: 10px 0;
+  border-top: 1px solid #e5eaf0;
+}
+
+.memory-context-row > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.memory-context-row small {
+  color: #64748b;
+}
+
+.memory-context-row details p {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.memory-correlation-note {
+  margin: -4px 0 0;
+  color: #64748b;
+  font-size: 11px;
 }
 
 .memory-toolbar,
@@ -10734,6 +10859,22 @@ button.dashboard-correlation-row:hover {
 }
 
 @media (max-width: 720px) {
+  .task-memory-recommendation {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-memory-actions,
+  .memory-recommendation-actions {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .memory-onboarding-section,
+  .memory-context-row > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .memory-status-table {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

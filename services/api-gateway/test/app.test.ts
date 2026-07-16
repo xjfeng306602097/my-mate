@@ -90,7 +90,7 @@ async function startUpstreamServer() {
     idempotencyKey?: string | undefined;
   }> = [];
 
-  app.all(/^\/api\/(?:memory-settings|memory-observability|memory-maintenance|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-review)$/u, (req, res) => {
+  app.all(/^\/api\/(?:memory-settings|memory-observability|memory-effectiveness|memory-onboarding(?:\/.*)?|memory-maintenance|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-(?:review|recommendations(?:\/.*)?|overlay(?:\/.*)?|contexts(?:\/.*)?))$/u, (req, res) => {
     requests.push({
       method: req.method,
       path: req.path,
@@ -2757,6 +2757,49 @@ test("proxies M5 memory retrieval and optional knowledge provider routes", async
       "/api/memory-knowledge/query",
     ]);
     assert.deepEqual(upstream.requests.at(-4)?.body, searchPayload);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies the complete M9 Memory activation, feedback, and onboarding surface", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const session = "sess_gateway_test";
+    const recommendation = "memrec_gateway";
+    const feedback = await postJson(
+      `${server.baseUrl}/api/sessions/${session}/memory-recommendations/${recommendation}/feedback`,
+      { action: "use_next_turn" },
+    );
+    const overlay = await postJson(`${server.baseUrl}/api/sessions/${session}/memory-overlay`, {
+      memory_id: "mem_gateway",
+      mode: "session",
+    });
+    const contexts = await getJson(`${server.baseUrl}/api/sessions/${session}/memory-contexts`);
+    const context = await getJson(`${server.baseUrl}/api/sessions/${session}/memory-contexts/memctx_gateway`);
+    const onboarding = await getJson(`${server.baseUrl}/api/memory-onboarding`);
+    const started = await postJson(`${server.baseUrl}/api/memory-onboarding/start`, {});
+    const effectiveness = await getJson(`${server.baseUrl}/api/memory-effectiveness`);
+    const revoked = await fetch(`${server.baseUrl}/api/sessions/${session}/memory-overlay/memov_gateway`, {
+      method: "DELETE",
+    });
+
+    assert.deepEqual(
+      [feedback.status, overlay.status, contexts.status, context.status, onboarding.status, started.status, effectiveness.status, revoked.status],
+      [200, 200, 200, 200, 200, 200, 200, 200],
+    );
+    assert.deepEqual(upstream.requests.slice(-8).map((request) => `${request.method} ${request.path}`), [
+      `POST /api/sessions/${session}/memory-recommendations/${recommendation}/feedback`,
+      `POST /api/sessions/${session}/memory-overlay`,
+      `GET /api/sessions/${session}/memory-contexts`,
+      `GET /api/sessions/${session}/memory-contexts/memctx_gateway`,
+      "GET /api/memory-onboarding",
+      "POST /api/memory-onboarding/start",
+      "GET /api/memory-effectiveness",
+      `DELETE /api/sessions/${session}/memory-overlay/memov_gateway`,
+    ]);
   } finally {
     await server.close();
     await upstream.close();

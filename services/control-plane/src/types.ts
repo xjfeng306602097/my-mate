@@ -1004,6 +1004,126 @@ export interface MemoryRecommendation {
   applied_automatically: boolean;
   snapshot_version: number | null;
   updated_at: string;
+  recommendation_id: string;
+  application_state: "available" | "queued" | "kept" | "applied" | "dismissed";
+  last_applied_context_id: string | null;
+  available_actions: Array<"use_next_turn" | "keep_for_session" | "dismiss_for_session" | "not_relevant" | "edit_requested" | "forget_requested">;
+}
+
+export type TurnMemoryContextSource = "core_snapshot" | "automatic_recall" | "manual_overlay";
+
+export interface TurnMemoryContextEntry {
+  memory_id: string;
+  memory_version: number;
+  source: TurnMemoryContextSource;
+  scope_kind: MemoryScopeKind;
+  scope_id: string;
+  kind: MemoryKind;
+  sensitivity: Exclude<MemorySensitivity, "restricted">;
+  content: string;
+  content_digest: string;
+}
+
+export interface TurnMemoryContextSnapshot {
+  schema_version: 1;
+  context_id: string;
+  workspace_id: string;
+  session_id: string;
+  source_user_message_id: string;
+  provider_connection_id: string | null;
+  model: string | null;
+  entries: TurnMemoryContextEntry[];
+  character_count: number;
+  prompt_digest: string;
+  created_at: string;
+}
+
+export type MemoryOverlayMode = "next_turn" | "session";
+export type MemoryOverlayStatus = "queued" | "active" | "consumed" | "revoked" | "stale";
+
+export interface MemoryOverlayRecord {
+  schema_version: 1;
+  overlay_id: string;
+  workspace_id: string;
+  session_id: string;
+  memory_id: string;
+  memory_version: number;
+  mode: MemoryOverlayMode;
+  status: MemoryOverlayStatus;
+  entry: Omit<TurnMemoryContextEntry, "source">;
+  created_by: string;
+  created_at: string;
+  consumed_context_id: string | null;
+  consumed_at: string | null;
+  revoked_at: string | null;
+}
+
+export type MemoryRecommendationFeedbackAction =
+  | "use_next_turn"
+  | "keep_for_session"
+  | "dismiss_for_session"
+  | "not_relevant"
+  | "edit_requested"
+  | "forget_requested";
+
+export interface MemoryRecommendationFeedback {
+  schema_version: 1;
+  feedback_id: string;
+  recommendation_id: string;
+  workspace_id: string;
+  session_id: string;
+  memory_id: string;
+  memory_version: number;
+  action: MemoryRecommendationFeedbackAction;
+  reason_code: "useful" | "wrong_task" | "outdated" | "incorrect" | "too_sensitive" | "other" | null;
+  actor_id: string;
+  created_at: string;
+}
+
+export type MemoryOnboardingStatus = "not_started" | "in_progress" | "completed" | "dismissed";
+
+export interface MemoryOnboardingRecord {
+  schema_version: 1;
+  workspace_id: string;
+  principal_id: string;
+  status: MemoryOnboardingStatus;
+  step: number;
+  draft_entries: Array<{
+    content: string;
+    kind: MemoryKind;
+    scope_kind: "user" | "workspace" | "project";
+    scope_id: string | null;
+    sensitivity: Exclude<MemorySensitivity, "restricted">;
+    tags: string[];
+    origin: "explicit" | "inferred";
+  }>;
+  committed_memory_ids: string[];
+  candidate_ids: string[];
+  started_at: string | null;
+  completed_at: string | null;
+  dismissed_at: string | null;
+  updated_at: string;
+}
+
+export interface MemoryEffectiveness {
+  schema_version: 1;
+  workspace_id: string;
+  turn_contexts: number;
+  applied_memories: number;
+  recommendation_feedback: number;
+  accepted_recommendations: number;
+  dismissed_recommendations: number;
+  not_relevant_recommendations: number;
+  acceptance_rate: number;
+  dismissal_rate: number;
+  stale_overlays: number;
+  evaluated_tasks: number;
+  evaluated_tasks_with_memory: number;
+  evaluation_join_rate: number;
+  correlation_note: string;
+  context_total_latency_ms: number;
+  context_last_latency_ms: number | null;
+  evaluated_at: string;
 }
 
 export interface MemoryEmbeddingProviderStatus {

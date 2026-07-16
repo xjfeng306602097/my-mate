@@ -1,3 +1,9 @@
+import {
+  listMemoryOverlays,
+  listRecommendationFeedback,
+  listTurnMemoryContexts,
+  recommendationDigest,
+} from "./memory-activation-store.js";
 import { getMemorySettings } from "./memory-settings-store.js";
 import { getCoreMemorySnapshot } from "./memory-snapshot-store.js";
 import { listMemories } from "./memory-store.js";
@@ -93,17 +99,42 @@ export function listSessionMemoryRecommendations(
   const snapshot = getCoreMemorySnapshot(session.session_id, workspaceId);
   const snapshotVersions = snapshot?.memory_versions || {};
   const limit = Math.min(MAX_RECOMMENDATIONS, Math.max(1, Math.floor(options.limit || 5)));
+  const feedback = listRecommendationFeedback(session.session_id, workspaceId);
+  const overlays = listMemoryOverlays(session.session_id, workspaceId);
+  const contexts = listTurnMemoryContexts(session.session_id, workspaceId);
 
   return listMemories({ status: "active", limit: 500 })
     .filter((memory) => currentlyValid(memory, timestamp))
     .filter((memory) => visibleToSession(memory, session, principalId))
-    .map((memory) => ({ memory, score: relevanceScore(query, memory) }))
+    .filter((memory) => !feedback.some((item) =>
+      item.memory_id === memory.memory_id &&
+      item.memory_version === memory.version &&
+      item.action === "dismiss_for_session",
+    ))
+    .map((memory) => {
+      const base = relevanceScore(query, memory);
+      const matching = feedback.filter((item) => item.memory_id === memory.memory_id && item.memory_version === memory.version);
+      const boost = Math.min(0.08, matching.filter((item) => item.action === "use_next_turn" || item.action === "keep_for_session").length * 0.02);
+      const penalty = Math.min(0.08, matching.filter((item) => item.action === "not_relevant").length * 0.02);
+      return { memory, score: Number(Math.max(0, Math.min(1, base + boost - penalty)).toFixed(4)) };
+    })
     .filter(({ score }) => score >= MIN_RELEVANCE_SCORE)
     .sort((left, right) => right.score - left.score || right.memory.updated_at.localeCompare(left.memory.updated_at))
     .slice(0, limit)
     .map(({ memory, score }) => {
       const snapshotVersion = snapshotVersions[memory.memory_id] || null;
       const alreadyInSnapshot = snapshotVersion === memory.version;
+      const recommendationId = recommendationDigest(session.session_id, memory.memory_id, memory.version, queryText);
+      const overlay = overlays.find((item) =>
+        item.memory_id === memory.memory_id && item.memory_version === memory.version &&
+        (item.status === "queued" || item.status === "active"),
+      );
+      const appliedContext = contexts.find((context) => context.entries.some((entry) =>
+        entry.memory_id === memory.memory_id && entry.memory_version === memory.version,
+      ));
+      const applicationState: MemoryRecommendation["application_state"] = overlay
+        ? overlay.mode === "next_turn" ? "queued" : "kept"
+        : appliedContext ? "applied" : "available";
       return {
         schema_version: 1,
         session_id: session.session_id,
@@ -118,9 +149,20 @@ export function listSessionMemoryRecommendations(
         reason: reason(memory, score, alreadyInSnapshot),
         score,
         already_in_snapshot: alreadyInSnapshot,
-        applied_automatically: alreadyInSnapshot,
+        applied_automatically: Boolean(appliedContext),
         snapshot_version: snapshotVersion,
         updated_at: memory.updated_at,
+        recommendation_id: recommendationId,
+        application_state: applicationState,
+        last_applied_context_id: appliedContext?.context_id || null,
+        available_actions: [
+          "use_next_turn",
+          "keep_for_session",
+          "dismiss_for_session",
+          "not_relevant",
+          "edit_requested",
+          "forget_requested",
+        ],
       };
     });
 }

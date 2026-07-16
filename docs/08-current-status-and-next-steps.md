@@ -299,3 +299,7 @@ M7 adds a configurable Memory Intelligence model, model-assisted full-turn extra
 # M8 completion update (2026-07-16)
 
 M8 adds AES-256-GCM Private Memory encryption and migration, normal-only knowledge projection cleanup, generation-aware recall caching, independent multi-Workspace maintenance, explainable current-Task recommendations, privacy-safe proactive alerts, expanded intent and Memory-operation quality gates, and complete Studio/API/OpenAPI observability. See `docs/59-memory-production-hardening-and-proactive-reuse.md`.
+
+# M9 completion update (2026-07-17)
+
+M9 completes the Memory activation and feedback milestone: immutable encrypted per-turn Memory context evidence, retry/continuation reuse, session-only recommendation overlays, user feedback and suppression, optional guided onboarding, bounded feedback reranking, and explicitly non-causal effectiveness correlation. Task recommendation actions update locally without rebuilding the Task workspace. It preserves the frozen Core Memory snapshot and does not autonomously scan local files. See `docs/60-m9-memory-activation-feedback-and-guided-onboarding.md`.

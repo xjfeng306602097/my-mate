@@ -118,6 +118,22 @@ import { refineConversationIntent } from "./conversation-intent-intelligence.js"
 import { evaluateConversationIntentRouter } from "./memory-intelligence-evaluation.js";
 import { ensureCoreMemorySnapshot } from "./memory-snapshot-store.js";
 import { listSessionMemoryRecommendations } from "./memory-recommendation.js";
+import {
+  createMemoryOverlay,
+  createRecommendationFeedback,
+  getTurnMemoryContext,
+  listMemoryOverlays,
+  listTurnMemoryContexts,
+  memoryEffectiveness,
+  revokeMemoryOverlay,
+} from "./memory-activation-store.js";
+import {
+  completeMemoryOnboarding,
+  dismissMemoryOnboarding,
+  getMemoryOnboarding,
+  previewMemoryOnboarding,
+  startMemoryOnboarding,
+} from "./memory-onboarding-store.js";
 import { recallSessions } from "./session-recall-store.js";
 import {
   getMemoryRetrievalIndexStatus,
@@ -12280,6 +12296,118 @@ export function createApp(options?: {
       recommendations,
     });
   });
+
+  app.post("/api/sessions/:sessionId/memory-recommendations/:recommendationId/feedback", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const recommendationId = getSingleParam(req.params.recommendationId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session || !recommendationId) {
+      return res.status(404).json({ code: "not_found", message: "Memory recommendation not found." });
+    }
+    const recommendation = listSessionMemoryRecommendations(session, { limit: 8 })
+      .find((item) => item.recommendation_id === recommendationId);
+    if (!recommendation) {
+      return res.status(404).json({ code: "not_found", message: "Memory recommendation not found." });
+    }
+    const body = isPlainObject(req.body) ? req.body : {};
+    const actions = new Set([
+      "use_next_turn", "keep_for_session", "dismiss_for_session", "not_relevant", "edit_requested", "forget_requested",
+    ]);
+    const action = typeof body.action === "string" && actions.has(body.action) ? body.action : null;
+    if (!action) return res.status(400).json({ code: "invalid_request", message: "A valid feedback action is required." });
+    const reasonCodes = new Set(["useful", "wrong_task", "outdated", "incorrect", "too_sensitive", "other"]);
+    const reasonCode = typeof body.reason_code === "string" && reasonCodes.has(body.reason_code)
+      ? body.reason_code as "useful" | "wrong_task" | "outdated" | "incorrect" | "too_sensitive" | "other"
+      : null;
+    const feedback = createRecommendationFeedback({
+      session,
+      recommendationId,
+      memoryId: recommendation.memory_id,
+      memoryVersion: recommendation.memory_version,
+      action: action as import("./types.js").MemoryRecommendationFeedbackAction,
+      reasonCode,
+    });
+    const overlay = action === "use_next_turn" || action === "keep_for_session"
+      ? createMemoryOverlay({
+          session,
+          memoryId: recommendation.memory_id,
+          mode: action === "use_next_turn" ? "next_turn" : "session",
+        })
+      : null;
+    return res.status(201).json({ feedback, overlay });
+  });
+
+  app.get("/api/sessions/:sessionId/memory-overlay", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    const items = listMemoryOverlays(session.session_id, session.workspace_id || "default");
+    return res.json({ schema_version: 1, session_id: session.session_id, count: items.length, items });
+  });
+
+  app.post("/api/sessions/:sessionId/memory-overlay", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    const body = isPlainObject(req.body) ? req.body : {};
+    const memoryId = typeof body.memory_id === "string" ? body.memory_id.trim() : "";
+    const mode = body.mode === "session" ? "session" : body.mode === "next_turn" ? "next_turn" : null;
+    if (!memoryId || !mode) {
+      return res.status(400).json({ code: "invalid_request", message: "memory_id and a valid mode are required." });
+    }
+    try {
+      return res.status(201).json(createMemoryOverlay({ session, memoryId, mode }));
+    } catch (error) {
+      const value = error as { code?: string; status?: number; message?: string };
+      return res.status(value.status || 400).json({ code: value.code || "invalid_request", message: value.message || "Invalid overlay." });
+    }
+  });
+
+  app.delete("/api/sessions/:sessionId/memory-overlay/:overlayId", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const overlayId = getSingleParam(req.params.overlayId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session || !overlayId) return res.status(404).json({ code: "not_found", message: "Memory overlay not found." });
+    const overlay = revokeMemoryOverlay(session.session_id, overlayId, session.workspace_id || "default");
+    return overlay ? res.json(overlay) : res.status(404).json({ code: "not_found", message: "Memory overlay not found." });
+  });
+
+  app.get("/api/sessions/:sessionId/memory-contexts", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const session = sessionId ? getSession(sessionId) : null;
+    if (!session) return res.status(404).json({ code: "not_found", message: "Session not found." });
+    const items = listTurnMemoryContexts(session.session_id, session.workspace_id || "default");
+    return res.json({ schema_version: 1, session_id: session.session_id, count: items.length, items });
+  });
+
+  app.get("/api/sessions/:sessionId/memory-contexts/:contextId", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    const contextId = getSingleParam(req.params.contextId);
+    const session = sessionId ? getSession(sessionId) : null;
+    const context = session && contextId
+      ? getTurnMemoryContext(session.session_id, contextId, session.workspace_id || "default")
+      : null;
+    return context ? res.json(context) : res.status(404).json({ code: "not_found", message: "Memory context not found." });
+  });
+
+  app.get("/api/memory-onboarding", (_req: Request, res: Response) => res.json(getMemoryOnboarding()));
+  app.post("/api/memory-onboarding/start", (_req: Request, res: Response) => res.json(startMemoryOnboarding()));
+  app.post("/api/memory-onboarding/preview", (req: Request, res: Response) => {
+    try {
+      return res.json(previewMemoryOnboarding(isPlainObject(req.body) ? req.body : {}));
+    } catch (error) {
+      return res.status(400).json({ code: "invalid_request", message: error instanceof Error ? error.message : "Invalid onboarding input." });
+    }
+  });
+  app.post("/api/memory-onboarding/complete", (_req: Request, res: Response) => {
+    try {
+      return res.json(completeMemoryOnboarding());
+    } catch (error) {
+      return res.status(409).json({ code: "memory_onboarding_invalid", message: error instanceof Error ? error.message : "Onboarding cannot be completed." });
+    }
+  });
+  app.post("/api/memory-onboarding/dismiss", (_req: Request, res: Response) => res.json(dismissMemoryOnboarding()));
+  app.get("/api/memory-effectiveness", (_req: Request, res: Response) => res.json(memoryEffectiveness()));
 
   app.post("/api/session-recall/search", (req: Request, res: Response) => {
     const body = isPlainObject(req.body) ? req.body : {};

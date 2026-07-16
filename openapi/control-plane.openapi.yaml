@@ -666,7 +666,13 @@ components:
         applied_automatically: { type: boolean }
         snapshot_version: { type: [integer, "null"], minimum: 1 }
         updated_at: { type: string, format: date-time }
-      required: [schema_version, session_id, memory_id, memory_version, scope_kind, scope_id, kind, sensitivity, title, summary, reason, score, already_in_snapshot, applied_automatically, snapshot_version, updated_at]
+        recommendation_id: { type: string }
+        application_state: { type: string, enum: [available, queued, kept, applied, dismissed] }
+        last_applied_context_id: { type: [string, "null"] }
+        available_actions:
+          type: array
+          items: { type: string, enum: [use_next_turn, keep_for_session, dismiss_for_session, not_relevant, edit_requested, forget_requested] }
+      required: [schema_version, session_id, memory_id, memory_version, scope_kind, scope_id, kind, sensitivity, title, summary, reason, score, already_in_snapshot, applied_automatically, snapshot_version, updated_at, recommendation_id, application_state, last_applied_context_id, available_actions]
     MemoryRecommendationResult:
       type: object
       properties:
@@ -677,6 +683,117 @@ components:
           type: array
           items: { $ref: "#/components/schemas/MemoryRecommendation" }
       required: [schema_version, session_id, count, recommendations]
+    TurnMemoryContextEntry:
+      type: object
+      properties:
+        memory_id: { type: string }
+        memory_version: { type: integer, minimum: 1 }
+        source: { type: string, enum: [core_snapshot, automatic_recall, manual_overlay] }
+        scope_kind: { $ref: "#/components/schemas/MemoryScopeKind" }
+        scope_id: { type: string }
+        kind: { $ref: "#/components/schemas/MemoryKind" }
+        sensitivity: { type: string, enum: [normal, private] }
+        content: { type: string }
+        content_digest: { type: string }
+      required: [memory_id, memory_version, scope_kind, scope_id, kind, sensitivity, content, content_digest]
+    TurnMemoryContextSnapshot:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        context_id: { type: string }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        source_user_message_id: { type: string }
+        provider_connection_id: { type: [string, "null"] }
+        model: { type: [string, "null"] }
+        entries: { type: array, items: { $ref: "#/components/schemas/TurnMemoryContextEntry" } }
+        character_count: { type: integer, minimum: 0 }
+        prompt_digest: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, context_id, workspace_id, session_id, source_user_message_id, provider_connection_id, model, entries, character_count, prompt_digest, created_at]
+    MemoryOverlay:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        overlay_id: { type: string }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        memory_id: { type: string }
+        memory_version: { type: integer, minimum: 1 }
+        mode: { type: string, enum: [next_turn, session] }
+        status: { type: string, enum: [queued, active, consumed, revoked, stale] }
+        entry: { $ref: "#/components/schemas/TurnMemoryContextEntry" }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        consumed_context_id: { type: [string, "null"] }
+        consumed_at: { type: [string, "null"], format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+      required: [schema_version, overlay_id, workspace_id, session_id, memory_id, memory_version, mode, status, entry, created_by, created_at, consumed_context_id, consumed_at, revoked_at]
+    MemoryRecommendationFeedback:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        feedback_id: { type: string }
+        recommendation_id: { type: string }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        memory_id: { type: string }
+        memory_version: { type: integer, minimum: 1 }
+        action: { type: string, enum: [use_next_turn, keep_for_session, dismiss_for_session, not_relevant, edit_requested, forget_requested] }
+        reason_code: { type: [string, "null"], enum: [useful, wrong_task, outdated, incorrect, too_sensitive, other, null] }
+        actor_id: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, feedback_id, recommendation_id, workspace_id, session_id, memory_id, memory_version, action, reason_code, actor_id, created_at]
+    MemoryOnboarding:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        principal_id: { type: string }
+        status: { type: string, enum: [not_started, in_progress, completed, dismissed] }
+        step: { type: integer, minimum: 0, maximum: 4 }
+        draft_entries:
+          type: array
+          items:
+            type: object
+            properties:
+              content: { type: string }
+              kind: { $ref: "#/components/schemas/MemoryKind" }
+              scope_kind: { type: string, enum: [user, workspace, project] }
+              scope_id: { type: [string, "null"] }
+              sensitivity: { type: string, enum: [normal, private] }
+              tags: { type: array, items: { type: string } }
+              origin: { type: string, enum: [explicit, inferred] }
+            required: [content, kind, scope_kind, scope_id, sensitivity, tags, origin]
+        committed_memory_ids: { type: array, items: { type: string } }
+        candidate_ids: { type: array, items: { type: string } }
+        started_at: { type: [string, "null"], format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+        dismissed_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, principal_id, status, step, draft_entries, committed_memory_ids, candidate_ids, started_at, completed_at, dismissed_at, updated_at]
+    MemoryEffectiveness:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        turn_contexts: { type: integer, minimum: 0 }
+        applied_memories: { type: integer, minimum: 0 }
+        recommendation_feedback: { type: integer, minimum: 0 }
+        accepted_recommendations: { type: integer, minimum: 0 }
+        dismissed_recommendations: { type: integer, minimum: 0 }
+        not_relevant_recommendations: { type: integer, minimum: 0 }
+        acceptance_rate: { type: number, minimum: 0, maximum: 1 }
+        dismissal_rate: { type: number, minimum: 0, maximum: 1 }
+        stale_overlays: { type: integer, minimum: 0 }
+        evaluated_tasks: { type: integer, minimum: 0 }
+        evaluated_tasks_with_memory: { type: integer, minimum: 0 }
+        evaluation_join_rate: { type: number, minimum: 0, maximum: 1 }
+        correlation_note: { type: string }
+        context_total_latency_ms: { type: integer, minimum: 0 }
+        context_last_latency_ms: { type: [integer, "null"], minimum: 0 }
+        evaluated_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, turn_contexts, applied_memories, recommendation_feedback, accepted_recommendations, dismissed_recommendations, not_relevant_recommendations, acceptance_rate, dismissal_rate, stale_overlays, evaluated_tasks, evaluated_tasks_with_memory, evaluation_join_rate, correlation_note, context_total_latency_ms, context_last_latency_ms, evaluated_at]
     MemoryRetrievalRequest:
       type: object
       properties:
@@ -5678,6 +5795,227 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/sessions/{sessionId}/memory-recommendations/{recommendationId}/feedback:
+    post:
+      operationId: createSessionMemoryRecommendationFeedback
+      tags: [Memory]
+      summary: Record a content-free recommendation action and optionally activate an overlay
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: recommendationId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string, enum: [use_next_turn, keep_for_session, dismiss_for_session, not_relevant, edit_requested, forget_requested] }
+                reason_code: { type: [string, "null"], enum: [useful, wrong_task, outdated, incorrect, too_sensitive, other, null] }
+              required: [action]
+      responses:
+        "201":
+          description: Recorded feedback and optional overlay
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  feedback: { $ref: "#/components/schemas/MemoryRecommendationFeedback" }
+                  overlay:
+                    oneOf:
+                      - { $ref: "#/components/schemas/MemoryOverlay" }
+                      - { type: "null" }
+                required: [feedback, overlay]
+
+  /api/sessions/{sessionId}/memory-overlay:
+    get:
+      operationId: listSessionMemoryOverlays
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Session Memory overlays
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schema_version: { type: integer, const: 1 }
+                  session_id: { type: string }
+                  count: { type: integer, minimum: 0 }
+                  items: { type: array, items: { $ref: "#/components/schemas/MemoryOverlay" } }
+                required: [schema_version, session_id, count, items]
+    post:
+      operationId: createSessionMemoryOverlay
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                memory_id: { type: string }
+                mode: { type: string, enum: [next_turn, session] }
+              required: [memory_id, mode]
+      responses:
+        "201":
+          description: Created Memory overlay
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOverlay" }
+
+  /api/sessions/{sessionId}/memory-overlay/{overlayId}:
+    delete:
+      operationId: revokeSessionMemoryOverlay
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: overlayId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Revoked Memory overlay
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOverlay" }
+
+  /api/sessions/{sessionId}/memory-contexts:
+    get:
+      operationId: listSessionTurnMemoryContexts
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Immutable per-turn Memory context history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schema_version: { type: integer, const: 1 }
+                  session_id: { type: string }
+                  count: { type: integer, minimum: 0 }
+                  items: { type: array, items: { $ref: "#/components/schemas/TurnMemoryContextSnapshot" } }
+                required: [schema_version, session_id, count, items]
+
+  /api/sessions/{sessionId}/memory-contexts/{contextId}:
+    get:
+      operationId: getSessionTurnMemoryContext
+      tags: [Memory]
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: contextId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Exact immutable Memory context
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TurnMemoryContextSnapshot" }
+
+  /api/memory-onboarding:
+    get:
+      operationId: getMemoryOnboarding
+      tags: [Memory]
+      responses:
+        "200":
+          description: Resumable guided Memory onboarding state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOnboarding" }
+
+  /api/memory-onboarding/start:
+    post:
+      operationId: startMemoryOnboarding
+      tags: [Memory]
+      responses:
+        "200":
+          description: Started or resumed onboarding
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOnboarding" }
+
+  /api/memory-onboarding/preview:
+    post:
+      operationId: previewMemoryOnboarding
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Saved onboarding draft preview
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOnboarding" }
+
+  /api/memory-onboarding/complete:
+    post:
+      operationId: completeMemoryOnboarding
+      tags: [Memory]
+      responses:
+        "200":
+          description: Completed onboarding
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOnboarding" }
+
+  /api/memory-onboarding/dismiss:
+    post:
+      operationId: dismissMemoryOnboarding
+      tags: [Memory]
+      responses:
+        "200":
+          description: Dismissed onboarding without deleting drafts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOnboarding" }
+
+  /api/memory-effectiveness:
+    get:
+      operationId: getMemoryEffectiveness
+      tags: [Memory]
+      summary: Get correlation-only Memory activation and feedback metrics
+      responses:
+        "200":
+          description: Memory effectiveness metrics
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryEffectiveness" }
 
   /api/sessions/{sessionId}/memory-review:
     post:

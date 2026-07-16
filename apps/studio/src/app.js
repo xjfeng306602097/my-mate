@@ -324,6 +324,16 @@ const state = {
     maintenance: null,
     maintenanceSweep: null,
     recommendations: null,
+    overlays: null,
+    contexts: null,
+    onboarding: null,
+    effectiveness: null,
+    onboardingDraft: {
+      responsePreferences: "",
+      validationConventions: "",
+      projectConventions: "",
+      private: false,
+    },
     records: [],
     candidates: [],
     query: "",
@@ -5250,6 +5260,16 @@ function resetWorkspaceScopedState() {
     maintenance: null,
     maintenanceSweep: null,
     recommendations: null,
+    overlays: null,
+    contexts: null,
+    onboarding: null,
+    effectiveness: null,
+    onboardingDraft: {
+      responsePreferences: "",
+      validationConventions: "",
+      projectConventions: "",
+      private: false,
+    },
     records: [],
     candidates: [],
     query: "",
@@ -7120,7 +7140,7 @@ async function loadMemoryStatus(shouldRender = true) {
     if (state.memory.kindFilter !== "all") params.set("kind", state.memory.kindFilter);
     if (state.memory.query.trim()) params.set("query", state.memory.query.trim());
     const recommendationSessionId = state.selectedSessionId || state.workspaceDetail?.session?.session_id || "";
-    const [retrievalStatus, knowledgeStatus, memories, candidates, settings, observability, maintenance, intelligenceEvaluation, recommendations] = await Promise.all([
+    const [retrievalStatus, knowledgeStatus, memories, candidates, settings, observability, maintenance, intelligenceEvaluation, recommendations, overlays, contexts, onboarding, effectiveness] = await Promise.all([
       request("/api/memory-retrieval/status"),
       request("/api/memory-knowledge/status"),
       request(`/api/memories?${params.toString()}`),
@@ -7132,6 +7152,14 @@ async function loadMemoryStatus(shouldRender = true) {
       recommendationSessionId
         ? request(`/api/sessions/${encodeURIComponent(recommendationSessionId)}/memory-recommendations`)
         : Promise.resolve(null),
+      recommendationSessionId
+        ? request(`/api/sessions/${encodeURIComponent(recommendationSessionId)}/memory-overlay`)
+        : Promise.resolve(null),
+      recommendationSessionId
+        ? request(`/api/sessions/${encodeURIComponent(recommendationSessionId)}/memory-contexts`)
+        : Promise.resolve(null),
+      request("/api/memory-onboarding"),
+      request("/api/memory-effectiveness"),
     ]);
     state.memory.retrievalStatus = retrievalStatus;
     state.memory.knowledgeStatus = knowledgeStatus;
@@ -7142,6 +7170,10 @@ async function loadMemoryStatus(shouldRender = true) {
     state.memory.maintenance = maintenance.last_run || null;
     state.memory.intelligenceEvaluation = intelligenceEvaluation;
     state.memory.recommendations = recommendations;
+    state.memory.overlays = overlays;
+    state.memory.contexts = contexts;
+    state.memory.onboarding = onboarding;
+    state.memory.effectiveness = effectiveness;
   } catch (error) {
     state.error = error.message || "Failed to load memory status.";
   } finally {
@@ -7165,6 +7197,140 @@ async function searchMemoryFromStudio() {
     state.error = error.message || "Memory search failed.";
   } finally {
     state.memoryLoading = false;
+    render();
+  }
+}
+
+function currentMemoryRecommendation(recommendationId) {
+  return (state.memory.recommendations?.recommendations || [])
+    .find((item) => item.recommendation_id === recommendationId) || null;
+}
+
+function activeOverlayForRecommendation(item) {
+  return (state.memory.overlays?.items || []).find((overlay) =>
+    overlay.memory_id === item.memory_id &&
+    overlay.memory_version === item.memory_version &&
+    ["queued", "active", "stale"].includes(overlay.status),
+  ) || null;
+}
+
+function updateMemoryRecommendationSurfaces() {
+  const task = document.querySelector("[data-task-memory-recommendations]");
+  if (task) task.innerHTML = renderTaskMemoryRecommendationContent();
+  const center = document.querySelector("[data-memory-recommendation-list]");
+  if (center) center.innerHTML = renderMemoryRecommendationListContent();
+}
+
+async function applyMemoryRecommendationAction(recommendationId, action) {
+  const sessionId = state.selectedSessionId || state.workspaceDetail?.session?.session_id || "";
+  const recommendation = currentMemoryRecommendation(recommendationId);
+  if (!sessionId || !recommendation || state.memory.saving) return;
+  state.memory.saving = true;
+  document.querySelectorAll(`[data-recommendation-id="${CSS.escape(recommendationId)}"] button`)
+    .forEach((button) => { button.disabled = true; });
+  try {
+    const result = await request(`/api/sessions/${encodeURIComponent(sessionId)}/memory-recommendations/${encodeURIComponent(recommendationId)}/feedback`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    });
+    if (action === "dismiss_for_session" || action === "not_relevant") {
+      state.memory.recommendations.recommendations = state.memory.recommendations.recommendations
+        .filter((item) => item.recommendation_id !== recommendationId);
+    } else if (action === "use_next_turn" || action === "keep_for_session") {
+      recommendation.application_state = action === "use_next_turn" ? "queued" : "kept";
+      state.memory.overlays ||= { items: [] };
+      if (result.overlay) state.memory.overlays.items = [result.overlay, ...(state.memory.overlays.items || [])];
+    }
+    state.notice = action === "use_next_turn"
+      ? "Memory queued for the next reply."
+      : action === "keep_for_session"
+        ? "Memory will stay active for this Task."
+        : "Memory recommendation feedback saved.";
+    updateMemoryRecommendationSurfaces();
+  } catch (error) {
+    state.error = error.message || "Memory recommendation action failed.";
+    render();
+  } finally {
+    state.memory.saving = false;
+  }
+}
+
+async function removeMemoryOverlay(overlayId, recommendationId) {
+  const sessionId = state.selectedSessionId || state.workspaceDetail?.session?.session_id || "";
+  if (!sessionId || !overlayId || state.memory.saving) return;
+  state.memory.saving = true;
+  try {
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/memory-overlay/${encodeURIComponent(overlayId)}`, {
+      method: "DELETE",
+    });
+    state.memory.overlays.items = (state.memory.overlays?.items || []).filter((item) => item.overlay_id !== overlayId);
+    const recommendation = currentMemoryRecommendation(recommendationId);
+    if (recommendation) recommendation.application_state = recommendation.last_applied_context_id ? "applied" : "available";
+    updateMemoryRecommendationSurfaces();
+  } catch (error) {
+    state.error = error.message || "Task Memory could not be removed.";
+    render();
+  } finally {
+    state.memory.saving = false;
+  }
+}
+
+async function startMemoryOnboardingFromStudio() {
+  try {
+    state.memory.onboarding = await request("/api/memory-onboarding/start", { method: "POST", body: "{}" });
+    render();
+  } catch (error) {
+    state.error = error.message || "Memory onboarding could not start.";
+    render();
+  }
+}
+
+function onboardingDraftEntries() {
+  const draft = state.memory.onboardingDraft;
+  const sensitivity = draft.private ? "private" : "normal";
+  const entries = [];
+  if (draft.responsePreferences.trim()) entries.push({
+    content: draft.responsePreferences.trim(), kind: "preference", scope_kind: "user", sensitivity, tags: ["onboarding", "response"], origin: "explicit",
+  });
+  if (draft.validationConventions.trim()) entries.push({
+    content: draft.validationConventions.trim(), kind: "convention", scope_kind: "workspace", sensitivity, tags: ["onboarding", "validation"], origin: "explicit",
+  });
+  const projectId = state.workspaceDetail?.task_workspace?.project_id || state.desktop.workspace?.projectId || "";
+  if (draft.projectConventions.trim() && projectId) entries.push({
+    content: draft.projectConventions.trim(), kind: "convention", scope_kind: "project", scope_id: projectId, sensitivity, tags: ["onboarding", "project"], origin: "explicit",
+  });
+  return entries;
+}
+
+async function advanceMemoryOnboarding(complete = false) {
+  const onboarding = state.memory.onboarding;
+  if (!onboarding || state.memory.saving) return;
+  state.memory.saving = true;
+  try {
+    const nextStep = Math.min(4, Math.max(1, Number(onboarding.step || 1) + (complete ? 0 : 1)));
+    state.memory.onboarding = await request("/api/memory-onboarding/preview", {
+      method: "POST",
+      body: JSON.stringify({ step: nextStep, entries: onboardingDraftEntries() }),
+    });
+    if (complete) {
+      state.memory.onboarding = await request("/api/memory-onboarding/complete", { method: "POST", body: "{}" });
+      state.notice = "Memory onboarding completed.";
+      await loadMemoryStatus(false);
+    }
+  } catch (error) {
+    state.error = error.message || "Memory onboarding could not be saved.";
+  } finally {
+    state.memory.saving = false;
+    render();
+  }
+}
+
+async function dismissMemoryOnboardingFromStudio() {
+  try {
+    state.memory.onboarding = await request("/api/memory-onboarding/dismiss", { method: "POST", body: "{}" });
+    render();
+  } catch (error) {
+    state.error = error.message || "Memory onboarding could not be dismissed.";
     render();
   }
 }
@@ -7430,7 +7596,7 @@ async function hydrateSessionWorkspaceSecondary({
   signal,
   shouldRender,
 }) {
-  const [routeCompare, runtimeTrace, runtimeScorecards, runtimeEvaluations] = await Promise.all([
+  const [routeCompare, runtimeTrace, runtimeScorecards, runtimeEvaluations, _dagProposals, memoryRecommendations, memoryOverlays, memoryContexts] = await Promise.all([
     request(`/api/sessions/${encodeURIComponent(sessionId)}/compare`, { signal }).catch(() => null),
     activeRunId
       ? request(`/api/runs/${encodeURIComponent(activeRunId)}/trace?limit=500`, { signal }).catch(() => null)
@@ -7442,6 +7608,9 @@ async function hydrateSessionWorkspaceSecondary({
       ? request(`/api/runs/${encodeURIComponent(activeRunId)}/evaluations`, { signal }).catch(() => ({ items: [] }))
       : Promise.resolve({ items: [] }),
     loadSessionDagProposals(sessionId, false, loadSeq, { signal }),
+    request(`/api/sessions/${encodeURIComponent(sessionId)}/memory-recommendations`, { signal }).catch(() => null),
+    request(`/api/sessions/${encodeURIComponent(sessionId)}/memory-overlay`, { signal }).catch(() => null),
+    request(`/api/sessions/${encodeURIComponent(sessionId)}/memory-contexts`, { signal }).catch(() => null),
   ]);
   if (signal.aborted || loadSeq !== workspaceLoadSeq) return;
   if (!state.workspaceDetail || getWorkspaceSessionId(state.workspaceDetail) !== sessionId) return;
@@ -7453,6 +7622,9 @@ async function hydrateSessionWorkspaceSecondary({
     runtime_scorecards: runtimeScorecards?.items || [],
     runtime_evaluations: runtimeEvaluations?.items || [],
   };
+  state.memory.recommendations = memoryRecommendations;
+  state.memory.overlays = memoryOverlays;
+  state.memory.contexts = memoryContexts;
   if (routeCompare?.left || routeCompare?.right) {
     state.ui.routeCompareSelection = {
       leftKey: buildRouteCompareSelectionKey(routeCompare.left?.revision, routeCompare.left?.option),
@@ -7487,6 +7659,11 @@ async function loadSessionWorkspace(sessionId, shouldRender = true, options = {}
 
   const currentSessionId = state.workspaceDetail?.session?.session_id || null;
   const enteringSession = currentSessionId !== sessionId;
+  if (enteringSession) {
+    state.memory.recommendations = null;
+    state.memory.overlays = null;
+    state.memory.contexts = null;
+  }
   if (currentSessionId && enteringSession) resetWorkspaceDrilldownState();
   if (enteringSession) resetDurableProposalState(sessionId);
   state.workspaceLoadingSessionId = sessionId;
@@ -14201,6 +14378,46 @@ function renderGeneratedRepair(experience) {
   return `<section class="task-generated-band task-repair-band"><div><span class="task-start-kicker">Supervisor</span><h3>${escapeHtml(alert.title)}</h3><p>${escapeHtml(alert.detail)}</p><small>${escapeHtml(`Still active / checked ${formatWorkspaceTimestamp(alert.last_seen_at)}`)}</small></div><div class="task-generated-actions">${duplicatesPrimaryAction ? "" : `<button class="primary" data-action="${escapeHtml(alert.recommended_action)}">${escapeHtml(alert.recommended_action_label)}</button>`}<button class="secondary" data-action="resolve-supervision-alert" data-alert-id="${escapeHtml(alert.alert_id)}">Dismiss</button></div></section>`;
 }
 
+function recommendationStateLabel(item) {
+  return {
+    queued: "Next reply",
+    kept: "Active in Task",
+    applied: "Applied",
+    dismissed: "Dismissed",
+  }[item.application_state] || "Available";
+}
+
+function renderTaskMemoryRecommendationContent() {
+  const recommendations = Array.isArray(state.memory.recommendations?.recommendations)
+    ? state.memory.recommendations.recommendations.slice(0, 2)
+    : [];
+  if (!recommendations.length) return "";
+  return recommendations.map((item) => {
+    const overlay = activeOverlayForRecommendation(item);
+    return `
+    <article class="task-memory-recommendation" data-recommendation-id="${escapeHtml(item.recommendation_id)}">
+      <div><span class="badge neutral">Memory</span><strong>${escapeHtml(item.summary)}</strong><small>${escapeHtml(item.reason)}</small></div>
+      <div class="task-memory-actions">
+        <span class="badge ${item.application_state === "available" ? "neutral" : "success"}">${escapeHtml(recommendationStateLabel(item))}</span>
+        ${item.application_state === "available" ? `<button class="primary" data-action="memory-recommendation-action" data-memory-action="use_next_turn" data-recommendation-id="${escapeHtml(item.recommendation_id)}">Use next reply</button><button class="icon-button" data-action="memory-recommendation-action" data-memory-action="keep_for_session" data-recommendation-id="${escapeHtml(item.recommendation_id)}" title="Keep for this Task" aria-label="Keep for this Task">+</button><button class="icon-button" data-action="memory-recommendation-action" data-memory-action="dismiss_for_session" data-recommendation-id="${escapeHtml(item.recommendation_id)}" title="Dismiss for this Task" aria-label="Dismiss for this Task">&#10005;</button>` : overlay ? `<button class="icon-button" data-action="remove-memory-overlay" data-overlay-id="${escapeHtml(overlay.overlay_id)}" data-recommendation-id="${escapeHtml(item.recommendation_id)}" title="Remove from this Task" aria-label="Remove from this Task">&#10005;</button>` : ""}
+      </div>
+    </article>`;
+  }).join("");
+}
+
+function renderMemoryRecommendationListContent() {
+  const recommendations = Array.isArray(state.memory.recommendations?.recommendations)
+    ? state.memory.recommendations.recommendations
+    : [];
+  return recommendations.map((item) => {
+    const overlay = activeOverlayForRecommendation(item);
+    return `<article class="memory-recommendation-row" data-recommendation-id="${escapeHtml(item.recommendation_id)}">
+    <div><div class="memory-record-meta"><span class="badge ${item.sensitivity === "private" ? "warn" : "neutral"}">${escapeHtml(item.sensitivity)}</span><small>${escapeHtml(`${item.scope_kind}:${item.scope_id} / ${item.kind} / v${item.memory_version}`)}</small></div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(item.reason)}</small></div>
+    <div class="memory-recommendation-actions"><span class="badge ${item.application_state === "available" ? "neutral" : "success"}">${escapeHtml(recommendationStateLabel(item))}</span><strong>${escapeHtml(Number(item.score || 0).toFixed(2))}</strong>${item.application_state === "available" ? `<button class="primary" data-action="memory-recommendation-action" data-memory-action="use_next_turn" data-recommendation-id="${escapeHtml(item.recommendation_id)}">Use next reply</button><button class="secondary" data-action="memory-recommendation-action" data-memory-action="keep_for_session" data-recommendation-id="${escapeHtml(item.recommendation_id)}">Keep for Task</button><button class="icon-button" data-action="memory-recommendation-action" data-memory-action="not_relevant" data-recommendation-id="${escapeHtml(item.recommendation_id)}" title="Not relevant" aria-label="Not relevant">&#10005;</button>` : overlay ? `<button class="secondary" data-action="remove-memory-overlay" data-overlay-id="${escapeHtml(overlay.overlay_id)}" data-recommendation-id="${escapeHtml(item.recommendation_id)}">Remove from Task</button>` : ""}</div>
+  </article>`;
+  }).join("") || `<p class="muted">${state.memory.recommendations ? "No relevant memory recommendation for the current Task." : "Select a Task, then refresh Memory Center."}</p>`;
+}
+
 function renderTaskConversationRail(messages) {
   const visibleMessages = getVisibleOrchestratorMessages(messages);
   const conversationTargets = getConversationTargets();
@@ -14233,6 +14450,7 @@ function renderTaskConversationRail(messages) {
       ${renderOrchestratorConversation(messages)}
       ${checkpointNotice}
       ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
+      <div class="task-memory-recommendations" data-task-memory-recommendations>${renderTaskMemoryRecommendationContent()}</div>
       <div class="orchestrator-composer task-chat-composer" data-conversation-file-drop="true">
         ${attachments.length ? `<div class="task-chat-attachments">${attachments.slice(-6).map((attachment) => `<span class="task-chat-attachment" title="${escapeHtml(attachment.summary || attachment.storage_uri || attachment.name)}"><span>${escapeHtml(attachment.name || "Attached file")}</span><button class="icon-button" type="button" data-action="remove-conversation-attachment" data-attachment-id="${escapeHtml(attachment.attachment_id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(attachment.name || "attachment")}" ${state.attachmentSaving ? "disabled" : ""}>&#10005;</button></span>`).join("")}</div>` : ""}
         <textarea rows="2" aria-label="Message My Mate" data-field="planner.intent" placeholder="Message My Mate" ${state.planning ? "disabled" : ""}>${escapeHtml(state.planner.intent)}</textarea>
@@ -15060,6 +15278,25 @@ function renderProductSettingsPanel() {
   `;
 }
 
+function renderMemoryOnboarding() {
+  const onboarding = state.memory.onboarding;
+  if (!onboarding) return "";
+  if (onboarding.status !== "in_progress") {
+    const complete = onboarding.status === "completed";
+    return `<section class="memory-onboarding-section"><div><span class="task-start-kicker">Guided setup</span><strong>${complete ? "Memory preferences are configured" : onboarding.status === "dismissed" ? "Memory setup is dismissed" : "Set up how My Mate should work with you"}</strong><small>${complete ? `${onboarding.committed_memory_ids?.length || 0} memories committed / ${onboarding.candidate_ids?.length || 0} awaiting review` : "Optional, resumable, and limited to what you explicitly enter."}</small></div><button class="${complete ? "secondary" : "primary"}" data-action="start-memory-onboarding">${complete ? "Restart" : "Start"}</button></section>`;
+  }
+  const step = Math.min(4, Math.max(1, Number(onboarding.step || 1)));
+  const draft = state.memory.onboardingDraft;
+  const body = step === 1
+    ? `<label><span>Response and communication preferences</span><textarea rows="3" data-field="memory.onboarding.responsePreferences" placeholder="For example: concise answers, Chinese output, evidence first">${escapeHtml(draft.responsePreferences)}</textarea></label>`
+    : step === 2
+      ? `<label><span>Validation and delivery conventions</span><textarea rows="3" data-field="memory.onboarding.validationConventions" placeholder="For example: run focused tests and report exact failures">${escapeHtml(draft.validationConventions)}</textarea></label>`
+      : step === 3
+        ? `<label><span>Current Project conventions (optional)</span><textarea rows="3" data-field="memory.onboarding.projectConventions" placeholder="Only applies to the selected Project">${escapeHtml(draft.projectConventions)}</textarea></label>`
+        : `<label class="memory-inline-check"><input type="checkbox" data-field="memory.onboarding.private" ${draft.private ? "checked" : ""} /><span>Store these entries as Private encrypted Memory</span></label><p class="muted">Only the text above will be stored. My Mate will not scan your files, browser history, or connected services.</p>`;
+  return `<section class="memory-onboarding-flow"><div class="memory-results-heading"><strong>Guided Memory setup</strong><small>Step ${step} of 4</small></div>${body}<div class="memory-actions-row"><button class="secondary" data-action="dismiss-memory-onboarding">Dismiss</button>${step < 4 ? `<button class="primary" data-action="advance-memory-onboarding">Continue</button>` : `<button class="primary" data-action="complete-memory-onboarding" ${!onboardingDraftEntries().length ? "disabled" : ""}>Review and save</button>`}</div></section>`;
+}
+
 function renderMemoryWorkspace() {
   const retrieval = state.memory.retrievalStatus;
   const embedding = retrieval?.embedding || null;
@@ -15071,6 +15308,9 @@ function renderMemoryWorkspace() {
   const intelligenceEvaluation = state.memory.intelligenceEvaluation;
   const maintenance = state.memory.maintenance;
   const maintenanceSweep = state.memory.maintenanceSweep;
+  const effectiveness = state.memory.effectiveness;
+  const contexts = Array.isArray(state.memory.contexts?.items) ? state.memory.contexts.items : [];
+  const overlays = Array.isArray(state.memory.overlays?.items) ? state.memory.overlays.items : [];
   const recommendations = Array.isArray(state.memory.recommendations?.recommendations)
     ? state.memory.recommendations.recommendations
     : [];
@@ -15101,6 +15341,14 @@ function renderMemoryWorkspace() {
           <button class="secondary" data-action="export-memory" data-format="jsonl">Export JSONL</button>
         </div>
       </div>
+      ${renderMemoryOnboarding()}
+      <div class="memory-status-table" aria-label="Memory activation effectiveness">
+        <div><span>Turn contexts</span><strong>${escapeHtml(String(effectiveness?.turn_contexts || 0))}</strong></div>
+        <div><span>Accepted recommendations</span><strong>${escapeHtml(String(effectiveness?.accepted_recommendations || 0))}</strong></div>
+        <div><span>Acceptance rate</span><strong>${escapeHtml(`${Math.round(Number(effectiveness?.acceptance_rate || 0) * 100)}%`)}</strong></div>
+        <div><span>Stale Task overlays</span><strong>${escapeHtml(String(effectiveness?.stale_overlays || 0))}</strong></div>
+      </div>
+      <p class="memory-correlation-note">${escapeHtml(effectiveness?.correlation_note || "Memory usage metrics report correlation only, not causation.")} ${escapeHtml(`${effectiveness?.evaluated_tasks_with_memory || 0}/${effectiveness?.evaluated_tasks || 0} evaluated Tasks have Memory context evidence.`)}</p>
       <div class="memory-record-list" aria-live="polite">
         <div class="memory-results-heading"><strong>${records.length} canonical memories</strong><small>Canonical records are soft-deleted and remain auditable.</small></div>
         ${records.map((memory) => {
@@ -15148,11 +15396,16 @@ function renderMemoryWorkspace() {
       </div>
       <section class="memory-recommendation-section">
         <div class="memory-results-heading"><strong>Current Task recommendations</strong><small>${state.memory.recommendations ? `${recommendations.length} relevant memories` : "Select a Task to inspect"}</small></div>
-        ${recommendations.map((item) => `<article class="memory-recommendation-row">
-          <div><div class="memory-record-meta"><span class="badge ${item.sensitivity === "private" ? "warn" : "neutral"}">${escapeHtml(item.sensitivity)}</span><small>${escapeHtml(`${item.scope_kind}:${item.scope_id} / ${item.kind} / v${item.memory_version}`)}</small></div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(item.reason)}</small></div>
-          <div class="memory-result-score"><strong>${escapeHtml(Number(item.score || 0).toFixed(2))}</strong><small>${item.already_in_snapshot ? "In snapshot" : "Newer context"}</small></div>
-        </article>`).join("") || `<p class="muted">${state.memory.recommendations ? "No relevant memory recommendation for the current Task." : "Select a Task, then refresh Memory Center."}</p>`}
+        <div data-memory-recommendation-list>${renderMemoryRecommendationListContent()}</div>
       </section>
+      <details class="memory-advanced-section">
+        <summary>Applied Memory history (${contexts.length})</summary>
+        <div class="memory-context-list">${contexts.map((context) => `<article class="memory-context-row"><div><strong>${escapeHtml(context.context_id)}</strong><small>${escapeHtml(`${formatWorkspaceTimestamp(context.created_at)} / ${context.model || "unknown model"} / ${context.entries?.length || 0} entries`)}</small></div><details><summary>Inspect exact context</summary>${(context.entries || []).map((entry) => `<p><span class="badge neutral">${escapeHtml(entry.source)}</span> ${escapeHtml(`${entry.memory_id} v${entry.memory_version}`)} - ${escapeHtml(entry.content)}</p>`).join("") || '<p class="muted">No Memory entries.</p>'}</details></article>`).join("") || '<p class="muted">No provider turn has frozen a Memory context yet.</p>'}</div>
+      </details>
+      <details class="memory-advanced-section">
+        <summary>Task overlays (${overlays.filter((item) => ["queued", "active", "stale"].includes(item.status)).length})</summary>
+        <div class="memory-context-list">${overlays.filter((item) => ["queued", "active", "stale"].includes(item.status)).map((overlay) => `<article class="memory-context-row"><div><span><strong>${escapeHtml(`${overlay.entry.kind} memory`)}</strong><small>${escapeHtml(`${overlay.mode} / v${overlay.memory_version}`)}</small></span><span><span class="badge ${overlay.status === "stale" ? "warn" : "success"}">${escapeHtml(overlay.status)}</span> <button class="secondary" data-action="remove-memory-overlay" data-overlay-id="${escapeHtml(overlay.overlay_id)}" data-recommendation-id="">Remove</button></span></div><p>${escapeHtml(overlay.entry.content)}</p></article>`).join("") || '<p class="muted">No queued, active, or stale Task Memory overlays.</p>'}</div>
+      </details>
       <div class="memory-provider-row">
         <span><strong>Embedding</strong><small>${escapeHtml(`${embedding?.provider_id || "disabled"}${embedding?.model ? ` / ${embedding.model}` : ""}`)}</small></span>
         <span class="badge ${embedding?.state === "ready" ? "success" : embedding?.state === "degraded" ? "warn" : "neutral"}">${escapeHtml(embedding?.state || "disabled")}</span>
@@ -15712,6 +15965,22 @@ function handleChange(target) {
   }
   if (field === "memory.importDryRun") {
     state.memory.importDryRun = target.checked === true;
+    return;
+  }
+  if (field === "memory.onboarding.responsePreferences") {
+    state.memory.onboardingDraft.responsePreferences = value;
+    return;
+  }
+  if (field === "memory.onboarding.validationConventions") {
+    state.memory.onboardingDraft.validationConventions = value;
+    return;
+  }
+  if (field === "memory.onboarding.projectConventions") {
+    state.memory.onboardingDraft.projectConventions = value;
+    return;
+  }
+  if (field === "memory.onboarding.private") {
+    state.memory.onboardingDraft.private = target.checked === true;
     return;
   }
   if (field.startsWith("memory.settings.") && state.memory.settings) {
@@ -16586,6 +16855,16 @@ document.addEventListener("click", (event) => {
     void Promise.all([loadRuntimeSummary(false), loadDashboardSummary(false)]).then(() => render());
   }
   if (action === "refresh-memory") void loadMemoryStatus();
+  if (action === "memory-recommendation-action") {
+    void applyMemoryRecommendationAction(button.dataset.recommendationId || "", button.dataset.memoryAction || "");
+  }
+  if (action === "remove-memory-overlay") {
+    void removeMemoryOverlay(button.dataset.overlayId || "", button.dataset.recommendationId || "");
+  }
+  if (action === "start-memory-onboarding") void startMemoryOnboardingFromStudio();
+  if (action === "advance-memory-onboarding") void advanceMemoryOnboarding(false);
+  if (action === "complete-memory-onboarding") void advanceMemoryOnboarding(true);
+  if (action === "dismiss-memory-onboarding") void dismissMemoryOnboardingFromStudio();
   if (action === "filter-memory") void loadMemoryStatus();
   if (action === "search-memory") void searchMemoryFromStudio();
   if (action === "rebuild-memory-index") void rebuildMemoryFromStudio("retrieval");

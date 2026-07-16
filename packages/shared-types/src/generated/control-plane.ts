@@ -689,6 +689,23 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/memory-effectiveness": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get correlation-only Memory activation and feedback metrics */
+        readonly get: operations["getMemoryEffectiveness"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/memory-intelligence/evaluation": {
         readonly parameters: {
             readonly query?: never;
@@ -803,6 +820,86 @@ export type paths = {
         readonly get: operations["getMemoryObservability"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-onboarding": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get: operations["getMemoryOnboarding"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-onboarding/complete": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post: operations["completeMemoryOnboarding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-onboarding/dismiss": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post: operations["dismissMemoryOnboarding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-onboarding/preview": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post: operations["previewMemoryOnboarding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-onboarding/start": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post: operations["startMemoryOnboarding"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -3433,6 +3530,70 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/sessions/{sessionId}/memory-contexts": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get: operations["listSessionTurnMemoryContexts"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/sessions/{sessionId}/memory-contexts/{contextId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get: operations["getSessionTurnMemoryContext"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/sessions/{sessionId}/memory-overlay": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get: operations["listSessionMemoryOverlays"];
+        readonly put?: never;
+        readonly post: operations["createSessionMemoryOverlay"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/sessions/{sessionId}/memory-overlay/{overlayId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete: operations["revokeSessionMemoryOverlay"];
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/sessions/{sessionId}/memory-recommendations": {
         readonly parameters: {
             readonly query?: never;
@@ -3444,6 +3605,23 @@ export type paths = {
         readonly get: operations["listSessionMemoryRecommendations"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/sessions/{sessionId}/memory-recommendations/{recommendationId}/feedback": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Record a content-free recommendation action and optionally activate an overlay */
+        readonly post: operations["createSessionMemoryRecommendationFeedback"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -4937,6 +5115,28 @@ export type components = {
         readonly MemoryCandidateRisk: "low" | "medium" | "high";
         /** @enum {string} */
         readonly MemoryCandidateStatus: "pending" | "approved" | "rejected";
+        readonly MemoryEffectiveness: {
+            readonly acceptance_rate: number;
+            readonly accepted_recommendations: number;
+            readonly applied_memories: number;
+            readonly context_last_latency_ms: number | null;
+            readonly context_total_latency_ms: number;
+            readonly correlation_note: string;
+            readonly dismissal_rate: number;
+            readonly dismissed_recommendations: number;
+            /** Format: date-time */
+            readonly evaluated_at: string;
+            readonly evaluated_tasks: number;
+            readonly evaluated_tasks_with_memory: number;
+            readonly evaluation_join_rate: number;
+            readonly not_relevant_recommendations: number;
+            readonly recommendation_feedback: number;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly stale_overlays: number;
+            readonly turn_contexts: number;
+            readonly workspace_id: string;
+        };
         readonly MemoryEmbeddingProviderStatus: {
             readonly cached_vectors: number;
             readonly dimensions: number | null;
@@ -5092,6 +5292,59 @@ export type components = {
             readonly updated_at: string;
             readonly workspace_id: string;
         };
+        readonly MemoryOnboarding: {
+            readonly candidate_ids: readonly string[];
+            readonly committed_memory_ids: readonly string[];
+            /** Format: date-time */
+            readonly completed_at: string | null;
+            /** Format: date-time */
+            readonly dismissed_at: string | null;
+            readonly draft_entries: readonly {
+                readonly content: string;
+                readonly kind: components["schemas"]["MemoryKind"];
+                /** @enum {string} */
+                readonly origin: "explicit" | "inferred";
+                readonly scope_id: string | null;
+                /** @enum {string} */
+                readonly scope_kind: "user" | "workspace" | "project";
+                /** @enum {string} */
+                readonly sensitivity: "normal" | "private";
+                readonly tags: readonly string[];
+            }[];
+            readonly principal_id: string;
+            /** @constant */
+            readonly schema_version: 1;
+            /** Format: date-time */
+            readonly started_at: string | null;
+            /** @enum {string} */
+            readonly status: "not_started" | "in_progress" | "completed" | "dismissed";
+            readonly step: number;
+            /** Format: date-time */
+            readonly updated_at: string;
+            readonly workspace_id: string;
+        };
+        readonly MemoryOverlay: {
+            /** Format: date-time */
+            readonly consumed_at: string | null;
+            readonly consumed_context_id: string | null;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly created_by: string;
+            readonly entry: components["schemas"]["TurnMemoryContextEntry"];
+            readonly memory_id: string;
+            readonly memory_version: number;
+            /** @enum {string} */
+            readonly mode: "next_turn" | "session";
+            readonly overlay_id: string;
+            /** Format: date-time */
+            readonly revoked_at: string | null;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly session_id: string;
+            /** @enum {string} */
+            readonly status: "queued" | "active" | "consumed" | "revoked" | "stale";
+            readonly workspace_id: string;
+        };
         readonly MemoryProposal: {
             readonly confidence: number;
             readonly content: string;
@@ -5112,11 +5365,16 @@ export type components = {
         };
         readonly MemoryRecommendation: {
             readonly already_in_snapshot: boolean;
+            /** @enum {string} */
+            readonly application_state: "available" | "queued" | "kept" | "applied" | "dismissed";
             readonly applied_automatically: boolean;
+            readonly available_actions: readonly ("use_next_turn" | "keep_for_session" | "dismiss_for_session" | "not_relevant" | "edit_requested" | "forget_requested")[];
             readonly kind: components["schemas"]["MemoryKind"];
+            readonly last_applied_context_id: string | null;
             readonly memory_id: string;
             readonly memory_version: number;
             readonly reason: string;
+            readonly recommendation_id: string;
             /** @constant */
             readonly schema_version: 1;
             readonly scope_id: string;
@@ -5130,6 +5388,23 @@ export type components = {
             readonly title: string;
             /** Format: date-time */
             readonly updated_at: string;
+        };
+        readonly MemoryRecommendationFeedback: {
+            /** @enum {string} */
+            readonly action: "use_next_turn" | "keep_for_session" | "dismiss_for_session" | "not_relevant" | "edit_requested" | "forget_requested";
+            readonly actor_id: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly feedback_id: string;
+            readonly memory_id: string;
+            readonly memory_version: number;
+            /** @enum {string|null} */
+            readonly reason_code: "useful" | "wrong_task" | "outdated" | "incorrect" | "too_sensitive" | "other" | null;
+            readonly recommendation_id: string;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly session_id: string;
+            readonly workspace_id: string;
         };
         readonly MemoryRecommendationResult: {
             readonly count: number;
@@ -6256,6 +6531,34 @@ export type components = {
             readonly trace_id: string;
             readonly usage: components["schemas"]["UsageSummary"] | null;
         };
+        readonly TurnMemoryContextEntry: {
+            readonly content: string;
+            readonly content_digest: string;
+            readonly kind: components["schemas"]["MemoryKind"];
+            readonly memory_id: string;
+            readonly memory_version: number;
+            readonly scope_id: string;
+            readonly scope_kind: components["schemas"]["MemoryScopeKind"];
+            /** @enum {string} */
+            readonly sensitivity: "normal" | "private";
+            /** @enum {string} */
+            readonly source?: "core_snapshot" | "automatic_recall" | "manual_overlay";
+        };
+        readonly TurnMemoryContextSnapshot: {
+            readonly character_count: number;
+            readonly context_id: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly entries: readonly components["schemas"]["TurnMemoryContextEntry"][];
+            readonly model: string | null;
+            readonly prompt_digest: string;
+            readonly provider_connection_id: string | null;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly session_id: string;
+            readonly source_user_message_id: string;
+            readonly workspace_id: string;
+        };
         readonly UpdateAgentHostingRequest: {
             readonly model?: string | null;
             readonly openclaw_agent_id?: string;
@@ -6498,6 +6801,7 @@ export type SchemaMemoryCandidateOperation = components['schemas']['MemoryCandid
 export type SchemaMemoryCandidateRecord = components['schemas']['MemoryCandidateRecord'];
 export type SchemaMemoryCandidateRisk = components['schemas']['MemoryCandidateRisk'];
 export type SchemaMemoryCandidateStatus = components['schemas']['MemoryCandidateStatus'];
+export type SchemaMemoryEffectiveness = components['schemas']['MemoryEffectiveness'];
 export type SchemaMemoryEmbeddingProviderStatus = components['schemas']['MemoryEmbeddingProviderStatus'];
 export type SchemaMemoryImportRequest = components['schemas']['MemoryImportRequest'];
 export type SchemaMemoryImportResult = components['schemas']['MemoryImportResult'];
@@ -6509,8 +6813,11 @@ export type SchemaMemoryKnowledgeRelation = components['schemas']['MemoryKnowled
 export type SchemaMemoryMaintenanceResult = components['schemas']['MemoryMaintenanceResult'];
 export type SchemaMemoryMaintenanceSweepResult = components['schemas']['MemoryMaintenanceSweepResult'];
 export type SchemaMemoryObservability = components['schemas']['MemoryObservability'];
+export type SchemaMemoryOnboarding = components['schemas']['MemoryOnboarding'];
+export type SchemaMemoryOverlay = components['schemas']['MemoryOverlay'];
 export type SchemaMemoryProposal = components['schemas']['MemoryProposal'];
 export type SchemaMemoryRecommendation = components['schemas']['MemoryRecommendation'];
+export type SchemaMemoryRecommendationFeedback = components['schemas']['MemoryRecommendationFeedback'];
 export type SchemaMemoryRecommendationResult = components['schemas']['MemoryRecommendationResult'];
 export type SchemaMemoryRecord = components['schemas']['MemoryRecord'];
 export type SchemaMemoryRetrievalEvidence = components['schemas']['MemoryRetrievalEvidence'];
@@ -6602,6 +6909,8 @@ export type SchemaTemplateLineageResponse = components['schemas']['TemplateLinea
 export type SchemaTemplateSummary = components['schemas']['TemplateSummary'];
 export type SchemaTraceProjection = components['schemas']['TraceProjection'];
 export type SchemaTraceSpan = components['schemas']['TraceSpan'];
+export type SchemaTurnMemoryContextEntry = components['schemas']['TurnMemoryContextEntry'];
+export type SchemaTurnMemoryContextSnapshot = components['schemas']['TurnMemoryContextSnapshot'];
 export type SchemaUpdateAgentHostingRequest = components['schemas']['UpdateAgentHostingRequest'];
 export type SchemaUpdateAutopilotRequest = components['schemas']['UpdateAutopilotRequest'];
 export type SchemaUpdateDagProposalAssignmentsRequest = components['schemas']['UpdateDagProposalAssignmentsRequest'];
@@ -7330,6 +7639,26 @@ export interface operations {
             };
         };
     };
+    readonly getMemoryEffectiveness: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Memory effectiveness metrics */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryEffectiveness"];
+                };
+            };
+        };
+    };
     readonly evaluateMemoryIntelligence: {
         readonly parameters: {
             readonly query?: never;
@@ -7494,6 +7823,112 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["MemoryObservability"];
+                };
+            };
+        };
+    };
+    readonly getMemoryOnboarding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Resumable guided Memory onboarding state */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOnboarding"];
+                };
+            };
+        };
+    };
+    readonly completeMemoryOnboarding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Completed onboarding */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOnboarding"];
+                };
+            };
+        };
+    };
+    readonly dismissMemoryOnboarding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Dismissed onboarding without deleting drafts */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOnboarding"];
+                };
+            };
+        };
+    };
+    readonly previewMemoryOnboarding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Saved onboarding draft preview */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOnboarding"];
+                };
+            };
+        };
+    };
+    readonly startMemoryOnboarding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Started or resumed onboarding */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOnboarding"];
                 };
             };
         };
@@ -8633,6 +9068,138 @@ export interface operations {
             };
         };
     };
+    readonly listSessionTurnMemoryContexts: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly sessionId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Immutable per-turn Memory context history */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly count: number;
+                        readonly items: readonly components["schemas"]["TurnMemoryContextSnapshot"][];
+                        /** @constant */
+                        readonly schema_version: 1;
+                        readonly session_id: string;
+                    };
+                };
+            };
+        };
+    };
+    readonly getSessionTurnMemoryContext: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly contextId: string;
+                readonly sessionId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Exact immutable Memory context */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["TurnMemoryContextSnapshot"];
+                };
+            };
+        };
+    };
+    readonly listSessionMemoryOverlays: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly sessionId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Session Memory overlays */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly count: number;
+                        readonly items: readonly components["schemas"]["MemoryOverlay"][];
+                        /** @constant */
+                        readonly schema_version: 1;
+                        readonly session_id: string;
+                    };
+                };
+            };
+        };
+    };
+    readonly createSessionMemoryOverlay: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly sessionId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly memory_id: string;
+                    /** @enum {string} */
+                    readonly mode: "next_turn" | "session";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Created Memory overlay */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOverlay"];
+                };
+            };
+        };
+    };
+    readonly revokeSessionMemoryOverlay: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly overlayId: string;
+                readonly sessionId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Revoked Memory overlay */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOverlay"];
+                };
+            };
+        };
+    };
     readonly listSessionMemoryRecommendations: {
         readonly parameters: {
             readonly query?: {
@@ -8662,6 +9229,41 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readonly createSessionMemoryRecommendationFeedback: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly recommendationId: string;
+                readonly sessionId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {string} */
+                    readonly action: "use_next_turn" | "keep_for_session" | "dismiss_for_session" | "not_relevant" | "edit_requested" | "forget_requested";
+                    /** @enum {string|null} */
+                    readonly reason_code?: "useful" | "wrong_task" | "outdated" | "incorrect" | "too_sensitive" | "other" | null;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Recorded feedback and optional overlay */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly feedback: components["schemas"]["MemoryRecommendationFeedback"];
+                        readonly overlay: components["schemas"]["MemoryOverlay"] | null;
+                    };
                 };
             };
         };
