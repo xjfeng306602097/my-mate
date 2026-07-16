@@ -328,6 +328,10 @@ const state = {
     contexts: null,
     onboarding: null,
     effectiveness: null,
+    operations: null,
+    operationResult: null,
+    backupPassphrase: "",
+    purgeConfirmId: "",
     onboardingDraft: {
       responsePreferences: "",
       validationConventions: "",
@@ -7140,7 +7144,7 @@ async function loadMemoryStatus(shouldRender = true) {
     if (state.memory.kindFilter !== "all") params.set("kind", state.memory.kindFilter);
     if (state.memory.query.trim()) params.set("query", state.memory.query.trim());
     const recommendationSessionId = state.selectedSessionId || state.workspaceDetail?.session?.session_id || "";
-    const [retrievalStatus, knowledgeStatus, memories, candidates, settings, observability, maintenance, intelligenceEvaluation, recommendations, overlays, contexts, onboarding, effectiveness] = await Promise.all([
+    const [retrievalStatus, knowledgeStatus, memories, candidates, settings, observability, maintenance, intelligenceEvaluation, recommendations, overlays, contexts, onboarding, effectiveness, operations] = await Promise.all([
       request("/api/memory-retrieval/status"),
       request("/api/memory-knowledge/status"),
       request(`/api/memories?${params.toString()}`),
@@ -7160,6 +7164,7 @@ async function loadMemoryStatus(shouldRender = true) {
         : Promise.resolve(null),
       request("/api/memory-onboarding"),
       request("/api/memory-effectiveness"),
+      request("/api/memory-operations"),
     ]);
     state.memory.retrievalStatus = retrievalStatus;
     state.memory.knowledgeStatus = knowledgeStatus;
@@ -7174,6 +7179,7 @@ async function loadMemoryStatus(shouldRender = true) {
     state.memory.contexts = contexts;
     state.memory.onboarding = onboarding;
     state.memory.effectiveness = effectiveness;
+    state.memory.operations = operations;
   } catch (error) {
     state.error = error.message || "Failed to load memory status.";
   } finally {
@@ -7476,6 +7482,93 @@ async function runMemoryMaintenanceSweepFromStudio() {
     state.error = error.message || "Workspace Memory maintenance failed.";
   } finally {
     state.memory.rebuilding = false;
+    render();
+  }
+}
+
+async function runMemoryOperationFromStudio(action, options = {}) {
+  if (state.memory.rebuilding) return;
+  const routes = {
+    rotate: "/api/memory-keys/rotate",
+    integrity: "/api/memory-integrity/scan",
+    retention: "/api/memory-retention/run",
+    backup: "/api/memory-backups",
+  };
+  const route = routes[action];
+  if (!route) return;
+  if (action === "backup" && state.memory.backupPassphrase.length < 12) {
+    state.error = "Backup passphrase must be at least 12 characters.";
+    render();
+    return;
+  }
+  state.memory.rebuilding = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.operationResult = await request(route, {
+      method: "POST",
+      body: JSON.stringify(action === "backup" ? { passphrase: state.memory.backupPassphrase } : options),
+    });
+    if (action === "backup") state.memory.backupPassphrase = "";
+    await loadMemoryStatus(false);
+    state.notice = {
+      rotate: "Private Memory data key rotated and retired keys destroyed.",
+      integrity: "Memory integrity scan completed.",
+      retention: "Memory retention policy applied.",
+      backup: "Encrypted Memory backup created.",
+    }[action];
+  } catch (error) {
+    state.error = error.message || "Memory operation failed.";
+  } finally {
+    state.memory.rebuilding = false;
+    render();
+  }
+}
+
+async function restoreMemoryBackupFromStudio(backupId, dryRun) {
+  if (!backupId || state.memory.rebuilding || state.memory.backupPassphrase.length < 12) {
+    state.error = "Enter the backup passphrase before verifying or restoring.";
+    render();
+    return;
+  }
+  state.memory.rebuilding = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.operationResult = await request(`/api/memory-backups/${encodeURIComponent(backupId)}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ passphrase: state.memory.backupPassphrase, dry_run: dryRun }),
+    });
+    if (!dryRun) {
+      state.memory.backupPassphrase = "";
+      await loadMemoryStatus(false);
+    }
+    state.notice = dryRun ? "Backup passphrase and manifest verified." : "Memory backup restored.";
+  } catch (error) {
+    state.error = error.message || "Memory backup restore failed.";
+  } finally {
+    state.memory.rebuilding = false;
+    render();
+  }
+}
+
+async function hardPurgeMemoryFromStudio(memoryId) {
+  if (!memoryId || state.memory.purgeConfirmId !== memoryId || state.memory.saving) return;
+  state.memory.saving = true;
+  state.error = null;
+  render();
+  try {
+    state.memory.operationResult = await request(`/api/memories/${encodeURIComponent(memoryId)}/purge`, {
+      method: "POST",
+      body: JSON.stringify({ confirm_memory_id: memoryId }),
+    });
+    state.memory.purgeConfirmId = "";
+    await loadMemoryStatus(false);
+    state.notice = "Memory and its content-bearing derived copies were permanently purged.";
+  } catch (error) {
+    state.error = error.message || "Memory purge failed.";
+  } finally {
+    state.memory.saving = false;
     render();
   }
 }
@@ -15309,6 +15402,8 @@ function renderMemoryWorkspace() {
   const maintenance = state.memory.maintenance;
   const maintenanceSweep = state.memory.maintenanceSweep;
   const effectiveness = state.memory.effectiveness;
+  const operations = state.memory.operations;
+  const integrity = operations?.last_integrity || null;
   const contexts = Array.isArray(state.memory.contexts?.items) ? state.memory.contexts.items : [];
   const overlays = Array.isArray(state.memory.overlays?.items) ? state.memory.overlays.items : [];
   const recommendations = Array.isArray(state.memory.recommendations?.recommendations)
@@ -15364,7 +15459,7 @@ function renderMemoryWorkspace() {
                 ? `<button class="secondary" data-action="cancel-memory-edit">Cancel</button><button class="primary" data-action="save-memory-edit" data-memory-id="${escapeHtml(memory.memory_id)}" ${state.memory.saving || !state.memory.editContent.trim() ? "disabled" : ""}>Save</button>`
                 : memory.status === "active"
                   ? `<button class="secondary" data-action="edit-memory" data-memory-id="${escapeHtml(memory.memory_id)}">Edit</button><button class="secondary danger-action" data-action="delete-memory" data-memory-id="${escapeHtml(memory.memory_id)}">Delete</button>`
-                  : `<button class="secondary" data-action="restore-memory" data-memory-id="${escapeHtml(memory.memory_id)}">Restore</button>`}
+                  : `<button class="secondary" data-action="restore-memory" data-memory-id="${escapeHtml(memory.memory_id)}">Restore</button>${memory.status === "deleted" ? state.memory.purgeConfirmId === memory.memory_id ? `<button class="secondary" data-action="cancel-memory-purge">Cancel</button><button class="secondary danger-action" data-action="confirm-memory-purge" data-memory-id="${escapeHtml(memory.memory_id)}">Permanently purge</button>` : `<button class="secondary danger-action" data-action="prepare-memory-purge" data-memory-id="${escapeHtml(memory.memory_id)}">Purge...</button>` : ""}`}
             </div>
           </article>`;
         }).join("") || '<div class="product-empty"><strong>No memories in this view</strong><span>Change the filters or complete a task that contains durable preferences or decisions.</span></div>'}
@@ -15419,6 +15514,28 @@ function renderMemoryWorkspace() {
         <button class="secondary" data-action="run-memory-maintenance-sweep" ${state.memory.rebuilding ? "disabled" : ""}>Maintain all Workspaces</button>
         <small>${maintenanceSweep ? `${escapeHtml(String(maintenanceSweep.maintained_workspaces || 0))} maintained / ${escapeHtml(String(maintenanceSweep.failed_workspaces?.length || 0))} failed` : maintenance ? `Last maintenance ${escapeHtml(formatWorkspaceTimestamp(maintenance.completed_at))}` : "Maintenance has not run yet"}</small>
       </div>
+      <details class="memory-advanced-section" open>
+        <summary>Security, backup, and retention</summary>
+        <div class="memory-status-table">
+          <div><span>Active data key</span><strong>${escapeHtml(operations?.key?.active_key_id?.slice(-12) || "-")}</strong></div>
+          <div><span>Key created</span><strong>${escapeHtml(operations?.key?.active_key_created_at ? formatWorkspaceTimestamp(operations.key.active_key_created_at) : "-")}</strong></div>
+          <div><span>Integrity</span><strong>${escapeHtml(integrity?.status || "Not scanned")}</strong></div>
+          <div><span>Encrypted backups</span><strong>${escapeHtml(String(operations?.backups?.length || 0))}</strong></div>
+        </div>
+        <div class="memory-actions-row">
+          <button class="secondary" data-action="rotate-memory-key" ${state.memory.rebuilding ? "disabled" : ""}>Rotate key</button>
+          <button class="secondary" data-action="scan-memory-integrity" ${state.memory.rebuilding ? "disabled" : ""}>Scan integrity</button>
+          <button class="secondary" data-action="run-memory-retention" ${state.memory.rebuilding ? "disabled" : ""}>Apply retention</button>
+        </div>
+        <div class="memory-backup-controls">
+          <label><span>Backup passphrase</span><input type="password" data-field="memory.backupPassphrase" value="${escapeHtml(state.memory.backupPassphrase)}" autocomplete="new-password" placeholder="At least 12 characters" /></label>
+          <button class="primary" data-action="create-memory-backup" ${state.memory.rebuilding || state.memory.backupPassphrase.length < 12 ? "disabled" : ""}>Create encrypted backup</button>
+        </div>
+        <div class="memory-context-list">
+          ${(operations?.backups || []).map((backup) => `<article class="memory-context-row"><div><span><strong>${escapeHtml(backup.backup_id)}</strong><small>${escapeHtml(`${backup.record_count} records / ${formatWorkspaceTimestamp(backup.created_at)}`)}</small></span><span><button class="secondary" data-action="verify-memory-backup" data-backup-id="${escapeHtml(backup.backup_id)}">Verify</button> <button class="secondary" data-action="restore-memory-backup" data-backup-id="${escapeHtml(backup.backup_id)}">Restore</button></span></div></article>`).join("") || '<p class="muted">No encrypted backup has been created.</p>'}
+        </div>
+        ${state.memory.operationResult ? `<p class="muted">${escapeHtml(state.memory.operationResult.purge_id ? `${state.memory.operationResult.removed_records} records purged` : state.memory.operationResult.verified_digest ? "Backup manifest verified" : state.memory.operationResult.report_id ? `${state.memory.operationResult.checked_records} records checked` : "Operation completed")}</p>` : ""}
+      </details>
       <details class="memory-advanced-section">
         <summary>Retrieval diagnostics</summary>
         <div class="memory-search-row">
@@ -15455,6 +15572,11 @@ function renderMemoryWorkspace() {
           <label><span>Agent memory</span><input type="checkbox" data-field="memory.settings.agentEnabled" ${settings.scope_policy.agent_memory_enabled ? "checked" : ""} /></label>
           <label><span>Resolved candidate retention</span><input type="number" min="1" max="3650" data-field="memory.settings.retentionDays" value="${escapeHtml(String(settings.retention.resolved_candidate_days))}" /></label>
           <label><span>Journal record limit</span><input type="number" min="100" max="1000000" data-field="memory.settings.journalLimit" value="${escapeHtml(String(settings.retention.journal_max_records))}" /></label>
+          <label><span>Deleted Memory days</span><input type="number" min="1" max="3650" data-field="memory.settings.deletedRetentionDays" value="${escapeHtml(String(settings.retention.soft_deleted_memory_days))}" /></label>
+          <label><span>Expired Memory days</span><input type="number" min="1" max="3650" data-field="memory.settings.expiredRetentionDays" value="${escapeHtml(String(settings.retention.expired_memory_days))}" /></label>
+          <label><span>Turn context days</span><input type="number" min="1" max="3650" data-field="memory.settings.contextRetentionDays" value="${escapeHtml(String(settings.retention.turn_context_days))}" /></label>
+          <label><span>Feedback days</span><input type="number" min="1" max="3650" data-field="memory.settings.feedbackRetentionDays" value="${escapeHtml(String(settings.retention.feedback_days))}" /></label>
+          <label><span>Backup days</span><input type="number" min="1" max="3650" data-field="memory.settings.backupRetentionDays" value="${escapeHtml(String(settings.retention.backup_days))}" /></label>
           <label><span>Embedding provider</span><select data-field="memory.settings.embeddingProvider"><option value="disabled" ${settings.embedding.provider === "disabled" ? "selected" : ""}>Disabled</option><option value="openai-compatible" ${settings.embedding.provider === "openai-compatible" ? "selected" : ""}>OpenAI compatible</option></select></label>
           <label><span>Provider connection</span><select data-field="memory.settings.connectionId"><option value="">Select connection</option>${state.providerConnections.filter((connection) => connection.status === "active").map((connection) => `<option value="${escapeHtml(connection.connection_id)}" ${settings.embedding.provider_connection_id === connection.connection_id ? "selected" : ""}>${escapeHtml(connection.name)}</option>`).join("")}</select></label>
           <label><span>Embedding model</span><input data-field="memory.settings.embeddingModel" value="${escapeHtml(settings.embedding.model || "")}" placeholder="text-embedding-3-small" /></label>
@@ -15967,6 +16089,12 @@ function handleChange(target) {
     state.memory.importDryRun = target.checked === true;
     return;
   }
+  if (field === "memory.backupPassphrase") {
+    state.memory.backupPassphrase = value;
+    const createButton = document.querySelector('[data-action="create-memory-backup"]');
+    if (createButton) createButton.disabled = state.memory.rebuilding || value.length < 12;
+    return;
+  }
   if (field === "memory.onboarding.responsePreferences") {
     state.memory.onboardingDraft.responsePreferences = value;
     return;
@@ -16003,6 +16131,11 @@ function handleChange(target) {
     if (field === "memory.settings.agentEnabled") settings.scope_policy.agent_memory_enabled = target.checked === true;
     if (field === "memory.settings.retentionDays") settings.retention.resolved_candidate_days = Number(value) || 90;
     if (field === "memory.settings.journalLimit") settings.retention.journal_max_records = Number(value) || 20000;
+    if (field === "memory.settings.deletedRetentionDays") settings.retention.soft_deleted_memory_days = Number(value) || 30;
+    if (field === "memory.settings.expiredRetentionDays") settings.retention.expired_memory_days = Number(value) || 90;
+    if (field === "memory.settings.contextRetentionDays") settings.retention.turn_context_days = Number(value) || 90;
+    if (field === "memory.settings.feedbackRetentionDays") settings.retention.feedback_days = Number(value) || 180;
+    if (field === "memory.settings.backupRetentionDays") settings.retention.backup_days = Number(value) || 30;
     if (field === "memory.settings.embeddingProvider") settings.embedding.provider = value;
     if (field === "memory.settings.connectionId") settings.embedding.provider_connection_id = value || null;
     if (field === "memory.settings.embeddingModel") settings.embedding.model = value || null;
@@ -16885,9 +17018,24 @@ document.addEventListener("click", (event) => {
   if (action === "save-memory-edit") void saveMemoryEdit(button.dataset.memoryId || "");
   if (action === "delete-memory") void changeMemoryStatus(button.dataset.memoryId || "", "delete");
   if (action === "restore-memory") void changeMemoryStatus(button.dataset.memoryId || "", "restore");
+  if (action === "prepare-memory-purge") {
+    state.memory.purgeConfirmId = button.dataset.memoryId || "";
+    render();
+  }
+  if (action === "cancel-memory-purge") {
+    state.memory.purgeConfirmId = "";
+    render();
+  }
+  if (action === "confirm-memory-purge") void hardPurgeMemoryFromStudio(button.dataset.memoryId || "");
   if (action === "save-memory-settings") void saveMemorySettings();
   if (action === "run-memory-maintenance") void runMemoryMaintenanceFromStudio();
   if (action === "run-memory-maintenance-sweep") void runMemoryMaintenanceSweepFromStudio();
+  if (action === "rotate-memory-key") void runMemoryOperationFromStudio("rotate");
+  if (action === "scan-memory-integrity") void runMemoryOperationFromStudio("integrity");
+  if (action === "run-memory-retention") void runMemoryOperationFromStudio("retention");
+  if (action === "create-memory-backup") void runMemoryOperationFromStudio("backup");
+  if (action === "verify-memory-backup") void restoreMemoryBackupFromStudio(button.dataset.backupId || "", true);
+  if (action === "restore-memory-backup") void restoreMemoryBackupFromStudio(button.dataset.backupId || "", false);
   if (action === "import-memory") void importMemoryFromStudio();
   if (action === "export-memory") void exportMemoryFromStudio(button.dataset.format || "json");
   if (action === "set-dashboard-cost-group") {

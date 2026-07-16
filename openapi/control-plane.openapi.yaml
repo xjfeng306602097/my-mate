@@ -370,7 +370,12 @@ components:
             resolved_candidate_days: { type: integer, minimum: 1, maximum: 3650 }
             journal_max_records: { type: integer, minimum: 100, maximum: 1000000 }
             maintenance_interval_minutes: { type: integer, minimum: 1, maximum: 10080 }
-          required: [resolved_candidate_days, journal_max_records, maintenance_interval_minutes]
+            soft_deleted_memory_days: { type: integer, minimum: 1, maximum: 3650 }
+            expired_memory_days: { type: integer, minimum: 1, maximum: 3650 }
+            turn_context_days: { type: integer, minimum: 1, maximum: 3650 }
+            feedback_days: { type: integer, minimum: 1, maximum: 3650 }
+            backup_days: { type: integer, minimum: 1, maximum: 3650 }
+          required: [resolved_candidate_days, journal_max_records, maintenance_interval_minutes, soft_deleted_memory_days, expired_memory_days, turn_context_days, feedback_days, backup_days]
         embedding:
           type: object
           properties:
@@ -794,6 +799,102 @@ components:
         context_last_latency_ms: { type: [integer, "null"], minimum: 0 }
         evaluated_at: { type: string, format: date-time }
       required: [schema_version, workspace_id, turn_contexts, applied_memories, recommendation_feedback, accepted_recommendations, dismissed_recommendations, not_relevant_recommendations, acceptance_rate, dismissal_rate, stale_overlays, evaluated_tasks, evaluated_tasks_with_memory, evaluation_join_rate, correlation_note, context_total_latency_ms, context_last_latency_ms, evaluated_at]
+    MemoryKeyStatus:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        active_key_id: { type: string }
+        active_key_created_at: { type: string, format: date-time }
+        retained_key_count: { type: integer, minimum: 1 }
+        last_rotated_at: { type: [string, "null"], format: date-time }
+        root_source: { type: string, enum: [environment, local_file] }
+      required: [schema_version, workspace_id, active_key_id, active_key_created_at, retained_key_count, last_rotated_at, root_source]
+    MemoryIntegrityReport:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        report_id: { type: string }
+        workspace_id: { type: string }
+        status: { type: string, enum: [healthy, degraded] }
+        checked_records: { type: integer, minimum: 0 }
+        encrypted_records: { type: integer, minimum: 0 }
+        invalid_records: { type: integer, minimum: 0 }
+        orphan_references: { type: integer, minimum: 0 }
+        issues:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              record_type: { type: string }
+              record_id: { type: [string, "null"] }
+            required: [code, record_type, record_id]
+        scanned_at: { type: string, format: date-time }
+      required: [schema_version, report_id, workspace_id, status, checked_records, encrypted_records, invalid_records, orphan_references, issues, scanned_at]
+    MemoryBackupMetadata:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        backup_id: { type: string }
+        workspace_id: { type: string }
+        record_count: { type: integer, minimum: 0 }
+        encrypted_bytes: { type: integer, minimum: 0 }
+        manifest_digest: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+      required: [schema_version, backup_id, workspace_id, record_count, encrypted_bytes, manifest_digest, created_by, created_at, expires_at]
+    MemoryPurgeResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        purge_id: { type: string }
+        workspace_id: { type: string }
+        memory_id: { type: string }
+        removed_records: { type: integer, minimum: 0 }
+        removed_by_type: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+        retrieval_rebuilt: { type: boolean }
+        knowledge_rebuilt: { type: boolean }
+        cryptographic_erasure: { type: boolean }
+        completed_at: { type: string, format: date-time }
+      required: [schema_version, purge_id, workspace_id, memory_id, removed_records, removed_by_type, retrieval_rebuilt, knowledge_rebuilt, cryptographic_erasure, completed_at]
+    MemoryRetentionRunResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        purged_memories: { type: integer, minimum: 0 }
+        pruned_contexts: { type: integer, minimum: 0 }
+        pruned_feedback: { type: integer, minimum: 0 }
+        pruned_backups: { type: integer, minimum: 0 }
+        completed_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, purged_memories, pruned_contexts, pruned_feedback, pruned_backups, completed_at]
+    MemoryRestoreResult:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        backup_id: { type: string }
+        workspace_id: { type: string }
+        dry_run: { type: boolean }
+        restored_records: { type: integer, minimum: 0 }
+        skipped_records: { type: integer, minimum: 0 }
+        verified_digest: { type: boolean }
+        completed_at: { type: string, format: date-time }
+      required: [schema_version, backup_id, workspace_id, dry_run, restored_records, skipped_records, verified_digest, completed_at]
+    MemoryOperationsStatus:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        key: { $ref: "#/components/schemas/MemoryKeyStatus" }
+        retention: { $ref: "#/components/schemas/MemorySettings/properties/retention" }
+        backups: { type: array, items: { $ref: "#/components/schemas/MemoryBackupMetadata" } }
+        last_integrity:
+          oneOf:
+            - { $ref: "#/components/schemas/MemoryIntegrityReport" }
+            - { type: "null" }
+      required: [schema_version, workspace_id, key, retention, backups, last_integrity]
     MemoryRetrievalRequest:
       type: object
       properties:
@@ -6125,6 +6226,122 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MemoryMaintenanceSweepResult" }
 
+  /api/memory-operations:
+    get:
+      operationId: getMemoryOperationsStatus
+      tags: [Memory]
+      summary: Return key, retention, backup, and integrity status without secret material
+      responses:
+        "200":
+          description: Memory operations status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryOperationsStatus" }
+
+  /api/memory-keys/rotate:
+    post:
+      operationId: rotateMemoryEncryptionKey
+      tags: [Memory]
+      summary: Re-encrypt Private Memory under a new Workspace data key and destroy retired keys
+      responses:
+        "200":
+          description: Rotation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { $ref: "#/components/schemas/MemoryKeyStatus" }
+                  rewritten_records: { type: integer, minimum: 0 }
+                  retired_keys_destroyed: { type: integer, minimum: 0 }
+                required: [key, rewritten_records, retired_keys_destroyed]
+
+  /api/memory-integrity/scan:
+    post:
+      operationId: scanMemoryIntegrity
+      tags: [Memory]
+      summary: Verify Memory schemas, encrypted payloads, Workspace boundaries, and references
+      responses:
+        "200":
+          description: Integrity report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryIntegrityReport" }
+
+  /api/memory-retention/run:
+    post:
+      operationId: runMemoryRetention
+      tags: [Memory]
+      summary: Apply explicit Workspace Memory retention policy
+      responses:
+        "200":
+          description: Retention result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryRetentionRunResult" }
+
+  /api/memory-backups:
+    get:
+      operationId: listMemoryBackups
+      tags: [Memory]
+      summary: List encrypted Memory backup metadata
+      responses:
+        "200":
+          description: Backup metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/MemoryBackupMetadata" } }
+                required: [items]
+    post:
+      operationId: createEncryptedMemoryBackup
+      tags: [Memory]
+      summary: Create a passphrase-encrypted logical Memory backup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passphrase: { type: string, minLength: 12, maxLength: 1024 }
+              required: [passphrase]
+      responses:
+        "201":
+          description: Backup metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryBackupMetadata" }
+
+  /api/memory-backups/{backupId}/restore:
+    post:
+      operationId: restoreEncryptedMemoryBackup
+      tags: [Memory]
+      summary: Verify or restore an encrypted Memory backup
+      parameters:
+        - in: path
+          name: backupId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passphrase: { type: string, minLength: 12, maxLength: 1024 }
+                dry_run: { type: boolean, default: false }
+              required: [passphrase]
+      responses:
+        "200":
+          description: Restore result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryRestoreResult" }
+
   /api/session-recall/search:
     post:
       operationId: searchHistoricalSessions
@@ -6453,6 +6670,32 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MemoryRecord" }
+
+  /api/memories/{memoryId}/purge:
+    post:
+      operationId: hardPurgeMemory
+      tags: [Memory]
+      summary: Physically remove a Memory and all content-bearing derived copies
+      parameters:
+        - in: path
+          name: memoryId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirm_memory_id: { type: string }
+              required: [confirm_memory_id]
+      responses:
+        "200":
+          description: Purge and cryptographic erasure result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryPurgeResult" }
 
   /api/memories/export:
     get:

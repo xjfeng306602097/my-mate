@@ -147,6 +147,12 @@ export function hasPermission(permission: WorkspacePermission): boolean {
 export function requiredPermission(req: Request): WorkspacePermission {
   const method = req.method.toUpperCase();
   const path = req.path;
+  if (/^\/memories\/[^/]+\/purge$/u.test(path)) return "memory.manage";
+  if (path.startsWith("/memory-keys") || path.startsWith("/memory-integrity") || path.startsWith("/memory-retention")) {
+    return "memory.manage";
+  }
+  if (path.startsWith("/memory-backups")) return method === "GET" ? "memory.read" : "memory.manage";
+  if (path === "/memory-operations") return "memory.read";
   if (path.startsWith("/memory-candidates")) {
     if (method === "GET" || /\/(approve|reject)$/.test(path)) return "memory.review";
     return "memory.propose";

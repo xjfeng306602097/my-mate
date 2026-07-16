@@ -90,7 +90,7 @@ async function startUpstreamServer() {
     idempotencyKey?: string | undefined;
   }> = [];
 
-  app.all(/^\/api\/(?:memory-settings|memory-observability|memory-effectiveness|memory-onboarding(?:\/.*)?|memory-maintenance|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-(?:review|recommendations(?:\/.*)?|overlay(?:\/.*)?|contexts(?:\/.*)?))$/u, (req, res) => {
+  app.all(/^\/api\/(?:memory-settings|memory-observability|memory-effectiveness|memory-onboarding(?:\/.*)?|memory-maintenance|memory-operations|memory-keys(?:\/.*)?|memory-integrity(?:\/.*)?|memory-retention(?:\/.*)?|memory-backups(?:\/.*)?|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-(?:review|recommendations(?:\/.*)?|overlay(?:\/.*)?|contexts(?:\/.*)?))$/u, (req, res) => {
     requests.push({
       method: req.method,
       path: req.path,
@@ -2790,7 +2790,7 @@ test("proxies the complete M9 Memory activation, feedback, and onboarding surfac
       [feedback.status, overlay.status, contexts.status, context.status, onboarding.status, started.status, effectiveness.status, revoked.status],
       [200, 200, 200, 200, 200, 200, 200, 200],
     );
-    assert.deepEqual(upstream.requests.slice(-8).map((request) => `${request.method} ${request.path}`), [
+    assert.deepEqual(upstream.requests.slice(-8).map((request) => `${request.method} ${request.path}`).sort(), [
       `POST /api/sessions/${session}/memory-recommendations/${recommendation}/feedback`,
       `POST /api/sessions/${session}/memory-overlay`,
       `GET /api/sessions/${session}/memory-contexts`,
@@ -2799,7 +2799,40 @@ test("proxies the complete M9 Memory activation, feedback, and onboarding surfac
       "POST /api/memory-onboarding/start",
       "GET /api/memory-effectiveness",
       `DELETE /api/sessions/${session}/memory-overlay/memov_gateway`,
+    ].sort());
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies the complete M10 Memory operations surface", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const memoryId = "mem_gateway_m10";
+    const backupId = "membak_gateway_m10";
+    const responses = await Promise.all([
+      getJson(`${server.baseUrl}/api/memory-operations`),
+      postJson(`${server.baseUrl}/api/memory-keys/rotate`, {}),
+      postJson(`${server.baseUrl}/api/memory-integrity/scan`, {}),
+      postJson(`${server.baseUrl}/api/memory-retention/run`, {}),
+      getJson(`${server.baseUrl}/api/memory-backups`),
+      postJson(`${server.baseUrl}/api/memory-backups`, { passphrase: "gateway passphrase" }),
+      postJson(`${server.baseUrl}/api/memory-backups/${backupId}/restore`, { passphrase: "gateway passphrase", dry_run: true }),
+      postJson(`${server.baseUrl}/api/memories/${memoryId}/purge`, { confirm_memory_id: memoryId }),
     ]);
+    assert.ok(responses.every((response) => response.status === 200));
+    assert.deepEqual(upstream.requests.slice(-8).map((request) => `${request.method} ${request.path}`).sort(), [
+      "GET /api/memory-operations",
+      "POST /api/memory-keys/rotate",
+      "POST /api/memory-integrity/scan",
+      "POST /api/memory-retention/run",
+      "GET /api/memory-backups",
+      "POST /api/memory-backups",
+      `POST /api/memory-backups/${backupId}/restore`,
+      `POST /api/memories/${memoryId}/purge`,
+    ].sort());
   } finally {
     await server.close();
     await upstream.close();

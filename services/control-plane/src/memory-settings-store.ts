@@ -80,6 +80,11 @@ export function defaultMemorySettings(workspaceId = getActiveWorkspaceId() || "d
       resolved_candidate_days: 90,
       journal_max_records: 20_000,
       maintenance_interval_minutes: 60,
+      soft_deleted_memory_days: 30,
+      expired_memory_days: 90,
+      turn_context_days: 90,
+      feedback_days: 180,
+      backup_days: 30,
     },
     embedding: {
       provider: "disabled",
@@ -206,6 +211,36 @@ function normalizeSettings(input: unknown, current: MemorySettings): MemorySetti
         current.retention.maintenance_interval_minutes,
         1,
         10_080,
+      ),
+      soft_deleted_memory_days: boundedInteger(
+        retention.soft_deleted_memory_days,
+        current.retention.soft_deleted_memory_days,
+        1,
+        3_650,
+      ),
+      expired_memory_days: boundedInteger(
+        retention.expired_memory_days,
+        current.retention.expired_memory_days,
+        1,
+        3_650,
+      ),
+      turn_context_days: boundedInteger(
+        retention.turn_context_days,
+        current.retention.turn_context_days,
+        1,
+        3_650,
+      ),
+      feedback_days: boundedInteger(
+        retention.feedback_days,
+        current.retention.feedback_days,
+        1,
+        3_650,
+      ),
+      backup_days: boundedInteger(
+        retention.backup_days,
+        current.retention.backup_days,
+        1,
+        3_650,
       ),
     },
     embedding: {

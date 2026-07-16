@@ -303,3 +303,7 @@ M8 adds AES-256-GCM Private Memory encryption and migration, normal-only knowled
 # M9 completion update (2026-07-17)
 
 M9 completes the Memory activation and feedback milestone: immutable encrypted per-turn Memory context evidence, retry/continuation reuse, session-only recommendation overlays, user feedback and suppression, optional guided onboarding, bounded feedback reranking, and explicitly non-causal effectiveness correlation. Task recommendation actions update locally without rebuilding the Task workspace. It preserves the frozen Core Memory snapshot and does not autonomously scan local files. See `docs/60-m9-memory-activation-feedback-and-guided-onboarding.md`.
+
+# M10 completion update (2026-07-17)
+
+M10 completes Memory operational security and recovery: envelope encryption with Workspace data keys, full Private surface rotation, hard purge and cryptographic erasure, passphrase-encrypted logical backup/restore, explicit retention execution, integrity scanning, managed API permissions, and Studio controls. See `docs/61-m10-memory-operational-security-and-recovery.md`.

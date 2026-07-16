@@ -46,4 +46,5 @@ import "./memory-m6.test.ts";
 import "./memory-m7.test.ts";
 import "./memory-m8.test.ts";
 import "./memory-m9.test.ts";
+import "./memory-m10.test.ts";
 import "./task-checkpoint.test.ts";

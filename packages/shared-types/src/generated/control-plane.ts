@@ -569,6 +569,23 @@ export type paths = {
         readonly patch: operations["updateMemory"];
         readonly trace?: never;
     };
+    readonly "/api/memories/{memoryId}/purge": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Physically remove a Memory and all content-bearing derived copies */
+        readonly post: operations["hardPurgeMemory"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/memories/{memoryId}/restore": {
         readonly parameters: {
             readonly query?: never;
@@ -614,6 +631,41 @@ export type paths = {
         readonly put?: never;
         /** Validate or import portable memories without preserving foreign canonical ids */
         readonly post: operations["importMemories"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-backups": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List encrypted Memory backup metadata */
+        readonly get: operations["listMemoryBackups"];
+        readonly put?: never;
+        /** Create a passphrase-encrypted logical Memory backup */
+        readonly post: operations["createEncryptedMemoryBackup"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-backups/{backupId}/restore": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Verify or restore an encrypted Memory backup */
+        readonly post: operations["restoreEncryptedMemoryBackup"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -706,6 +758,23 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/memory-integrity/scan": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Verify Memory schemas, encrypted payloads, Workspace boundaries, and references */
+        readonly post: operations["scanMemoryIntegrity"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/memory-intelligence/evaluation": {
         readonly parameters: {
             readonly query?: never;
@@ -717,6 +786,23 @@ export type paths = {
         readonly get: operations["evaluateMemoryIntelligence"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-keys/rotate": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Re-encrypt Private Memory under a new Workspace data key and destroy retired keys */
+        readonly post: operations["rotateMemoryEncryptionKey"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -900,6 +986,40 @@ export type paths = {
         readonly get?: never;
         readonly put?: never;
         readonly post: operations["startMemoryOnboarding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-operations": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Return key, retention, backup, and integrity status without secret material */
+        readonly get: operations["getMemoryOperationsStatus"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/memory-retention/run": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Apply explicit Workspace Memory retention policy */
+        readonly post: operations["runMemoryRetention"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -5086,6 +5206,20 @@ export type components = {
             readonly url: string | null;
             readonly workspace_id: string;
         };
+        readonly MemoryBackupMetadata: {
+            readonly backup_id: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly created_by: string;
+            readonly encrypted_bytes: number;
+            /** Format: date-time */
+            readonly expires_at: string | null;
+            readonly manifest_digest: string;
+            readonly record_count: number;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly workspace_id: string;
+        };
         /** @enum {string} */
         readonly MemoryCandidateOperation: "create" | "update" | "delete";
         readonly MemoryCandidateRecord: {
@@ -5176,6 +5310,38 @@ export type components = {
             readonly strategy: "skip" | "merge" | "replace";
             readonly total: number;
             readonly updated: number;
+        };
+        readonly MemoryIntegrityReport: {
+            readonly checked_records: number;
+            readonly encrypted_records: number;
+            readonly invalid_records: number;
+            readonly issues: readonly {
+                readonly code: string;
+                readonly record_id: string | null;
+                readonly record_type: string;
+            }[];
+            readonly orphan_references: number;
+            readonly report_id: string;
+            /** Format: date-time */
+            readonly scanned_at: string;
+            /** @constant */
+            readonly schema_version: 1;
+            /** @enum {string} */
+            readonly status: "healthy" | "degraded";
+            readonly workspace_id: string;
+        };
+        readonly MemoryKeyStatus: {
+            /** Format: date-time */
+            readonly active_key_created_at: string;
+            readonly active_key_id: string;
+            /** Format: date-time */
+            readonly last_rotated_at: string | null;
+            readonly retained_key_count: number;
+            /** @enum {string} */
+            readonly root_source: "environment" | "local_file";
+            /** @constant */
+            readonly schema_version: 1;
+            readonly workspace_id: string;
         };
         /** @enum {string} */
         readonly MemoryKind: "preference" | "fact" | "convention" | "decision" | "lesson";
@@ -5323,6 +5489,15 @@ export type components = {
             readonly updated_at: string;
             readonly workspace_id: string;
         };
+        readonly MemoryOperationsStatus: {
+            readonly backups: readonly components["schemas"]["MemoryBackupMetadata"][];
+            readonly key: components["schemas"]["MemoryKeyStatus"];
+            readonly last_integrity: components["schemas"]["MemoryIntegrityReport"] | null;
+            readonly retention: components["schemas"]["MemorySettings"]["retention"];
+            /** @constant */
+            readonly schema_version: 1;
+            readonly workspace_id: string;
+        };
         readonly MemoryOverlay: {
             /** Format: date-time */
             readonly consumed_at: string | null;
@@ -5362,6 +5537,22 @@ export type components = {
             readonly valid_from: string | null;
             /** Format: date-time */
             readonly valid_until: string | null;
+        };
+        readonly MemoryPurgeResult: {
+            /** Format: date-time */
+            readonly completed_at: string;
+            readonly cryptographic_erasure: boolean;
+            readonly knowledge_rebuilt: boolean;
+            readonly memory_id: string;
+            readonly purge_id: string;
+            readonly removed_by_type: {
+                readonly [key: string]: number;
+            };
+            readonly removed_records: number;
+            readonly retrieval_rebuilt: boolean;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly workspace_id: string;
         };
         readonly MemoryRecommendation: {
             readonly already_in_snapshot: boolean;
@@ -5425,6 +5616,29 @@ export type components = {
             readonly updated_at: string;
             readonly updated_by: string;
             readonly version: number;
+            readonly workspace_id: string;
+        };
+        readonly MemoryRestoreResult: {
+            readonly backup_id: string;
+            /** Format: date-time */
+            readonly completed_at: string;
+            readonly dry_run: boolean;
+            readonly restored_records: number;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly skipped_records: number;
+            readonly verified_digest: boolean;
+            readonly workspace_id: string;
+        };
+        readonly MemoryRetentionRunResult: {
+            /** Format: date-time */
+            readonly completed_at: string;
+            readonly pruned_backups: number;
+            readonly pruned_contexts: number;
+            readonly pruned_feedback: number;
+            readonly purged_memories: number;
+            /** @constant */
+            readonly schema_version: 1;
             readonly workspace_id: string;
         };
         readonly MemoryRetrievalEvidence: {
@@ -5536,9 +5750,14 @@ export type components = {
                 readonly sync_canonical: boolean;
             };
             readonly retention: {
+                readonly backup_days: number;
+                readonly expired_memory_days: number;
+                readonly feedback_days: number;
                 readonly journal_max_records: number;
                 readonly maintenance_interval_minutes: number;
                 readonly resolved_candidate_days: number;
+                readonly soft_deleted_memory_days: number;
+                readonly turn_context_days: number;
             };
             /** @constant */
             readonly schema_version: 1;
@@ -6797,6 +7016,7 @@ export type SchemaMcpConnectorPreset = components['schemas']['McpConnectorPreset
 export type SchemaMcpConnectorPresetSecret = components['schemas']['McpConnectorPresetSecret'];
 export type SchemaMcpDiscoveredTool = components['schemas']['McpDiscoveredTool'];
 export type SchemaMcpServer = components['schemas']['McpServer'];
+export type SchemaMemoryBackupMetadata = components['schemas']['MemoryBackupMetadata'];
 export type SchemaMemoryCandidateOperation = components['schemas']['MemoryCandidateOperation'];
 export type SchemaMemoryCandidateRecord = components['schemas']['MemoryCandidateRecord'];
 export type SchemaMemoryCandidateRisk = components['schemas']['MemoryCandidateRisk'];
@@ -6805,6 +7025,8 @@ export type SchemaMemoryEffectiveness = components['schemas']['MemoryEffectivene
 export type SchemaMemoryEmbeddingProviderStatus = components['schemas']['MemoryEmbeddingProviderStatus'];
 export type SchemaMemoryImportRequest = components['schemas']['MemoryImportRequest'];
 export type SchemaMemoryImportResult = components['schemas']['MemoryImportResult'];
+export type SchemaMemoryIntegrityReport = components['schemas']['MemoryIntegrityReport'];
+export type SchemaMemoryKeyStatus = components['schemas']['MemoryKeyStatus'];
 export type SchemaMemoryKind = components['schemas']['MemoryKind'];
 export type SchemaMemoryKnowledgeProviderStatus = components['schemas']['MemoryKnowledgeProviderStatus'];
 export type SchemaMemoryKnowledgeQueryRequest = components['schemas']['MemoryKnowledgeQueryRequest'];
@@ -6814,12 +7036,16 @@ export type SchemaMemoryMaintenanceResult = components['schemas']['MemoryMainten
 export type SchemaMemoryMaintenanceSweepResult = components['schemas']['MemoryMaintenanceSweepResult'];
 export type SchemaMemoryObservability = components['schemas']['MemoryObservability'];
 export type SchemaMemoryOnboarding = components['schemas']['MemoryOnboarding'];
+export type SchemaMemoryOperationsStatus = components['schemas']['MemoryOperationsStatus'];
 export type SchemaMemoryOverlay = components['schemas']['MemoryOverlay'];
 export type SchemaMemoryProposal = components['schemas']['MemoryProposal'];
+export type SchemaMemoryPurgeResult = components['schemas']['MemoryPurgeResult'];
 export type SchemaMemoryRecommendation = components['schemas']['MemoryRecommendation'];
 export type SchemaMemoryRecommendationFeedback = components['schemas']['MemoryRecommendationFeedback'];
 export type SchemaMemoryRecommendationResult = components['schemas']['MemoryRecommendationResult'];
 export type SchemaMemoryRecord = components['schemas']['MemoryRecord'];
+export type SchemaMemoryRestoreResult = components['schemas']['MemoryRestoreResult'];
+export type SchemaMemoryRetentionRunResult = components['schemas']['MemoryRetentionRunResult'];
 export type SchemaMemoryRetrievalEvidence = components['schemas']['MemoryRetrievalEvidence'];
 export type SchemaMemoryRetrievalHit = components['schemas']['MemoryRetrievalHit'];
 export type SchemaMemoryRetrievalIndexStatus = components['schemas']['MemoryRetrievalIndexStatus'];
@@ -7424,6 +7650,34 @@ export interface operations {
             };
         };
     };
+    readonly hardPurgeMemory: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly memoryId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly confirm_memory_id: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Purge and cryptographic erasure result */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryPurgeResult"];
+                };
+            };
+        };
+    };
     readonly restoreMemory: {
         readonly parameters: {
             readonly query?: never;
@@ -7492,6 +7746,84 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["MemoryImportResult"];
+                };
+            };
+        };
+    };
+    readonly listMemoryBackups: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Backup metadata */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["MemoryBackupMetadata"][];
+                    };
+                };
+            };
+        };
+    };
+    readonly createEncryptedMemoryBackup: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly passphrase: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Backup metadata */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryBackupMetadata"];
+                };
+            };
+        };
+    };
+    readonly restoreEncryptedMemoryBackup: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly backupId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @default false */
+                    readonly dry_run?: boolean;
+                    readonly passphrase: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Restore result */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryRestoreResult"];
                 };
             };
         };
@@ -7659,6 +7991,26 @@ export interface operations {
             };
         };
     };
+    readonly scanMemoryIntegrity: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Integrity report */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryIntegrityReport"];
+                };
+            };
+        };
+    };
     readonly evaluateMemoryIntelligence: {
         readonly parameters: {
             readonly query?: never;
@@ -7675,6 +8027,30 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ConversationIntentEvaluationResult"];
+                };
+            };
+        };
+    };
+    readonly rotateMemoryEncryptionKey: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Rotation result */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly key: components["schemas"]["MemoryKeyStatus"];
+                        readonly retired_keys_destroyed: number;
+                        readonly rewritten_records: number;
+                    };
                 };
             };
         };
@@ -7929,6 +8305,46 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["MemoryOnboarding"];
+                };
+            };
+        };
+    };
+    readonly getMemoryOperationsStatus: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Memory operations status */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryOperationsStatus"];
+                };
+            };
+        };
+    };
+    readonly runMemoryRetention: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Retention result */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemoryRetentionRunResult"];
                 };
             };
         };

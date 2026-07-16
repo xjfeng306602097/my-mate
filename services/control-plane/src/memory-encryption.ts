@@ -13,8 +13,9 @@ import type {
 import { nowIso } from "./utils.js";
 
 interface EncryptedPayload {
-  schema_version: 1;
+  schema_version: 1 | 2;
   algorithm: "aes-256-gcm";
+  key_id?: string;
   iv: string;
   auth_tag: string;
   ciphertext: string;
@@ -68,6 +69,25 @@ interface PersistedPrivateOnboarding {
 type EncryptedKind = "memory" | "candidate" | "snapshot" | "turn-context" | "overlay" | "onboarding";
 
 const MASTER_KEY_FILE = ".memory-master-key";
+const KEYRING_SUFFIX = ".memory-keyring.json";
+
+interface WrappedWorkspaceKey {
+  key_id: string;
+  status: "active" | "retired";
+  created_at: string;
+  retired_at: string | null;
+  iv: string;
+  auth_tag: string;
+  ciphertext: string;
+}
+
+interface WorkspaceKeyring {
+  schema_version: 1;
+  workspace_id: string;
+  active_key_id: string;
+  keys: WrappedWorkspaceKey[];
+  last_rotated_at: string | null;
+}
 
 function decodeConfiguredKey(value: string): Buffer {
   const trimmed = value.trim();
@@ -107,18 +127,134 @@ function masterKey(): Buffer {
   return configured?.trim() ? decodeConfiguredKey(configured) : localMasterKey();
 }
 
+function keyringPath(workspaceId: string): string {
+  return path.join(MEMORY_SECRETS_DIR, `${encodeURIComponent(workspaceId)}${KEYRING_SUFFIX}`);
+}
+
+function rootSource(): "environment" | "local_file" {
+  return (process.env.MY_MATE_MEMORY_SECRET_KEY || process.env.MY_MATE_PROVIDER_SECRET_KEY)?.trim()
+    ? "environment"
+    : "local_file";
+}
+
+function wrapWorkspaceKey(workspaceId: string, keyId: string, key: Buffer): WrappedWorkspaceKey {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", masterKey(), iv);
+  cipher.setAAD(Buffer.from(`my-mate:memory-key:${workspaceId}:${keyId}`, "utf8"));
+  const ciphertext = Buffer.concat([cipher.update(key), cipher.final()]);
+  return {
+    key_id: keyId,
+    status: "active",
+    created_at: nowIso(),
+    retired_at: null,
+    iv: iv.toString("base64"),
+    auth_tag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+  };
+}
+
+function unwrapWorkspaceKey(workspaceId: string, record: WrappedWorkspaceKey): Buffer {
+  const decipher = crypto.createDecipheriv("aes-256-gcm", masterKey(), Buffer.from(record.iv, "base64"));
+  decipher.setAAD(Buffer.from(`my-mate:memory-key:${workspaceId}:${record.key_id}`, "utf8"));
+  decipher.setAuthTag(Buffer.from(record.auth_tag, "base64"));
+  return Buffer.concat([decipher.update(Buffer.from(record.ciphertext, "base64")), decipher.final()]);
+}
+
+function writeKeyring(keyring: WorkspaceKeyring): void {
+  fs.mkdirSync(MEMORY_SECRETS_DIR, { recursive: true });
+  const file = keyringPath(keyring.workspace_id);
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(keyring, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(temporary, file);
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Windows filesystems may not expose POSIX modes.
+  }
+}
+
+function readKeyring(workspaceId: string): WorkspaceKeyring {
+  fs.mkdirSync(MEMORY_SECRETS_DIR, { recursive: true });
+  const file = keyringPath(workspaceId);
+  if (fs.existsSync(file)) {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as WorkspaceKeyring;
+    if (parsed.schema_version !== 1 || parsed.workspace_id !== workspaceId || !parsed.active_key_id) {
+      throw new Error("MEMORY_KEYRING_INVALID");
+    }
+    return parsed;
+  }
+  const keyId = `memkey_${crypto.randomUUID()}`;
+  const keyring: WorkspaceKeyring = {
+    schema_version: 1,
+    workspace_id: workspaceId,
+    active_key_id: keyId,
+    keys: [wrapWorkspaceKey(workspaceId, keyId, crypto.randomBytes(32))],
+    last_rotated_at: null,
+  };
+  writeKeyring(keyring);
+  return keyring;
+}
+
+function workspaceKey(workspaceId: string, keyId?: string): { keyId: string; key: Buffer } {
+  const keyring = readKeyring(workspaceId);
+  const targetId = keyId || keyring.active_key_id;
+  const record = keyring.keys.find((item) => item.key_id === targetId);
+  if (!record) throw new Error("MEMORY_ENCRYPTION_KEY_NOT_FOUND");
+  return { keyId: targetId, key: unwrapWorkspaceKey(workspaceId, record) };
+}
+
+export function getMemoryKeyStatus(workspaceId: string): import("./types.js").MemoryKeyStatus {
+  const keyring = readKeyring(workspaceId);
+  const active = keyring.keys.find((item) => item.key_id === keyring.active_key_id);
+  if (!active) throw new Error("MEMORY_KEYRING_INVALID");
+  return {
+    schema_version: 1,
+    workspace_id: workspaceId,
+    active_key_id: active.key_id,
+    active_key_created_at: active.created_at,
+    retained_key_count: keyring.keys.length,
+    last_rotated_at: keyring.last_rotated_at,
+    root_source: rootSource(),
+  };
+}
+
+export function beginMemoryKeyRotation(workspaceId: string): { previous_key_id: string; active_key_id: string } {
+  const keyring = readKeyring(workspaceId);
+  const timestamp = nowIso();
+  const keyId = `memkey_${crypto.randomUUID()}`;
+  keyring.keys = keyring.keys.map((item) => item.key_id === keyring.active_key_id
+    ? { ...item, status: "retired", retired_at: timestamp }
+    : item);
+  const previousKeyId = keyring.active_key_id;
+  keyring.active_key_id = keyId;
+  keyring.keys.push(wrapWorkspaceKey(workspaceId, keyId, crypto.randomBytes(32)));
+  keyring.last_rotated_at = timestamp;
+  writeKeyring(keyring);
+  return { previous_key_id: previousKeyId, active_key_id: keyId };
+}
+
+export function discardRetiredMemoryKeys(workspaceId: string): number {
+  const keyring = readKeyring(workspaceId);
+  const before = keyring.keys.length;
+  keyring.keys = keyring.keys.filter((item) => item.key_id === keyring.active_key_id);
+  writeKeyring(keyring);
+  return before - keyring.keys.length;
+}
+
 function aad(kind: EncryptedKind, workspaceId: string, recordId: string): Buffer {
   return Buffer.from(`my-mate:${kind}:${workspaceId}:${recordId}`, "utf8");
 }
 
 function encrypt(kind: EncryptedKind, workspaceId: string, recordId: string, value: unknown): EncryptedPayload {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", masterKey(), iv);
+  const resolved = workspaceKey(workspaceId);
+  const cipher = crypto.createCipheriv("aes-256-gcm", resolved.key, iv);
   cipher.setAAD(aad(kind, workspaceId, recordId));
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
   return {
-    schema_version: 1,
+    schema_version: 2,
     algorithm: "aes-256-gcm",
+    key_id: resolved.keyId,
     iv: iv.toString("base64"),
     auth_tag: cipher.getAuthTag().toString("base64"),
     ciphertext: ciphertext.toString("base64"),
@@ -127,10 +263,13 @@ function encrypt(kind: EncryptedKind, workspaceId: string, recordId: string, val
 }
 
 function decrypt<T>(kind: EncryptedKind, workspaceId: string, recordId: string, payload: EncryptedPayload): T {
-  if (payload?.schema_version !== 1 || payload.algorithm !== "aes-256-gcm") {
+  if (![1, 2].includes(payload?.schema_version) || payload.algorithm !== "aes-256-gcm") {
     throw new Error("MEMORY_PRIVATE_PAYLOAD_INVALID");
   }
-  const decipher = crypto.createDecipheriv("aes-256-gcm", masterKey(), Buffer.from(payload.iv, "base64"));
+  const key = payload.schema_version === 2 && payload.key_id
+    ? workspaceKey(workspaceId, payload.key_id).key
+    : masterKey();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64"));
   decipher.setAAD(aad(kind, workspaceId, recordId));
   decipher.setAuthTag(Buffer.from(payload.auth_tag, "base64"));
   return JSON.parse(Buffer.concat([

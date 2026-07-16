@@ -1585,3 +1585,11 @@ Suggested maintenance rhythm:
 - [x] M9.3 resumable guided onboarding with explicit preference capture and candidate preview
 - [x] M9.4 bounded feedback reranking and effectiveness correlation
 - [x] M9.5 Gateway/OpenAPI/Studio/observability and full acceptance
+
+# M10 Memory operational security completion (2026-07-17)
+
+- [x] M10.1 Workspace envelope encryption and complete Private surface key rotation
+- [x] M10.2 owner/manager hard purge, derived-copy removal, and cryptographic erasure
+- [x] M10.3 passphrase-encrypted logical backup, dry-run verification, and recovery
+- [x] M10.4 explicit retention and content-free integrity reporting
+- [x] M10.5 Gateway/OpenAPI/generated types/Studio and desktop/mobile acceptance

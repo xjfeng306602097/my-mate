@@ -746,6 +746,11 @@ export interface MemorySettings {
     resolved_candidate_days: number;
     journal_max_records: number;
     maintenance_interval_minutes: number;
+    soft_deleted_memory_days: number;
+    expired_memory_days: number;
+    turn_context_days: number;
+    feedback_days: number;
+    backup_days: number;
   };
   embedding: {
     provider: "disabled" | "openai-compatible";
@@ -1124,6 +1129,88 @@ export interface MemoryEffectiveness {
   context_total_latency_ms: number;
   context_last_latency_ms: number | null;
   evaluated_at: string;
+}
+
+export interface MemoryKeyStatus {
+  schema_version: 1;
+  workspace_id: string;
+  active_key_id: string;
+  active_key_created_at: string;
+  retained_key_count: number;
+  last_rotated_at: string | null;
+  root_source: "environment" | "local_file";
+}
+
+export interface MemoryIntegrityReport {
+  schema_version: 1;
+  report_id: string;
+  workspace_id: string;
+  status: "healthy" | "degraded";
+  checked_records: number;
+  encrypted_records: number;
+  invalid_records: number;
+  orphan_references: number;
+  issues: Array<{
+    code: string;
+    record_type: string;
+    record_id: string | null;
+  }>;
+  scanned_at: string;
+}
+
+export interface MemoryPurgeResult {
+  schema_version: 1;
+  purge_id: string;
+  workspace_id: string;
+  memory_id: string;
+  removed_records: number;
+  removed_by_type: Record<string, number>;
+  retrieval_rebuilt: boolean;
+  knowledge_rebuilt: boolean;
+  cryptographic_erasure: boolean;
+  completed_at: string;
+}
+
+export interface MemoryRetentionRunResult {
+  schema_version: 1;
+  workspace_id: string;
+  purged_memories: number;
+  pruned_contexts: number;
+  pruned_feedback: number;
+  pruned_backups: number;
+  completed_at: string;
+}
+
+export interface MemoryBackupMetadata {
+  schema_version: 1;
+  backup_id: string;
+  workspace_id: string;
+  record_count: number;
+  encrypted_bytes: number;
+  manifest_digest: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+}
+
+export interface MemoryRestoreResult {
+  schema_version: 1;
+  backup_id: string;
+  workspace_id: string;
+  dry_run: boolean;
+  restored_records: number;
+  skipped_records: number;
+  verified_digest: boolean;
+  completed_at: string;
+}
+
+export interface MemoryOperationsStatus {
+  schema_version: 1;
+  workspace_id: string;
+  key: MemoryKeyStatus;
+  retention: MemorySettings["retention"];
+  backups: MemoryBackupMetadata[];
+  last_integrity: MemoryIntegrityReport | null;
 }
 
 export interface MemoryEmbeddingProviderStatus {

@@ -10597,6 +10597,25 @@ button.dashboard-correlation-row:hover {
   flex-wrap: wrap;
 }
 
+.memory-backup-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.memory-backup-controls label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.memory-backup-controls label > span {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .memory-toolbar,
 .memory-record-list,
 .memory-review-section,
@@ -10909,6 +10928,10 @@ button.dashboard-correlation-row:hover {
 
   .memory-settings-wide {
     grid-column: auto;
+  }
+
+  .memory-backup-controls {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .mcp-server-row {

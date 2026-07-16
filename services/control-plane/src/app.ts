@@ -134,6 +134,16 @@ import {
   previewMemoryOnboarding,
   startMemoryOnboarding,
 } from "./memory-onboarding-store.js";
+import {
+  createEncryptedMemoryBackup,
+  getMemoryOperationsStatus,
+  hardPurgeMemory,
+  listMemoryBackups,
+  restoreEncryptedMemoryBackup,
+  rotateMemoryEncryptionKey,
+  runMemoryRetention,
+  scanMemoryIntegrity,
+} from "./memory-operations.js";
 import { recallSessions } from "./session-recall-store.js";
 import {
   getMemoryRetrievalIndexStatus,
@@ -10683,6 +10693,66 @@ export function createApp(options?: {
     return res.status(result.failed_workspaces.length ? 207 : 200).json(result);
   });
 
+  app.get("/api/memory-operations", (_req: Request, res: Response) => {
+    try {
+      return res.json(getMemoryOperationsStatus());
+    } catch (error) {
+      return res.status(503).json({
+        code: "memory_operations_unavailable",
+        message: error instanceof Error ? error.message : "Memory operations are unavailable.",
+      });
+    }
+  });
+
+  app.post("/api/memory-keys/rotate", (_req: Request, res: Response) => {
+    try {
+      return res.json(rotateMemoryEncryptionKey());
+    } catch (error) {
+      return res.status(503).json({
+        code: "memory_key_rotation_failed",
+        message: error instanceof Error ? error.message : "Memory key rotation failed.",
+      });
+    }
+  });
+
+  app.post("/api/memory-integrity/scan", (_req: Request, res: Response) => {
+    return res.json(scanMemoryIntegrity());
+  });
+
+  app.post("/api/memory-retention/run", (_req: Request, res: Response) => {
+    try {
+      return res.json(runMemoryRetention());
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.get("/api/memory-backups", (_req: Request, res: Response) => {
+    return res.json({ items: listMemoryBackups() });
+  });
+
+  app.post("/api/memory-backups", (req: Request, res: Response) => {
+    try {
+      return res.status(201).json(createEncryptedMemoryBackup({ passphrase: req.body?.passphrase }));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
+  app.post("/api/memory-backups/:backupId/restore", (req: Request, res: Response) => {
+    const backupId = getSingleParam(req.params.backupId);
+    if (!backupId) return res.status(400).json({ code: "invalid_request", message: "backupId is required." });
+    try {
+      return res.json(restoreEncryptedMemoryBackup({
+        backupId,
+        passphrase: req.body?.passphrase,
+        dryRun: req.body?.dry_run === true,
+      }));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
+  });
+
   app.get("/api/memories/export", (req: Request, res: Response) => {
     const format = getSingleParam(req.query.format) === "jsonl" ? "jsonl" : "json";
     const requestedStatus = getSingleParam(req.query.status) || "all";
@@ -10822,6 +10892,21 @@ export function createApp(options?: {
     return memory
       ? res.json(memory)
       : res.status(404).json({ code: "not_found", message: "Memory not found." });
+  });
+
+  app.post("/api/memories/:memoryId/purge", (req: Request, res: Response) => {
+    const memoryId = getSingleParam(req.params.memoryId);
+    if (!memoryId || req.body?.confirm_memory_id !== memoryId) {
+      return res.status(400).json({
+        code: "memory_purge_confirmation_required",
+        message: "confirm_memory_id must exactly match the Memory id.",
+      });
+    }
+    try {
+      return res.json(hardPurgeMemory(memoryId));
+    } catch (error) {
+      return sendMemoryStoreError(res, error);
+    }
   });
 
   app.get("/api/memory-candidates", (req: Request, res: Response) => {

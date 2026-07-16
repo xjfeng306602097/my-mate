@@ -109,6 +109,8 @@ export let MEMORY_TURN_CONTEXTS_DIR = path.join(DATA_DIR, "memory-turn-contexts"
 export let MEMORY_OVERLAYS_DIR = path.join(DATA_DIR, "memory-overlays");
 export let MEMORY_FEEDBACK_DIR = path.join(DATA_DIR, "memory-feedback");
 export let MEMORY_ONBOARDING_DIR = path.join(DATA_DIR, "memory-onboarding");
+export let MEMORY_OPERATIONS_DIR = path.join(DATA_DIR, "memory-operations");
+export let MEMORY_BACKUPS_DIR = path.join(DATA_DIR, "memory-backups");
 export let SESSION_RECALL_INDEX_DIR = path.join(DATA_DIR, "_indexes", "session-recall");
 export let MEMORY_RETRIEVAL_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-retrieval");
 export let MEMORY_KNOWLEDGE_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-knowledge");
@@ -186,6 +188,8 @@ export function overrideDataDir(dataDir: string): void {
   MEMORY_OVERLAYS_DIR = path.join(DATA_DIR, "memory-overlays");
   MEMORY_FEEDBACK_DIR = path.join(DATA_DIR, "memory-feedback");
   MEMORY_ONBOARDING_DIR = path.join(DATA_DIR, "memory-onboarding");
+  MEMORY_OPERATIONS_DIR = path.join(DATA_DIR, "memory-operations");
+  MEMORY_BACKUPS_DIR = path.join(DATA_DIR, "memory-backups");
   SESSION_RECALL_INDEX_DIR = path.join(DATA_DIR, "_indexes", "session-recall");
   MEMORY_RETRIEVAL_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-retrieval");
   MEMORY_KNOWLEDGE_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-knowledge");
