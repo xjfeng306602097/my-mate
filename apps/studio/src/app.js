@@ -12865,8 +12865,19 @@ function renderSessionInventoryControls(kind) {
   `;
 }
 
+function renderSkeletonRows(count = 5) {
+  return `<div class="skeleton-list" aria-hidden="true">${Array.from({ length: count }, () => `<div class="skeleton-row"><span class="skeleton skeleton-dot"></span><span class="skeleton-lines"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line short"></span></span></div>`).join("")}</div>`;
+}
+
+function renderSkeletonCards(count = 2) {
+  return `<div class="skeleton-list" aria-hidden="true">${Array.from({ length: count }, () => `<div class="skeleton-card"><span class="skeleton-lines"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line short"></span></span></div>`).join("")}</div>`;
+}
+
 function renderMissionList() {
   if (!state.missions.length) {
+    if (state.missionsLoading) {
+      return renderSkeletonRows();
+    }
     return `<p class="sidebar-muted">${
       state.missionVisibility === "archived"
         ? "No archived missions."
@@ -12893,6 +12904,9 @@ function renderMissionList() {
 
 function renderSessionList() {
   if (!state.sessions.length) {
+    if (state.sessionsLoading) {
+      return renderSkeletonRows();
+    }
     return `<p class="sidebar-muted">${
       state.sessionVisibility === "archived"
         ? "No archived sessions."
@@ -18218,12 +18232,13 @@ function renderInboxWorkspace() {
   return `
     <section class="product-surface inbox-surface">
       <div class="product-surface-heading">
-        <div><h3>${count ? "Your attention is needed" : "Nothing needs your attention"}</h3><p>${count ? "Only decisions that can change or unblock a task appear here." : "My Mate will bring approvals, questions, and blocked tasks here."}</p></div>
+        <div><h3>${state.inbox.loading && !count ? "Checking for decisions…" : count ? "Your attention is needed" : "Nothing needs your attention"}</h3><p>${state.inbox.loading && !count ? "Approvals, questions, and blocked tasks are loading." : count ? "Only decisions that can change or unblock a task appear here." : "My Mate will bring approvals, questions, and blocked tasks here."}</p></div>
         <span class="badge ${count ? "warn" : "success"}">${count ? `${count} open` : "All clear"}</span>
       </div>
       ${state.inbox.error ? `<div class="alert danger">${escapeHtml(state.inbox.error)}</div>` : ""}
       ${renderWorkspaceChangeReview()}
       <div class="inbox-list">
+        ${state.inbox.loading && !notifications.length && !approvals.length && !humanInputs.length ? renderSkeletonCards(3) : ""}
         ${notifications.map((notification) => `
           <article class="inbox-item notification-inbox-item ${notification.read_at ? "is-read" : ""}">
             <span class="inbox-item-kind">${escapeHtml(notification.kind.startsWith("schedule_") ? "Schedule" : "Notice")}</span>
