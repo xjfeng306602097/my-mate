@@ -1,0 +1,102 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+      MY_MATE_REQUIRE_DESKTOP_SIGNING: ${{ github.ref_type == 'tag' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            packages/shared-types/package-lock.json
+            services/control-plane/package-lock.json
+            services/api-gateway/package-lock.json
+            apps/studio/package-lock.json
+            apps/desktop/package-lock.json
+      - name: Install Desktop build dependencies
+        shell: pwsh
+        run: |
+          npm ci --prefix packages/shared-types
+          npm ci --prefix services/control-plane
+          npm ci --prefix services/api-gateway
+          npm ci --prefix apps/studio
+          npm ci --prefix apps/desktop
+      - name: Verify release tag
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ("v$version" -ne "$env:GITHUB_REF_NAME") { throw "Tag does not match package version." }
+      - name: Check Desktop
+        run: npm run desktop:check
+      - name: Run Desktop Workflow E2E
+        shell: pwsh
+        run: |
+          $electron = Resolve-Path "apps/desktop/node_modules/.bin/electron.cmd"
+          $desktop = Start-Process -FilePath $electron -ArgumentList @("--remote-debugging-port=9223", ".") -WorkingDirectory (Resolve-Path "apps/desktop") -PassThru -WindowStyle Hidden
+          try {
+            $deadline = (Get-Date).AddMinutes(3)
+            do {
+              try {
+                $targets = Invoke-RestMethod -Uri "http://127.0.0.1:9223/json/list" -TimeoutSec 2
+                $ready = @($targets | Where-Object { $_.title -eq "My Mate Studio" }).Count -gt 0
+              } catch {
+                $ready = $false
+              }
+              if (-not $ready) { Start-Sleep -Milliseconds 500 }
+            } while (-not $ready -and (Get-Date) -lt $deadline)
+            if (-not $ready) { throw "Desktop CDP endpoint did not become ready." }
+            $env:MY_MATE_DESKTOP_E2E_EDITOR_ONLY = "1"
+            node apps/studio/scripts/desktop-workflow-e2e.mjs
+          } finally {
+            if ($desktop -and -not $desktop.HasExited) { Stop-Process -Id $desktop.Id -Force }
+          }
+      - name: Upload Desktop E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-workflow-e2e-${{ github.run_id }}
+          path: output/desktop-workflow-e2e/**
+          if-no-files-found: warn
+      - name: Build signed Windows installer
+        run: npm run desktop:dist
+      - name: Generate SHA-256 manifest
+        run: npm run desktop:hash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: my-mate-windows-${{ github.ref_name }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.yml
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish GitHub release assets
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.yml
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/SHA256SUMS.txt

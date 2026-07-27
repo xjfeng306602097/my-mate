@@ -1,8 +1,8 @@
 # My Mate
 
-`My Mate` is a mobile-first agent control platform with its own provider-neutral
-workflow runtime. OpenClaw remains supported as a compatibility harness, while
-new execution can run through provisioned Docker workers.
+`My Mate` is a mobile-first agent control platform with one provider-neutral
+Native Agent Runtime. Provider harnesses run through local, Docker, or isolated
+workers without introducing a second Agent Runtime.
 
 This repository currently focuses on:
 
@@ -11,7 +11,7 @@ This repository currently focuses on:
 - a shared Manager/Worker protocol with sequenced, idempotent events
 - Docker worker provisioning, leases, heartbeats, evidence, handoffs, and cleanup
 - Studio and Mobile runtime inspection surfaces
-- compatibility execution through the existing OpenClaw bridge
+- versioned Agent definitions, immutable bindings, and durable AgentDag execution
 
 ## Repository Goals
 
@@ -21,7 +21,7 @@ This project should evolve into:
 - a PC workflow studio for DAG/template authoring
 - a workflow control plane
 - provider-neutral local, Docker, and remote worker execution
-- an OpenClaw bridge kept behind the harness/legacy adapter boundary
+- storage-boundary migration for historical Profile, Workflow, and Run records
 
 ## Repository Structure
 
@@ -36,7 +36,6 @@ apps/
 services/
   api-gateway/          # client-facing BFF/API proxy
   control-plane/        # workflow engine and scheduler
-  execution-adapter/    # OpenClaw bridge service
   runtime-worker/       # Docker/local worker daemon and harness clients
 packages/
   shared-types/         # shared runtime protocol and DTO source of truth
@@ -44,36 +43,17 @@ packages/
 
 ## Current Design Documents
 
-- [docs/01-my-mate-overall-architecture.md](/C:/project/my-mate/docs/01-my-mate-overall-architecture.md)
-- [docs/02-my-mate-implementation-roadmap.md](/C:/project/my-mate/docs/02-my-mate-implementation-roadmap.md)
-- [docs/03-my-mate-schema-and-api-draft.md](/C:/project/my-mate/docs/03-my-mate-schema-and-api-draft.md)
-- [docs/04-my-mate-repository-structure.md](/C:/project/my-mate/docs/04-my-mate-repository-structure.md)
-- [docs/05-my-mate-interaction-architecture.md](/C:/project/my-mate/docs/05-my-mate-interaction-architecture.md)
-- [docs/06-my-mate-openclaw-integration-plan.md](/C:/project/my-mate/docs/06-my-mate-openclaw-integration-plan.md)
-- [docs/07-visual-acceptance-guide.md](/C:/project/my-mate/docs/07-visual-acceptance-guide.md)
-- [docs/08-current-status-and-next-steps.md](/C:/project/my-mate/docs/08-current-status-and-next-steps.md)
-- [docs/09-conversation-first-orchestrator-redesign.md](/C:/project/my-mate/docs/09-conversation-first-orchestrator-redesign.md)
-- [docs/10-bilibili-reference-video-review.md](/C:/project/my-mate/docs/10-bilibili-reference-video-review.md)
-- [docs/11-openclaw-conversation-product-implementation.md](/C:/project/my-mate/docs/11-openclaw-conversation-product-implementation.md)
-- [docs/12-phased-implementation-plan.md](/C:/project/my-mate/docs/12-phased-implementation-plan.md)
-- [docs/13-dual-video-product-alignment.md](/C:/project/my-mate/docs/13-dual-video-product-alignment.md)
-- [docs/14-hermes-desktop-gap-analysis-and-next-iteration-plan.md](/C:/project/my-mate/docs/14-hermes-desktop-gap-analysis-and-next-iteration-plan.md)
-- [docs/15-studio-v2-orchestrator-workbench.md](/C:/project/my-mate/docs/15-studio-v2-orchestrator-workbench.md)
-- [docs/16-dag-proposal-domain-and-api-draft.md](/C:/project/my-mate/docs/16-dag-proposal-domain-and-api-draft.md)
-- [docs/17-dag-proposal-code-change-plan.md](/C:/project/my-mate/docs/17-dag-proposal-code-change-plan.md)
-- [docs/18-openclaw-end-to-end-flow.md](/C:/project/my-mate/docs/18-openclaw-end-to-end-flow.md)
-- [docs/19-progress-tracking-checklist.md](/C:/project/my-mate/docs/19-progress-tracking-checklist.md)
-- [docs/20-mission-workspace-contract.md](/C:/project/my-mate/docs/20-mission-workspace-contract.md)
-- [docs/21-my-mate-vs-homerail-positioning.md](/C:/project/my-mate/docs/21-my-mate-vs-homerail-positioning.md)
-- [docs/22-homerail-like-runtime-architecture.md](/C:/project/my-mate/docs/22-homerail-like-runtime-architecture.md)
-- [docs/23-homerail-like-runtime-rewrite-checklist.md](/C:/project/my-mate/docs/23-homerail-like-runtime-rewrite-checklist.md)
-- [docs/24-homerail-like-runtime-contract-v1.md](/C:/project/my-mate/docs/24-homerail-like-runtime-contract-v1.md)
-- [docs/25-homerail-human-flow-comparison.md](/C:/project/my-mate/docs/25-homerail-human-flow-comparison.md)
-- [docs/26-homerail-gap-closure-plan.md](/C:/project/my-mate/docs/26-homerail-gap-closure-plan.md)
-- [docs/27-p0-p1-implementation-blueprint.md](/C:/project/my-mate/docs/27-p0-p1-implementation-blueprint.md)
-- [docs/28-data-02-tenancy-governance.md](/C:/project/my-mate/docs/28-data-02-tenancy-governance.md)
-- [docs/29-data-03-registry-governance.md](/C:/project/my-mate/docs/29-data-03-registry-governance.md)
-- [docs/30-obs-02-cost-attribution.md](/C:/project/my-mate/docs/30-obs-02-cost-attribution.md)
+- [Current status and next steps](docs/08-current-status-and-next-steps.md)
+- [Progress and acceptance tracking](docs/19-progress-tracking-checklist.md)
+- [Mission workspace contract](docs/20-mission-workspace-contract.md)
+- [Agent and scheduled task V2](docs/68-agent-and-cron-v2.md)
+- [Unified orchestration protocol](docs/69-unified-orchestration-protocol.md)
+- [Long-task runtime](docs/70-long-task-runtime-and-business-flow.md)
+- [DAG and long-task closeout](docs/71-dag-long-task-closeout.md)
+- [Native Agent Runtime](docs/72-native-agent-runtime.md)
+
+Earlier numbered documents are historical design records. They are not current
+runtime contracts and may describe retired prototypes.
 
 ## Tenancy And Identity
 
@@ -94,7 +74,7 @@ identity JSON shape, role matrix, migration behavior, and client configuration.
 
 Every workspace starts with advisory Registry governance. Owner/admin users can
 enable enforced mode to require a proposal, independent review, and separate
-apply action for Agent Profile, Skill, and Template publish/archive mutations:
+apply action for Agent, Skill, and Template publish/archive mutations:
 
 ```bash
 npm run my-mate -- governance policy --mode enforced --required-approvals 1 --self-approval deny
@@ -199,8 +179,8 @@ See `apps/cli/README.md` for configuration, output modes, and exit codes.
 
 P1-C1, P1-C2, P1-D1, and P1-D2 are implemented. Evidence V2 supports sequence, source, trace,
 input/output references, usage availability, redaction status, and V1
-compatibility. Stateful adapters now normalize Codex JSONL/app-server, Claude
-Agent SDK, Kimi stream/ACP/SDK, and OpenClaw bridge events into complete model
+compatibility. Provider harnesses normalize Codex JSONL/app-server, Claude
+Agent SDK, Kimi stream/ACP/SDK, and OpenAI-compatible events into complete model
 turn, text/thinking, tool call/result, usage, and provider-error evidence.
 
 Unrecognized command or bridge output still uses the D1 synthetic fallback and

@@ -1,6 +1,6 @@
 # My Mate Current Status And Next Steps
 
-Last synchronized: 2026-07-12.
+Last synchronized: 2026-07-17.
 
 This document is the concise entry point for the current repository state. The
 authoritative task board and acceptance evidence live in
@@ -43,7 +43,10 @@ The shipped baseline includes:
   managed keys or environment references, Agent Harness binding, frozen RunPlan
   snapshots, secret-safe Docker injection, and Connection-aware Doctor checks.
 - HomeRail-style first-run setup with minimal model fields, automatic default
-  Agent Profile binding, and Doctor-backed Git Bash/host-shell and Docker checks.
+  AgentDefinition binding, and Doctor-backed Git Bash/host-shell and Docker checks.
+- A governed Skill Platform with 15 bundled Core Skills, explicit and automatic
+  activation, Workspace policy and lockfiles, Docker-only declared scripts,
+  quarantine/signature/upgrade controls, rollback, and output verification.
 
 ## HomeRail Alignment
 
@@ -54,12 +57,12 @@ The P0 and P1 HomeRail alignment program is complete for the agreed scope.
 | Route and work-package identity | Done | Canonical route identity is retained through direct template and Session launch paths. |
 | Docker Worker execution | Done | Runtime jobs can be provisioned, executed, supervised, recovered, and cleaned up through Docker Workers. |
 | Operator and evaluation loop | Done | Doctor, supervise, scorecard, evaluation, replay, rerun, and trace are first-class surfaces. |
-| Evidence and provider adapters | Done | Codex app-server, Claude Agent SDK, Anthropic-compatible GLM, Kimi, and OpenClaw native evidence is normalized through Evidence V2. |
+| Evidence and provider adapters | Done | Codex app-server, Claude Agent SDK, Anthropic-compatible GLM, and Kimi evidence is normalized through Evidence V2. |
 | Runtime graph UX | Done | Studio uses the spatial DAG as the primary Run view with deterministic Mobile fallback. |
 | Recovery and operations | Done | Capacity, queueing, timeout compensation, cleanup gating, restart continuation, and failure replay are persisted and observable. |
 
-Live provider calls, model-judge evaluation, and real OpenClaw environments are
-explicit opt-in checks. Their absence from the default deterministic test suite
+Live provider calls and model-judge evaluation are explicit opt-in checks.
+Their absence from the default deterministic test suite
 does not imply that offline provider normalization is missing.
 
 ## Runnable Today
@@ -78,7 +81,7 @@ The repository supports these end-to-end flows:
 7. Govern protected Registry changes through proposal, independent review,
    drift-safe apply, and audit evidence.
 8. Configure Provider Connections in the Studio modal, add models and choose a
-   default, bind Agent Profiles, and verify the selected Connection through
+   default, bind versioned AgentDefinitions, and verify the selected Connection through
    Doctor before a live acceptance lane is enabled.
 
 ## Latest Closure
@@ -288,6 +291,15 @@ explicit opt-in environment is configured.
 - `docs/34-rt-05-rt-06-stu-04-runtime-and-authoring-closure.md`
 - `docs/35-mw-04-live-01-materializer-and-live-acceptance-closure.md`
 - `docs/36-product-intelligence-human-surface-contract.md`
+
+## Artifact Worker completion update (2026-07-17)
+
+The unified Artifact Worker now produces and converts verified PDF, DOCX,
+PPTX, and XLSX files in a pinned, network-disabled Docker image. Conversation
+creates a T2 one-time Desktop approval action before execution, mounts source
+input read-only, accepts output only from `/output`, validates file signatures,
+package structure, digest, and format-library reopen, and persists a PDF
+preview plus real download. See `docs/65-artifact-worker.md`.
 # M6 completion update (2026-07-16)
 
 Long-term memory M1-M6 is now implemented end to end. M6 adds the Memory Center and Inbox review surface, background extraction, Project snapshot extension, lifecycle/retention maintenance, JSON/JSONL import/export, Provider Connection-backed embeddings, observability, Gateway/OpenAPI contracts, and responsive browser acceptance. See `docs/57-memory-center-lifecycle-and-background-review.md`.
@@ -311,3 +323,50 @@ M10 completes Memory operational security and recovery: envelope encryption with
 # M11 completion update (2026-07-17)
 
 M11 completes controlled collaborative Memory and external knowledge synchronization: Team and Organization collections, pinned or follow-latest cross-Workspace projections, read-only or suggest-changes governance, explicit conflict resolution, Push ingestion, MCP pull sync, source cursors and bindings, and Studio collaboration controls. Private and restricted Memory remains unshareable, receiving Workspaces never gain a second canonical copy, and local edits are never overwritten silently. See `docs/62-m11-collaborative-memory-and-external-sync.md`.
+
+# M12 completion update (2026-07-17)
+
+M12 adds a versioned Executable Skill Host with progressive model discovery, exact instruction loading, declared-resource access, post-load tool narrowing, compatibility checks, secure local installation, enable/disable and reload controls, invocation lineage, Studio management, APIs, OpenAPI contracts, and the bundled `web-research` acceptance package. Skill package code is never executed; side effects remain governed by existing Capability, MCP, Desktop approval, and Worker boundaries. See `docs/63-m12-executable-skill-host.md`.
+
+# M13-M17 Skill Platform completion (2026-07-17)
+
+M13-M17 add governed auto/explicit activation, Workspace profiles and lockfiles,
+15 bundled Core Skills, Docker Worker-only declared scripts behind Desktop
+approval, Hermes compatibility inspection, marketplace quarantine and Ed25519
+verification, provenance-preserving version rollback, explicit permission-delta
+approval, invocation/output evaluation, observability, and the Studio Skills
+management surface. Binary DOCX/PDF/PPTX generation remains an Artifact Worker
+adapter concern rather than being implied by package availability. See
+`docs/64-m13-m17-skill-platform.md`.
+
+# M18-M21 productization completion (2026-07-17)
+
+Desktop Production Release, packaged local runtime productization, Artifact
+history/live-acceptance closure, and User Cron with in-app notifications are
+complete. The packaged runtime defaults to a persistent in-process SQLite
+backend, performs verified file-JSON migration with backup, and starts compiled
+Control Plane, Gateway, and Studio services from the Electron release.
+
+The Windows installer, blockmap, update metadata, and SHA256 manifest are under
+`apps/desktop/release`. Root checks/tests and packaged desktop/narrow-width
+acceptance pass. External messaging channels and the later
+voice/meeting/smart-home/media expansion remain deferred. See
+`docs/67-m18-m21-productization-roadmap.md` and the completed items at the end
+of `docs/19-progress-tracking-checklist.md`.
+
+# Multi-Agent and durable DAG completion (2026-07-18)
+
+The Agent V2 registry now includes explicit Roles and version-pinned Teams.
+Main Agent delegation is projected into durable Agent DAG, Task, Run, Result,
+Artifact reference, and idempotent protocol-message records. Execution enforces
+bounded concurrency, delegation depth, reserved tool/runtime budgets,
+permission intersection, Reviewer verdicts, parent-child AgentRun lineage,
+AbortSignal cancellation cascade, and failed-node recovery with incrementing
+attempts. Studio now provides Agent and Team creation plus DAG authoring,
+execution, protocol inspection, cancellation, and real retry controls.
+
+Legacy Workflow `agent_profile` values are retained only as compatibility
+metadata while persisted nodes are backfilled with schema-v2
+`AgentBindingSnapshot` values. Removal is intentionally blocked until every
+Workspace reports zero unresolved migration nodes. See
+`docs/68-agent-and-cron-v2.md`.

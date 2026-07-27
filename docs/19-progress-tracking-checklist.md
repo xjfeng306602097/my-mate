@@ -12,7 +12,7 @@ It builds on:
 - [`docs/08-current-status-and-next-steps.md`](/C:/project/my-mate/docs/08-current-status-and-next-steps.md)
 - [`docs/12-phased-implementation-plan.md`](/C:/project/my-mate/docs/12-phased-implementation-plan.md)
 - [`docs/14-hermes-desktop-gap-analysis-and-next-iteration-plan.md`](/C:/project/my-mate/docs/14-hermes-desktop-gap-analysis-and-next-iteration-plan.md)
-- [`docs/18-openclaw-end-to-end-flow.md`](/C:/project/my-mate/docs/18-openclaw-end-to-end-flow.md)
+- [`docs/72-native-agent-runtime.md`](/C:/project/my-mate/docs/72-native-agent-runtime.md)
 
 ## How To Use This Checklist
 
@@ -38,7 +38,6 @@ Current validated local checks:
 - `apps/mobile`: `npm run check`, `npm test`
 - `apps/studio`: `npm run check`
 - `services/api-gateway`: `npm run check`, `npm test`
-- `services/execution-adapter`: `npm run check`, `npm test`
 - `services/control-plane`: `npm run check`, `npm test`
 - `services/runtime-worker`: `npm run check`, `npm test`
 - `apps/cli`: `npm run check`, `npm test`
@@ -48,10 +47,9 @@ Current validated local checks:
 Validation boundary:
 
 - the checks above are local package checks; `services/control-plane npm test`
-  uses stubbed execution adapters and does not require Docker/OpenClaw
-- real OpenClaw regression remains a separate gate:
-  `node scripts/openclaw-isolated-e2e.mjs` and
-  `node scripts/restart-recovery-smoke.mjs`
+  uses deterministic local adapters and does not require Docker
+- real Runtime Worker regressions use `npm run runtime-worker:smoke` and
+  `npm run runtime-worker:recovery-smoke`
 - the Docker Worker smoke is a real isolated Control Plane + Gateway + CLI +
   Docker acceptance flow; it does not require a model credential and does not
   claim semantic model quality
@@ -64,7 +62,7 @@ Current read of the repository:
 - core MVP orchestration loop exists
 - Mission / Session / Run projections exist
 - mobile and Studio surfaces are usable today
-- OpenClaw bridge path is implemented and locally verified
+- the provider-neutral Native Agent Runtime is implemented and locally verified
 - main remaining work is productionization plus planner/orchestrator evaluation
   and productization
 
@@ -107,7 +105,7 @@ Latest implementation update:
   - shared `HarnessClient` supports async semantic evidence emission
   - new Worker records carry schema version, sequence, source, trace,
     input/output refs, usage availability, and redaction status
-  - local and unrecognized command/OpenClaw fallbacks are explicitly synthetic
+  - local and unrecognized command/provider fallbacks are explicitly synthetic
     and report unavailable usage with null token/cost values
   - Worker and Control Plane perform separate secret-redaction passes; payloads
     above 32 KiB are externalized or marked blocked
@@ -116,9 +114,8 @@ Latest implementation update:
   - normalized evidence is JSON-Schema validated and exposed in supervise
     deltas; unavailable usage no longer counts as complete
 - `HR-P1-D2` Provider Adapters landed
-  - Codex app-server, Claude Agent SDK, Anthropic-compatible GLM, Kimi
-    stream/ACP/SDK, and OpenClaw bridge
-    records normalize into provider-native Evidence V2
+  - Codex app-server, Claude Agent SDK, Anthropic-compatible GLM, and Kimi
+    stream/ACP/SDK records normalize into provider-native Evidence V2
   - command stdout is parsed while the process runs; unknown output retains the
     D1 synthetic fallback and missing provider usage stays explicitly unavailable
   - tool calls/results retain stable IDs, complete text/thinking is aggregated,
@@ -483,7 +480,7 @@ Latest implementation update:
   - `npm run runtime-worker:smoke`
   - `npm run runtime-worker:recovery-smoke`
   - `git diff --check`
-  - real OpenClaw E2E was not part of this observability validation pass
+  - real Docker Worker E2E is tracked as a separate release validation pass
 
 ## Current Working Agreement
 
@@ -976,7 +973,7 @@ This also means the following may land incrementally:
 - [x] `CORE-03` strict-by-default run validation gate is wired end to end.
 - [x] `CORE-04` planner provider registry exists with deterministic fallback behavior.
 - [x] `CORE-05` route compare, revision history, and confirmation state are available.
-- [x] `CORE-06` registry management exists for agent profiles and skills.
+- [x] `CORE-06` registry management exists for versioned AgentDefinitions and Skills.
 
 ### Runtime Projection and Steering
 
@@ -1002,19 +999,19 @@ This also means the following may land incrementally:
 - [x] `STU-BASE-04` route compare and runtime cockpit surfaces exist.
 - [x] `STU-BASE-05` Studio command palette and keyboard navigation foundation exist.
 
-### OpenClaw Integration
+### Native Agent Runtime
 
-- [x] `OC-BASE-01` `api-gateway -> control-plane -> execution-adapter -> openclaw-local` path is implemented.
-- [x] `OC-BASE-02` execution-adapter supports `mock`, `native-agent`, and `container-exec` modes.
-- [x] `OC-BASE-03` direct-agent async polling and restart recovery exist.
-- [x] `OC-BASE-04` proposal-backed run creation and callback projection are implemented.
+- [x] `NATIVE-BASE-01` `api-gateway -> control-plane -> Runtime Worker` is the only execution path.
+- [x] `NATIVE-BASE-02` Local, Docker, and isolated Worker boundaries are supported.
+- [x] `NATIVE-BASE-03` durable leases, restart recovery, and AgentRun lineage exist.
+- [x] `NATIVE-BASE-04` proposal-backed AgentDag execution and callback projection are implemented.
 
 ## Open Tracking Board
 
 | ID | Area | Status | Priority | Task | Notes |
 |---|---|---|---|---|---|
 | `PX-00` | Product Intelligence | Done | P0 | Define and enforce the Human Surface Contract, information budget, and progressive-disclosure boundary. | Contract: `docs/36-product-intelligence-human-surface-contract.md`; the default surface is limited to Task, Decision, and Result. |
-| `PX-01` | Product Intelligence | Done | P0 | Reduce the default Studio shell to Tasks, Inbox, Library, and Settings while retaining advanced routes. | Default task flow exposes one primary action; technical routes remain available through Advanced and existing deep links. |
+| `PX-01` | Product Intelligence | Done | P0 | Reduce the default Studio shell to Task, Build, Operate, and Admin navigation groups. | Daily work stays in Task; Agent, Workflow, and Registry authoring live in Build; Mission, Runtime, and Memory live in Operate; System Details remains Admin-only while existing deep links stay compatible. |
 | `PX-02` | Product Intelligence | Done | P0 | Make setup derive Connection internals, bind the default Agent, verify the live Connection, and run environment checks. | Setup saves the encrypted Connection, repairs and binds `default-agent`, runs the live Connection test, and only advances after verification; `Configured` is never presented as `Verified`. |
 | `PX-03` | Product Intelligence | Done | P0 | Advance a prepared task through one recommended human action while preserving strict runtime validation. | `Start work` uses the existing Session message contract; the post-action Task Guidance state decides whether success may be shown. |
 | `PX-04` | Product Intelligence | Done | P0 | Adapt the Tasks workspace to ready, running, decision, result, recovery, paused, and preparation states. | A tested pure guidance model drives the task header, three-signal strip, primary action, results-first surface, and progressive disclosure. |
@@ -1030,7 +1027,7 @@ This also means the following may land incrementally:
 | `HR-P1-C1` | Policy And Evaluation | Done | P1 | Add declarative policy checks and independent persisted evaluation verdicts. | Offline none/deterministic paths, model queue/recovery, Gateway, CLI, schemas, and tests pass; live Anthropic judge remains explicit opt-in. |
 | `HR-P1-C2` | Trace And Replay | Done | P1 | Add first-class trace, pure replay, projection differences, replay-plan, and linked rerun. | Complete V2 runs replay exactly, legacy runs report partial, and rerun uses frozen-plan lineage plus Idempotency-Key. |
 | `HR-P1-D1` | Evidence Protocol | Done | P1 | Add streaming Harness Client, Evidence V2 fields, redaction, payload refs, and V1 compatibility. | Synthetic fallbacks are sequenced, schema-validated, redacted, and usage-unavailable. |
-| `HR-P1-D2` | Provider Adapters | Done | P1 | Normalize Codex, Claude Agent SDK, GLM, Kimi, and OpenClaw native evidence and project usage/cost/tools. | Codex/Claude/GLM use Agent Harness paths, recorded fixtures and offline tests pass, live Provider verification remains explicit opt-in, and no unknown model receives estimated cost. |
+| `HR-P1-D2` | Provider Harnesses | Done | P1 | Normalize Codex, Claude Agent SDK, GLM, and Kimi evidence and project usage/cost/tools. | Provider Harness fixtures and offline tests pass, live Provider verification remains explicit opt-in, and no unknown model receives estimated cost. |
 | `HR-P1-E1` | Runtime Graph UX | Done | P1 | Share deterministic DAG layout and make the spatial runtime graph the primary Studio run view. | Authoring/compare/runtime share one layout; toolbar, cursor refresh, node drawer, URL/keyboard selection, mobile-width list fallback, and six overlap fixtures pass. |
 | `HR-P1-E2` | Evaluation UI And Mobile | Done | P1 | Make Studio evaluation actionable and add Mobile topology, evidence, trace, and replay inspection. | Studio actions and verdicts, Mobile staged topology/full-height evidence, four focused tests, and desktop/mobile browser acceptance pass. |
 | `MW-00` | Mission Workspace | Done | P0 | Define a unified `Mission Workspace` contract in the Control Plane and align Mobile and Studio to consume it. | Contract definition, Control Plane normalization, Mobile cleanup, Studio cleanup, and cross-stage verification have landed. |
@@ -1057,10 +1054,10 @@ This also means the following may land incrementally:
 | `OBS-01C` | Observability | Done | P1 | Replace per-request raw-store scans with per-run indexes and add bounded Dashboard filtering. | Per-run lazy indexes, dirty-write invalidation, 1-720 hour windows, status filters, correlation limits, adaptive buckets, compatibility coverage, Docker smoke, and desktop/mobile acceptance pass. |
 | `OBS-01D` | Observability | Done | P1 | Add configurable derived-index retention and previous-period operational comparison. | Default 90-day non-destructive index retention, unlimited override, explicit coverage, seven comparison metrics, Studio toggle/strip, compatibility tests, Docker smoke, and responsive acceptance pass. |
 | `OBS-02` | Observability | Done | P2 | Add agent cost tracking and operational reporting surfaces. | Index V2 attribution, provider-preferred effective cost, completeness, Agent/model/work-package reports, OpenAPI/SDK, Gateway, CLI, and Studio are implemented and validated. |
-| `OC-01` | OpenClaw Production Hardening | Done | P1 | Add stronger concurrency handling, queueing, container health checks, resource isolation, and crash compensation. | `OC-01A/B` cover bounded capacity, health/isolation, Docker inventory reconciliation, orphan removal, durable cleanup attempts, redispatch gating, and operational visibility. |
-| `OC-01A` | OpenClaw Production Hardening | Done | P1 | Add bounded Docker Worker capacity, FIFO provisioning, container health gating, and default isolation. | Unit/integration coverage, real Docker Doctor/runtime smoke, Runtime Summary, Studio Dashboard/Settings, and responsive acceptance pass. |
-| `OC-01B` | OpenClaw Production Hardening | Done | P1 | Reconcile Docker Worker resources across crashes and make cleanup durable, observable, and idempotent. | Focused recovery coverage and real Docker restart smoke remove matched/orphan containers, retain failed cleanup capacity, and gate redispatch until compensation succeeds. |
-| `OC-02` | OpenClaw Production Hardening | Done | P2 | Add timeout compensation, failure replay, and more complete recovery audit trails. | Persistent deadline compensation, cleanup-gated capacity, restart continuation, frozen failed-Job Replay, evidence/Trace lineage, OpenAPI/Gateway/CLI/Studio operations, and focused plus Docker recovery acceptance are implemented. |
+| `RT-PROD-01` | Runtime Worker Hardening | Done | P1 | Add stronger concurrency handling, queueing, container health checks, resource isolation, and crash compensation. | Bounded capacity, health/isolation, Docker inventory reconciliation, orphan removal, durable cleanup attempts, redispatch gating, and operational visibility are covered. |
+| `RT-PROD-01A` | Runtime Worker Hardening | Done | P1 | Add bounded Docker Worker capacity, FIFO provisioning, container health gating, and default isolation. | Unit/integration coverage, real Docker Doctor/runtime smoke, Runtime Summary, Studio Dashboard/Settings, and responsive acceptance pass. |
+| `RT-PROD-01B` | Runtime Worker Hardening | Done | P1 | Reconcile Docker Worker resources across crashes and make cleanup durable, observable, and idempotent. | Focused recovery coverage and real Docker restart smoke remove matched/orphan containers, retain failed cleanup capacity, and gate redispatch until compensation succeeds. |
+| `RT-PROD-02` | Runtime Worker Hardening | Done | P2 | Add timeout compensation, failure replay, and complete recovery audit trails. | Persistent deadline compensation, cleanup-gated capacity, restart continuation, frozen failed-Job Replay, evidence/Trace lineage, OpenAPI/Gateway/CLI/Studio operations, and focused plus Docker recovery acceptance are implemented. |
 | `SDK-01` | Shared Types / SDK | Done | P1 | Generate shared client types/SDK from schemas and OpenAPI instead of relying on handwritten types. | Committed OpenAPI-generated DTOs, drift checks, typed client factory/tests, strengthened supervision schemas, and CLI consumers have landed. |
 | `REL-01` | Release Engineering | Done | P1 | Replace mutable Runtime Worker image defaults with immutable version/tag/digest resolution and build provenance. | Version-derived defaults, override policy, OCI labels, Worker health/registration provenance, Doctor identity, image verification, and real Docker acceptance pass. |
 | `REL-02` | Release Engineering | Done | P1 | Add CI release gates for generated-contract drift, checks, tests, Runtime Worker image build, and deterministic Docker smoke. | PR/main and tag/manual workflows separate full deterministic checks from image build, provenance, Docker operator, and restart-recovery gates; actionlint passes. |
@@ -1457,15 +1454,15 @@ Exit condition:
 
 - [x] Studio Registry lists workspace-scoped Provider Connections and uses a
       focused create/edit modal for Codex, Claude Agent SDK, GLM, Kimi,
-      OpenClaw, and custom providers.
+      and custom providers.
 - [x] Provider protocol, endpoint, multiple models, one default model, and
       credential source metadata are persisted; API keys are write-only and
       never returned.
 - [x] Managed API keys use AES-256-GCM storage with a deployment master key;
       environment references remain supported and storage snapshots exclude
       Provider secrets.
-- [x] Agent Profiles bind Agent Runtime, harness profile, Provider Connection,
-      model/agent reference, tools, and skills with runtime compatibility checks.
+- [x] Versioned AgentDefinitions bind Provider Connection, model, tools, skills,
+      memory, context, permissions, and sandbox policy.
 - [x] RunPlan compilation freezes the non-secret Connection snapshot and Runtime
       Worker Jobs retain only endpoint/model configuration and credential env
       identity.
@@ -1603,3 +1600,137 @@ Suggested maintenance rhythm:
 - [x] M11.5 local-edit and external-deletion conflict protection
 - [x] M11.6 backup, restore, integrity, purge, Gateway, OpenAPI, generated types, and Studio integration
 - [x] M11.7 focused tests, full regression, and desktop/mobile browser acceptance
+
+# M12 Executable Skill Host completion (2026-07-17)
+
+- [x] M12.1 versioned manifest, exact `SKILL.md`, and declared-resource package contract
+- [x] M12.2 bundled, installed, and custom-root discovery with Workspace enable/disable state
+- [x] M12.3 `skill_search`, `skill_load`, and `skill_resource_read` progressive loading tools
+- [x] M12.4 post-load Provider tool narrowing to declared tools plus Skill controls
+- [x] M12.5 no package code execution; existing Capability, approval, MCP, Desktop, and Worker boundaries retained
+- [x] M12.6 secure local installation, compatibility diagnostics, invocation lineage, and completion records
+- [x] M12.7 Control Plane and Gateway APIs, OpenAPI generated types, and Studio lifecycle management
+- [x] M12.8 bundled `web-research` acceptance package and focused regression coverage
+
+# M13 Skill activation and policy completion (2026-07-17)
+
+- [x] M13.1 explicit and deterministic automatic Skill activation
+- [x] M13.2 keyword specificity and negative-keyword handling
+- [x] M13.3 post-activation Provider tool narrowing
+- [x] M13.4 Workspace auto-activation, category, trust, update, and pin policy
+- [x] M13.5 deterministic Workspace Skill lockfile
+
+# M14 Core Skill catalog completion (2026-07-17)
+
+- [x] M14.1 six artifact workflow packages
+- [x] M14.2 two research workflow packages
+- [x] M14.3 five repository and coding workflow packages
+- [x] M14.4 Desktop diagnostics and GitHub workflow packages
+- [x] M14.5 15 bundled packages discover as ready
+
+# M15 isolated executable Skill completion (2026-07-17)
+
+- [x] M15.1 declared-script-only `skill_script_run`
+- [x] M15.2 separate Worker plugin runtime registration
+- [x] M15.3 one-time Desktop approval attestation for dangerous writes
+- [x] M15.4 Docker Worker-only Skill script execution
+- [x] M15.5 denial prevents Worker launch and Docker absence fails boundedly
+- [x] M15.6 Hermes content/tool compatibility inspection
+
+# M16 marketplace governance completion (2026-07-17)
+
+- [x] M16.1 local source catalog and source-root confinement
+- [x] M16.2 quarantine scan for package structure and dangerous content
+- [x] M16.3 Ed25519 digest verification and tamper rejection
+- [x] M16.4 installation provenance and retained prior versions
+- [x] M16.5 explicit rollback with provenance retention
+- [x] M16.6 permission delta for tools, capabilities, scopes, and scripts
+- [x] M16.7 explicit approval required before permission-expanding upgrade
+
+# M17 Skill verification and observability completion (2026-07-17)
+
+- [x] M17.1 activation and invocation lineage with version/digest identity
+- [x] M17.2 Provider failure marks loaded Skill invocations failed
+- [x] M17.3 persisted artifacts verify associated invocations as passed
+- [x] M17.4 evaluation upsert by invocation ID
+- [x] M17.5 privacy-safe Workspace health metrics and recommendations
+- [x] M17.6 Gateway, OpenAPI, generated types, and Studio Skills management
+- [x] M17.7 desktop/narrow browser acceptance and focused regression
+- [x] M17.8 binary DOCX/PDF/PPTX execution remains outside the Skill package process
+
+# Unified Artifact Worker completion (2026-07-17)
+
+- [x] Pinned PDF/Office Worker image with CJK fonts, LibreOffice, and Poppler
+- [x] PDF, DOCX, PPTX, and XLSX create/convert adapters
+- [x] T2 one-time Desktop approval before Docker execution
+- [x] Read-only input, output-only writes, no network, capabilities dropped, and resource limits
+- [x] Worker-side format-library reopen plus host-side signature/package/digest validation
+- [x] Verified binary persistence, PDF preview, download, extracted-text diff basis, and Workboard artifact
+- [x] HTTP requests without a Desktop approval channel remain pending instead of executing silently
+- [x] Focused runner and end-to-end Conversation regression coverage
+
+# M18-M21 productization completion (2026-07-17)
+
+- [x] M18.1 packaged Desktop runs compiled Control Plane, Gateway, and Studio assets
+- [x] M18.2 Windows unpacked build and installer scripts
+- [x] M18.3 Desktop release workflow, hashes, version checks, and signing boundary
+- [x] M18.4 packaged startup and smoke acceptance
+- [x] M19.1 Desktop user-data runtime root and packaged SQLite default
+- [x] M19.2 verified file-JSON migration and backup
+- [x] M19.3 Docker and pinned image preflight/provisioning
+- [x] M19.4 service logs, restart, and recovery diagnostics
+- [x] M20.1 legacy semantic filename and version-family migration
+- [x] M20.2 compact complete-name Workboard presentation
+- [x] M20.3 real Desktop multi-format, CJK, preview, diff, download, and restart acceptance
+- [x] M21.1 Workspace-owned timezone-aware schedule model and APIs
+- [x] M21.2 bounded scheduler watchdog and durable execution history
+- [x] M21.3 autonomy, permission, budget, and approval enforcement
+- [x] M21.4 in-app notifications and Inbox integration
+- [x] M21.5 Studio schedule and notification management with full acceptance
+
+Final acceptance produced the Windows installer and hashes, verified packaged
+SQLite migration/backup and all three local services, passed root checks and
+tests, and confirmed the Settings, Schedule, and Inbox surfaces without
+horizontal overflow at the Desktop 980px minimum width.
+
+Deferred by product decision: external messaging channels, voice, meetings,
+smart-home integrations, media services, remote plugin discovery, external
+observability exporters, and Mobile productization. See
+`docs/67-m18-m21-productization-roadmap.md`.
+
+## Multi-Agent And Durable DAG Closure (2026-07-18)
+
+- [x] Merge legacy Orchestrator Profile semantics into versioned Agent Definitions with explicit Agent Roles.
+- [x] Add version-pinned Agent Teams with concurrency, depth, budget, Reviewer, and cancellation policy.
+- [x] Persist Agent DAG, Task, Result, Artifact reference, and idempotent Agent Protocol envelopes.
+- [x] Project Main Agent delegation tools into durable DAG state before Sub Agent execution.
+- [x] Record parent-child AgentRun lifecycle for Workflow, delegation, and review execution.
+- [x] Enforce permission intersection, empty-tool denial, Role/binding consistency, timeouts, and budget reservation.
+- [x] Implement Reviewer acceptance/rejection, cancellation cascade, and failed-node retry with attempt lineage.
+- [x] Add Studio Agent/Team creation and DAG authoring, execution, protocol, cancellation, and recovery controls.
+- [x] Backfill legacy Workflow nodes with pinned AgentBindingSnapshot values and clear their runtime `agent_profile` authority.
+- [x] Make AgentBindingSnapshot the RunPlan execution authority, record every legacy Profile fallback read in RunPlan telemetry, and expose zero-unresolved/zero-fallback removal readiness through `/api/agents`. Nullable compatibility fields remain protocol placeholders for old JSON clients and are no longer a second runtime truth source.
+- [x] Define the unified `MissionSpec -> OrchestrationDecision -> DagProposal -> DagDefinition -> AgentDag` protocol and normalize template, model, and manual authoring into Proposal revisions.
+- [x] Add atomic Main Agent `dag_propose`, whole-graph validation, confirmation-time Agent version pinning, idempotent compilation, and partial-draft rollback.
+- [x] Route confirmed Proposal-backed Session execution entirely through the compiled AgentDag Runner, return immediately with `agent_dag_id`, and project lifecycle cards back into the owning Session.
+- [x] Lock confirmed Proposal revisions so reviewed Agent selectors cannot drift from the compiled AgentBindingSnapshot graph.
+- [ ] Add a read-only legacy Run projection only if external compatibility telemetry shows a remaining consumer; Studio now consumes AgentDag directly.
+- [x] Add native durable AgentDag approval/input gates with API resolution, automatic resume, restart recovery, and model-bypass tests.
+- [x] Fail closed on unavailable Agent Skills, tools, unverified Connections, missing credentials, and missing models; expose the same readiness evidence in API, Main Agent discovery, and Studio.
+- [x] Migrate legacy Agent Skill/tool aliases and Roles to canonical capabilities without changing pinned runtime authority.
+- [x] Add a bounded default execution policy only when no user policy exists, and present Team semantics as optional execution policy in Studio.
+- [x] Return AgentDag execution asynchronously, charge actual tool rounds, and aggregate every terminal graph exactly once through the pinned Main Agent.
+- [x] Project Sub Agent artifacts into the parent Task Workboard and surface Agent/DAG readiness in Studio.
+- [x] Force repeated Proposal calls to converge, prevent DagDefinition ids from being executed, and auto-expand Proposal review/launch controls when human action is required.
+- [x] Recover shared DAG state from persisted completed-node outputs, including legacy `output.<field>` mappings and bounded malformed single-field JSON recovery.
+- [x] Pass a real Desktop `glm-5.2` two-Worker plus Reviewer E2E with parallel execution, honest rejection, persisted recovery, accepted re-review, and automatic Main Agent synthesis.
+- [ ] Remove nullable legacy Profile/Workflow compatibility fields only after one release observation window and backup/restore rollback acceptance; runtime authority is already canonical V2.
+
+## Long Task Productization Closure (2026-07-18)
+
+- [x] Persist cumulative wall time, TurnAttempts, resumes, input/output tokens, cost availability, and exhaustion reason in every TaskCheckpoint.
+- [x] Enforce two-hour, 12-TurnAttempt, and four-million-token defaults with per-Session overrides and a human boundary on exhaustion.
+- [x] Keep HTTP and WebSocket Completion Contract transitions consistent for satisfied, incomplete, blocked, tool-limit, continuation-limit, and budget-limit outcomes.
+- [x] Surface elapsed time, TurnAttempts, resumes, cumulative tokens, compaction, tool rounds, Completion Contract, and budget exhaustion in the Conversation rail.
+- [x] Pass the deterministic 100-file interruption/compaction/idempotency/Change Set stress acceptance.
+- [x] Pass isolated live acceptance against the configured `glm-5.2` Provider with real tools, context compaction, token evidence, and a satisfied Completion Contract.

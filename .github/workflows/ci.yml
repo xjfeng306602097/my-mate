@@ -25,18 +25,20 @@ jobs:
             services/runtime-worker/package-lock.json
             services/control-plane/package-lock.json
             services/api-gateway/package-lock.json
-            services/execution-adapter/package-lock.json
             apps/cli/package-lock.json
             apps/mobile/package-lock.json
+            apps/studio/package-lock.json
+            apps/desktop/package-lock.json
       - name: Install workspace dependencies
         run: |
           npm ci --prefix packages/shared-types
           npm ci --prefix services/runtime-worker
           npm ci --prefix services/control-plane
           npm ci --prefix services/api-gateway
-          npm ci --prefix services/execution-adapter
           npm ci --prefix apps/cli
           npm ci --prefix apps/mobile
+          npm ci --prefix apps/studio
+          npm ci --prefix apps/desktop
       - name: Check generated contracts and types
         run: npm run check
       - name: Run deterministic test suite

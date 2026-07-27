@@ -83,16 +83,15 @@ The primary Studio navigation is:
 3. `Library`: reusable workflows and completed deliverables.
 4. `Settings`: model, machine readiness, and workspace identity.
 
-Advanced navigation retains:
+The navigation is grouped by user intent:
 
-- Sessions
-- Runtime Dashboard
-- Subagents
-- Templates
-- Registry
-- technical Settings
+- `Task`: Tasks, Scheduled, Inbox, and Settings
+- `Build`: Agents, Workflow Library, Workflow Editor, and Registry
+- `Operate`: Mission Workspace, Runtime Dashboard, and Memory
+- `Admin`: System Details and diagnostic controls
 
-Existing route IDs and deep links remain compatible during migration.
+Sessions remain available as an internal view inside Mission Workspace. Existing route IDs and deep links remain compatible during migration.
+
 
 ## Task Flow
 

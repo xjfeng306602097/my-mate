@@ -49,8 +49,6 @@ on:
         required: false
       ZHIPU_API_KEY:
         required: false
-      MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY:
-        required: false
 
 concurrency:
   group: live-provider-acceptance-${{ github.ref }}
@@ -68,11 +66,9 @@ jobs:
       MY_MATE_CODEX_COMMAND: ${{ vars.MY_MATE_CODEX_COMMAND }}
       MY_MATE_CLAUDE_SDK_COMMAND: ${{ vars.MY_MATE_CLAUDE_SDK_COMMAND }}
       MY_MATE_KIMI_COMMAND: ${{ vars.MY_MATE_KIMI_COMMAND }}
-      MY_MATE_OPENCLAW_WORKER_BRIDGE_URL: ${{ vars.MY_MATE_OPENCLAW_WORKER_BRIDGE_URL }}
       MY_MATE_CODEX_MODEL: ${{ vars.MY_MATE_CODEX_MODEL }}
       MY_MATE_CLAUDE_MODEL: ${{ vars.MY_MATE_CLAUDE_MODEL }}
       MY_MATE_KIMI_MODEL: ${{ vars.MY_MATE_KIMI_MODEL }}
-      MY_MATE_OPENCLAW_MODEL: ${{ vars.MY_MATE_OPENCLAW_MODEL }}
       MY_MATE_GLM_ANTHROPIC_BASE_URL: ${{ vars.MY_MATE_GLM_ANTHROPIC_BASE_URL }}
       MY_MATE_GLM_MODEL: ${{ vars.MY_MATE_GLM_MODEL }}
       MY_MATE_EVALUATOR_MODEL: ${{ vars.MY_MATE_EVALUATOR_MODEL }}
@@ -84,7 +80,6 @@ jobs:
       GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
       ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
       ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
-      MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY: ${{ secrets.MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
