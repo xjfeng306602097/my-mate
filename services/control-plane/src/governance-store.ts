@@ -6,30 +6,31 @@ import { getRequestAuthContext } from "./request-security.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getTemplate, archiveTemplate, publishTemplate } from "./template-store.js";
 import {
-  disableAgentProfile,
+  disableAgentDefinition,
+  getAgentDefinition,
+  upsertAgentDefinition,
+} from "./agent-runtime-store.js";
+import {
   disableSkill,
-  getAgentProfile,
   getSkill,
-  upsertAgentProfile,
   upsertSkill,
 } from "./registry-store.js";
 import type {
-  AgentProfileRecord,
+  AgentDefinitionRecord,
   CreateGovernanceChangeRequest,
   GovernanceChangeRecord,
   GovernanceDecisionRequest,
   GovernancePolicyRecord,
   GovernanceProtectedAction,
   SkillRecord,
-  UpsertAgentProfileRequest,
   UpsertSkillRequest,
   WorkflowTemplateRecord,
 } from "./types.js";
 import { isPlainObject, nowIso, slugify } from "./utils.js";
 
 export const GOVERNANCE_PROTECTED_ACTIONS: readonly GovernanceProtectedAction[] = [
-  "agent_profile.upsert",
-  "agent_profile.disable",
+  "agent.upsert",
+  "agent.disable",
   "skill.upsert",
   "skill.disable",
   "template.publish",
@@ -98,8 +99,30 @@ function isProtectedAction(value: unknown): value is GovernanceProtectedAction {
   );
 }
 
+function normalizeProtectedAction(value: unknown): GovernanceProtectedAction | null {
+  if (value === "agent_profile.upsert") return "agent.upsert";
+  if (value === "agent_profile.disable") return "agent.disable";
+  return isProtectedAction(value) ? value : null;
+}
+
+function normalizeGovernanceChange(change: GovernanceChangeRecord): GovernanceChangeRecord {
+  const action = normalizeProtectedAction(change.action);
+  if (!action) return change;
+  const payload = { ...change.payload };
+  if (typeof payload.profile_id === "string" && payload.agent_id === undefined) {
+    payload.agent_id = payload.profile_id;
+    delete payload.profile_id;
+  }
+  return {
+    ...change,
+    action,
+    resource_type: action.startsWith("agent.") ? "agent" : change.resource_type,
+    payload,
+  };
+}
+
 function resourceType(action: GovernanceProtectedAction): GovernanceChangeRecord["resource_type"] {
-  if (action.startsWith("agent_profile.")) return "agent_profile";
+  if (action.startsWith("agent.")) return "agent";
   if (action.startsWith("skill.")) return "skill";
   return "template";
 }
@@ -107,8 +130,8 @@ function resourceType(action: GovernanceProtectedAction): GovernanceChangeRecord
 function currentResource(
   action: GovernanceProtectedAction,
   resourceId: string,
-): AgentProfileRecord | SkillRecord | WorkflowTemplateRecord | null {
-  if (action.startsWith("agent_profile.")) return getAgentProfile(resourceId);
+): AgentDefinitionRecord | SkillRecord | WorkflowTemplateRecord | null {
+  if (action.startsWith("agent.")) return getAgentDefinition(resourceId, requestIdentity().workspaceId);
   if (action.startsWith("skill.")) return getSkill(resourceId);
   return getTemplate(resourceId);
 }
@@ -127,11 +150,11 @@ function validateChangeInput(input: CreateGovernanceChangeRequest): {
   const payload = input.payload === undefined ? {} : input.payload;
   if (!isPlainObject(payload)) throw new Error("GOVERNANCE_PAYLOAD_INVALID");
 
-  if (input.action === "agent_profile.upsert") {
+  if (input.action === "agent.upsert") {
     if (typeof payload.name !== "string" || !payload.name.trim()) {
       throw new Error("GOVERNANCE_AGENT_PROFILE_NAME_REQUIRED");
     }
-    if (payload.profile_id && slugify(String(payload.profile_id)) !== resourceId) {
+    if (payload.agent_id && slugify(String(payload.agent_id)) !== resourceId) {
       throw new Error("GOVERNANCE_RESOURCE_ID_MISMATCH");
     }
   }
@@ -146,7 +169,7 @@ function validateChangeInput(input: CreateGovernanceChangeRequest): {
 
   const current = currentResource(input.action, resourceId);
   if (
-    ["agent_profile.disable", "skill.disable", "template.publish", "template.archive"].includes(
+    ["agent.disable", "skill.disable", "template.publish", "template.archive"].includes(
       input.action,
     ) && !current
   ) {
@@ -189,9 +212,14 @@ export function getGovernancePolicy(): GovernancePolicyRecord {
   const { workspaceId } = requestIdentity();
   const storage = getJsonStorageBackend();
   const filePath = policyPath(workspaceId);
-  return storage.exists(filePath)
-    ? storage.readJson<GovernancePolicyRecord>(filePath)
-    : defaultPolicy(workspaceId);
+  if (!storage.exists(filePath)) return defaultPolicy(workspaceId);
+  const policy = storage.readJson<GovernancePolicyRecord>(filePath);
+  return {
+    ...policy,
+    protected_actions: policy.protected_actions
+      .map(normalizeProtectedAction)
+      .filter((action): action is GovernanceProtectedAction => action !== null),
+  };
 }
 
 export function updateGovernancePolicy(input: {
@@ -308,7 +336,9 @@ export function listGovernanceChanges(input: {
   const limit = Math.min(500, Math.max(1, Math.floor(input.limit || 100)));
   return getJsonStorageBackend()
     .listJsonFiles(changesDir(workspaceId))
-    .map((file) => getJsonStorageBackend().readJson<GovernanceChangeRecord>(file))
+    .map((file) => normalizeGovernanceChange(
+      getJsonStorageBackend().readJson<GovernanceChangeRecord>(file),
+    ))
     .filter((change) => !input.status || change.status === input.status)
     .filter((change) => !input.action || change.action === input.action)
     .sort((left, right) => right.proposed_at.localeCompare(left.proposed_at))
@@ -319,7 +349,9 @@ export function getGovernanceChange(changeId: string): GovernanceChangeRecord | 
   const { workspaceId } = requestIdentity();
   const filePath = changePath(workspaceId, changeId);
   const storage = getJsonStorageBackend();
-  return storage.exists(filePath) ? storage.readJson<GovernanceChangeRecord>(filePath) : null;
+  return storage.exists(filePath)
+    ? normalizeGovernanceChange(storage.readJson<GovernanceChangeRecord>(filePath))
+    : null;
 }
 
 export function decideGovernanceChange(
@@ -371,16 +403,25 @@ export function decideGovernanceChange(
 }
 
 function applyMutation(change: GovernanceChangeRecord): Record<string, unknown> {
-  let record: AgentProfileRecord | SkillRecord | WorkflowTemplateRecord;
+  let record: AgentDefinitionRecord | SkillRecord | WorkflowTemplateRecord;
   switch (change.action) {
-    case "agent_profile.upsert":
-      record = upsertAgentProfile({
-        ...(change.payload as unknown as UpsertAgentProfileRequest),
-        profile_id: change.resource_id,
+    case "agent.upsert": {
+      const result = upsertAgentDefinition({
+        workspaceId: change.workspace_id,
+        agentId: change.resource_id,
+        name: String(change.payload.name || change.resource_id),
+        description: typeof change.payload.description === "string"
+          ? change.payload.description
+          : "",
+        version: isPlainObject(change.payload.version) ? change.payload.version : undefined,
+        metadata: isPlainObject(change.payload.metadata) ? change.payload.metadata : undefined,
+        createdBy: change.applied_by || "governance",
       });
+      record = result.definition;
       break;
-    case "agent_profile.disable":
-      record = disableAgentProfile(change.resource_id);
+    }
+    case "agent.disable":
+      record = disableAgentDefinition(change.resource_id, change.workspace_id);
       break;
     case "skill.upsert":
       record = upsertSkill({

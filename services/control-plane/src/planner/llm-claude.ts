@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { listTemplates } from "../template-store.js";
+import { listCurrentPublishedTemplates } from "../template-store.js";
 import {
   PLANNER_LLM_MAX_TOKENS,
   PLANNER_LLM_MODEL,
@@ -122,7 +122,7 @@ function buildDagShapeUserPrompt(
       `- ${node.id}`,
       `type=${node.type}`,
       `name=${node.name}`,
-      `agent=${node.agent_profile || "none"}`,
+      `agent=${node.agent_id || node.agent_binding_snapshot?.agent_id || "none"}`,
       `skills=${node.allowed_skills.join(",") || "none"}`,
       `domains=${[...new Set(domains)].join(",") || "none"}`,
     ].join(" | ");
@@ -505,7 +505,6 @@ function templateRecordFromDraft(
     workspace_scope: draft.workspace_scope || "default",
     input_schema: draft.input_schema,
     policy: draft.policy,
-    agent_profile_bindings: draft.agent_profile_bindings || {},
     nodes: draft.nodes,
     edges: draft.edges,
     metadata: draft.metadata || {},
@@ -597,7 +596,7 @@ async function recommendTemplate(
   if (!intentTrimmed) {
     return null;
   }
-  const publishedTemplates = listTemplates().filter((t) => t.status === "published");
+  const publishedTemplates = listCurrentPublishedTemplates();
   if (publishedTemplates.length === 0) {
     return null;
   }

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { buildMissionUiPlan } from "../src/mission-ui-planner.js";
 import { recordProviderConnectionVerification, upsertProviderConnection } from "../src/provider-connection-store.js";
 import { runProactiveSupervisionScan } from "../src/proactive-supervisor.js";
+import { createSession, getSession, saveSession } from "../src/session-store.js";
 import { listSupervisionAlerts } from "../src/supervision-store.js";
 import {
   createStubExecutionAdapter,
@@ -37,20 +38,106 @@ test("SUP-01 supervision scans persist and deduplicate actionable configuration 
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.items.length, 1);
+
+    const connection = upsertProviderConnection({
+      connection_id: "resolved-supervisor-provider",
+      name: "Resolved Supervisor Provider",
+      agent_runtime: "codex",
+      provider: "openai",
+      protocol: "codex-appserver",
+      base_url: "https://model.example",
+      models: ["resolved-model"],
+      default_model: "resolved-model",
+      credential_source: "managed",
+      credential_env: "OPENAI_API_KEY",
+      status: "active",
+      metadata: {},
+    });
+    recordProviderConnectionVerification(connection.connection_id, {
+      status: "verified",
+      tested_at: "2026-07-13T10:01:30.000Z",
+      detail: "verified for alert recovery",
+      duration_ms: 1,
+      model: "resolved-model",
+    });
+    const session = getSession(created.body.session.session_id)!;
+    session.metadata = {
+      ...(session.metadata || {}),
+      conversation_provider_connection_id: connection.connection_id,
+      conversation_model: "resolved-model",
+      agent_binding_snapshot: null,
+    };
+    saveSession(session);
+    const recovered = runProactiveSupervisionScan({ now: "2026-07-13T10:02:00.000Z" });
+    assert.equal(recovered.open_alerts.filter((item) => item.category === "configuration").length, 0);
+    assert.ok(recovered.resolved_alerts.includes(first.open_alerts[0].alert_id));
   } finally {
     await server.close();
   }
 });
 
+test("SUP-01 accepts the verified Provider Connection and model bound to the Session", () => {
+  resetTestRoot();
+  const connection = upsertProviderConnection({
+    connection_id: "session-supervisor-provider",
+    name: "Session Supervisor Provider",
+    agent_runtime: "codex",
+    provider: "openai",
+    protocol: "codex-appserver",
+    base_url: "https://model.example",
+    models: ["session-model"],
+    default_model: "session-model",
+    credential_source: "managed",
+    credential_env: "OPENAI_API_KEY",
+    status: "active",
+    metadata: {},
+  });
+  recordProviderConnectionVerification(connection.connection_id, {
+    status: "verified",
+    tested_at: "2026-07-13T10:00:00.000Z",
+    detail: "verified for supervision",
+    duration_ms: 1,
+    model: "session-model",
+  });
+  createSession({
+    initial_message: "Use this explicitly selected model",
+    created_by: "test",
+    provider_connection_id: connection.connection_id,
+    model: "session-model",
+  });
+
+  const scan = runProactiveSupervisionScan({ now: "2026-07-13T10:01:00.000Z" });
+  assert.equal(scan.open_alerts.filter((item) => item.category === "configuration").length, 0);
+  assert.equal(listSupervisionAlerts({ status: "open" }).length, 0);
+});
+
+test("SUP-01 ignores stale conversational drafts without execution intent", () => {
+  resetTestRoot();
+  const session = createSession({
+    initial_message: "An old task that never reached execution",
+    created_by: "test",
+  });
+  session.updated_at = "2026-07-10T00:00:00.000Z";
+  session.metadata = {
+    ...(session.metadata || {}),
+    latest_orchestrator_intent: "clarify",
+    pending_decision: "What constraints matter?",
+    workspace_state: {
+      next_recommended_action: "clarify",
+      pending_decision: "What constraints matter?",
+    },
+  };
+  saveSession(session);
+
+  const scan = runProactiveSupervisionScan({ now: "2026-07-13T10:00:00.000Z" });
+  assert.equal(scan.open_alerts.filter((item) => item.category === "configuration").length, 0);
+});
+
 test("AI-01 Autopilot persists policy, opens a strict Run, and returns controller truth", async () => {
   resetTestRoot();
   seedSkill({ skill_id: "coding-agent", name: "Coding Agent" });
-  seedAgentProfile({
-    profile_id: "backend",
-    name: "Backend",
-    runtime_agent_ref: "backend",
-    default_skills: ["coding-agent"],
-  });
+  seedSkill({ skill_id: "artifact-code", name: "Code Artifact" });
+  seedSkill({ skill_id: "test-driven-development", name: "Test Driven Development" });
   const connection = upsertProviderConnection({
     connection_id: "autopilot-provider",
     name: "Autopilot Provider",
@@ -71,6 +158,14 @@ test("AI-01 Autopilot persists policy, opens a strict Run, and returns controlle
     detail: "verified for test",
     duration_ms: 1,
     model: "gpt-test",
+  });
+  seedAgentProfile({
+    profile_id: "backend",
+    name: "Backend",
+    runtime_agent_ref: "backend",
+    agent_runtime: "codex",
+    provider_connection_id: connection.connection_id,
+    default_skills: ["coding-agent"],
   });
   seedAgentProfile({
     profile_id: "default-agent",
@@ -96,7 +191,7 @@ test("AI-01 Autopilot persists policy, opens a strict Run, and returns controlle
     assert.equal(configured.status, 200);
     const resumed = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/autopilot/resume`, {});
     assert.equal(resumed.status, 200);
-    assert.equal(resumed.body.status, "running");
+    assert.equal(resumed.body.status, "running", JSON.stringify(resumed.body));
     assert.equal(resumed.body.phase, "execution");
     assert.equal(resumed.body.last_action, "start_run");
 

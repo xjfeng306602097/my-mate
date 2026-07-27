@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "web-research",
+  "name": "Web Research",
+  "version": "1.0.0",
+  "description": "Research a current topic with bounded search, source inspection, and an evidence-based synthesis.",
+  "category": "research",
+  "risk_level": "T1",
+  "allowed_tools": ["web_search", "web_fetch", "browser_navigate", "browser_snapshot"],
+  "required_capabilities": ["web_search", "web_fetch"],
+  "permission_scopes": ["network.public.read"],
+  "activation_keywords": ["research", "latest", "current", "trend", "调查", "研究", "最新", "趋势", "热度"],
+  "negative_keywords": ["available skills", "skill list", "可用skill", "有哪些skill"],
+  "activation_policy": "auto",
+  "platforms": ["windows", "macos", "linux"],
+  "resources": [],
+  "scripts": [],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "question": { "type": "string", "minLength": 1 },
+      "source_limit": { "type": "integer", "minimum": 2, "maximum": 12, "default": 6 }
+    },
+    "required": ["question"],
+    "additionalProperties": false
+  },
+  "output_contract": {
+    "type": "object",
+    "required": ["answer", "sources", "limitations"]
+  },
+  "enabled_by_default": true,
+  "publisher": "My Mate",
+  "license": "MIT",
+  "trust_level": "bundled",
+  "metadata": {
+    "progressive_loading": true,
+    "external_content_untrusted": true
+  }
+}

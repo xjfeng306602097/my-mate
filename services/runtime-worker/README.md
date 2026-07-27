@@ -21,7 +21,6 @@ same SBOM and Critical vulnerability gate.
 - `glm`: the Claude Agent SDK harness pointed at a GLM
   Anthropic-compatible endpoint, default model `glm-5.2`.
 - `kimi`: Kimi command/stream-json compatibility harness.
-- `openclaw`: HTTP bridge configured by `MY_MATE_OPENCLAW_WORKER_BRIDGE_URL`.
 
 Codex and Claude no longer use one-shot commands by default. Set
 `MY_MATE_CODEX_HARNESS=command` or `MY_MATE_CLAUDE_HARNESS=command` together
@@ -37,7 +36,7 @@ Codex app-server notifications and Claude/GLM Agent SDK messages are consumed
 as native streams. Kimi compatibility stdout is consumed as JSONL while its
 process is running. Stateful Provider adapters aggregate token deltas into
 complete text or thinking blocks and preserve stable tool call/result
-correlation. OpenClaw normalizes `events` or `evidence` returned by the bridge.
+correlation.
 If no known native record is recognized, the command/bridge result uses the
 synthetic compatibility path instead of claiming native evidence.
 
@@ -51,8 +50,8 @@ signal)` contract. The Worker assigns every emitted record:
 - trace/span/tool-call correlation metadata
 - explicit input/output references and nullable usage
 
-Local and unrecognized command/OpenClaw bridge fallbacks are explicitly marked
-`synthetic=true`. Recognized Codex, Claude SDK, GLM, Kimi, and OpenClaw events use
+Local and unrecognized command fallbacks are explicitly marked
+`synthetic=true`. Recognized Codex, Claude SDK, GLM, and Kimi events use
 `synthetic=false`. If a recognized stream omits usage, the Worker appends a
 synthetic unavailable-usage marker; it never invents zero token counts or cost.
 
@@ -78,7 +77,7 @@ second redaction pass before persistence.
 Recorded adapter fixtures run with the normal test suite. A real provider call
 is disabled by default. To enable it, set
 `MY_MATE_RUN_LIVE_PROVIDER_TESTS=true`, choose `MY_MATE_LIVE_PROVIDER`, and set
-the matching command or OpenClaw bridge variable. `MY_MATE_LIVE_MODEL` is an
+the matching command or Harness-specific credential variables. `MY_MATE_LIVE_MODEL` is an
 optional source label. Missing live configuration fails clearly once the gate
 is enabled.
 

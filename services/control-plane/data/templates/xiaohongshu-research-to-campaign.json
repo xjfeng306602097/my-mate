@@ -1,0 +1,641 @@
+{
+  "template_id": "xiaohongshu-research-to-campaign",
+  "version": 1,
+  "name": "Xiaohongshu Research to Campaign",
+  "status": "published",
+  "description": "Collect authorized public sources, research audience and topic signals, draft Xiaohongshu copy, independently review claims and platform risk, require human approval, then produce a controlled publishing package without silently posting.",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": {
+        "type": "string",
+        "title": "Goal"
+      }
+    },
+    "required": [
+      "goal"
+    ]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 900,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "nodes": [
+    {
+      "id": "node_backend",
+      "name": "Collect Authorized Sources",
+      "type": "agent_task",
+      "agent_id": "research-analyst",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "allowed_tools": [
+          "read",
+          "write",
+          "shell"
+        ],
+        "output_contract": {
+          "expected_artifacts": [
+            "agent-report"
+          ]
+        }
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 900,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_d575e82a-427b-47a9-8236-e2eb975c5410",
+        "binding_mode": "pinned",
+        "agent_id": "research-analyst",
+        "agent_version": 1,
+        "agent_name": "Research Analyst",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "web_search",
+            "web_fetch",
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "web-research",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:33:47.853Z",
+        "snapshot_digest": "fc43b16143686da0fa8211fad9abcc3e4efd65e004ccde54297e96ab4ada9365"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 0,
+        "backoff_seconds": 0
+      },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "node_3",
+      "name": "Audience & Topic Research",
+      "type": "agent_task",
+      "agent_id": "research-analyst",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_2b6a1393-cfb3-400e-81eb-07b82d159d6d",
+        "binding_mode": "pinned",
+        "agent_id": "research-analyst",
+        "agent_version": 1,
+        "agent_name": "Research Analyst",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "web_search",
+            "web_fetch",
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "web-research",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:33:47.894Z",
+        "snapshot_digest": "a6a14e09983330a08a2472ea131f565e8ae31c0d51416a4db55ccf5da35adb33"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_4",
+      "name": "Draft Xiaohongshu Copy",
+      "type": "agent_task",
+      "agent_id": "content-writer",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_4e802575-e09c-45d1-9cd7-fee0e1f7416d",
+        "binding_mode": "pinned",
+        "agent_id": "content-writer",
+        "agent_version": 1,
+        "agent_name": "Content Writer",
+        "agent_role": "worker",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "artifact-document",
+              "version": null
+            },
+            {
+              "skill_id": "artifact-presentation",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:33:47.927Z",
+        "snapshot_digest": "d048c71e63b9cb41130b2dc6c35ceb1084920861f9e0345d995814e47e2d6252"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_5",
+      "name": "Independent Claim & Policy Review",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-reviewer",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_f7c2353d-4e29-422b-8e53-f64f434d8c7a",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-reviewer",
+        "agent_version": 1,
+        "agent_name": "E2E Independent Reviewer",
+        "agent_role": "reviewer",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Review the shared workspace independently and return a structured acceptance verdict.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": false,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "review_first",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:33:47.961Z",
+        "snapshot_digest": "d242bdd2a663e4bebfcd87855fe66e531398563b1552ba7d0172a3a2b1c1a9de"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_6",
+      "name": "Review Passed?",
+      "type": "condition",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {
+        "condition": {
+          "path": "result.approved",
+          "operator": "truthy"
+        }
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "node_7",
+      "name": "Human Campaign Approval",
+      "type": "approval",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": "prod_release",
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "node_8",
+      "name": "Prepare Controlled Publishing Package",
+      "type": "agent_task",
+      "agent_id": "customer-success-agent",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_20d3652d-fd89-425b-ba47-2df2a076a993",
+        "binding_mode": "pinned",
+        "agent_id": "customer-success-agent",
+        "agent_version": 1,
+        "agent_name": "Customer Success Agent",
+        "agent_role": "worker",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "artifact-document",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:33:47.995Z",
+        "snapshot_digest": "8c318d15f180bac4a6472cb45a95520403d3a481f1e8ac8172f5dd808b725a92"
+      },
+      "agent_version": 1
+    }
+  ],
+  "edges": [
+    {
+      "from": "node_backend",
+      "to": "node_3",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_3",
+      "to": "node_4",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_4",
+      "to": "node_5",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_5",
+      "to": "node_6",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_6",
+      "to": "node_7",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_7",
+      "to": "node_8",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_8",
+      "to": "node_end",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    }
+  ],
+  "metadata": {
+    "domain": "demo",
+    "versioning": {
+      "family_id": "xiaohongshu-research-to-campaign",
+      "root_template_id": "xiaohongshu-research-to-campaign",
+      "source_template_id": null,
+      "source_version": null,
+      "previous_template_id": null,
+      "previous_version": null,
+      "derivation_kind": "initial",
+      "generation": 1
+    },
+    "agent_binding_migration": {
+      "schema_version": 2,
+      "migrated_at": "2026-07-22T12:33:47.997Z",
+      "compatibility_fields_retained": false
+    }
+  },
+  "created_at": "2026-07-22T12:33:15.704Z",
+  "updated_at": "2026-07-22T12:39:32.556Z",
+  "published_at": "2026-07-22T12:39:32.556Z"
+}

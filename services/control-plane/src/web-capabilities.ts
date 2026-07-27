@@ -250,7 +250,14 @@ export async function fetchWeb(input: {
     headers: { accept: "text/html,application/xhtml+xml,text/plain,application/json,application/xml;q=0.9,*/*;q=0.2" },
   });
   if (response.status < 200 || response.status >= 300) {
-    throw new WebNetworkError("web_fetch_http_error", `Web page returned HTTP ${response.status}.`);
+    const code = response.status === 401 || response.status === 403
+      ? "web_fetch_access_denied"
+      : response.status === 429
+        ? "web_fetch_rate_limited"
+        : response.status >= 500
+          ? "web_fetch_server_error"
+          : "web_fetch_http_error";
+    throw new WebNetworkError(code, `Web page returned HTTP ${response.status}.`);
   }
   const contentType = (response.headers["content-type"] || "application/octet-stream").toLowerCase();
   const textual = contentType.startsWith("text/") || /(?:json|xml|javascript|xhtml|yaml)/u.test(contentType);

@@ -11,14 +11,13 @@ import { buildJob } from "./worker-runtime.test.js";
 const runLive = process.env.MY_MATE_RUN_LIVE_PROVIDER_TESTS === "true";
 const commandEnv: Record<string, string> = {
   kimi: "MY_MATE_KIMI_COMMAND",
-  openclaw: "MY_MATE_OPENCLAW_WORKER_BRIDGE_URL",
 };
 
 test("opt-in live provider completes the workspace tool and usage scenario", { skip: !runLive }, async () => {
   const provider = process.env.MY_MATE_LIVE_PROVIDER as RuntimeAgentRuntime | undefined;
   assert.ok(
-    provider && ["codex", "claude-sdk", "glm", "kimi", "openclaw"].includes(provider),
-    "MY_MATE_LIVE_PROVIDER must be one of codex, claude-sdk, glm, kimi, or openclaw.",
+    provider && ["codex", "claude-sdk", "glm", "kimi"].includes(provider),
+    "MY_MATE_LIVE_PROVIDER must be one of codex, claude-sdk, glm, or kimi.",
   );
   const requiredEnv = commandEnv[provider];
   if (requiredEnv) {

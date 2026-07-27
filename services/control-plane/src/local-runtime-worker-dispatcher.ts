@@ -48,8 +48,10 @@ export class LocalRuntimeWorkerDispatcher implements RuntimeDispatcher {
         adapter_kind: "runtime-worker",
         raw_ref: {
           dispatch_id: `runtime-worker:${job.job_id}`,
-          openclaw_task_id: `local-task:${job.node_run_id}`,
-          openclaw_session_id: `local-session:${job.node_run_id}`,
+          provider_refs: {
+            task_id: `local-task:${job.node_run_id}`,
+            session_id: `local-session:${job.node_run_id}`,
+          },
         },
       },
     };

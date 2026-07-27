@@ -1,0 +1,1014 @@
+{
+  "template_id": "production-incident-response",
+  "version": 1,
+  "name": "Production Incident Response",
+  "status": "published",
+  "description": "Triage a synthetic production incident, diagnose service and infrastructure in parallel, review and approve a containment plan, prepare controlled remediation or rollback, verify recovery, and capture a postmortem without silently changing production.",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": {
+        "type": "string",
+        "title": "Goal"
+      }
+    },
+    "required": [
+      "goal"
+    ]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 900,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "nodes": [
+    {
+      "id": "node_backend",
+      "name": "Alert Triage",
+      "type": "agent_task",
+      "agent_id": "ops-runner",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Classify the synthetic alert, establish severity, scope, and immediate safety constraints. Do not call tools or change production.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 900,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_44935038-7e3d-41b2-9b26-29379d8c4d87",
+        "binding_mode": "pinned",
+        "agent_id": "ops-runner",
+        "agent_version": 1,
+        "agent_name": "Ops Runner",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_run_command"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "systematic-debugging",
+              "version": null
+            },
+            {
+              "skill_id": "desktop-diagnostics",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.278Z",
+        "snapshot_digest": "e0ad0c58e1f026916980434912221cbf73b4f4fd4205e004fd97b71aea8d26bf"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 0,
+        "backoff_seconds": 0
+      },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "node_3",
+      "name": "Service Diagnosis",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-backend",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Analyze the supplied service symptoms and produce likely application-level causes with supporting evidence. Do not change files or systems.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_9c9a4405-db37-45b3-bc06-72d108ccb58c",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-backend",
+        "agent_version": 1,
+        "agent_name": "E2E Backend Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Implement bounded Node.js HTTP services in the shared Task workspace.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.295Z",
+        "snapshot_digest": "b66768c2fbb91882fb9efb206e8ab7ff3a996e755d032bdfb2ec3797e73b12b1"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_4",
+      "name": "Infrastructure Diagnosis",
+      "type": "agent_task",
+      "agent_id": "ops-runner",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Analyze the supplied infrastructure symptoms and produce likely platform-level causes with supporting evidence. Do not change production.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_21ef76e8-b4e2-4944-965b-d5da7e971501",
+        "binding_mode": "pinned",
+        "agent_id": "ops-runner",
+        "agent_version": 1,
+        "agent_name": "Ops Runner",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_run_command"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "systematic-debugging",
+              "version": null
+            },
+            {
+              "skill_id": "desktop-diagnostics",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.318Z",
+        "snapshot_digest": "51023010caf35243580fff6aa5df42f1564e8ec171fabb9961c3897ea1c5d6e7"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_5",
+      "name": "Combine Findings",
+      "type": "reducer",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {
+        "objective": "Combine service and infrastructure findings into one incident state."
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "node_6",
+      "name": "Containment Plan",
+      "type": "agent_task",
+      "agent_id": "ops-runner",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Prepare a bounded containment plan with explicit blast radius, rollback trigger, and verification criteria. Do not execute it.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_6dfbae8a-d69e-4208-a015-8b7c1c5f4918",
+        "binding_mode": "pinned",
+        "agent_id": "ops-runner",
+        "agent_version": 1,
+        "agent_name": "Ops Runner",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_run_command"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "systematic-debugging",
+              "version": null
+            },
+            {
+              "skill_id": "desktop-diagnostics",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.341Z",
+        "snapshot_digest": "78ec9ba3542845e9872e01ce921c775362c3820da99d46a4d42ab1f4844dfafb"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_7",
+      "name": "Independent Review",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-reviewer",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Independently review the diagnosis and containment plan against safety and evidence requirements.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_6f308742-ee4c-49b7-a2cc-364c794727ec",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-reviewer",
+        "agent_version": 1,
+        "agent_name": "E2E Independent Reviewer",
+        "agent_role": "reviewer",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Review the shared workspace independently and return a structured acceptance verdict.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": false,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "review_first",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.360Z",
+        "snapshot_digest": "44c9d519e219e97b4a337daa4e139b76cfb2cfe01d12abfee70c57ffa17242bb"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_8",
+      "name": "Incident Commander Approval",
+      "type": "approval",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {
+        "objective": "Require a human incident commander to approve the controlled remediation or rollback plan."
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": "prod_release",
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "node_9",
+      "name": "Controlled Remediation Or Rollback",
+      "type": "agent_task",
+      "agent_id": "ops-runner",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Produce an operator-ready remediation or rollback package from the approved plan. This synthetic test must not execute external production actions.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_134795ff-da71-4d14-8627-c611a6202cde",
+        "binding_mode": "pinned",
+        "agent_id": "ops-runner",
+        "agent_version": 1,
+        "agent_name": "Ops Runner",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_run_command"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "systematic-debugging",
+              "version": null
+            },
+            {
+              "skill_id": "desktop-diagnostics",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.381Z",
+        "snapshot_digest": "e4f65cd534127be140d91282e00e31a172278b5e3c9759ad9895b3e7c270f18b"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_10",
+      "name": "Recovery Verification",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-test",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Verify the synthetic recovery evidence and determine whether service objectives are restored.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_9510a68e-5b29-4112-b11e-447d1d302a99",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-test",
+        "agent_version": 1,
+        "agent_name": "E2E Test Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Inspect frontend and backend outputs, then add executable Node.js integration tests.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.403Z",
+        "snapshot_digest": "0c2de48d2dfd31dddb9cd191ea0556192aa98f0037d1e04cde2989ae0888dc45"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_11",
+      "name": "Postmortem",
+      "type": "agent_task",
+      "agent_id": "content-writer",
+      "allowed_skills": [],
+      "config": {
+        "objective": "Create a concise postmortem with timeline, root cause, contributing factors, corrective actions, and owners.",
+        "allowed_tools": [
+          "workspace_read_text"
+        ],
+        "acceptance_criteria": [
+          "Return a concrete, auditable result for this synthetic incident without performing an external production action."
+        ],
+        "verification_steps": [
+          "Check the supplied incident context and upstream durable evidence before returning the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_62095f21-fe9c-49d5-8c7e-5e1d7aac058d",
+        "binding_mode": "pinned",
+        "agent_id": "content-writer",
+        "agent_version": 1,
+        "agent_name": "Content Writer",
+        "agent_role": "worker",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "artifact-document",
+              "version": null
+            },
+            {
+              "skill_id": "artifact-presentation",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T15:28:42.429Z",
+        "snapshot_digest": "a3504a4db337f1458530f0ed3088f013b6bb4811d17c1953e7a90c13f7f26854"
+      },
+      "agent_version": 1
+    }
+  ],
+  "edges": [
+    {
+      "from": "node_backend",
+      "to": "node_3",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_backend",
+      "to": "node_4",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_3",
+      "to": "node_5",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_4",
+      "to": "node_5",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_5",
+      "to": "node_6",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_6",
+      "to": "node_7",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_7",
+      "to": "node_8",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_8",
+      "to": "node_9",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_9",
+      "to": "node_10",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_10",
+      "to": "node_11",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_11",
+      "to": "node_end",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    }
+  ],
+  "metadata": {
+    "domain": "demo",
+    "versioning": {
+      "family_id": "production-incident-response",
+      "root_template_id": "production-incident-response",
+      "source_template_id": null,
+      "source_version": null,
+      "previous_template_id": null,
+      "previous_version": null,
+      "derivation_kind": "initial",
+      "generation": 1
+    },
+    "agent_binding_migration": {
+      "schema_version": 2,
+      "migrated_at": "2026-07-22T15:28:42.430Z",
+      "compatibility_fields_retained": false
+    }
+  },
+  "created_at": "2026-07-22T15:28:32.901Z",
+  "updated_at": "2026-07-22T15:28:42.430Z",
+  "published_at": "2026-07-22T15:28:41.569Z"
+}

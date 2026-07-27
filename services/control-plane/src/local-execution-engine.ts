@@ -44,19 +44,19 @@ function buildLocalExecutionRef(nodeRunId: string) {
     target_kind: "local",
     dispatch_id: `disp_local_${nodeRunId}`,
     provider_refs: {
-      openclaw_task_id: `local-task-${nodeRunId}`,
-      openclaw_session_id: `local-session-${nodeRunId}`,
+      task_id: `local-task-${nodeRunId}`,
+      session_id: `local-session-${nodeRunId}`,
     },
-    openclaw_task_id: `local-task-${nodeRunId}`,
-    openclaw_session_id: `local-session-${nodeRunId}`,
   });
 }
 
 function buildLocalDispatchResult(nodeRunId: string): AdapterDispatchResult {
   return {
     dispatch_id: `disp_${generateEventId()}`,
-    openclaw_task_id: `local-task-${nodeRunId}`,
-    openclaw_session_id: `local-session-${nodeRunId}`,
+    provider_refs: {
+      task_id: `local-task-${nodeRunId}`,
+      session_id: `local-session-${nodeRunId}`,
+    },
     status: "accepted",
   };
 }

@@ -47,8 +47,7 @@ export interface RuntimeJobRecord {
   compatibility: {
     adapter_kind: string | null;
     dispatch_id: string | null;
-    openclaw_task_id: string | null;
-    openclaw_session_id: string | null;
+    provider_refs: Record<string, string | null>;
   };
   job: RuntimeWorkerJob;
 }
@@ -59,6 +58,30 @@ function runRuntimeJobsDir(runId: string): string {
 
 function runtimeJobPath(runId: string, jobId: string): string {
   return path.join(runRuntimeJobsDir(runId), `${encodeURIComponent(jobId)}.json`);
+}
+
+function normalizeRuntimeJobRecord(value: RuntimeJobRecord): RuntimeJobRecord {
+  const compatibility = value.compatibility as RuntimeJobRecord["compatibility"] & {
+    openclaw_task_id?: string | null;
+    openclaw_session_id?: string | null;
+  };
+  const providerRefs = {
+    ...(compatibility?.provider_refs || {}),
+  };
+  if (compatibility?.openclaw_task_id && providerRefs.task_id === undefined) {
+    providerRefs.task_id = compatibility.openclaw_task_id;
+  }
+  if (compatibility?.openclaw_session_id && providerRefs.session_id === undefined) {
+    providerRefs.session_id = compatibility.openclaw_session_id;
+  }
+  return {
+    ...value,
+    compatibility: {
+      adapter_kind: compatibility?.adapter_kind ?? null,
+      dispatch_id: compatibility?.dispatch_id ?? null,
+      provider_refs: providerRefs,
+    },
+  };
 }
 
 export function createRuntimeJobRecord(input: {
@@ -90,8 +113,7 @@ export function createRuntimeJobRecord(input: {
     compatibility: {
       adapter_kind: null,
       dispatch_id: null,
-      openclaw_task_id: null,
-      openclaw_session_id: null,
+      provider_refs: {},
     },
     job: input.job,
   };
@@ -113,13 +135,15 @@ export function getRuntimeJobRecord(
   if (!storage.exists(filePath)) {
     return null;
   }
-  return storage.readJson<RuntimeJobRecord>(filePath);
+  return normalizeRuntimeJobRecord(storage.readJson<RuntimeJobRecord>(filePath));
 }
 
 export function listRuntimeJobRecords(runId: string): RuntimeJobRecord[] {
   const storage = getJsonStorageBackend();
   const files = storage.listJsonFiles(runRuntimeJobsDir(runId));
-  const records = files.map((file) => storage.readJson<RuntimeJobRecord>(file));
+  const records = files.map((file) =>
+    normalizeRuntimeJobRecord(storage.readJson<RuntimeJobRecord>(file)),
+  );
   records.sort((a, b) => {
     if (a.created_at !== b.created_at) {
       return a.created_at.localeCompare(b.created_at);
@@ -165,8 +189,7 @@ export function applyRuntimeDispatchResultToJobRecord(
   record.compatibility = {
     adapter_kind: result.compatibility.adapter_kind,
     dispatch_id: result.compatibility.raw_ref.dispatch_id,
-    openclaw_task_id: result.compatibility.raw_ref.openclaw_task_id,
-    openclaw_session_id: result.compatibility.raw_ref.openclaw_session_id,
+    provider_refs: { ...(result.compatibility.raw_ref.provider_refs || {}) },
   };
   return saveRuntimeJobRecord(record);
 }

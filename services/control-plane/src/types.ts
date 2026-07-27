@@ -1,20 +1,25 @@
-export type RunStatus =
-  | "draft"
-  | "queued"
-  | "running"
-  | "waiting_human"
-  | "paused"
-  | "blocked"
-  | "completed"
-  | "failed"
-  | "cancelled";
+import type {
+  AgentDagStatus as SharedAgentDagStatus,
+  AgentRole as SharedAgentRole,
+  AgentRunStatus as SharedAgentRunStatus,
+  AgentTaskStatus as SharedAgentTaskStatus,
+  AutonomyMode as SharedAutonomyMode,
+  NodeStatus as SharedNodeStatus,
+  PlanOption as SharedPlanOption,
+  RunStatus as SharedRunStatus,
+  SessionStatus as SharedSessionStatus,
+  TaskCheckpointStatus as SharedTaskCheckpointStatus,
+  WorkerTargetKind as SharedWorkerTargetKind,
+} from "@my-mate/shared-types/domain-lifecycle";
+
+export type RunStatus = SharedRunStatus;
 
 export type TemplateStatus = "draft" | "published" | "archived";
 export type RegistryStatus = "active" | "disabled";
 export type GovernanceMode = "advisory" | "enforced";
 export type GovernanceProtectedAction =
-  | "agent_profile.upsert"
-  | "agent_profile.disable"
+  | "agent.upsert"
+  | "agent.disable"
   | "skill.upsert"
   | "skill.disable"
   | "template.publish"
@@ -27,37 +32,19 @@ export type GovernanceChangeStatus =
   | "conflicted";
 export type TemplateDerivationKind = "derive" | "version";
 export type RunValidationMode = "warn" | "strict" | "bypass";
-export type SessionStatus =
-  | "draft"
-  | "planning"
-  | "ready_to_run"
-  | "running"
-  | "waiting_human"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type SessionStatus = SharedSessionStatus;
 export type PlannerValidationCategory = "required_input" | "registry" | "graph" | "other";
 export type PlannerValidationCode =
   | "missing_required_input"
-  | "missing_agent_profile"
-  | "missing_runtime_agent_ref"
-  | "missing_openclaw_agent"
-  | "unknown_agent_profile"
-  | "disabled_agent_profile"
+  | "missing_agent"
+  | "unknown_agent"
+  | "disabled_agent"
   | "unknown_skill"
   | "disabled_skill"
   | "disallowed_skill"
   | "no_ready_frontier"
   | "no_terminal_node";
-export type NodeStatus =
-  | "pending"
-  | "ready"
-  | "running"
-  | "waiting_human"
-  | "completed"
-  | "failed"
-  | "skipped"
-  | "cancelled";
+export type NodeStatus = SharedNodeStatus;
 
 export type EventType =
   | "run.created"
@@ -137,6 +124,7 @@ export type SessionMessageKind =
   | "plan_card"
   | "plan_options_card"
   | "run_card"
+  | "agent_activity"
   | "summary_card"
   | "subtask_card"
   | "approval_card"
@@ -218,6 +206,7 @@ export interface MissionSpecContract {
   pipelineSummary: MissionPipelineSummary;
   checkpointSummary: MissionCheckpointSummary;
   revisionLineage: MissionRevisionLineageSummary;
+  executionContract?: ExecutionContract;
   activeRunId: string | null;
   latestMessageId: string | null;
   latestUserMessageId: string | null;
@@ -226,7 +215,120 @@ export interface MissionSpecContract {
   updatedAt: string;
 }
 
-export type RouteCompareOption = "primary" | "alternative";
+export interface ExecutionContract {
+  schemaVersion: 1;
+  status: "forming" | "ready" | "executing" | "awaiting_acceptance" | "satisfied" | "blocked";
+  deliverables: string[];
+  acceptanceCriteria: string[];
+  verificationSteps: string[];
+  boundaries: string[];
+  openQuestions: string[];
+  completionRule: "all_required_deliverables_and_acceptance_criteria";
+}
+
+export type MissionDeltaClassification =
+  | "baseline"
+  | "minor"
+  | "material"
+  | "topology"
+  | "critical";
+
+export interface MissionDeltaChange {
+  field: string;
+  operation: "added" | "removed" | "replaced";
+  impact: "informational" | "execution" | "topology" | "risk";
+  before: unknown;
+  after: unknown;
+}
+
+export interface MissionSpecRevisionRecord {
+  schema_version: 1;
+  revision_id: string;
+  mission_id: string;
+  session_id: string;
+  revision: number;
+  parent_revision_id: string | null;
+  source_message_id: string | null;
+  mission_spec_contract: MissionSpecContract;
+  semantic_digest: string;
+  delta_id: string;
+  created_at: string;
+}
+
+export interface MissionDeltaRecord {
+  schema_version: 1;
+  delta_id: string;
+  mission_id: string;
+  session_id: string;
+  from_revision_id: string | null;
+  to_revision_id: string;
+  source_message_id: string | null;
+  classification: MissionDeltaClassification;
+  changed_fields: string[];
+  changes: MissionDeltaChange[];
+  requires_interview_reassessment: boolean;
+  requires_orchestration_reassessment: boolean;
+  invalidates_confirmed_proposal: boolean;
+  evidence: string[];
+  created_at: string;
+}
+
+export type MissionInterviewMode = "skip" | "focused" | "deep";
+export type MissionInterviewQuestionStatus =
+  | "open"
+  | "answered"
+  | "inferred"
+  | "deferred"
+  | "invalidated";
+
+export interface MissionInterviewQuestion {
+  question_id: string;
+  decision_key: string;
+  dependency_keys: string[];
+  blocking_level: "none" | "soft" | "hard";
+  prompt: string;
+  reason: string;
+  recommended_answer: string | null;
+  answer: string | null;
+  answer_source: "user" | "workspace" | "system" | "model" | "default" | null;
+  affected_node_ids: string[];
+  status: MissionInterviewQuestionStatus;
+  answered_at: string | null;
+}
+
+export interface InterviewDecisionRecord {
+  schema_version: 1;
+  decision_id: string;
+  mission_id: string;
+  session_id: string;
+  mission_revision_id: string;
+  mode: MissionInterviewMode;
+  reason_codes: string[];
+  blocking_decisions: string[];
+  recommended_defaults: Record<string, string>;
+  invalidated_question_ids: string[];
+  decided_by: "policy" | "user";
+  policy_version: string;
+  created_at: string;
+}
+
+export interface MissionInterviewRecord {
+  schema_version: 1;
+  interview_id: string;
+  mission_id: string;
+  session_id: string;
+  mission_revision_id: string;
+  decision_id: string;
+  mode: MissionInterviewMode;
+  status: "inactive" | "active" | "ready" | "superseded";
+  readiness_score: number;
+  questions: MissionInterviewQuestion[];
+  supersedes_interview_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type RouteCompareOption = SharedPlanOption;
 export type RouteCompareKind =
   | "option"
   | "revision"
@@ -503,6 +605,7 @@ export interface MissionDetailResponse {
 }
 
 export interface SessionWorkspaceDetailResponse {
+  mission: MissionListItem;
   session: SessionRecord;
   messages: SessionMessageRecord[];
   latest_run: RunRecord | null;
@@ -514,8 +617,17 @@ export interface SessionWorkspaceDetailResponse {
   mission_spec: MissionSpecSummary | null;
   mission_spec_contract: MissionSpecContract | null;
   mission_snapshot: MissionSnapshot | null;
+  mission_view: MissionView;
   runtime_projection?: Record<string, unknown> | null;
   artifacts?: ArtifactRecord[];
+  agent_dag?: AgentDagRecord | null;
+  agent_dag_artifacts?: AgentArtifactReference[];
+  agent_delegations?: AgentDelegationProjection[];
+  conversation_actions?: ConversationActionRecord[];
+  workspace_change_set?: SessionWorkspaceChangeSetProjection | null;
+  workspace_change_sets?: SessionWorkspaceChangeSetProjection[];
+  workspace_files?: SessionWorkspaceFileProjection[];
+  conversation_summary?: SessionConversationSummary;
   pending_approvals?: ApprovalRecord[];
   pending_human_inputs?: HumanInputRecord[];
   supervision_alerts?: SupervisionAlertRecord[];
@@ -523,6 +635,79 @@ export interface SessionWorkspaceDetailResponse {
   ui_plan?: MissionUiPlan;
   workspace_binding?: PublicWorkspaceBinding | null;
   task_workspace?: PublicTaskWorkspace | null;
+}
+
+/**
+ * A task-scoped projection of one DAG node. Hidden child Sessions remain an
+ * implementation detail of the Control Plane, while this projection gives
+ * the parent Conversation an auditable, clickable Agent work surface.
+ */
+export interface AgentDelegationProjection {
+  dag_id: string;
+  parent_dag_id: string | null;
+  delegation_depth: number;
+  node_id: string;
+  task_id: string;
+  node_name: string;
+  role: AgentRole;
+  role_label: string;
+  status: AgentTaskStatus | AgentRunStatus;
+  objective: string;
+  agent_id: string;
+  agent_name: string;
+  agent_version: number;
+  model: string;
+  skills: string[];
+  agent_run_id: string | null;
+  child_session_id: string | null;
+  child_session_status: SessionStatus | null;
+  child_session_title: string | null;
+  parent_session_id: string;
+  latest_summary: string | null;
+  latest_result_id: string | null;
+  messages: SessionMessageRecord[];
+  actions: ConversationActionRecord[];
+  artifacts: AgentArtifactReference[];
+  events: AgentRunEventRecord[];
+  latest_event_sequence: number;
+}
+
+export interface SessionWorkspaceChangeProjection {
+  relative_path: string;
+  kind: "added" | "modified" | "deleted";
+  before_size_bytes: number | null;
+  after_size_bytes: number | null;
+  added_lines: number;
+  deleted_lines: number;
+}
+
+export interface SessionWorkspaceChangeSetProjection {
+  change_set_id: string;
+  status: "pending" | "applied" | "rejected" | "blocked" | "apply_failed";
+  origin: "runtime" | "conversation";
+  source_root: string;
+  changes: SessionWorkspaceChangeProjection[];
+  blocked_reason: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface SessionWorkspaceFileProjection {
+  relative_path: string;
+  kind: "added" | "modified" | "deleted";
+  status: "pending" | "applied";
+  change_set_id: string;
+  source_root: string;
+  before_size_bytes: number | null;
+  after_size_bytes: number | null;
+  added_lines: number;
+  deleted_lines: number;
+  created_at: string;
+}
+
+export interface SessionConversationSummary {
+  message_count: number | null;
+  endpoint: string;
 }
 
 export type SupervisionAlertSeverity = "info" | "warning" | "critical";
@@ -556,7 +741,7 @@ export interface SupervisionAlertRecord {
   metadata: Record<string, unknown>;
 }
 
-export type AutopilotMode = "review_first" | "assisted" | "autopilot";
+export type AutopilotMode = SharedAutonomyMode;
 export type AutopilotPendingGate =
   | "start_confirmation"
   | "workspace_authorization"
@@ -815,6 +1000,16 @@ export interface MemoryObservability {
   updated_at: string;
 }
 
+export type MemoryReviewTrigger =
+  | "conversation_turn"
+  | "context_compaction"
+  | "checkpoint"
+  | "dag_node_completion"
+  | "dag_completion"
+  | "reviewer_acceptance"
+  | "user_approval"
+  | "task_completion";
+
 export interface MemoryReviewRecord {
   schema_version: 1;
   workspace_id: string;
@@ -834,6 +1029,8 @@ export interface MemoryReviewRecord {
   };
   reason: string | null;
   reviewed_at: string;
+  trigger?: MemoryReviewTrigger;
+  trigger_id?: string;
 }
 
 export type MemoryIntelligenceOperation = "create" | "update" | "supersede" | "delete" | "ignore";
@@ -1379,13 +1576,7 @@ export interface MemoryKnowledgeQueryResult {
   relations: MemoryKnowledgeRelation[];
 }
 
-export type TaskCheckpointStatus =
-  | "in_progress"
-  | "resumable"
-  | "waiting_human"
-  | "completed"
-  | "failed"
-  | "superseded";
+export type TaskCheckpointStatus = SharedTaskCheckpointStatus;
 
 export type TaskCheckpointReason =
   | "turn_started"
@@ -1394,6 +1585,8 @@ export type TaskCheckpointReason =
   | "context_compacted"
   | "continuation_limit"
   | "tool_round_limit"
+  | "completion_contract_incomplete"
+  | "budget_limit"
   | "provider_interrupted"
   | "client_disconnected"
   | "server_restart"
@@ -1418,9 +1611,42 @@ export interface TaskCheckpointProviderState {
   continuation_limit_reached: boolean;
   context_compacted: boolean;
   compaction_count: number;
+  in_loop_compaction_count: number;
+  context_snapshot_id: string | null;
+  context_pressure_peak_tokens: number;
+  pruned_tool_result_count: number;
+  repeated_tool_call_limit_reached: boolean;
   tool_rounds: number;
   tool_round_limit_reached: boolean;
   action_ids: string[];
+  completion_contract: {
+    status: "satisfied" | "incomplete" | "blocked";
+    reason: string;
+    successful_action_ids: string[];
+    failed_action_ids: string[];
+  };
+}
+
+export interface LongTaskRuntimeState {
+  schema_version: 1;
+  started_at: string;
+  updated_at: string;
+  elapsed_ms: number;
+  turn_attempts: number;
+  resume_attempts: number;
+  cumulative_input_tokens: number;
+  cumulative_reported_input_tokens: number;
+  cumulative_estimated_input_tokens: number;
+  input_token_accounting: "reported" | "estimated" | "mixed" | "unavailable";
+  cumulative_output_tokens: number;
+  cumulative_total_tokens: number;
+  max_wall_time_ms: number;
+  max_turn_attempts: number;
+  max_total_tokens: number;
+  cost_status: "unavailable" | "partial" | "complete";
+  cumulative_costs: Record<string, string>;
+  exhausted: boolean;
+  exhausted_reason: "wall_time" | "turn_attempts" | "total_tokens" | null;
 }
 
 export interface TaskCheckpointRecord {
@@ -1443,6 +1669,7 @@ export interface TaskCheckpointRecord {
   context_summary: string | null;
   next_action: string | null;
   provider_state: TaskCheckpointProviderState | null;
+  long_task_runtime: LongTaskRuntimeState;
   last_error_code: string | null;
   last_error_message: string | null;
   transitions: TaskCheckpointTransition[];
@@ -1479,63 +1706,15 @@ export interface MissionUiPlan {
   fallback_component: "task_guidance";
 }
 
-export interface AgentHostingSummary {
-  ownership: {
-    execution_runtime: string;
-    runtime_protocol: "my_mate";
-    orchestration_binding: "my_mate";
-  };
-  profiles: Array<{
-    profile_id: string;
-    name: string;
-    status: RegistryStatus;
-    runtime_agent_ref: string;
-    agent_runtime: string;
-    harness_profile: string | null;
-    openclaw_agent_id: string;
-    default_skills: string[];
-    provider: string | null;
-    model: string | null;
-    runtime_mode: string | null;
-    managed_by: "my_mate_registry";
-    health: {
-      status: "ready" | "needs_binding" | "disabled";
-      detail: string;
-    };
-  }>;
-}
-
-export interface UpdateAgentHostingRequest {
-  runtime_agent_ref?: string;
-  agent_runtime?: string;
-  harness_profile?: string | null;
-  openclaw_agent_id?: string;
-  provider?: string | null;
-  model?: string | null;
-  runtime_mode?: string | null;
-}
-
 export interface RuntimeSummary {
   execution_runtime: {
     adapter_kind: string;
     registered_adapter_kinds: string[];
     local_execution_enabled: boolean;
     auto_approve_human_gates: boolean;
-    bridge_base_url: string | null;
-    bridge_execution_mode: string | null;
-    bridge_dispatch_path: string | null;
-    bridge_control_path: string | null;
-    bridge_sweep_path: string | null;
-    callback_base_url: string | null;
-    callback_path: string | null;
-    gateway_base_url: string | null;
-    approval_console_base_url: string | null;
-    container_name: string | null;
     runtime_health: {
       status: "ok" | "warn";
       detail: string;
-      bridge_configured: boolean;
-      callback_configured: boolean;
     };
     maintenance: {
       supported_actions: Array<"dispatch_sweep">;
@@ -1573,7 +1752,6 @@ export interface RuntimeSummary {
       stale_workers: number;
     };
   };
-  agent_hosting: AgentHostingSummary;
   planner: {
     provider_id: string;
     provider_name: string;
@@ -1585,8 +1763,8 @@ export interface RuntimeSummary {
     llm_timeout_ms: number;
   };
   registry: {
-    agent_profile_count: number;
-    active_agent_profile_count: number;
+    agent_definition_count: number;
+    active_agent_definition_count: number;
     skill_count: number;
     active_skill_count: number;
     template_count: number;
@@ -1649,7 +1827,11 @@ export interface WorkflowNode {
   id: string;
   name: string;
   type: string;
-  agent_profile: string | null;
+  /** Read-only migration input. Canonical templates use agent_id. */
+  agent_profile?: string | null;
+  agent_id?: string | null;
+  agent_version?: number | null;
+  agent_binding_snapshot?: AgentBindingSnapshot | null;
   allowed_skills: string[];
   config: Record<string, unknown>;
   retry_policy: RetryPolicy;
@@ -1761,7 +1943,8 @@ export interface WorkflowTemplateRecord {
   workspace_scope: string;
   input_schema: Record<string, unknown>;
   policy: TemplatePolicy;
-  agent_profile_bindings: Record<string, unknown>;
+  /** Read-only migration input. Canonical templates pin node Agent bindings. */
+  agent_profile_bindings?: Record<string, unknown>;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   metadata: Record<string, unknown>;
@@ -1816,6 +1999,445 @@ export interface SessionRecord {
   mission_snapshot?: MissionSnapshot | null;
 }
 
+export type AgentAutonomyMode = SharedAutonomyMode;
+export type AgentBindingMode = "pinned" | "follow_latest";
+export type AgentRunKind = "conversation" | "workflow_node" | "schedule" | "continuation" | "delegation" | "review";
+export type AgentRunStatus = SharedAgentRunStatus;
+export type AgentRole = SharedAgentRole;
+
+export interface ProviderDefinitionRecord {
+  provider_id: string;
+  workspace_id: string;
+  name: string;
+  protocol: ProviderConnectionRecord["protocol"];
+  provider_family: string;
+  capabilities: string[];
+  status: RegistryStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelDeploymentRecord {
+  deployment_id: string;
+  workspace_id: string;
+  provider_id: string;
+  connection_id: string;
+  model: string;
+  display_name: string;
+  modalities: string[];
+  context_window: number;
+  max_output_tokens: number;
+  supports_tools: boolean;
+  supports_streaming: boolean;
+  status: RegistryStatus;
+  connection_revision: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentDefinitionRecord {
+  agent_id: string;
+  workspace_id: string;
+  name: string;
+  description: string;
+  latest_version: number;
+  published_version: number | null;
+  status: RegistryStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentVersionRecord {
+  agent_id: string;
+  workspace_id: string;
+  version: number;
+  status: "draft" | "published" | "retired";
+  role: AgentRole;
+  responsibility?: string;
+  system_prompt: string;
+  model_policy: {
+    deployment_id: string | null;
+    provider_connection_id: string | null;
+    model: string | null;
+    allow_runtime_override: boolean;
+    routing_preference?: "quality" | "balanced" | "cost" | "latency";
+    fallback_models?: string[];
+    allow_model_escalation?: boolean;
+  };
+  capability_policy?: {
+    capability_tags: string[];
+    allow_delegation: boolean;
+    input_contract: Record<string, unknown>;
+    output_contract: Record<string, unknown>;
+    acceptance_criteria: string[];
+    verification_steps: string[];
+  };
+  tool_policy: {
+    allowed_tools: string[];
+    denied_tools: string[];
+    max_tool_rounds: number | null;
+  };
+  skill_policy: {
+    locked_skills: Array<{ skill_id: string; version: string | null }>;
+    denied_skills: string[];
+    dynamic_activation: boolean;
+  };
+  memory_policy: {
+    enabled: boolean;
+    automatic_recall: boolean;
+    write_mode: "disabled" | "review" | "automatic";
+  };
+  context_policy: {
+    compression_enabled: boolean;
+    compression_threshold_percent: number;
+    max_continuation_rounds: number | null;
+  };
+  runtime_policy: {
+    runtime: "native";
+    sandbox: "local" | "docker" | "isolated" | "auto";
+    timeout_seconds: number;
+  };
+  workspace_policy: {
+    read: boolean;
+    write: boolean;
+    allowed_project_ids: string[];
+  };
+  autonomy_ceiling: AgentAutonomyMode;
+  artifact_policy: Record<string, unknown>;
+  delivery_policy: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  published_at: string | null;
+}
+
+export interface AgentTeamMember {
+  member_id: string;
+  agent_id: string;
+  agent_version: number | null;
+  role: AgentRole;
+  capability_tags: string[];
+  required: boolean;
+}
+
+export interface AgentTeamRecord {
+  team_id: string;
+  workspace_id: string;
+  name: string;
+  description: string;
+  orchestrator_member_id: string;
+  reviewer_member_ids: string[];
+  members: AgentTeamMember[];
+  policy: {
+    max_concurrency: number;
+    max_delegation_depth: number;
+    max_total_agent_runs: number;
+    max_total_tool_rounds: number;
+    max_runtime_seconds: number;
+    require_reviewer: boolean;
+    cancel_children_on_parent_cancel: boolean;
+  };
+  status: RegistryStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentArtifactReference {
+  artifact_id: string;
+  kind: string;
+  name: string;
+  uri: string | null;
+  mime_type: string | null;
+  sha256: string | null;
+  size_bytes: number | null;
+  producer_agent_run_id: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export type AgentTaskStatus = SharedAgentTaskStatus;
+
+export type AgentDagJoinPolicy = "all" | "any" | "quorum";
+export type AgentDagConditionOperator = "exists" | "truthy" | "equals" | "not_equals" | "contains";
+export interface AgentDagCondition {
+  path: string;
+  operator: AgentDagConditionOperator;
+  value?: unknown;
+}
+
+export interface AgentDagStateMapping {
+  source_path: string;
+  target_path: string;
+  reducer: "replace" | "merge" | "append";
+}
+
+export interface AgentReviewerVerdict {
+  verdict: "accepted" | "rejected";
+  criteria: Array<{ name: string; passed: boolean; detail: string }>;
+  issues: string[];
+  required_revisions: string[];
+}
+
+export interface AgentHumanGateConfig {
+  gate_type: "approval" | "input";
+  prompt: string;
+  input_schema: Record<string, unknown>;
+  auto_resume: boolean;
+}
+export interface AgentTaskRecord {
+  task_id: string;
+  workspace_id: string;
+  dag_id: string;
+  dag_run_id: string | null;
+  node_id: string;
+  parent_task_id: string | null;
+  depth: number;
+  status: AgentTaskStatus;
+  title: string;
+  objective: string;
+  context: Record<string, unknown>;
+  expected_output: Record<string, unknown>;
+  acceptance_criteria?: string[];
+  verification_steps?: string[];
+  binding_snapshot: AgentBindingSnapshot;
+  permission_ceiling: {
+    autonomy_mode: AgentAutonomyMode;
+    allowed_tools: string[];
+    workspace_read: boolean;
+    workspace_write: boolean;
+  };
+  budget: {
+    max_tool_rounds: number;
+    max_runtime_seconds: number;
+    max_output_tokens: number | null;
+  };
+  assigned_agent_run_id: string | null;
+  idempotency_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentResultRecord {
+  result_id: string;
+  task_id: string;
+  agent_run_id: string;
+  status: "completed" | "blocked" | "failed" | "cancelled";
+  summary: string;
+  output: Record<string, unknown>;
+  artifact_refs: AgentArtifactReference[];
+  verification: {
+    status: "unverified" | "verified" | "rejected";
+    reviewer_agent_run_id: string | null;
+    evidence: Record<string, unknown>;
+  };
+  error_code: string | null;
+  created_at: string;
+}
+
+export type AgentMessageType =
+  | "task.request"
+  | "task.accepted"
+  | "task.progress"
+  | "task.blocked"
+  | "artifact.published"
+  | "task.result"
+  | "task.failed"
+  | "task.cancel"
+  | "task.steer"
+  | "gate.requested"
+  | "gate.resolved"
+  | "agent.heartbeat";
+
+export interface AgentMessageEnvelope {
+  schema_version: 1;
+  message_id: string;
+  message_type: AgentMessageType;
+  workspace_id: string;
+  dag_id: string;
+  dag_run_id: string | null;
+  task_id: string;
+  from_agent_run_id: string | null;
+  to_agent_run_id: string | null;
+  correlation_id: string;
+  causation_id: string | null;
+  idempotency_key: string;
+  payload: Record<string, unknown>;
+  artifact_refs: AgentArtifactReference[];
+  created_at: string;
+}
+
+export interface AgentDagNode {
+  node_id: string;
+  name: string;
+  task_id: string;
+  binding_snapshot: AgentBindingSnapshot;
+  role: AgentRole;
+  kind: DagDefinitionNodeKind;
+  depends_on: string[];
+  join_policy: AgentDagJoinPolicy;
+  join_quorum: number | null;
+  condition: AgentDagCondition | null;
+  state_input: Record<string, string>;
+  state_output: AgentDagStateMapping[];
+  human_gate: AgentHumanGateConfig | null;
+  retry_policy: RetryPolicy;
+  status: AgentTaskStatus;
+  reviewer_node_id: string | null;
+  acceptance_criteria?: string[];
+  verification_steps?: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface AgentDagRecord {
+  schema_version: 1;
+  dag_id: string;
+  workspace_id: string;
+  session_id: string;
+  source_message_id: string | null;
+  idempotency_key: string;
+  team_id: string | null;
+  title: string;
+  objective: string;
+  execution_contract?: ExecutionContract | null;
+  status: SharedAgentDagStatus;
+  orchestrator_binding: AgentBindingSnapshot;
+  parent_dag_id: string | null;
+  delegation_depth: number;
+  nodes: AgentDagNode[];
+  state_schema: Record<string, unknown>;
+  state: Record<string, unknown>;
+  state_revision: number;
+  policy: AgentTeamRecord["policy"];
+  budget_usage: {
+    agent_runs: number;
+    tool_rounds: number;
+    runtime_seconds: number;
+  };
+  revision: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentDagGateRecord {
+  gate_id: string;
+  workspace_id: string;
+  dag_id: string;
+  node_id: string;
+  task_id: string;
+  gate_type: "approval" | "input";
+  status: "pending" | "approved" | "rejected" | "submitted" | "cancelled";
+  prompt: string;
+  input_schema: Record<string, unknown>;
+  response: Record<string, unknown> | null;
+  auto_resume: boolean;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+}
+
+export interface AgentBindingSnapshot {
+  schema_version: 2;
+  binding_id: string;
+  binding_mode: AgentBindingMode;
+  agent_id: string;
+  agent_version: number;
+  agent_name: string;
+  agent_role: AgentRole;
+  responsibility?: string;
+  provider_id: string;
+  provider_connection_id: string;
+  connection_revision: string;
+  model_deployment_id: string;
+  model: string;
+  model_routing_policy?: {
+    routing_preference: "quality" | "balanced" | "cost" | "latency";
+    fallback_models: string[];
+    allow_model_escalation: boolean;
+  };
+  system_prompt: string;
+  tool_policy: AgentVersionRecord["tool_policy"];
+  skill_policy: AgentVersionRecord["skill_policy"];
+  capability_policy?: NonNullable<AgentVersionRecord["capability_policy"]>;
+  memory_policy: AgentVersionRecord["memory_policy"];
+  context_policy: AgentVersionRecord["context_policy"];
+  runtime_policy: AgentVersionRecord["runtime_policy"];
+  workspace_policy: AgentVersionRecord["workspace_policy"];
+  autonomy_ceiling: AgentAutonomyMode;
+  artifact_policy: Record<string, unknown>;
+  delivery_policy: Record<string, unknown>;
+  snapshot_digest: string;
+  created_at: string;
+}
+
+export interface AgentRunRecord {
+  agent_run_id: string;
+  workspace_id: string;
+  kind: AgentRunKind;
+  status: AgentRunStatus;
+  binding_snapshot: AgentBindingSnapshot;
+  session_id: string | null;
+  workflow_run_id: string | null;
+  node_run_id: string | null;
+  schedule_id: string | null;
+  schedule_run_id: string | null;
+  parent_agent_run_id: string | null;
+  attempt: number;
+  input_digest: string | null;
+  output_digest: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export type AgentRunEventType =
+  | "task.assigned"
+  | "agent.started"
+  | "agent.progress"
+  | "agent.message.delta"
+  | "agent.message.completed"
+  | "tool.started"
+  | "tool.waiting_approval"
+  | "tool.completed"
+  | "tool.failed"
+  | "checkpoint.saved"
+  | "artifact.created"
+  | "handoff.returned"
+  | "agent.completed"
+  | "agent.failed"
+  | "agent.cancelled";
+
+export type AgentRunEventStatus =
+  | "info"
+  | "running"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface AgentRunEventRecord {
+  event_id: string;
+  workspace_id: string;
+  dag_id: string;
+  node_id: string;
+  task_id: string;
+  agent_run_id: string;
+  child_session_id: string | null;
+  sequence: number;
+  type: AgentRunEventType;
+  status: AgentRunEventStatus;
+  summary: string;
+  payload: Record<string, unknown>;
+  idempotency_key: string | null;
+  created_at: string;
+}
+
 export interface SessionMessageRecord {
   message_id: string;
   session_id: string;
@@ -1837,6 +2459,7 @@ export interface ConversationActionRecord {
   tool_call_id: string;
   tool_name: string;
   arguments: Record<string, unknown>;
+  idempotency_key: string | null;
   arguments_digest: string;
   risk_level: ConversationActionRiskLevel;
   executor: "control-plane" | "runtime-worker" | "desktop" | "browser" | "mcp";
@@ -1854,11 +2477,13 @@ export interface CreateSessionRequest {
   title?: string;
   initial_message?: string;
   created_by?: string;
-  orchestrator_profile_id?: string;
   provider_connection_id?: string;
   model?: string;
   defer_conversation_reply?: boolean;
   autonomy_mode?: AutopilotMode;
+  agent_id?: string;
+  agent_version?: number;
+  agent_binding_mode?: AgentBindingMode;
 }
 
 export type WorkspaceBindingAccess = "snapshot-read" | "sandbox-write";
@@ -2155,16 +2780,13 @@ export interface TemplateLineageResponse {
   items: TemplateLineageItem[];
 }
 
-export interface AgentProfileRecord {
+/** Historical storage shape. New code must use AgentDefinitionRecord. */
+export interface LegacyAgentProfileRecord {
   profile_id: string;
   workspace_id?: string;
   name: string;
   description: string;
-  runtime_agent_ref?: string;
-  agent_runtime?: string;
-  harness_profile?: string | null;
   provider_connection_id?: string | null;
-  openclaw_agent_id: string;
   default_skills: string[];
   allowed_tools: string[];
   disallowed_skills: string[];
@@ -2191,43 +2813,13 @@ export interface OrchestratorProfileRecord {
   updated_at: string;
 }
 
-export interface UpsertOrchestratorProfileRequest {
-  orchestrator_id?: string;
-  name: string;
-  provider?: string;
-  model?: string;
-  system_prompt?: string;
-  default_tools?: string[];
-  default_subagent_profile_ids?: string[];
-  planning_policy?: Record<string, unknown>;
-  handoff_policy?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-}
-
-export interface UpsertAgentProfileRequest {
-  profile_id?: string;
-  name: string;
-  description?: string;
-  runtime_agent_ref?: string;
-  agent_runtime?: string;
-  harness_profile?: string | null;
-  provider_connection_id?: string | null;
-  openclaw_agent_id?: string;
-  default_skills?: string[];
-  allowed_tools?: string[];
-  disallowed_skills?: string[];
-  policy_tags?: string[];
-  status?: RegistryStatus;
-  metadata?: Record<string, unknown>;
-}
-
 export interface ProviderConnectionRecord {
   connection_id: string;
   workspace_id: string;
   name: string;
   agent_runtime: string;
   provider: string;
-  protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible" | "openclaw-bridge";
+  protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible";
   base_url: string | null;
   models: string[];
   default_model: string | null;
@@ -2236,6 +2828,7 @@ export interface ProviderConnectionRecord {
   context_compression_enabled: boolean;
   context_compression_threshold_percent: number;
   max_continuation_rounds: number;
+  max_tool_rounds: number;
   credential_source: "managed" | "environment";
   credential_env: string;
   verification: ProviderConnectionVerification | null;
@@ -2267,6 +2860,7 @@ export interface UpsertProviderConnectionRequest {
   context_compression_enabled?: boolean;
   context_compression_threshold_percent?: number;
   max_continuation_rounds?: number;
+  max_tool_rounds?: number;
   credential_source?: ProviderConnectionRecord["credential_source"];
   credential_env?: string;
   api_key?: string;
@@ -2314,6 +2908,160 @@ export interface UpsertSkillRequest {
   metadata?: Record<string, unknown>;
 }
 
+export type SkillPackageSource = "bundled" | "official_optional" | "installed" | "workspace" | "custom" | "marketplace";
+export type SkillActivationPolicy = "explicit_only" | "advisory" | "auto";
+export type SkillActivationSource = "explicit" | "intent" | "model" | "preloaded";
+export type SkillTrustLevel = "bundled" | "official" | "workspace" | "community" | "unverified";
+
+export interface SkillScriptDeclaration {
+  id: string;
+  runtime: "node" | "python" | "shell";
+  entrypoint: string;
+  input_schema: Record<string, unknown>;
+  timeout_seconds: number;
+  network: "none" | "public";
+  workspace_access: "read" | "write";
+  digest: string | null;
+}
+
+export interface SkillPackageManifest {
+  schema_version: 1;
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  category: string;
+  risk_level: ConversationActionRiskLevel;
+  allowed_tools: string[];
+  required_capabilities: string[];
+  permission_scopes: string[];
+  activation_keywords: string[];
+  negative_keywords: string[];
+  activation_policy: SkillActivationPolicy;
+  platforms: string[];
+  resources: string[];
+  scripts: SkillScriptDeclaration[];
+  input_schema: Record<string, unknown>;
+  output_contract: Record<string, unknown>;
+  enabled_by_default: boolean;
+  publisher: string | null;
+  license: string | null;
+  trust_level: SkillTrustLevel;
+  metadata: Record<string, unknown>;
+}
+
+export interface SkillPackageStatus {
+  skill_id: string;
+  workspace_id: string | null;
+  name: string;
+  version: string;
+  description: string;
+  category: string;
+  risk_level: ConversationActionRiskLevel;
+  allowed_tools: string[];
+  required_capabilities: string[];
+  permission_scopes: string[];
+  activation_keywords: string[];
+  negative_keywords: string[];
+  activation_policy: SkillActivationPolicy;
+  platforms: string[];
+  resources: string[];
+  scripts: SkillScriptDeclaration[];
+  input_schema: Record<string, unknown>;
+  output_contract: Record<string, unknown>;
+  source: SkillPackageSource;
+  enabled: boolean;
+  status: "ready" | "disabled" | "error" | "incompatible";
+  compatibility: "ready" | "degraded" | "blocked";
+  missing_requirements: string[];
+  error: string | null;
+  instructions_digest: string;
+  root_path: string;
+  manifest_path: string;
+  metadata: Record<string, unknown>;
+  publisher: string | null;
+  license: string | null;
+  trust_level: SkillTrustLevel;
+}
+
+export interface SkillInvocationRecord {
+  schema_version: 1;
+  invocation_id: string;
+  workspace_id: string;
+  session_id: string;
+  skill_id: string;
+  skill_version: string;
+  instructions_digest: string;
+  action_id: string | null;
+  activation_source: SkillActivationSource;
+  status: "loaded" | "completed" | "failed";
+  allowed_tools: string[];
+  required_capabilities: string[];
+  tool_action_ids: string[];
+  error_code: string | null;
+  verification_status: "pending" | "passed" | "failed" | "not_applicable";
+  output_contract: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface SkillWorkspaceProfile {
+  schema_version: 1;
+  workspace_id: string;
+  auto_activation: boolean;
+  enabled_categories: string[];
+  trusted_sources: SkillTrustLevel[];
+  update_policy: "manual" | "notify" | "automatic_official";
+  pinned_versions: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SkillLockEntry {
+  skill_id: string;
+  version: string;
+  source: SkillPackageSource;
+  trust_level: SkillTrustLevel;
+  instructions_digest: string;
+  manifest_digest: string;
+  locked_at: string;
+}
+
+export interface SkillLockfileRecord {
+  schema_version: 1;
+  workspace_id: string;
+  entries: SkillLockEntry[];
+  updated_at: string;
+}
+
+export interface SkillCatalogSourceRecord {
+  source_id: string;
+  name: string;
+  kind: "official" | "directory" | "http" | "marketplace" | "hermes";
+  location: string;
+  enabled: boolean;
+  trust_level: SkillTrustLevel;
+  public_key: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SkillEvaluationRecord {
+  evaluation_id: string;
+  workspace_id: string;
+  skill_id: string;
+  skill_version: string;
+  invocation_id: string | null;
+  verdict: "passed" | "failed" | "partial";
+  output_contract_passed: boolean;
+  tool_policy_passed: boolean;
+  latency_ms: number | null;
+  tool_rounds: number;
+  error_code: string | null;
+  created_at: string;
+}
+
 export interface GovernancePolicyRecord {
   schema_version: 1;
   workspace_id: string;
@@ -2338,7 +3086,7 @@ export interface GovernanceChangeRecord {
   change_id: string;
   workspace_id: string;
   action: GovernanceProtectedAction;
-  resource_type: "agent_profile" | "skill" | "template";
+  resource_type: "agent" | "skill" | "template";
   resource_id: string;
   reason: string;
   payload: Record<string, unknown>;
@@ -2369,11 +3117,7 @@ export interface GovernanceDecisionRequest {
   comment?: string;
 }
 
-export type ExecutionTargetKind =
-  | "local"
-  | "external-bridge"
-  | "docker-worker"
-  | "node-worker";
+export type ExecutionTargetKind = SharedWorkerTargetKind;
 
 export interface ExecutionRef {
   job_id: string | null;
@@ -2382,8 +3126,6 @@ export interface ExecutionRef {
   target_kind: ExecutionTargetKind | null;
   dispatch_id: string | null;
   provider_refs: Record<string, string | null>;
-  openclaw_task_id: string | null;
-  openclaw_session_id: string | null;
 }
 
 export interface ExecutionArtifactRecord {
@@ -2478,12 +3220,17 @@ export interface CompiledNodeRecord {
   node_id: string;
   name: string;
   type: string;
-  agent_profile: string | null;
+  /** Historical RunPlan read compatibility only. */
+  agent_profile?: string | null;
+  agent_id?: string | null;
+  agent_version?: number | null;
+  agent_binding_snapshot?: AgentBindingSnapshot | null;
   runtime_agent_ref: string | null;
   agent_runtime?: string | null;
   harness_profile?: string | null;
   provider_connection?: ProviderConnectionSnapshot | null;
-  openclaw_agent_id: string | null;
+  /** Historical RunPlan read compatibility only. */
+  openclaw_agent_id?: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
   approval_kind: string | null;
@@ -2564,24 +3311,23 @@ export interface RunInitializationRecord {
 
 export interface RegistrySkillProvenance {
   skill_id: string;
-  sources: Array<"agent_profile_default" | "node_allowed">;
+  sources: Array<"agent_default" | "node_allowed">;
   registry_status: RegistryStatus | "missing";
   included: boolean;
-  excluded_reason: "disallowed_by_agent_profile" | "disabled" | "missing" | null;
+  excluded_reason: "disallowed_by_agent" | "disabled" | "missing" | null;
 }
 
 export interface RegistryToolProvenance {
   tool_id: string;
-  sources: Array<"agent_profile_allowed" | "node_allowed">;
+  sources: Array<"agent_allowed" | "node_allowed">;
 }
 
 export interface RegistryProvenance {
-  agent_profile_requested: string | null;
-  agent_profile_resolved: string | null;
-  agent_profile_status: RegistryStatus | "missing" | null;
-  agent_profile_source: "registry" | "template_binding" | "fallback" | "none";
+  agent_id_requested: string | null;
+  agent_id_resolved: string | null;
+  agent_status: RegistryStatus | "missing" | null;
+  agent_source: "registry" | "template_binding" | "fallback" | "none";
   runtime_agent_ref_source: RuntimeAgentRefSource;
-  openclaw_agent_id_source: RuntimeAgentRefSource;
   skill_bindings: RegistrySkillProvenance[];
   tool_bindings: RegistryToolProvenance[];
 }
@@ -2624,9 +3370,8 @@ export interface RuntimeGraphNode {
   attempt: number;
   startedAt: string | null;
   finishedAt: string | null;
-  agentProfile: string | null;
+  agentId: string | null;
   runtimeAgentRef: string | null;
-  openclawAgentId: string | null;
   approvalKind: string | null;
   humanInputRequired: boolean;
   expectedArtifacts: string[];
@@ -2766,7 +3511,7 @@ export interface CreateRunRequest {
 
 export interface PlannerTemplateSelectionRequest {
   intent: string;
-  orchestrator_profile_id?: string;
+  orchestrator_agent_id?: string;
   planner_provider_id?: string;
 }
 
@@ -2800,9 +3545,9 @@ export interface PlannerTemplateSelectionResponse {
     provider_id?: string;
     requested_provider_id?: string;
     requested_model?: string;
-    orchestrator_profile_id?: string;
+    orchestrator_agent_id?: string;
     orchestrator_system_prompt?: string;
-    preferred_subagent_profile_ids?: string[];
+    preferred_agent_ids?: string[];
     prefer_domain_match?: boolean;
     default_max_agent_nodes?: number;
     require_review?: boolean;
@@ -2828,7 +3573,7 @@ export interface PlannerCandidatePlanRequest {
   intent: string;
   template_id: string;
   inputs: Record<string, unknown>;
-  orchestrator_profile_id?: string;
+  orchestrator_agent_id?: string;
   planner_provider_id?: string;
   planner_model?: string;
   orchestrator_system_prompt?: string;
@@ -2841,7 +3586,7 @@ export interface PlannerValidationDetail {
   field: string | null;
   node_id: string | null;
   node_name: string | null;
-  agent_profile_id: string | null;
+  agent_id: string | null;
   skill_id: string | null;
 }
 
@@ -2861,7 +3606,7 @@ export interface PlannerDagDraftRequest {
   template_id?: string;
   inputs?: Record<string, unknown>;
   max_agent_nodes?: number;
-  orchestrator_profile_id?: string;
+  orchestrator_agent_id?: string;
   planner_provider_id?: string;
   planner_model?: string;
   orchestrator_system_prompt?: string;
@@ -2870,10 +3615,9 @@ export interface PlannerDagDraftRequest {
 export interface PlannerRegistryRecommendation {
   node_id: string;
   node_name: string;
-  agent_profile_id: string | null;
-  agent_profile_name: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
   runtime_agent_ref: string | null;
-  openclaw_agent_id: string | null;
   skill_ids: string[];
   allowed_tools: string[];
   score: number;
@@ -2906,9 +3650,9 @@ export interface PlannerDagDraftResponse {
     provider_id?: string;
     requested_provider_id?: string;
     requested_model?: string;
-    orchestrator_profile_id?: string;
+    orchestrator_agent_id?: string;
     orchestrator_system_prompt?: string;
-    preferred_subagent_profile_ids?: string[];
+    preferred_agent_ids?: string[];
     prefer_domain_match?: boolean;
     default_max_agent_nodes?: number;
     require_review?: boolean;
@@ -2927,7 +3671,7 @@ export type DagProposalStatus =
 export interface DagProposalPlannerContext {
   provider_id: string | null;
   model: string | null;
-  orchestrator_profile_id: string | null;
+  orchestrator_agent_id: string | null;
   system_prompt_summary: string | null;
   fallback_used: boolean;
   fallback_reason: string | null;
@@ -2936,7 +3680,7 @@ export interface DagProposalPlannerContext {
 export interface DagProposalAssignment {
   node_id: string;
   node_name: string | null;
-  subagent_profile_id: string | null;
+  agent_id: string | null;
   provider: string | null;
   model: string | null;
   allowed_tools: string[];
@@ -2946,11 +3690,194 @@ export interface DagProposalAssignment {
   metadata: Record<string, unknown>;
 }
 
+export type OrchestrationDecisionMode = "direct" | "template" | "dynamic" | "manual";
+
+export interface OrchestrationDecision {
+  schema_version: 1;
+  decision_id: string;
+  mission_spec_id: string | null;
+  mode: OrchestrationDecisionMode;
+  requires_dag: boolean;
+  reason: string;
+  selected_template_id: string | null;
+  required_capabilities: string[];
+  risk_level: "low" | "medium" | "high";
+  approval_required: boolean;
+  policy_version?: string;
+  evidence?: {
+    signals: string[];
+    scores: {
+      direct: number;
+      template: number;
+      dynamic: number;
+      manual: number;
+    };
+    matched_template_id?: string | null;
+    rationale: string[];
+  };
+  created_at: string;
+}
+
+export type ExecutionShape = "direct" | "delegated" | "durable_dag";
+export type ExecutionProposalSource = "template" | "dynamic" | "manual" | null;
+
+export interface ExecutionShapeDecisionRecord {
+  schema_version: 1;
+  decision_id: string;
+  mission_id: string;
+  session_id: string;
+  mission_revision_id: string;
+  recommended_shape: ExecutionShape;
+  selected_shape: ExecutionShape | null;
+  proposal_source: ExecutionProposalSource;
+  selection_status: "automatic" | "recommended" | "confirmed" | "blocked";
+  decided_by: "policy" | "user" | "confirmed_state";
+  reason: string;
+  reason_codes: string[];
+  evidence: {
+    signals: string[];
+    scores: Record<ExecutionShape, number>;
+    rationale: string[];
+  };
+  risk_level: "low" | "medium" | "high";
+  approval_required: boolean;
+  policy_version: string;
+  supersedes_decision_id: string | null;
+  created_at: string;
+}
+
+export interface AgentRequirement {
+  requirement_id: string;
+  node_id: string | null;
+  preferred_agent_id: string | null;
+  preferred_agent_version: number | null;
+  role: AgentRole | null;
+  capability_tags: string[];
+  required_skills: string[];
+  required_tools: string[];
+  model_constraints: {
+    provider_connection_id: string | null;
+    model: string | null;
+    minimum_context_window: number | null;
+  };
+  memory_policy: Partial<AgentVersionRecord["memory_policy"]>;
+  permission_policy: {
+    workspace_read: boolean;
+    workspace_write: boolean;
+    autonomy_ceiling: AgentAutonomyMode | null;
+  };
+  isolation_requirement: "local" | "docker" | "isolated" | "auto";
+  input_contract: Record<string, unknown>;
+  output_contract: Record<string, unknown>;
+}
+
+export interface AgentCapabilityCandidate {
+  agent_id: string;
+  agent_version: number;
+  agent_name: string;
+  role: AgentRole;
+  score: number;
+  readiness: "ready" | "blocked";
+  matched_capabilities: string[];
+  missing_capabilities: string[];
+  missing_skills: string[];
+  missing_tools: string[];
+  issues: string[];
+}
+
+export interface AgentCapabilityGap {
+  gap_id: string;
+  requirement_id: string;
+  kind: "agent" | "capability" | "skill" | "tool" | "provider" | "permission" | "runtime";
+  value: string;
+  blocking: boolean;
+  resolution_hint: string;
+}
+
+export interface AgentCapabilityPlanRecord {
+  schema_version: 1;
+  plan_id: string;
+  mission_id: string;
+  session_id: string;
+  mission_revision_id: string;
+  requirements: AgentRequirement[];
+  candidates: Record<string, AgentCapabilityCandidate[]>;
+  selected_bindings: Record<string, { agent_id: string; agent_version: number } | null>;
+  gaps: AgentCapabilityGap[];
+  status: "ready" | "partial" | "blocked";
+  task_scoped_agent_recommended: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type DagDefinitionNodeKind =
+  | "agent_task"
+  | "reviewer"
+  | "human_gate"
+  | "condition"
+  | "fanout"
+  | "combine"
+  | "end";
+
+export interface DagDefinitionAgentSelector {
+  agent_id: string | null;
+  agent_version: number | null;
+  role: AgentRole | null;
+  capability_tags: string[];
+}
+
+export interface DagDefinitionNode {
+  node_id: string;
+  name: string;
+  kind: DagDefinitionNodeKind;
+  objective: string;
+  agent_selector: DagDefinitionAgentSelector | null;
+  depends_on: string[];
+  join_policy: AgentDagJoinPolicy;
+  join_quorum: number | null;
+  condition: AgentDagCondition | null;
+  state_input: Record<string, string>;
+  state_output: AgentDagStateMapping[];
+  human_gate: AgentHumanGateConfig | null;
+  retry_policy: RetryPolicy;
+  allowed_tools: string[];
+  allowed_skills: string[];
+  input_contract: Record<string, unknown>;
+  output_contract: Record<string, unknown>;
+  acceptance_criteria?: string[];
+  verification_steps?: string[];
+  autonomy_mode: AgentAutonomyMode;
+  max_tool_rounds: number | null;
+  max_runtime_seconds: number | null;
+  reviewer_node_id: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface DagDefinition {
+  schema_version: 1;
+  definition_id: string;
+  revision: number;
+  source: {
+    kind: "template" | "model" | "manual";
+    template_id: string | null;
+    message_id: string | null;
+  };
+  title: string;
+  objective: string;
+  nodes: DagDefinitionNode[];
+  state_schema: Record<string, unknown>;
+  initial_state: Record<string, unknown>;
+  policy: Partial<AgentTeamRecord["policy"]>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface DagProposalRecord {
+  protocol_version: 1;
   proposal_id: string;
   mission_id: string;
   session_id: string;
-  orchestrator_profile_id: string | null;
+  orchestrator_agent_id: string | null;
   source_message_id: string | null;
   source_revision: number | null;
   source_option: "primary" | "alternative" | null;
@@ -2962,6 +3889,10 @@ export interface DagProposalRecord {
   dag_draft: Record<string, unknown>;
   route_compare: RouteCompareSummary | null;
   assignments: DagProposalAssignment[];
+  orchestration_decision: OrchestrationDecision | null;
+  dag_definition: DagDefinition | null;
+  compiled_agent_dag_id: string | null;
+  compiled_at: string | null;
   warnings: string[];
   checklist: string[];
   created_at: string;
@@ -2995,6 +3926,9 @@ export interface CreateDagProposalRequest {
   source_option?: "primary" | "alternative";
   template_id?: string;
   inputs?: Record<string, unknown>;
+  source_kind?: "template" | "model" | "manual";
+  orchestration_decision?: OrchestrationDecision;
+  dag_definition?: DagDefinition;
 }
 
 export interface UpdateDagProposalAssignmentsRequest {
@@ -3003,6 +3937,7 @@ export interface UpdateDagProposalAssignmentsRequest {
 
 export interface ConfirmDagProposalRequest {
   confirmed_by?: string;
+  start?: boolean;
 }
 
 export interface RejectDagProposalRequest {
@@ -3087,12 +4022,13 @@ export interface DispatchEnvelope {
   node_id: string;
   node_name: string;
   node_type: string;
-  agent_profile: string | null;
+  agent_id: string | null;
+  agent_version?: number | null;
+  agent_binding_snapshot?: AgentBindingSnapshot | null;
   runtime_agent_ref: string | null;
   agent_runtime: string | null;
   harness_profile: string | null;
   provider_connection?: ProviderConnectionSnapshot | null;
-  openclaw_agent_id?: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
   registry_provenance: RegistryProvenance;
@@ -3113,8 +4049,7 @@ export interface DispatchEnvelope {
 
 export interface AdapterDispatchResult {
   dispatch_id: string;
-  openclaw_task_id: string | null;
-  openclaw_session_id: string | null;
+  provider_refs: Record<string, string | null>;
   status: "accepted" | "rejected" | "deferred";
 }
 
@@ -3132,56 +4067,6 @@ export interface ExecutionMaintenanceResult {
   supported: boolean;
   message: string | null;
   summary: DispatchSweepSummary | null;
-}
-
-export interface OpenClawBridgeDispatchRequest {
-  run_id: string;
-  node_run_id: string;
-  node_id: string;
-  node_name: string;
-  node_type: string;
-  template_id: string;
-  template_version: number;
-  workspace_id: string;
-  requested_by: string;
-  intent: string;
-  openclaw_agent_id: string | null;
-  allowed_skills: string[];
-  allowed_tools: string[];
-  registry_provenance: RegistryProvenance;
-  timeout_seconds: number;
-  parallelism_budget: number;
-  retry_policy: {
-    max_attempts: number;
-    attempt: number;
-  };
-  input_payload: Record<string, unknown>;
-  output_contract: Record<string, unknown>;
-  callback: {
-    report_url: string;
-    bearer_token: string | null;
-  };
-  trace_context: {
-    run_id: string;
-    node_run_id: string;
-    requested_by: string;
-  };
-  openclaw_runtime: {
-    execution_mode: string;
-    gateway_base_url: string | null;
-    approval_console_base_url: string | null;
-    container_name: string | null;
-  };
-}
-
-export interface OpenClawBridgeControlRequest {
-  run_id: string;
-  node_run_id: string | null;
-  action: "pause" | "resume" | "cancel" | "retry" | "skip";
-  trace_context: {
-    run_id: string;
-    node_run_id: string | null;
-  };
 }
 
 export interface NormalizedExecutionReport {
@@ -3204,8 +4089,6 @@ export interface NormalizedExecutionReport {
     target_kind?: ExecutionTargetKind | null;
     dispatch_id: string | null;
     provider_refs?: Record<string, string | null>;
-    openclaw_task_id: string | null;
-    openclaw_session_id: string | null;
   };
   human_gate?: {
     gate_id: string;
@@ -3217,7 +4100,7 @@ export interface NormalizedExecutionReport {
   created_at: string;
 }
 
-export interface OpenClawReportCallbackRequest {
+export interface RuntimeReportCallbackRequest {
   run_id: string;
   node_run_id: string;
   status: NodeStatus | "accepted";
@@ -3237,8 +4120,6 @@ export interface OpenClawReportCallbackRequest {
     target_kind?: ExecutionTargetKind | null;
     dispatch_id: string | null;
     provider_refs?: Record<string, string | null>;
-    openclaw_task_id: string | null;
-    openclaw_session_id: string | null;
   } | null;
   created_at?: string;
 }
@@ -3264,8 +4145,8 @@ export interface MobileRunTaskItem {
   attempt: number;
   started_at: string | null;
   finished_at: string | null;
+  agent_id: string | null;
   runtime_agent_ref: string | null;
-  openclaw_agent_id: string | null;
   execution_ref: ExecutionRef;
 }
 

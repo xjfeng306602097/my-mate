@@ -19,8 +19,10 @@ export class InProcessRuntimeWorkerClient implements RuntimeWorkerClient {
     const workerId = "runtime-worker-local";
     const rawRef = {
       dispatch_id: `runtime-worker:${job.job_id}`,
-      openclaw_task_id: `local-task:${job.node_run_id}`,
-      openclaw_session_id: `local-session:${job.node_run_id}`,
+      provider_refs: {
+        task_id: `local-task:${job.node_run_id}`,
+        session_id: `local-session:${job.node_run_id}`,
+      },
     };
     const eventBase = (sequence: number, kind: WorkerEvent["kind"]) => ({
       event_id: `${job.job_id}:evt:${sequence}`,

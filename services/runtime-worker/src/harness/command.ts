@@ -53,8 +53,6 @@ function buildRawRef(job: RuntimeWorkerJob, command: string) {
       runtime: job.harness.agent_runtime,
       command,
     },
-    openclaw_task_id: null,
-    openclaw_session_id: null,
   };
 }
 

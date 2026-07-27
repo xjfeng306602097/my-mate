@@ -260,3 +260,135 @@ test("conversation WebSocket returns a download link instead of streaming genera
     await close(server);
   }
 });
+
+test("conversation WebSocket keeps a turn running across disconnect and reattaches to its Session", async () => {
+  resetTestRoot();
+  let streamStarted = false;
+  const providerFetch: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    if (body.stream !== true) {
+      return new Response(JSON.stringify({
+        model: "glm-5.2",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "OK" }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    streamStarted = true;
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          'event: message_start\ndata: {"type":"message_start","message":{"model":"glm-5.2","usage":{"input_tokens":8}}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Still "}}\n\n',
+        ].join("")));
+        setTimeout(() => {
+          controller.enqueue(encoder.encode([
+            'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"running"}}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n',
+          ].join("")));
+          controller.close();
+        }, 200);
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const app = createApp({
+    doctor: { fetchImpl: providerFetch },
+    conversation: { fetchImpl: providerFetch },
+  });
+  const server = http.createServer(app);
+  const hub = new ConversationWebSocketHub({
+    security: app.locals.conversationSecurity,
+    turnHandler: app.locals.streamConversationTurn,
+  });
+  hub.attach(server);
+  const port = await listen(server);
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    await postJson(`${baseUrl}/api/registry/provider-connections`, {
+      connection_id: "ws-reattach-glm",
+      name: "WebSocket reattach GLM",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      protocol: "anthropic-messages",
+      base_url: "https://provider.example",
+      models: ["glm-5.2"],
+      default_model: "glm-5.2",
+      credential_source: "managed",
+      credential_env: "GLM_API_KEY",
+      api_key: "ws-reattach-secret",
+      status: "active",
+      metadata: {},
+    });
+    await postJson(`${baseUrl}/api/registry/provider-connections/ws-reattach-glm/test`, {});
+    const created = await postJson(`${baseUrl}/api/sessions`, {
+      initial_message: "Run through a network interruption",
+      provider_connection_id: "ws-reattach-glm",
+      model: "glm-5.2",
+      defer_conversation_reply: true,
+    });
+    const sessionId = created.body.session.session_id as string;
+    const url = `ws://127.0.0.1:${port}/api/sessions/${sessionId}/conversation`;
+    const first = new WebSocket(url);
+    let firstCursor = 0;
+    await new Promise<void>((resolve, reject) => {
+      first.once("open", resolve);
+      first.once("error", reject);
+    });
+    const firstDelta = new Promise<void>((resolve, reject) => {
+      first.on("message", (data) => {
+        const event = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (event.type === "conversation.delta") {
+          firstCursor = Number(event.sequence || 0);
+          resolve();
+        }
+        if (event.type === "conversation.error") reject(new Error(String(event.message || "failed")));
+      });
+    });
+    first.send(JSON.stringify({
+      type: "conversation.send",
+      request_id: "ws-reattach-turn-1",
+      resume_latest_user: true,
+      provider_connection_id: "ws-reattach-glm",
+      model: "glm-5.2",
+    }));
+    await firstDelta;
+    first.close(1000, "Simulated client network loss");
+    await new Promise<void>((resolve) => first.once("close", () => resolve()));
+
+    const second = new WebSocket(url);
+    const events: Array<Record<string, any>> = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        second.once("open", resolve);
+        second.once("error", reject);
+      });
+      const completed = new Promise<void>((resolve, reject) => {
+        second.on("message", (data) => {
+          const event = JSON.parse(data.toString()) as Record<string, any>;
+          events.push(event);
+          if (event.type === "conversation.completed") resolve();
+          if (event.type === "conversation.error") reject(new Error(String(event.message || "failed")));
+        });
+      });
+      assert.ok(firstCursor > 0);
+      second.send(JSON.stringify({ type: "conversation.attach", after_sequence: firstCursor }));
+      await completed;
+      assert.equal(streamStarted, true);
+      assert.equal(events.some((event) => event.type === "conversation.active"), true);
+      assert.equal(events.filter((event) => typeof event.sequence === "number").every((event) => Number(event.sequence) > firstCursor), true);
+      const completedEvent = events.find((event) => event.type === "conversation.completed");
+      assert.equal(completedEvent?.assistant_message?.content?.text, "Still running");
+      const detail = await getJson(`${baseUrl}/api/sessions/${sessionId}`);
+      assert.equal(detail.body.task_checkpoint?.status, "completed");
+      assert.notEqual(detail.body.task_checkpoint?.reason, "client_disconnected");
+    } finally {
+      second.close();
+    }
+  } finally {
+    hub.close();
+    await close(server);
+  }
+});

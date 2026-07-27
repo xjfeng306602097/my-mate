@@ -67,7 +67,6 @@ function seedRegistry(): void {
     profile_id: "backend",
     name: "Backend Coding Agent",
     description: "Backend code refactor and bug fix",
-    openclaw_agent_id: "backend",
     default_skills: ["coding-agent"],
     allowed_tools: ["read", "write", "shell"],
     policy_tags: ["coding"],
@@ -76,7 +75,6 @@ function seedRegistry(): void {
     profile_id: "content-writer",
     name: "Content Writer",
     description: "小红书 文案 海报 写作",
-    openclaw_agent_id: "content-writer",
     default_skills: ["copy-writing"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -232,6 +230,143 @@ test("dag draft falls back to rule-based behavior when no domain match", async (
   clearProviderEnv();
 });
 
+test("dag draft keeps low-confidence templates as suggestions instead of hijacking the intent", async () => {
+  resetTestRoot();
+  clearProviderEnv();
+  seedRegistry();
+  seedTemplate(
+    buildPublishedTemplate({
+      template_id: "full-stack-template",
+      name: "Production Full Stack Delivery",
+      description: "Frontend backend testing reviewer approval and deployment",
+    }),
+  );
+
+  const intent =
+    "Create a production incident response workflow with alert triage, parallel service and infrastructure diagnosis, containment planning, independent review, human approval, remediation or rollback, verification, and a postmortem.";
+  const recommendation = await recommendTemplate(intent);
+  assert.equal(recommendation?.selected_template.template_id, "full-stack-template");
+  assert.ok((recommendation?.selected_template.evidence?.coverage_score || 0) < 0.35);
+
+  const result = await generateDagDraft({
+    intent,
+    inputs: {},
+    max_agent_nodes: 8,
+  });
+
+  assert.equal(result.template_recommendation, null);
+  assert.equal(result.planner_context.draft_strategy, "registry_synthesis");
+  assert.equal(result.planner_context.source_template_id, null);
+  assert.notEqual(result.draft_template.metadata?.planner_source_template_id, "full-stack-template");
+});
+
+test("registry synthesis excludes agents whose locked Skills are unavailable", async () => {
+  resetTestRoot();
+  clearProviderEnv();
+  seedRegistry();
+  seedAgentProfile({
+    profile_id: "broken-incident-agent",
+    name: "Broken Incident Specialist",
+    description: "Production incident triage remediation rollback verification",
+    default_skills: ["missing-incident-skill"],
+    allowed_tools: ["read", "write"],
+    policy_tags: ["production", "incident", "rollback"],
+  });
+
+  const result = await generateDagDraft({
+    intent: "Triage a production incident and prepare a rollback",
+    inputs: { goal: "Restore service" },
+    max_agent_nodes: 8,
+  });
+
+  assert.equal(result.planner_context.draft_strategy, "registry_synthesis");
+  assert.equal(
+    result.registry_recommendations.some((item) => item.agent_id === "broken-incident-agent"),
+    false,
+  );
+  assert.equal(JSON.stringify(result.validation.warnings).includes("missing-incident-skill"), false);
+});
+
+test("registry synthesis treats max_agent_nodes as a ceiling instead of filling it with unrelated agents", async () => {
+  resetTestRoot();
+  clearProviderEnv();
+  seedSkill({
+    skill_id: "incident-response",
+    name: "Incident Response",
+    description: "Production incident triage rollback and recovery",
+    category: "ops",
+    allowed_tools: ["read", "write"],
+    tags: ["incident", "rollback", "recovery"],
+  });
+  seedAgentProfile({
+    profile_id: "incident-responder",
+    name: "Incident Responder",
+    description: "Production incident triage and rollback specialist",
+    default_skills: ["incident-response"],
+    allowed_tools: ["read", "write"],
+    policy_tags: ["incident", "rollback"],
+  });
+  seedAgentProfile({
+    profile_id: "default-agent",
+    name: "Default Agent",
+    description: "General purpose assistant",
+    default_skills: [],
+    allowed_tools: ["read"],
+    policy_tags: ["general"],
+  });
+
+  const result = await generateDagDraft({
+    intent: "Triage a production incident and prepare a rollback",
+    inputs: { goal: "Restore service" },
+    max_agent_nodes: 8,
+  });
+
+  assert.deepEqual(
+    result.registry_recommendations.map((item) => item.agent_id),
+    ["incident-responder"],
+  );
+});
+
+test("registry synthesis normalizes simple English plurals when matching agent roles", async () => {
+  resetTestRoot();
+  clearProviderEnv();
+  seedSkill({
+    skill_id: "test-automation",
+    name: "Test Automation",
+    description: "Test services and verify releases",
+    category: "testing",
+    allowed_tools: ["read", "shell"],
+    tags: ["test", "verification"],
+  });
+  seedAgentProfile({
+    profile_id: "test-engineer",
+    name: "Test Engineer",
+    description: "Test service changes and verify recovery",
+    default_skills: ["test-automation"],
+    allowed_tools: ["read", "shell"],
+    policy_tags: ["test"],
+  });
+  seedAgentProfile({
+    profile_id: "default-agent",
+    name: "Default Agent",
+    description: "General purpose assistant",
+    default_skills: [],
+    allowed_tools: ["read"],
+    policy_tags: ["general"],
+  });
+
+  const result = await generateDagDraft({
+    intent: "Run tests across services and verify the release",
+    inputs: { goal: "Verify the release" },
+    max_agent_nodes: 8,
+  });
+
+  assert.deepEqual(
+    result.registry_recommendations.map((item) => item.agent_id),
+    ["test-engineer"],
+  );
+});
+
 test("local_semantic_v1 dag draft keeps template recommendation and draft source aligned after rerank", async () => {
   resetTestRoot();
   setProviderEnv("local_semantic_v1");
@@ -278,7 +413,7 @@ test("local_semantic_v1 dag draft keeps template recommendation and draft source
   assert.equal(result.planner_context.source_template_id, "content-template");
   assert.equal(result.draft_template.metadata?.planner_source_template_id, "content-template");
   assert.equal(result.draft_template.metadata?.planner_source_template_selected_by, "template_selection");
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "content-writer");
+  assert.equal(result.registry_recommendations[0]?.agent_id, "content-writer");
 
   clearProviderEnv();
 });
@@ -306,7 +441,6 @@ test("rule_based dag draft respects preferred subagent profile order for registr
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Investigate and analyze",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["research-skill"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -315,7 +449,6 @@ test("rule_based dag draft respects preferred subagent profile order for registr
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Draft content and summaries",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["writing-skill"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -328,14 +461,14 @@ test("rule_based dag draft respects preferred subagent profile order for registr
       max_agent_nodes: 1,
     },
     {
-      preferredSubagentProfileIds: ["writer-agent"],
+      preferredAgentIds: ["writer-agent"],
     },
   );
   assert.equal(result.planner_context.provider_id, "rule_based_v1");
-  assert.deepEqual(result.planner_context.preferred_subagent_profile_ids, ["writer-agent"]);
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "writer-agent");
-  assert.deepEqual(result.registry_recommendations[0]?.allowed_tools, ["read", "write"]);
-  assert.deepEqual(result.draft_template.nodes[0]?.config?.allowed_tools, ["read", "write"]);
+  assert.deepEqual(result.planner_context.preferred_agent_ids, ["writer-agent"]);
+  assert.equal(result.registry_recommendations[0]?.agent_id, "writer-agent");
+  assert.deepEqual(result.registry_recommendations[0]?.allowed_tools, ["workspace_list", "workspace_read_text", "workspace_search", "workspace_apply_operations"]);
+  assert.deepEqual(result.draft_template.nodes[0]?.config?.allowed_tools, ["workspace_list", "workspace_read_text", "workspace_search", "workspace_apply_operations"]);
   assert.equal(result.registry_recommendations[0]?.evidence?.preferred_rank, 0);
   assert.ok((result.registry_recommendations[0]?.evidence?.profile_token_score || 0) >= 0);
 });
@@ -363,7 +496,6 @@ test("local_semantic_v1 preferred subagent does not hide a stronger single-node 
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Research investigator",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["research-skill"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -372,7 +504,6 @@ test("local_semantic_v1 preferred subagent does not hide a stronger single-node 
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Content writer",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["writing-skill"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -386,14 +517,14 @@ test("local_semantic_v1 preferred subagent does not hide a stronger single-node 
     },
     {
       providerId: "local_semantic_v1",
-      preferredSubagentProfileIds: ["writer-agent"],
+      preferredAgentIds: ["writer-agent"],
     },
   );
   assert.equal(result.planner_context.provider_id, "local_semantic_v1");
-  assert.deepEqual(result.planner_context.preferred_subagent_profile_ids, ["writer-agent"]);
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "research-agent");
-  assert.deepEqual(result.registry_recommendations[0]?.allowed_tools, ["read", "search"]);
-  assert.deepEqual(result.draft_template.nodes[0]?.config?.allowed_tools, ["read", "search"]);
+  assert.deepEqual(result.planner_context.preferred_agent_ids, ["writer-agent"]);
+  assert.equal(result.registry_recommendations[0]?.agent_id, "research-agent");
+  assert.deepEqual(result.registry_recommendations[0]?.allowed_tools, ["workspace_list", "workspace_read_text", "workspace_search", "search"]);
+  assert.deepEqual(result.draft_template.nodes[0]?.config?.allowed_tools, ["workspace_list", "workspace_read_text", "workspace_search", "search"]);
   assert.ok(result.registry_recommendations[0]?.evidence?.matched_domains?.includes("research"));
   assert.equal(result.registry_recommendations[0]?.evidence?.preferred_rank, null);
 
@@ -423,7 +554,6 @@ test("local_semantic_v1 still uses a preferred subagent when it matches the inte
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Research investigator",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["research-skill"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -432,7 +562,6 @@ test("local_semantic_v1 still uses a preferred subagent when it matches the inte
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Content writer",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["writing-skill"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -446,14 +575,14 @@ test("local_semantic_v1 still uses a preferred subagent when it matches the inte
     },
     {
       providerId: "local_semantic_v1",
-      preferredSubagentProfileIds: ["writer-agent"],
+      preferredAgentIds: ["writer-agent"],
     },
   );
   assert.equal(result.planner_context.provider_id, "local_semantic_v1");
-  assert.deepEqual(result.planner_context.preferred_subagent_profile_ids, ["writer-agent"]);
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "writer-agent");
-  assert.deepEqual(result.registry_recommendations[0]?.allowed_tools, ["read", "write"]);
-  assert.deepEqual(result.draft_template.nodes[0]?.config?.allowed_tools, ["read", "write"]);
+  assert.deepEqual(result.planner_context.preferred_agent_ids, ["writer-agent"]);
+  assert.equal(result.registry_recommendations[0]?.agent_id, "writer-agent");
+  assert.deepEqual(result.registry_recommendations[0]?.allowed_tools, ["workspace_list", "workspace_read_text", "workspace_search", "workspace_apply_operations"]);
+  assert.deepEqual(result.draft_template.nodes[0]?.config?.allowed_tools, ["workspace_list", "workspace_read_text", "workspace_search", "workspace_apply_operations"]);
   assert.equal(result.registry_recommendations[0]?.evidence?.preferred_rank, 0);
 
   clearProviderEnv();
@@ -474,7 +603,6 @@ test("local_semantic_v1 registry synthesis breaks same-domain ties with token fi
     profile_id: "research-generic",
     name: "Research Generic",
     description: "General research support",
-    openclaw_agent_id: "",
     default_skills: ["research-skill"],
     allowed_tools: ["read"],
     policy_tags: ["research"],
@@ -483,7 +611,6 @@ test("local_semantic_v1 registry synthesis breaks same-domain ties with token fi
     profile_id: "research-analyst",
     name: "Research Analyst",
     description: "Competitive analysis and reporting specialist",
-    openclaw_agent_id: "research-analyst-openclaw",
     default_skills: ["research-skill"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -495,7 +622,7 @@ test("local_semantic_v1 registry synthesis breaks same-domain ties with token fi
     max_agent_nodes: 1,
   });
   assert.equal(result.planner_context.provider_id, "local_semantic_v1");
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "research-analyst");
+  assert.equal(result.registry_recommendations[0]?.agent_id, "research-analyst");
   assert.match(result.registry_recommendations[0]?.reason || "", /Token fit/);
   assert.ok((result.registry_recommendations[0]?.evidence?.domain_overlap_score || 0) > 0);
   assert.ok(result.registry_recommendations[0]?.evidence?.matched_domains?.includes("research"));
@@ -526,7 +653,6 @@ test("local_semantic_v1 registry synthesis uses token-ranked skills within a mat
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Research investigations and reporting",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["generic-research"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -538,7 +664,7 @@ test("local_semantic_v1 registry synthesis uses token-ranked skills within a mat
     max_agent_nodes: 1,
   });
   assert.equal(result.planner_context.provider_id, "local_semantic_v1");
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "research-agent");
+  assert.equal(result.registry_recommendations[0]?.agent_id, "research-agent");
   assert.ok(
     result.registry_recommendations[0]?.skill_ids.includes("competitor-analysis"),
     `expected competitor-analysis in ${JSON.stringify(result.registry_recommendations[0]?.skill_ids)}`,
@@ -551,7 +677,7 @@ test("local_semantic_v1 registry synthesis uses token-ranked skills within a mat
   clearProviderEnv();
 });
 
-test("local_semantic_v1 registry synthesis penalizes disallowed overlap and warns on inactive defaults", async () => {
+test("local_semantic_v1 registry synthesis excludes agents with denied or unavailable locked skills", async () => {
   resetTestRoot();
   setProviderEnv("local_semantic_v1");
   seedSkill({
@@ -574,7 +700,6 @@ test("local_semantic_v1 registry synthesis penalizes disallowed overlap and warn
     profile_id: "restricted-reviewer",
     name: "Restricted Reviewer",
     description: "Backend bug review specialist",
-    openclaw_agent_id: "restricted-reviewer-openclaw",
     default_skills: ["backend-fix", "code-review", "missing-review-default"],
     disallowed_skills: ["code-review"],
     allowed_tools: ["read", "write"],
@@ -584,7 +709,6 @@ test("local_semantic_v1 registry synthesis penalizes disallowed overlap and warn
     profile_id: "backend-fixer",
     name: "Backend Fixer",
     description: "Backend bug fix specialist",
-    openclaw_agent_id: "backend-fixer-openclaw",
     default_skills: ["backend-fix"],
     allowed_tools: ["read", "write"],
     policy_tags: ["coding"],
@@ -596,22 +720,11 @@ test("local_semantic_v1 registry synthesis penalizes disallowed overlap and warn
     max_agent_nodes: 2,
   });
   assert.equal(result.planner_context.provider_id, "local_semantic_v1");
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "backend-fixer");
+  assert.equal(result.registry_recommendations[0]?.agent_id, "backend-fixer");
   const restricted = result.registry_recommendations.find(
-    (recommendation) => recommendation.agent_profile_id === "restricted-reviewer",
+    (recommendation) => recommendation.agent_id === "restricted-reviewer",
   );
-  assert.ok(restricted, "restricted reviewer recommendation expected");
-  assert.ok((restricted?.evidence?.disallowed_penalty || 0) > 0);
-  assert.ok((restricted?.evidence?.readiness_score || 0) < 1);
-  assert.match(restricted?.reason || "", /Disallowed overlap penalty/i);
-  assert.ok(
-    restricted?.warnings.some((warning) => /disallowed skills/i.test(warning)),
-    `expected disallowed warning in ${JSON.stringify(restricted?.warnings)}`,
-  );
-  assert.ok(
-    restricted?.warnings.some((warning) => /disabled default skills/i.test(warning)),
-    `expected inactive default skill warning in ${JSON.stringify(restricted?.warnings)}`,
-  );
+  assert.equal(restricted, undefined);
 
   clearProviderEnv();
 });
@@ -647,7 +760,6 @@ test("local_semantic_v1 registry synthesis spreads multi-domain intents across d
     profile_id: "research-lead",
     name: "Research Lead",
     description: "Competitive analysis and research reporting specialist",
-    openclaw_agent_id: "research-lead-openclaw",
     default_skills: ["research-analysis"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -656,7 +768,6 @@ test("local_semantic_v1 registry synthesis spreads multi-domain intents across d
     profile_id: "research-support",
     name: "Research Support",
     description: "Research summary support specialist",
-    openclaw_agent_id: "research-support-openclaw",
     default_skills: ["research-summary"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -665,7 +776,6 @@ test("local_semantic_v1 registry synthesis spreads multi-domain intents across d
     profile_id: "review-approver",
     name: "Review Approver",
     description: "Approval review and audit signoff specialist",
-    openclaw_agent_id: "review-approver-openclaw",
     default_skills: ["approval-review"],
     allowed_tools: ["read"],
     policy_tags: ["review"],
@@ -678,8 +788,8 @@ test("local_semantic_v1 registry synthesis spreads multi-domain intents across d
   });
   assert.equal(result.planner_context.provider_id, "local_semantic_v1");
   assert.equal(result.registry_recommendations.length, 2);
-  assert.equal(result.registry_recommendations[0]?.agent_profile_id, "review-approver");
-  assert.equal(result.registry_recommendations[1]?.agent_profile_id, "research-lead");
+  assert.equal(result.registry_recommendations[0]?.agent_id, "review-approver");
+  assert.equal(result.registry_recommendations[1]?.agent_id, "research-lead");
   assert.ok(hasDraftEdge(result, result.registry_recommendations[1]?.node_id, result.registry_recommendations[0]?.node_id));
   assert.ok(hasDraftEdge(result, result.registry_recommendations[0]?.node_id, "node_end"));
   assert.deepEqual(result.registry_recommendations[0]?.skill_ids, ["approval-review"]);
@@ -724,7 +834,6 @@ test("local_semantic_v1 registry synthesis orders research before content in the
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Research analysis specialist",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["research-analysis"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -733,7 +842,6 @@ test("local_semantic_v1 registry synthesis orders research before content in the
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Article content writer",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["article-writing"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -744,8 +852,8 @@ test("local_semantic_v1 registry synthesis orders research before content in the
     inputs: { goal: "Need research analysis and write article content" },
     max_agent_nodes: 2,
   });
-  const research = result.registry_recommendations.find((item) => item.agent_profile_id === "research-agent");
-  const writer = result.registry_recommendations.find((item) => item.agent_profile_id === "writer-agent");
+  const research = result.registry_recommendations.find((item) => item.agent_id === "research-agent");
+  const writer = result.registry_recommendations.find((item) => item.agent_id === "writer-agent");
   assert.equal(result.planner_context.provider_id, "local_semantic_v1");
   assert.ok(research, "research recommendation expected");
   assert.ok(writer, "writer recommendation expected");
@@ -779,7 +887,6 @@ test("local_semantic_v1 registry synthesis keeps peer execution domains parallel
     profile_id: "backend-agent",
     name: "Backend Agent",
     description: "Backend bug fix specialist",
-    openclaw_agent_id: "backend-openclaw",
     default_skills: ["backend-fix"],
     allowed_tools: ["read", "write"],
     policy_tags: ["coding"],
@@ -788,7 +895,6 @@ test("local_semantic_v1 registry synthesis keeps peer execution domains parallel
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Article content writer",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["article-writing"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -799,8 +905,8 @@ test("local_semantic_v1 registry synthesis keeps peer execution domains parallel
     inputs: { goal: "Need backend bug fix and article content draft" },
     max_agent_nodes: 2,
   });
-  const backend = result.registry_recommendations.find((item) => item.agent_profile_id === "backend-agent");
-  const writer = result.registry_recommendations.find((item) => item.agent_profile_id === "writer-agent");
+  const backend = result.registry_recommendations.find((item) => item.agent_id === "backend-agent");
+  const writer = result.registry_recommendations.find((item) => item.agent_id === "writer-agent");
   assert.ok(backend, "backend recommendation expected");
   assert.ok(writer, "writer recommendation expected");
   assert.ok(hasDraftEdge(result, backend?.node_id, "node_end"));
@@ -826,7 +932,6 @@ test("local_semantic_v1 registry synthesis adds an explicit review gate when pol
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Article content writer",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["article-writing"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -857,7 +962,7 @@ test("local_semantic_v1 registry synthesis adds an explicit review gate when pol
   clearProviderEnv();
 });
 
-test("rule_based dag draft uses policy fallback max_agent_nodes and require_review", async () => {
+test("rule_based dag draft uses policy max_agent_nodes as a ceiling and require_review", async () => {
   resetTestRoot();
   clearProviderEnv();
   seedSkill({
@@ -880,7 +985,6 @@ test("rule_based dag draft uses policy fallback max_agent_nodes and require_revi
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Investigate and analyze",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["research-skill"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -889,7 +993,6 @@ test("rule_based dag draft uses policy fallback max_agent_nodes and require_revi
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Draft content and summaries",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["writing-skill"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],

@@ -3,6 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import {
+  recordProviderConnectionVerification,
+  upsertProviderConnection,
+} from "../src/provider-connection-store.js";
 import { createSession, getSession } from "../src/session-store.js";
 import {
   getActiveSessionWorkspaceBinding,
@@ -114,12 +118,44 @@ test("Desktop bridge authentication registers a public Binding and Session mode 
 test("a read-only Desktop Binding gates mutable Runs and a write Binding routes by trusted id", async () => {
   resetTestRoot();
   seedSkill({ skill_id: "coding-agent", name: "Coding Agent" });
+  seedSkill({ skill_id: "artifact-code", name: "Code Artifact" });
+  seedSkill({ skill_id: "test-driven-development", name: "Test Driven Development" });
+  const connection = upsertProviderConnection({
+    connection_id: "workspace-binding-provider",
+    name: "Workspace Binding Provider",
+    agent_runtime: "codex",
+    provider: "openai",
+    protocol: "codex-appserver",
+    base_url: null,
+    models: ["gpt-test"],
+    default_model: "gpt-test",
+    credential_source: "managed",
+    api_key: "workspace-binding-test-secret",
+    credential_env: "OPENAI_API_KEY",
+    status: "active",
+    metadata: {},
+  });
+  recordProviderConnectionVerification(connection.connection_id, {
+    status: "verified",
+    tested_at: "2026-07-21T00:00:00.000Z",
+    detail: "verified for test",
+    duration_ms: 1,
+    model: "gpt-test",
+  });
   seedAgentProfile({
     profile_id: "backend",
     name: "Backend",
     runtime_agent_ref: "backend",
     agent_runtime: "codex",
+    provider_connection_id: connection.connection_id,
     default_skills: ["coding-agent"],
+  });
+  seedAgentProfile({
+    profile_id: "default-agent",
+    name: "Default Agent",
+    runtime_agent_ref: "default",
+    agent_runtime: "codex",
+    provider_connection_id: connection.connection_id,
   });
   seedTemplate();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "my-mate-binding-run-"));
@@ -172,7 +208,8 @@ test("a read-only Desktop Binding gates mutable Runs and a write Binding routes 
       inputs: { goal: "Modify the selected project", project_local_repo: "C:/forged/path" },
       validation_mode: "strict",
     });
-    assert.equal(started.status, 201);
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.equal(started.body.execution_kind, "agent_dag");
     const run = await getJson(`${server.baseUrl}/api/runs/${started.body.run_id}`);
     assert.equal(run.body.workspace_binding_id, writeBinding.binding_id);
     assert.equal(run.body.inputs.project_local_repo, undefined);

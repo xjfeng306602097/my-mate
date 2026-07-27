@@ -24,11 +24,13 @@ import {
   listMemories,
 } from "../src/memory-store.js";
 import { getNodeRun, listNodeRuns, saveNodeRuns } from "../src/node-run-store.js";
-import { upsertAgentProfile, upsertSkill, listAgentProfiles, listSkills } from "../src/registry-store.js";
+import { upsertSkill, listSkills } from "../src/registry-store.js";
+import { listLegacyAgentProfiles } from "../src/legacy-agent-profile-store.js";
 import {
   createJsonStorageBackend,
   getJsonStorageBackend,
   getJsonStorageBackendKind,
+  migratePhysicalFileJsonToSqlite,
   setJsonStorageBackend,
   type JsonStorageBackend,
 } from "../src/storage-backend.js";
@@ -215,16 +217,21 @@ test("json storage backend replacement drives store persistence reads and writes
       ["storage-template"],
     );
 
-    const profile = upsertAgentProfile({
+    const profileTimestamp = new Date().toISOString();
+    getJsonStorageBackend().writeJson(path.join(AGENT_PROFILES_DIR, "backend.json"), {
       profile_id: "backend",
+      workspace_id: "default",
       name: "Backend",
-      openclaw_agent_id: "backend-agent",
+      description: "",
+      provider_connection_id: null,
       default_skills: ["coding-agent"],
       allowed_tools: ["read"],
       disallowed_skills: [],
       policy_tags: [],
       status: "active",
       metadata: {},
+      created_at: profileTimestamp,
+      updated_at: profileTimestamp,
     });
     const skill = upsertSkill({
       skill_id: "coding-agent",
@@ -238,10 +245,9 @@ test("json storage backend replacement drives store persistence reads and writes
       status: "active",
       metadata: {},
     });
-    assert.equal(profile.profile_id, "backend");
     assert.equal(skill.skill_id, "coding-agent");
     assert.deepEqual(
-      listAgentProfiles().map((item) => item.profile_id),
+      listLegacyAgentProfiles().map((item) => item.profile_id),
       ["backend"],
     );
     assert.deepEqual(
@@ -535,6 +541,49 @@ test("sqlite storage backend round-trips snapshot-imported records through store
   }
 });
 
+test("file-json migration creates a verified backup and is idempotent", () => {
+  const previousBackend = getJsonStorageBackend();
+  const previousSqlitePathEnv = process.env.MY_MATE_SQLITE_PATH;
+  const previousDataDir = DATA_DIR;
+  resetTestRoot();
+  const testDataDir = DATA_DIR;
+  const sourcePath = path.join(testDataDir, "sessions", "session-migration.json");
+  const sqlitePath = path.join(testDataDir, "_storage", "migration.sqlite3");
+
+  try {
+    const source = createJsonStorageBackend("file-json");
+    source.writeJson(sourcePath, { session_id: "session-migration", title: "迁移验证" });
+    process.env.MY_MATE_SQLITE_PATH = sqlitePath;
+    const target = createJsonStorageBackend("sqlite");
+    const manifest = migratePhysicalFileJsonToSqlite({
+      storage: target,
+      dataDir: testDataDir,
+      now: () => new Date("2026-07-17T12:00:00.000Z"),
+    });
+
+    assert.equal(manifest.record_count, 1);
+    assert.equal(manifest.verified_count, 1);
+    assert.deepEqual(target.readJson(sourcePath), { session_id: "session-migration", title: "迁移验证" });
+    assert.ok(manifest.backup_relative_path);
+    assert.ok(fs.existsSync(path.join(
+      testDataDir,
+      manifest.backup_relative_path!,
+      "records",
+      "sessions",
+      "session-migration.json",
+    )));
+    assert.deepEqual(
+      migratePhysicalFileJsonToSqlite({ storage: target, dataDir: testDataDir }),
+      manifest,
+    );
+  } finally {
+    if (previousSqlitePathEnv === undefined) delete process.env.MY_MATE_SQLITE_PATH;
+    else process.env.MY_MATE_SQLITE_PATH = previousSqlitePathEnv;
+    overrideDataDir(previousDataDir);
+    setJsonStorageBackend(previousBackend);
+  }
+});
+
 test("file-json storage repeatedly replaces records without leaving temporary files", () => {
   resetTestRoot();
   const backend = createJsonStorageBackend("file-json");
@@ -552,4 +601,59 @@ test("file-json storage repeatedly replaces records without leaving temporary fi
     fs.readdirSync(storageDir).filter((entry) => entry.endsWith(".tmp")),
     [],
   );
+});
+
+test("file-json transaction rolls back every record when a later write fails", () => {
+  resetTestRoot();
+  const backend = createJsonStorageBackend("file-json");
+  const directory = path.join(DATA_DIR, "transaction-fault-test");
+  const firstPath = path.join(directory, "first.json");
+  const secondPath = path.join(directory, "second.json");
+  backend.writeJson(firstPath, { revision: 1 });
+
+  assert.throws(() => backend.transaction!(() => {
+    backend.writeJson(firstPath, { revision: 2 });
+    assert.deepEqual(backend.readJson(firstPath), { revision: 2 });
+    backend.writeJson(secondPath, { unsupported: 1n });
+  }), /BigInt/);
+
+  assert.deepEqual(backend.readJson(firstPath), { revision: 1 });
+  assert.equal(backend.exists(secondPath), false);
+  const journalDirectory = path.join(DATA_DIR, "_storage", "transactions");
+  assert.deepEqual(
+    fs.existsSync(journalDirectory) ? fs.readdirSync(journalDirectory).filter((entry) => entry.endsWith(".json")) : [],
+    [],
+  );
+});
+
+test("sqlite transaction commits a batch atomically and discards a failed callback", () => {
+  const previousSqlitePath = process.env.MY_MATE_SQLITE_PATH;
+  resetTestRoot();
+  const sqlitePath = path.join(DATA_DIR, "_storage", "transaction.sqlite3");
+  process.env.MY_MATE_SQLITE_PATH = sqlitePath;
+  try {
+    const backend = createJsonStorageBackend("sqlite");
+    const directory = path.join(DATA_DIR, "sqlite-transaction-test");
+    const firstPath = path.join(directory, "first.json");
+    const secondPath = path.join(directory, "second.json");
+    backend.transaction!(() => {
+      backend.writeJson(firstPath, { revision: 1 });
+      backend.writeJson(secondPath, { revision: 1 });
+      assert.deepEqual(backend.readJson(firstPath), { revision: 1 });
+      assert.deepEqual(backend.listJsonFiles(directory).map((item) => path.basename(item)), ["first.json", "second.json"]);
+    });
+    assert.deepEqual(backend.readJson(firstPath), { revision: 1 });
+    assert.deepEqual(backend.readJson(secondPath), { revision: 1 });
+
+    assert.throws(() => backend.transaction!(() => {
+      backend.writeJson(firstPath, { revision: 2 });
+      backend.removeJson(secondPath);
+      throw new Error("fault injection");
+    }), /fault injection/);
+    assert.deepEqual(backend.readJson(firstPath), { revision: 1 });
+    assert.deepEqual(backend.readJson(secondPath), { revision: 1 });
+  } finally {
+    if (previousSqlitePath === undefined) delete process.env.MY_MATE_SQLITE_PATH;
+    else process.env.MY_MATE_SQLITE_PATH = previousSqlitePath;
+  }
 });

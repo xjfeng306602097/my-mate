@@ -14,6 +14,7 @@ import { nowIso } from "./utils.js";
 import { getMemorySettings } from "./memory-settings-store.js";
 import { deserializeCoreMemorySnapshot, serializeCoreMemorySnapshot } from "./memory-encryption.js";
 import { listSharedMemoryViews } from "./memory-sharing-store.js";
+import { resolveSessionAgentId } from "./session-agent-id.js";
 
 const DEFAULT_CHARACTER_BUDGET = 12_000;
 const DEFAULT_TOKEN_BUDGET = 3_000;
@@ -30,12 +31,6 @@ function isCurrentlyValid(record: MemoryRecord, timestamp: string): boolean {
   return true;
 }
 
-function sessionAgentId(session: SessionRecord): string {
-  return typeof session.metadata.agent_profile_id === "string" && session.metadata.agent_profile_id.trim()
-    ? session.metadata.agent_profile_id.trim()
-    : "default-agent";
-}
-
 function visibleToSession(
   record: MemoryRecord,
   session: SessionRecord,
@@ -45,7 +40,7 @@ function visibleToSession(
   if (record.workspace_id !== (session.workspace_id || "default")) return false;
   if (record.sensitivity === "restricted") return false;
   if (record.scope_kind === "workspace") return record.scope_id === (session.workspace_id || "default");
-  if (record.scope_kind === "agent") return agentMemoryEnabled && record.scope_id === sessionAgentId(session);
+  if (record.scope_kind === "agent") return agentMemoryEnabled && record.scope_id === resolveSessionAgentId(session);
   if (record.scope_kind !== "user" || record.scope_id !== principalId) return false;
   return record.sensitivity === "normal" || record.sensitivity === "private";
 }

@@ -110,7 +110,7 @@ test("MCP Host discovers stdio tools and enforces Desktop approval, secrets, fil
     try {
       const write = await executeConversationTool({
         session,
-        call: { id: "mcp-write", name: "mcp_default_test_echo_write_record", arguments: { value: "approved" } },
+        call: { id: "mcp-write", name: "mcp_default_test_echo_write_record", arguments: { value: "approved", idempotency_key: "mcp-test:write:approved" } },
         onDesktopCapability: approve,
       });
       assert.equal(write.is_error, false);
@@ -118,7 +118,7 @@ test("MCP Host discovers stdio tools and enforces Desktop approval, secrets, fil
 
       const denied = await executeConversationTool({
         session,
-        call: { id: "mcp-denied", name: "mcp_default_test_echo_default_action", arguments: { value: "blocked" } },
+        call: { id: "mcp-denied", name: "mcp_default_test_echo_default_action", arguments: { value: "blocked", idempotency_key: "mcp-test:default:blocked" } },
         onDesktopCapability: async (request) => {
           const response = await postJson(
             `${server.baseUrl}/api/internal/desktop/sessions/${encodeURIComponent(request.session_id)}/conversation-actions/${encodeURIComponent(request.action_id)}/result`,

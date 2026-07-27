@@ -4,9 +4,8 @@ import { getJsonStorageBackend } from "./storage-backend.js";
 import { getActiveWorkspaceId } from "./request-security.js";
 import type {
   OrchestratorProfileRecord,
-  UpsertOrchestratorProfileRequest,
 } from "./types.js";
-import { ensureDir, isPlainObject, nowIso, slugify, writeJsonAtomic } from "./utils.js";
+import { getPublishedAgentVersion, upsertAgentDefinition } from "./agent-runtime-store.js";
 
 function profilePath(orchestratorId: string): string {
   return path.join(ORCHESTRATOR_PROFILES_DIR, `${orchestratorId}.json`);
@@ -20,25 +19,11 @@ function listJsonFiles(dirPath: string): string[] {
   return getJsonStorageBackend().listJsonFiles(dirPath);
 }
 
-function uniqueStrings(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return [
-    ...new Set(
-      value
-        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-        .map((item) => item.trim()),
-    ),
-  ];
-}
-
-function resolveId(input: { explicitId?: string; name: string; fallback: string }): string {
-  const explicit =
-    typeof input.explicitId === "string" && input.explicitId.trim()
-      ? slugify(input.explicitId)
-      : "";
-  return explicit || slugify(input.name) || input.fallback;
+function ensureOrchestratorAgent(profile: OrchestratorProfileRecord): void {
+  const published = getPublishedAgentVersion(profile.orchestrator_id, profile.workspace_id || "default");
+  if (published?.metadata?.orchestrator_profile_updated_at === profile.updated_at) return;
+  const providerConnectionId = typeof profile.metadata.provider_connection_id === "string" ? profile.metadata.provider_connection_id : null;
+  upsertAgentDefinition({ workspaceId: profile.workspace_id || "default", agentId: profile.orchestrator_id, name: profile.name, description: "Main Agent migrated from OrchestratorProfile.", createdBy: "orchestrator-profile-migration", version: { role: "orchestrator", system_prompt: profile.system_prompt, model_policy: { deployment_id: null, provider_connection_id: providerConnectionId, model: profile.model || null, allow_runtime_override: true }, tool_policy: { allowed_tools: profile.default_tools, denied_tools: [], max_tool_rounds: null }, metadata: { migrated_from: "orchestrator_profile", orchestrator_id: profile.orchestrator_id, orchestrator_profile_updated_at: profile.updated_at, preferred_agent_ids: profile.default_subagent_profile_ids, planning_policy: profile.planning_policy, handoff_policy: profile.handoff_policy } } });
 }
 
 export function listOrchestratorProfiles(): OrchestratorProfileRecord[] {
@@ -48,6 +33,7 @@ export function listOrchestratorProfiles(): OrchestratorProfileRecord[] {
     .map((profile) => ({ ...profile, workspace_id: profile.workspace_id || "default" }))
     .filter((profile) => !activeWorkspaceId || profile.workspace_id === activeWorkspaceId);
   profiles.sort((a, b) => a.orchestrator_id.localeCompare(b.orchestrator_id));
+  for (const profile of profiles) ensureOrchestratorAgent(profile);
   return profiles;
 }
 
@@ -60,50 +46,7 @@ export function getOrchestratorProfile(orchestratorId: string): OrchestratorProf
   const profile = readJsonFile<OrchestratorProfileRecord>(filePath);
   const normalized = { ...profile, workspace_id: profile.workspace_id || "default" };
   const activeWorkspaceId = getActiveWorkspaceId();
-  return activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId ? null : normalized;
-}
-
-export function upsertOrchestratorProfile(
-  input: UpsertOrchestratorProfileRequest,
-): OrchestratorProfileRecord {
-  ensureDir(ORCHESTRATOR_PROFILES_DIR);
-  const orchestratorId = resolveId({
-    explicitId: input.orchestrator_id,
-    name: input.name,
-    fallback: "orchestrator",
-  });
-  const existingProfilePath = profilePath(orchestratorId);
-  const activeWorkspaceId = getActiveWorkspaceId();
-  if (getJsonStorageBackend().exists(existingProfilePath)) {
-    const existing = readJsonFile<OrchestratorProfileRecord>(existingProfilePath);
-    if (activeWorkspaceId && (existing.workspace_id || "default") !== activeWorkspaceId) {
-      throw new Error("ORCHESTRATOR_PROFILE_ID_CONFLICT");
-    }
-  }
-  const current = getOrchestratorProfile(orchestratorId);
-  const timestamp = nowIso();
-  const profile: OrchestratorProfileRecord = {
-    orchestrator_id: orchestratorId,
-    workspace_id: getActiveWorkspaceId() || current?.workspace_id || "default",
-    name: input.name.trim(),
-    provider: input.provider?.trim() || current?.provider || "",
-    model: input.model?.trim() || current?.model || "",
-    system_prompt: input.system_prompt?.trim() || current?.system_prompt || "",
-    default_tools: uniqueStrings(input.default_tools ?? current?.default_tools),
-    default_subagent_profile_ids: uniqueStrings(
-      input.default_subagent_profile_ids ?? current?.default_subagent_profile_ids,
-    ),
-    planning_policy: isPlainObject(input.planning_policy)
-      ? input.planning_policy
-      : current?.planning_policy || {},
-    handoff_policy: isPlainObject(input.handoff_policy)
-      ? input.handoff_policy
-      : current?.handoff_policy || {},
-    metadata: isPlainObject(input.metadata) ? input.metadata : current?.metadata || {},
-    created_at: current?.created_at || timestamp,
-    updated_at: timestamp,
-  };
-
-  writeJsonAtomic(profilePath(profile.orchestrator_id), profile);
-  return profile;
+  if (activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId) return null;
+  ensureOrchestratorAgent(normalized);
+  return normalized;
 }

@@ -6,14 +6,24 @@ import { getActiveWorkspaceId } from "./request-security.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import type {
   AutopilotMode,
+  LongTaskRuntimeState,
   SessionRecord,
   TaskCheckpointReason,
   TaskCheckpointRecord,
   TaskCheckpointStatus,
 } from "./types.js";
 import { nowIso } from "./utils.js";
+import {
+  TASK_CHECKPOINT_LIFECYCLE,
+  assertLifecycleTransition,
+  parseLifecycleStatus,
+} from "@my-mate/shared-types/domain-lifecycle";
+import { assertSchemaValid, validateTaskCheckpoint } from "./validators.js";
 
-const DEFAULT_MAX_RESUME_ATTEMPTS = 3;
+const DEFAULT_MAX_RESUME_ATTEMPTS = 8;
+const DEFAULT_LONG_TASK_MAX_WALL_TIME_MS = 2 * 60 * 60 * 1_000;
+const DEFAULT_LONG_TASK_MAX_TURN_ATTEMPTS = 12;
+const DEFAULT_LONG_TASK_MAX_TOTAL_TOKENS = 4_000_000;
 
 function sessionDir(workspaceId: string, sessionId: string): string {
   return path.join(TASK_CHECKPOINTS_DIR, encodeURIComponent(workspaceId), encodeURIComponent(sessionId));
@@ -34,19 +44,96 @@ function boundedText(value: string | null | undefined, maxLength = 2_000): strin
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trimEnd()}...` : normalized;
 }
 
+export function taskCheckpointContextSummary(session: SessionRecord): string | null {
+  const rolling = typeof session.metadata?.conversation_context_summary === "string"
+    ? session.metadata.conversation_context_summary.trim()
+    : "";
+  const snapshot = session.metadata?.conversation_loop_context_snapshot;
+  const loop = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) &&
+    typeof (snapshot as Record<string, unknown>).summary === "string"
+    ? String((snapshot as Record<string, unknown>).summary).trim()
+    : "";
+  return boundedText([rolling, loop && loop !== rolling ? loop : null].filter(Boolean).join("\n\n"), 8_000);
+}
+
 function saveCheckpoint(checkpoint: TaskCheckpointRecord): TaskCheckpointRecord {
-  getJsonStorageBackend().writeJson(
-    checkpointPath(checkpoint.workspace_id, checkpoint.session_id, checkpoint.checkpoint_id),
-    checkpoint,
-  );
-  return checkpoint;
+  const storage = getJsonStorageBackend();
+  const normalized = {
+    ...checkpoint,
+    status: parseLifecycleStatus(TASK_CHECKPOINT_LIFECYCLE, checkpoint.status),
+  };
+  const target = checkpointPath(checkpoint.workspace_id, checkpoint.session_id, checkpoint.checkpoint_id);
+  if (storage.exists(target)) {
+    const previous = storage.readJson<TaskCheckpointRecord>(target);
+    assertLifecycleTransition(
+      TASK_CHECKPOINT_LIFECYCLE,
+      parseLifecycleStatus(TASK_CHECKPOINT_LIFECYCLE, previous.status),
+      normalized.status,
+    );
+  }
+  assertSchemaValid(validateTaskCheckpoint, normalized, "TaskCheckpoint");
+  storage.writeJson(target, normalized);
+  return normalized;
+}
+
+function normalizeCheckpoint(record: TaskCheckpointRecord): TaskCheckpointRecord {
+  const status = parseLifecycleStatus(TASK_CHECKPOINT_LIFECYCLE, record.status);
+  if (record.long_task_runtime?.schema_version === 1) {
+    const runtime = record.long_task_runtime;
+    const reported = runtime.cumulative_reported_input_tokens ?? 0;
+    const estimated = runtime.cumulative_estimated_input_tokens ?? Math.max(0, runtime.cumulative_input_tokens - reported);
+    const normalized: TaskCheckpointRecord = {
+      ...record,
+      status,
+      long_task_runtime: {
+        ...runtime,
+        cumulative_reported_input_tokens: reported,
+        cumulative_estimated_input_tokens: estimated,
+        input_token_accounting: runtime.input_token_accounting || (
+          estimated > 0 ? reported > 0 ? "mixed" : "estimated" : reported > 0 ? "reported" : "unavailable"
+        ),
+      },
+    };
+    assertSchemaValid(validateTaskCheckpoint, normalized, "TaskCheckpoint");
+    return normalized;
+  }
+  const startedAt = record.created_at || nowIso();
+  const elapsed = Math.max(0, Date.now() - Date.parse(startedAt));
+  const normalized: TaskCheckpointRecord = {
+    ...record,
+    status,
+    max_resume_attempts: Math.max(record.max_resume_attempts || 0, DEFAULT_MAX_RESUME_ATTEMPTS),
+    long_task_runtime: {
+      schema_version: 1,
+      started_at: startedAt,
+      updated_at: record.updated_at || startedAt,
+      elapsed_ms: Number.isFinite(elapsed) ? elapsed : 0,
+      turn_attempts: Math.max(1, (record.resume_attempts || 0) + 1),
+      resume_attempts: record.resume_attempts || 0,
+      cumulative_input_tokens: 0,
+      cumulative_reported_input_tokens: 0,
+      cumulative_estimated_input_tokens: 0,
+      input_token_accounting: "unavailable",
+      cumulative_output_tokens: 0,
+      cumulative_total_tokens: 0,
+      max_wall_time_ms: DEFAULT_LONG_TASK_MAX_WALL_TIME_MS,
+      max_turn_attempts: DEFAULT_LONG_TASK_MAX_TURN_ATTEMPTS,
+      max_total_tokens: DEFAULT_LONG_TASK_MAX_TOTAL_TOKENS,
+      cost_status: "unavailable",
+      cumulative_costs: {},
+      exhausted: false,
+      exhausted_reason: null,
+    },
+  };
+  assertSchemaValid(validateTaskCheckpoint, normalized, "TaskCheckpoint");
+  return normalized;
 }
 
 export function listTaskCheckpoints(sessionId: string, workspaceId?: string): TaskCheckpointRecord[] {
   const targetWorkspaceId = workspaceId || getActiveWorkspaceId() || "default";
   const storage = getJsonStorageBackend();
   return storage.listJsonFiles(sessionDir(targetWorkspaceId, sessionId))
-    .map((file) => storage.readJson<TaskCheckpointRecord>(file))
+    .map((file) => normalizeCheckpoint(storage.readJson<TaskCheckpointRecord>(file)))
     .filter((record) => record.workspace_id === targetWorkspaceId && record.session_id === sessionId)
     .sort((left, right) =>
       right.updated_at.localeCompare(left.updated_at) || right.checkpoint_id.localeCompare(left.checkpoint_id),
@@ -62,7 +149,7 @@ export function getTaskCheckpoint(
   const storage = getJsonStorageBackend();
   const file = checkpointPath(targetWorkspaceId, sessionId, checkpointId);
   if (!storage.exists(file)) return null;
-  const record = storage.readJson<TaskCheckpointRecord>(file);
+  const record = normalizeCheckpoint(storage.readJson<TaskCheckpointRecord>(file));
   return record.workspace_id === targetWorkspaceId && record.session_id === sessionId ? record : null;
 }
 
@@ -83,8 +170,10 @@ export function transitionTaskCheckpoint(
     providerEvidence?: ConversationProviderEvidence | null;
     errorCode?: string | null;
     errorMessage?: string | null;
+    longTaskRuntime?: LongTaskRuntimeState;
   },
 ): TaskCheckpointRecord {
+  assertLifecycleTransition(TASK_CHECKPOINT_LIFECYCLE, checkpoint.status, input.status);
   const timestamp = nowIso();
   const version = checkpoint.version + 1;
   const provider = input.providerEvidence;
@@ -108,11 +197,18 @@ export function transitionTaskCheckpoint(
           continuation_limit_reached: provider.continuation_limit_reached,
           context_compacted: provider.context_compacted,
           compaction_count: provider.compaction_count,
+          in_loop_compaction_count: provider.in_loop_compaction_count,
+          context_snapshot_id: provider.context_snapshot_id,
+          context_pressure_peak_tokens: provider.context_pressure_peak_tokens,
+          pruned_tool_result_count: provider.pruned_tool_result_count,
+          repeated_tool_call_limit_reached: provider.repeated_tool_call_limit_reached,
           tool_rounds: provider.tool_rounds,
           tool_round_limit_reached: provider.tool_round_limit_reached,
           action_ids: [...provider.action_ids],
+          completion_contract: structuredClone(provider.completion_contract),
         }
       : checkpoint.provider_state,
+    long_task_runtime: input.longTaskRuntime || checkpoint.long_task_runtime,
     last_error_code: input.errorCode === undefined ? checkpoint.last_error_code : input.errorCode,
     last_error_message: input.errorMessage === undefined
       ? checkpoint.last_error_message
@@ -206,16 +302,32 @@ export function beginTaskCheckpoint(input: {
     resume_from_checkpoint_id: null,
     resume_attempts: 0,
     max_resume_attempts: DEFAULT_MAX_RESUME_ATTEMPTS,
-    auto_resume_eligible: mode === "autopilot",
+    auto_resume_eligible: mode !== "review_first",
     progress_summary: "Conversation turn started.",
-    context_summary: boundedText(
-      typeof input.session.metadata?.conversation_context_summary === "string"
-        ? input.session.metadata.conversation_context_summary
-        : null,
-      8_000,
-    ),
+    context_summary: taskCheckpointContextSummary(input.session),
     next_action: "Complete the current model turn.",
     provider_state: null,
+    long_task_runtime: {
+      schema_version: 1,
+      started_at: timestamp,
+      updated_at: timestamp,
+      elapsed_ms: 0,
+      turn_attempts: 1,
+      resume_attempts: 0,
+      cumulative_input_tokens: 0,
+      cumulative_reported_input_tokens: 0,
+      cumulative_estimated_input_tokens: 0,
+      input_token_accounting: "unavailable",
+      cumulative_output_tokens: 0,
+      cumulative_total_tokens: 0,
+      max_wall_time_ms: DEFAULT_LONG_TASK_MAX_WALL_TIME_MS,
+      max_turn_attempts: DEFAULT_LONG_TASK_MAX_TURN_ATTEMPTS,
+      max_total_tokens: DEFAULT_LONG_TASK_MAX_TOTAL_TOKENS,
+      cost_status: "unavailable",
+      cumulative_costs: {},
+      exhausted: false,
+      exhausted_reason: null,
+    },
     last_error_code: null,
     last_error_message: null,
     transitions: [{
@@ -230,6 +342,17 @@ export function beginTaskCheckpoint(input: {
     completed_at: null,
   };
   return saveCheckpoint(checkpoint);
+}
+
+export function updateTaskCheckpointLongTaskRuntime(
+  checkpoint: TaskCheckpointRecord,
+  runtime: LongTaskRuntimeState,
+): TaskCheckpointRecord {
+  return saveCheckpoint({
+    ...checkpoint,
+    long_task_runtime: runtime,
+    updated_at: nowIso(),
+  });
 }
 
 export function markInterruptedCheckpointsForRecovery(): TaskCheckpointRecord[] {
@@ -251,7 +374,7 @@ export function markInterruptedCheckpointsForRecovery(): TaskCheckpointRecord[] 
           reason: "server_restart",
           detail: "The Control Plane restarted before this turn reached a terminal checkpoint state.",
           nextAction: latest.auto_resume_eligible
-            ? "Automatically resume the interrupted turn."
+            ? "Automatically resume the interrupted turn from persisted progress."
             : "Resume the interrupted turn after user authorization.",
         }));
       }

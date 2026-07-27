@@ -6,6 +6,7 @@ import { createApp } from "../src/app.js";
 import type { RuntimeDispatcher } from "../src/runtime-dispatcher.js";
 import type { SecurityOptions } from "../src/request-security.js";
 import type { DoctorServiceOptions } from "../src/diagnostics/doctor-service.js";
+import type { checkArtifactWorkerAvailability, runArtifactWorker } from "../src/artifact-worker-runner.js";
 import {
   APPROVALS_DIR,
   ARTIFACTS_DIR,
@@ -13,6 +14,8 @@ import {
   EVALUATION_SNAPSHOTS_DIR,
   EVALUATIONS_DIR,
   AGENT_PROFILES_DIR,
+  AGENT_DEFINITIONS_DIR,
+  AGENT_VERSIONS_DIR,
   HUMAN_INPUTS_DIR,
   NODE_RUNS_DIR,
   OBSERVABILITY_DIRTY_DIR,
@@ -35,8 +38,8 @@ import {
 } from "../src/config.js";
 import { listApprovals } from "../src/approval-store.js";
 import { listHumanInputs } from "../src/human-input-store.js";
-import { upsertAgentProfile, upsertSkill } from "../src/registry-store.js";
-import type { DispatchEnvelope, UpsertAgentProfileRequest, UpsertSkillRequest } from "../src/types.js";
+import { upsertSkill } from "../src/registry-store.js";
+import type { DispatchEnvelope, UpsertSkillRequest } from "../src/types.js";
 
 export const TEST_ROOT = path.join(
   path.resolve("C:/project/my-mate"),
@@ -109,7 +112,9 @@ export function buildPublishedTemplate(overrides: Record<string, unknown> = {}) 
       },
     ],
     edges: [],
-    metadata: {},
+    metadata: {
+      legacy_workflow_compatibility: true,
+    },
     created_at: timestamp,
     updated_at: timestamp,
     published_at: timestamp,
@@ -121,8 +126,38 @@ export function seedTemplate(template = buildPublishedTemplate()): void {
   writeJson(path.join(TEMPLATES_DIR, `${template.template_id}.json`), template);
 }
 
-export function seedAgentProfile(input: UpsertAgentProfileRequest): void {
-  upsertAgentProfile(input);
+export function seedAgentProfile(input: {
+  profile_id?: string;
+  name: string;
+  description?: string;
+  runtime_agent_ref?: string;
+  agent_runtime?: string;
+  harness_profile?: string | null;
+  provider_connection_id?: string | null;
+  default_skills?: string[];
+  allowed_tools?: string[];
+  disallowed_skills?: string[];
+  policy_tags?: string[];
+  status?: "active" | "disabled";
+  metadata?: Record<string, unknown>;
+}): void {
+  const timestamp = new Date().toISOString();
+  const profileId = input.profile_id || input.name.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "") || "legacy-agent";
+  writeJson(path.join(AGENT_PROFILES_DIR, `${profileId}.json`), {
+    profile_id: profileId,
+    workspace_id: "default",
+    name: input.name,
+    description: input.description || "",
+    provider_connection_id: input.provider_connection_id || null,
+    default_skills: input.default_skills || [],
+    allowed_tools: input.allowed_tools || [],
+    disallowed_skills: input.disallowed_skills || [],
+    policy_tags: input.policy_tags || [],
+    status: input.status || "active",
+    metadata: input.metadata || {},
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
 }
 
 export function seedSkill(input: UpsertSkillRequest): void {
@@ -133,6 +168,7 @@ export function cleanupTestArtifacts(input: {
   templateId?: string;
   runId?: string;
   agentProfileId?: string;
+  agentId?: string;
   skillId?: string;
   sessionId?: string;
 }): void {
@@ -201,6 +237,16 @@ export function cleanupTestArtifacts(input: {
     });
   }
 
+  if (input.agentId) {
+    fs.rmSync(path.join(AGENT_DEFINITIONS_DIR, `${input.agentId}.json`), {
+      force: true,
+    });
+    fs.rmSync(path.join(AGENT_VERSIONS_DIR, input.agentId), {
+      recursive: true,
+      force: true,
+    });
+  }
+
   if (input.skillId) {
     fs.rmSync(path.join(SKILLS_DIR, `${input.skillId}.json`), {
       force: true,
@@ -256,8 +302,7 @@ export function createStubExecutionAdapter(options?: {
       dispatchEnvelopes.push(envelope);
       return {
         dispatch_id: `disp_stub_${envelope.node_run_id}`,
-        openclaw_task_id: null,
-        openclaw_session_id: null,
+        provider_refs: {},
         status: "accepted",
       };
     },
@@ -292,10 +337,15 @@ export async function startTestServer(input?: {
   conversation?: {
     fetchImpl?: typeof fetch;
   };
+  artifactWorker?: {
+    preflight?: typeof checkArtifactWorkerAvailability;
+    run?: typeof runArtifactWorker;
+  };
 }) {
   const app = createApp(input);
   return await new Promise<{
     baseUrl: string;
+    app: ReturnType<typeof createApp>;
     close: () => Promise<void>;
   }>((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => {
@@ -305,6 +355,7 @@ export async function startTestServer(input?: {
       }
       resolve({
         baseUrl: `http://127.0.0.1:${address.port}`,
+        app,
         close: () =>
           new Promise<void>((done, reject) => {
             server.close((error) => {
@@ -314,6 +365,9 @@ export async function startTestServer(input?: {
               }
               done();
             });
+            server.closeIdleConnections?.();
+            // A completed test must not wait for a client keep-alive socket to expire.
+            server.closeAllConnections?.();
           }),
       });
     });

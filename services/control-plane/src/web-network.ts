@@ -6,7 +6,7 @@ import { CapabilityToolError } from "./capability-registry.js";
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-const USER_AGENT = "MyMate/0.1 (+https://localhost; capability-web)";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const BLOCKED_HOST_SUFFIXES = [".localhost", ".local", ".lan", ".internal", ".home", ".test"];
 const SENSITIVE_REDIRECT_HEADERS = ["authorization", "cookie", "proxy-authorization", "x-api-key"];
 
@@ -123,7 +123,9 @@ function pinnedAgent(addresses: ResolvedAddress[]): Agent {
         const eligible = requestedFamily === 4 || requestedFamily === 6
           ? addresses.filter((item) => item.family === requestedFamily)
           : addresses;
-        const selected = eligible[0];
+        // Prefer IPv4 when both families are returned. VPNs commonly publish an
+        // IPv6 answer even when the local route cannot carry IPv6 traffic.
+        const selected = eligible.find((item) => item.family === 4) || eligible[0];
         if (!selected) {
           callback(new Error("No public DNS address matches the requested network family."), "");
           return;
@@ -234,6 +236,9 @@ export async function safeWebRequest(input: {
   let body = input.body;
   let headers = new Headers(input.headers || {});
   headers.set("user-agent", USER_AGENT);
+  if (!headers.has("accept-language")) headers.set("accept-language", "zh-CN,zh;q=0.9,en;q=0.8");
+  if (!headers.has("cache-control")) headers.set("cache-control", "no-cache");
+  if (!headers.has("pragma")) headers.set("pragma", "no-cache");
   headers.set("accept-encoding", "gzip, deflate, br");
   const timeoutMs = Math.min(60_000, Math.max(1_000, Math.floor(input.timeout_ms || DEFAULT_TIMEOUT_MS)));
   const maximumBytes = Math.min(10 * 1024 * 1024, Math.max(1_024, Math.floor(input.max_bytes || DEFAULT_MAX_BYTES)));
@@ -252,9 +257,12 @@ export async function safeWebRequest(input: {
         dispatcher: agent,
       }) as unknown as Response;
     } catch (error) {
+      const timedOut = error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name);
       throw new WebNetworkError(
-        "web_request_failed",
-        `Web request to ${resolved.url.hostname} failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        timedOut ? "web_request_timeout" : "web_request_failed",
+        timedOut
+          ? `Web request to ${resolved.url.hostname} timed out after ${timeoutMs} ms.`
+          : `Web request to ${resolved.url.hostname} failed: ${error instanceof Error ? error.message : "unknown error"}`,
       );
     } finally {
       await agent.close().catch(() => undefined);
@@ -282,11 +290,25 @@ export async function safeWebRequest(input: {
       continue;
     }
 
+    let responseBody: Uint8Array;
+    try {
+      responseBody = await readBoundedBody(response, maximumBytes);
+    } catch (error) {
+      if (error instanceof WebNetworkError) throw error;
+      const timedOut = error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name);
+      throw new WebNetworkError(
+        timedOut ? "web_response_timeout" : "web_response_read_failed",
+        timedOut
+          ? `Web response from ${resolved.url.hostname} timed out while reading after ${timeoutMs} ms.`
+          : `Web response from ${resolved.url.hostname} could not be read: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+    }
+
     return {
       url: resolved.url.toString(),
       status: response.status,
       headers: responseHeaders(response),
-      body: await readBoundedBody(response, maximumBytes),
+      body: responseBody,
     };
   }
   throw new WebNetworkError("web_redirect_limit", `Web request exceeded ${MAX_REDIRECTS} redirects.`);

@@ -23,7 +23,11 @@ import { nowIso } from "../utils.js";
 import { EVIDENCE_SETTLE_QUIET_MS } from "../config.js";
 import { canonicalizeForEvidence, evidenceDigest } from "./canonical-json.js";
 import { getRunEvidenceSnapshot, saveRunEvidenceSnapshot } from "./snapshot-store.js";
-import type { RunEvidenceSnapshot, SnapshotCompleteness } from "./types.js";
+import type {
+  EvidenceArtifactRecord,
+  RunEvidenceSnapshot,
+  SnapshotCompleteness,
+} from "./types.js";
 import { classifyEvidenceCostCompleteness } from "../runtime/provider-evidence-projection.js";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -69,6 +73,22 @@ function byCreatedAtAndId<T extends Record<string, unknown>>(
     const created = String(left[createdKey] || "").localeCompare(String(right[createdKey] || ""));
     return created || String(left[idKey] || "").localeCompare(String(right[idKey] || ""));
   });
+}
+
+function toEvidenceArtifact(
+  artifact: ReturnType<typeof listArtifacts>[number],
+): EvidenceArtifactRecord {
+  return {
+    artifact_id: artifact.artifact_id,
+    run_id: artifact.run_id,
+    node_run_id: artifact.node_run_id,
+    type: artifact.type,
+    name: artifact.name,
+    storage_uri: artifact.storage_uri,
+    mime_type: artifact.mime_type,
+    size_bytes: artifact.size_bytes,
+    created_at: artifact.created_at,
+  };
 }
 
 function buildDigestDomain(
@@ -146,11 +166,12 @@ export function buildRunEvidenceSnapshot(
     "created_at",
     "handoff_id",
   ) as unknown as ReturnType<typeof listNodeHandoffRecords>;
-  const artifacts = byCreatedAtAndId(
+  const artifactRecords = byCreatedAtAndId(
     listArtifacts(runId) as unknown as Array<Record<string, unknown>>,
     "created_at",
     "artifact_id",
   ) as unknown as ReturnType<typeof listArtifacts>;
+  const artifacts = artifactRecords.map(toEvidenceArtifact);
   const approvals = listApprovals().filter((record) => record.run_id === runId);
   const humanInputs = listHumanInputs().filter((record) => record.run_id === runId);
   const interventions = listRunInterventions(runId);

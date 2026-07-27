@@ -50,10 +50,26 @@ export let HUMAN_INPUTS_DIR = path.join(DATA_DIR, "human-inputs");
 export let RUNTIME_HUMAN_GATES_DIR = path.join(DATA_DIR, "runtime-human-gates");
 export let ORCHESTRATOR_PROFILES_DIR = path.join(DATA_DIR, "orchestrator-profiles");
 export let AGENT_PROFILES_DIR = path.join(DATA_DIR, "agent-profiles");
+export let PROVIDER_DEFINITIONS_DIR = path.join(DATA_DIR, "provider-definitions");
+export let MODEL_DEPLOYMENTS_DIR = path.join(DATA_DIR, "model-deployments");
+export let AGENT_DEFINITIONS_DIR = path.join(DATA_DIR, "agent-definitions");
+export let AGENT_VERSIONS_DIR = path.join(DATA_DIR, "agent-versions");
+export let AGENT_BINDING_SNAPSHOTS_DIR = path.join(DATA_DIR, "agent-binding-snapshots");
+export let AGENT_RUNS_DIR = path.join(DATA_DIR, "agent-runs");
+export let AGENT_RUN_EVENTS_DIR = path.join(DATA_DIR, "agent-run-events");
+export let AGENT_TEAMS_DIR = path.join(DATA_DIR, "agent-teams");
+export let AGENT_TASKS_DIR = path.join(DATA_DIR, "agent-tasks");
+export let AGENT_RESULTS_DIR = path.join(DATA_DIR, "agent-results");
+export let AGENT_MESSAGES_DIR = path.join(DATA_DIR, "agent-messages");
+export let AGENT_DAGS_DIR = path.join(DATA_DIR, "agent-dags");
+export let AGENT_DAG_GATES_DIR = path.join(DATA_DIR, "agent-dag-gates");
+export let AGENT_DAG_LEASES_DIR = path.join(DATA_DIR, "agent-dag-leases");
 export let PROVIDER_CONNECTIONS_DIR = path.join(DATA_DIR, "provider-connections");
 export let PROVIDER_SECRETS_DIR = path.join(DATA_DIR, "provider-secrets");
 export let RUNTIME_SECRET_ENVS_DIR = path.join(DATA_DIR, "runtime-secret-envs");
 export let SKILLS_DIR = path.join(DATA_DIR, "skills");
+export let SKILL_PACKAGES_DIR = path.join(DATA_DIR, "skill-packages");
+export let SKILL_INVOCATIONS_DIR = path.join(DATA_DIR, "skill-invocations");
 export let SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 export let SESSION_MESSAGES_DIR = path.join(DATA_DIR, "session-messages");
 export let SESSION_INTERVENTIONS_DIR = path.join(DATA_DIR, "session-interventions");
@@ -68,6 +84,8 @@ export let NODE_HANDOFFS_DIR = path.join(DATA_DIR, "node-handoffs");
 export let RUNTIME_EVENT_CURSORS_DIR = path.join(DATA_DIR, "runtime-event-cursors");
 export let RUNTIME_WORKSPACES_DIR = path.join(DATA_DIR, "runtime-workspaces");
 export let RUNTIME_WORKSPACE_CHANGE_SETS_DIR = path.join(DATA_DIR, "runtime-workspace-change-sets");
+export let RUNTIME_WORKSPACE_FILE_PROJECTIONS_DIR = path.join(DATA_DIR, "runtime-workspace-file-projections");
+export let CONVERSATION_CODING_WORKSPACES_DIR = path.join(DATA_DIR, "conversation-coding-workspaces");
 export let RUN_ROUTES_DIR = path.join(DATA_DIR, "run-routes");
 export let RUN_INITIALIZATION_DIR = path.join(DATA_DIR, "run-initialization");
 export let RUN_PLAN_INITIAL_DIR = path.join(DATA_DIR, "run-plan-initial");
@@ -95,6 +113,7 @@ export let WORKSPACE_BINDINGS_DIR = path.join(DATA_DIR, "workspace-bindings");
 export let LOCAL_PROJECTS_DIR = path.join(DATA_DIR, "local-projects");
 export let TASK_WORKSPACES_DIR = path.join(DATA_DIR, "task-workspaces");
 export let CONVERSATION_ACTIONS_DIR = path.join(DATA_DIR, "conversation-actions");
+export let CONVERSATION_EVENTS_DIR = path.join(DATA_DIR, "conversation-events");
 export let MCP_SERVERS_DIR = path.join(DATA_DIR, "mcp-servers");
 export let MCP_SECRETS_DIR = path.join(DATA_DIR, "mcp-secrets");
 export let MEMORIES_DIR = path.join(DATA_DIR, "memories");
@@ -108,6 +127,8 @@ export let MEMORY_SECRETS_DIR = path.join(DATA_DIR, "memory-secrets");
 export let MEMORY_TURN_CONTEXTS_DIR = path.join(DATA_DIR, "memory-turn-contexts");
 export let MEMORY_OVERLAYS_DIR = path.join(DATA_DIR, "memory-overlays");
 export let MEMORY_FEEDBACK_DIR = path.join(DATA_DIR, "memory-feedback");
+export let MEMORY_TIER_STATE_DIR = path.join(DATA_DIR, "memory-tier-state");
+export let CONTEXT_COMPACTION_LEASES_DIR = path.join(DATA_DIR, "context-compaction-leases");
 export let MEMORY_ONBOARDING_DIR = path.join(DATA_DIR, "memory-onboarding");
 export let MEMORY_OPERATIONS_DIR = path.join(DATA_DIR, "memory-operations");
 export let MEMORY_BACKUPS_DIR = path.join(DATA_DIR, "memory-backups");
@@ -121,6 +142,9 @@ export let SESSION_RECALL_INDEX_DIR = path.join(DATA_DIR, "_indexes", "session-r
 export let MEMORY_RETRIEVAL_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-retrieval");
 export let MEMORY_KNOWLEDGE_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-knowledge");
 export let TASK_CHECKPOINTS_DIR = path.join(DATA_DIR, "task-checkpoints");
+export let USER_SCHEDULES_DIR = path.join(DATA_DIR, "user-schedules");
+export let USER_SCHEDULE_RUNS_DIR = path.join(DATA_DIR, "user-schedule-runs");
+export let NOTIFICATIONS_DIR = path.join(DATA_DIR, "notifications");
 
 export function overrideDataDir(dataDir: string): void {
   DATA_DIR = dataDir;
@@ -135,10 +159,26 @@ export function overrideDataDir(dataDir: string): void {
   RUNTIME_HUMAN_GATES_DIR = path.join(DATA_DIR, "runtime-human-gates");
   ORCHESTRATOR_PROFILES_DIR = path.join(DATA_DIR, "orchestrator-profiles");
   AGENT_PROFILES_DIR = path.join(DATA_DIR, "agent-profiles");
+  PROVIDER_DEFINITIONS_DIR = path.join(DATA_DIR, "provider-definitions");
+  MODEL_DEPLOYMENTS_DIR = path.join(DATA_DIR, "model-deployments");
+  AGENT_DEFINITIONS_DIR = path.join(DATA_DIR, "agent-definitions");
+  AGENT_VERSIONS_DIR = path.join(DATA_DIR, "agent-versions");
+  AGENT_BINDING_SNAPSHOTS_DIR = path.join(DATA_DIR, "agent-binding-snapshots");
+  AGENT_RUNS_DIR = path.join(DATA_DIR, "agent-runs");
+  AGENT_RUN_EVENTS_DIR = path.join(DATA_DIR, "agent-run-events");
+  AGENT_TEAMS_DIR = path.join(DATA_DIR, "agent-teams");
+  AGENT_TASKS_DIR = path.join(DATA_DIR, "agent-tasks");
+  AGENT_RESULTS_DIR = path.join(DATA_DIR, "agent-results");
+  AGENT_MESSAGES_DIR = path.join(DATA_DIR, "agent-messages");
+  AGENT_DAGS_DIR = path.join(DATA_DIR, "agent-dags");
+  AGENT_DAG_GATES_DIR = path.join(DATA_DIR, "agent-dag-gates");
+  AGENT_DAG_LEASES_DIR = path.join(DATA_DIR, "agent-dag-leases");
   PROVIDER_CONNECTIONS_DIR = path.join(DATA_DIR, "provider-connections");
   PROVIDER_SECRETS_DIR = path.join(DATA_DIR, "provider-secrets");
   RUNTIME_SECRET_ENVS_DIR = path.join(DATA_DIR, "runtime-secret-envs");
   SKILLS_DIR = path.join(DATA_DIR, "skills");
+  SKILL_PACKAGES_DIR = path.join(DATA_DIR, "skill-packages");
+  SKILL_INVOCATIONS_DIR = path.join(DATA_DIR, "skill-invocations");
   SESSIONS_DIR = path.join(DATA_DIR, "sessions");
   SESSION_MESSAGES_DIR = path.join(DATA_DIR, "session-messages");
   SESSION_INTERVENTIONS_DIR = path.join(DATA_DIR, "session-interventions");
@@ -153,6 +193,8 @@ export function overrideDataDir(dataDir: string): void {
   RUNTIME_EVENT_CURSORS_DIR = path.join(DATA_DIR, "runtime-event-cursors");
   RUNTIME_WORKSPACES_DIR = path.join(DATA_DIR, "runtime-workspaces");
   RUNTIME_WORKSPACE_CHANGE_SETS_DIR = path.join(DATA_DIR, "runtime-workspace-change-sets");
+  RUNTIME_WORKSPACE_FILE_PROJECTIONS_DIR = path.join(DATA_DIR, "runtime-workspace-file-projections");
+  CONVERSATION_CODING_WORKSPACES_DIR = path.join(DATA_DIR, "conversation-coding-workspaces");
   RUN_ROUTES_DIR = path.join(DATA_DIR, "run-routes");
   RUN_INITIALIZATION_DIR = path.join(DATA_DIR, "run-initialization");
   RUN_PLAN_INITIAL_DIR = path.join(DATA_DIR, "run-plan-initial");
@@ -180,6 +222,7 @@ export function overrideDataDir(dataDir: string): void {
   LOCAL_PROJECTS_DIR = path.join(DATA_DIR, "local-projects");
   TASK_WORKSPACES_DIR = path.join(DATA_DIR, "task-workspaces");
   CONVERSATION_ACTIONS_DIR = path.join(DATA_DIR, "conversation-actions");
+  CONVERSATION_EVENTS_DIR = path.join(DATA_DIR, "conversation-events");
   MCP_SERVERS_DIR = path.join(DATA_DIR, "mcp-servers");
   MCP_SECRETS_DIR = path.join(DATA_DIR, "mcp-secrets");
   MEMORIES_DIR = path.join(DATA_DIR, "memories");
@@ -193,6 +236,8 @@ export function overrideDataDir(dataDir: string): void {
   MEMORY_TURN_CONTEXTS_DIR = path.join(DATA_DIR, "memory-turn-contexts");
   MEMORY_OVERLAYS_DIR = path.join(DATA_DIR, "memory-overlays");
   MEMORY_FEEDBACK_DIR = path.join(DATA_DIR, "memory-feedback");
+  MEMORY_TIER_STATE_DIR = path.join(DATA_DIR, "memory-tier-state");
+  CONTEXT_COMPACTION_LEASES_DIR = path.join(DATA_DIR, "context-compaction-leases");
   MEMORY_ONBOARDING_DIR = path.join(DATA_DIR, "memory-onboarding");
   MEMORY_OPERATIONS_DIR = path.join(DATA_DIR, "memory-operations");
   MEMORY_BACKUPS_DIR = path.join(DATA_DIR, "memory-backups");
@@ -206,6 +251,9 @@ export function overrideDataDir(dataDir: string): void {
   MEMORY_RETRIEVAL_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-retrieval");
   MEMORY_KNOWLEDGE_INDEX_DIR = path.join(DATA_DIR, "_indexes", "memory-knowledge");
   TASK_CHECKPOINTS_DIR = path.join(DATA_DIR, "task-checkpoints");
+  USER_SCHEDULES_DIR = path.join(DATA_DIR, "user-schedules");
+  USER_SCHEDULE_RUNS_DIR = path.join(DATA_DIR, "user-schedule-runs");
+  NOTIFICATIONS_DIR = path.join(DATA_DIR, "notifications");
 }
 export const PORT = Number(process.env.PORT || 4010);
 export const SCHEMAS_ROOT = path.join(REPO_ROOT, "schemas");
@@ -216,52 +264,32 @@ export const AUTO_APPROVE_HUMAN_GATES =
 export const LOCAL_EXECUTION_STEP_DELAY_MS = Number(
   process.env.MY_MATE_LOCAL_STEP_DELAY_MS || 150,
 );
-export const EXECUTION_ADAPTER_KIND = (
-  process.env.MY_MATE_EXECUTION_ADAPTER ||
-  (ENABLE_LOCAL_EXECUTION ? "local" : "openclaw")
-).toLowerCase();
+export const EXECUTION_ADAPTER_KIND = "local";
 export const PUBLIC_BASE_URL = trimTrailingSlash(
   process.env.MY_MATE_PUBLIC_BASE_URL || `http://127.0.0.1:${PORT}`,
 );
-export const OPENCLAW_BRIDGE_BASE_URL = trimTrailingSlash(
-  process.env.MY_MATE_OPENCLAW_BRIDGE_BASE_URL || "",
+export const RUNTIME_REPORT_PATH =
+  process.env.MY_MATE_RUNTIME_REPORT_PATH || "/api/internal/runtime/reports";
+export const RUNTIME_REPORT_BASE_URL = trimTrailingSlash(
+  process.env.MY_MATE_RUNTIME_REPORT_BASE_URL || PUBLIC_BASE_URL,
 );
-export const OPENCLAW_BRIDGE_API_KEY =
-  process.env.MY_MATE_OPENCLAW_BRIDGE_API_KEY || "";
-export const OPENCLAW_BRIDGE_EXECUTION_MODE =
-  process.env.MY_MATE_OPENCLAW_BRIDGE_EXECUTION_MODE || "native-agent";
-export const OPENCLAW_BRIDGE_DISPATCH_PATH =
-  process.env.MY_MATE_OPENCLAW_BRIDGE_DISPATCH_PATH || "/api/v1/dispatches";
-export const OPENCLAW_BRIDGE_CONTROL_PATH =
-  process.env.MY_MATE_OPENCLAW_BRIDGE_CONTROL_PATH || "/api/v1/controls";
-export const OPENCLAW_BRIDGE_SWEEP_PATH =
-  process.env.MY_MATE_OPENCLAW_BRIDGE_SWEEP_PATH || "/api/v1/dispatches/sweep";
-export const OPENCLAW_CALLBACK_PATH =
-  process.env.MY_MATE_OPENCLAW_CALLBACK_PATH || "/api/internal/openclaw/reports";
-export const OPENCLAW_CALLBACK_BASE_URL = trimTrailingSlash(
-  process.env.MY_MATE_OPENCLAW_CALLBACK_BASE_URL || PUBLIC_BASE_URL,
-);
-export const OPENCLAW_CALLBACK_TOKEN =
-  process.env.MY_MATE_OPENCLAW_CALLBACK_TOKEN || "";
+export const RUNTIME_REPORT_TOKEN =
+  process.env.MY_MATE_RUNTIME_REPORT_TOKEN || "";
 export const INTERNAL_AUTH_SECRET = process.env.MY_MATE_INTERNAL_AUTH_SECRET || "";
 export const DESKTOP_BRIDGE_TOKEN = process.env.MY_MATE_DESKTOP_BRIDGE_TOKEN || "";
-export const OPENCLAW_GATEWAY_BASE_URL = trimTrailingSlash(
-  process.env.MY_MATE_OPENCLAW_GATEWAY_BASE_URL || "",
-);
-export const OPENCLAW_APPROVAL_CONSOLE_BASE_URL = trimTrailingSlash(
-  process.env.MY_MATE_OPENCLAW_APPROVAL_CONSOLE_BASE_URL || "",
-);
-export const OPENCLAW_CONTAINER_NAME =
-  process.env.MY_MATE_OPENCLAW_CONTAINER_NAME || "openclaw-local";
-
 export const RUNTIME_DISPATCHER_KIND = (
-  process.env.MY_MATE_RUNTIME_DISPATCHER || "legacy"
+  process.env.MY_MATE_RUNTIME_DISPATCHER || "docker-worker"
 ).toLowerCase();
 export const RUNTIME_WORKER_RELEASE_VERSION =
   process.env.MY_MATE_RUNTIME_WORKER_RELEASE_VERSION || readRuntimeWorkerReleaseVersion();
 export const RUNTIME_WORKER_IMAGE =
   process.env.MY_MATE_RUNTIME_WORKER_IMAGE ||
   `${process.env.MY_MATE_RUNTIME_WORKER_IMAGE_REPOSITORY || "my-mate-runtime-worker"}:${RUNTIME_WORKER_RELEASE_VERSION}`;
+export const ARTIFACT_WORKER_RELEASE_VERSION =
+  process.env.MY_MATE_ARTIFACT_WORKER_RELEASE_VERSION || "0.1.0";
+export const ARTIFACT_WORKER_IMAGE =
+  process.env.MY_MATE_ARTIFACT_WORKER_IMAGE ||
+  `${process.env.MY_MATE_ARTIFACT_WORKER_IMAGE_REPOSITORY || "my-mate-artifact-worker"}:${ARTIFACT_WORKER_RELEASE_VERSION}`;
 export const RUNTIME_DOCKER_BIN = process.env.MY_MATE_RUNTIME_DOCKER_BIN || "docker";
 export const RUNTIME_WORKER_MANAGER_WS_URL = trimTrailingSlash(
   process.env.MY_MATE_RUNTIME_WORKER_MANAGER_WS_URL || "",

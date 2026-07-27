@@ -38,17 +38,33 @@ function ensureSafeOutputRoot(projectRoot: string, outputRoot: string): string {
   return realOutput;
 }
 
-function targetForFile(outputRoot: string, fileName: string, overwrite: boolean): string {
+export function versionedArtifactFileName(fileName: string, existingFileNames: Iterable<string>): string {
   const leaf = safeFileName(fileName);
-  const direct = path.join(outputRoot, leaf);
-  if (overwrite || !fs.existsSync(direct)) return direct;
+  const existing = new Set([...existingFileNames].map((item) => safeFileName(item).toLocaleLowerCase()));
+  if (!existing.has(leaf.toLocaleLowerCase())) return leaf;
   const extension = path.extname(leaf);
   const stem = path.basename(leaf, extension);
-  for (let index = 2; index <= 999; index += 1) {
-    const candidate = path.join(outputRoot, `${stem}-${index}${extension}`);
-    if (!fs.existsSync(candidate)) return candidate;
+  const versionMatch = /^(.*)_v([1-9]\d*)$/iu.exec(stem);
+  const baseStem = versionMatch?.[1] || stem;
+  const firstVersion = versionMatch ? Number(versionMatch[2]) + 1 : 1;
+  for (let index = firstVersion; index <= 9999; index += 1) {
+    const candidate = `${baseStem}_v${index}${extension}`;
+    if (!existing.has(candidate.toLocaleLowerCase())) return candidate;
   }
   throw new Error("ARTIFACT_OUTPUT_NAME_EXHAUSTED");
+}
+
+function targetForFile(
+  outputRoot: string,
+  fileName: string,
+  overwrite: boolean,
+  reservedFileNames: Iterable<string> = [],
+): string {
+  const leaf = safeFileName(fileName);
+  if (overwrite) return path.join(outputRoot, leaf);
+  const existing = fs.readdirSync(outputRoot, { withFileTypes: true })
+    .map((entry) => entry.name);
+  return path.join(outputRoot, versionedArtifactFileName(leaf, [...existing, ...reservedFileNames]));
 }
 
 function atomicWrite(target: string, content: Buffer): void {
@@ -68,6 +84,7 @@ export function publishTaskArtifact(input: {
   fileName: string;
   content: Buffer;
   overwrite?: boolean;
+  reservedFileNames?: Iterable<string>;
 }): { published_relative_path: string; absolute_path: string } | null {
   const taskWorkspace = getTaskWorkspace(input.sessionId);
   if (!taskWorkspace || taskWorkspace.status !== "active") return null;
@@ -77,7 +94,12 @@ export function publishTaskArtifact(input: {
     project.root_path,
     resolveProjectOutputRoot(project, taskWorkspace.output_relative_path),
   );
-  const target = targetForFile(outputRoot, input.fileName, input.overwrite !== false);
+  const target = targetForFile(
+    outputRoot,
+    input.fileName,
+    input.overwrite !== false,
+    input.reservedFileNames,
+  );
   atomicWrite(target, input.content);
   return {
     published_relative_path: path.relative(project.root_path, target).split(path.sep).join("/"),

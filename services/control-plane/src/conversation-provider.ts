@@ -1,25 +1,32 @@
 import { getProviderConnection, listProviderConnections } from "./provider-connection-store.js";
 import { getManagedProviderCredential } from "./provider-secret-store.js";
 import { providerFetch } from "./provider-fetch.js";
-import { getAgentProfile } from "./registry-store.js";
 import { listSessionAttachments } from "./session-attachment-store.js";
 import { saveSession } from "./session-store.js";
 import { ensureCoreMemorySnapshot, renderCoreMemorySnapshot } from "./memory-snapshot-store.js";
 import { getMemorySettings } from "./memory-settings-store.js";
 import { buildAutomaticMemoryRecallContext } from "./memory-auto-recall.js";
+import { sessionAgentMemoryPolicy } from "./agent-memory-policy.js";
 import {
   contextEntryFromCore,
   freezeTurnMemoryContext,
   renderActivatedMemoryContext,
 } from "./memory-activation-store.js";
 import {
+  createConversationWebTurnState,
   executeConversationTool,
   getConversationToolDefinitions,
   type ConversationDesktopCapabilityRequest,
   type ConversationToolCall,
   type ConversationToolProgress,
   type ConversationToolResult,
+  type ConversationWebTurnState,
 } from "./conversation-tools.js";
+import { getSkillHost, renderSkillCatalog, skillControlToolNames } from "./skill-host.js";
+import { getPublishedAgentVersion, resolveSessionAgentBinding } from "./agent-runtime-store.js";
+import { createAgentRun, saveAgentRun } from "./agent-runtime-store.js";
+import { getContextEngine, type ContextAssemblyResult } from "./context-engine.js";
+import { buildConversationWorldState } from "./context-world-state.js";
 import type { ProviderConnectionRecord, SessionMessageRecord, SessionRecord } from "./types.js";
 
 export type ConversationFinishReason = "stop" | "length" | "tool_calls" | "content_filter" | "unknown";
@@ -35,21 +42,46 @@ export interface ConversationProviderEvidence {
   usage: {
     input_tokens: number | null;
     output_tokens: number | null;
+    input_tokens_reported?: number;
+    input_tokens_estimated?: number;
+    input_token_accounting?: "reported" | "estimated" | "mixed" | "unavailable";
   };
   finish_reason: ConversationFinishReason;
   continuation_rounds: number;
+  semantic_repair_rounds: number;
   continuation_limit_reached: boolean;
   context_compacted: boolean;
   compaction_count: number;
+  in_loop_compaction_count: number;
+  context_snapshot_id: string | null;
+  context_pressure_peak_tokens: number;
+  pruned_tool_result_count: number;
+  repeated_tool_call_limit_reached: boolean;
   tool_rounds: number;
   tool_round_limit_reached: boolean;
   action_ids: string[];
   memory_context_id: string | null;
+  active_skills: Array<{ skill_id: string; version: string; invocation_id: string; activation_source: string }>;
+  agent_id?: string;
+  agent_version?: number;
+  agent_binding_snapshot_digest?: string;
+  completion_contract: {
+    status: "satisfied" | "incomplete" | "blocked";
+    reason: string;
+    successful_action_ids: string[];
+    failed_action_ids: string[];
+  };
 }
 
 export interface ConversationProviderReply {
   text: string;
   evidence: ConversationProviderEvidence;
+}
+
+export interface ConversationContextCompactionEvent {
+  source_text: string;
+  message_ids: string[];
+  through_message_id: string;
 }
 
 export interface StreamConversationProviderInput {
@@ -61,6 +93,9 @@ export interface StreamConversationProviderInput {
   attachmentIds?: string[];
   memoryRecall?: boolean;
   toolsEnabled?: boolean;
+  allowedToolNames?: Iterable<string>;
+  skillActivation?: boolean;
+  onBeforeContextCompaction?: (event: ConversationContextCompactionEvent) => void | Promise<void>;
   onDelta: (text: string) => void | Promise<void>;
   onToolProgress?: (progress: ConversationToolProgress) => void | Promise<void>;
   onDesktopCapability?: (request: ConversationDesktopCapabilityRequest) => void | Promise<void>;
@@ -79,6 +114,11 @@ function sessionMetadataString(session: SessionRecord, key: string): string | nu
 }
 
 function resolveConnection(session: SessionRecord): ProviderConnectionRecord | null {
+  const binding = session.metadata?.agent_binding_snapshot;
+  if (binding && typeof binding === "object" && typeof (binding as { provider_connection_id?: unknown }).provider_connection_id === "string") {
+    const selected = getProviderConnection((binding as { provider_connection_id: string }).provider_connection_id);
+    if (selected?.status === "active" && selected.verification?.status === "verified") return selected;
+  }
   const selectedConnectionId = sessionMetadataString(session, "conversation_provider_connection_id");
   if (selectedConnectionId) {
     const selected = getProviderConnection(selectedConnectionId);
@@ -86,9 +126,9 @@ function resolveConnection(session: SessionRecord): ProviderConnectionRecord | n
       ? selected
       : null;
   }
-  const defaultAgent = getAgentProfile("default-agent");
-  const preferred = defaultAgent?.provider_connection_id
-    ? getProviderConnection(defaultAgent.provider_connection_id)
+  const defaultAgent = getPublishedAgentVersion("default-agent", session.workspace_id || "default");
+  const preferred = defaultAgent?.model_policy.provider_connection_id
+    ? getProviderConnection(defaultAgent.model_policy.provider_connection_id)
     : null;
   if (preferred?.status === "active" && preferred.verification?.status === "verified") {
     return preferred;
@@ -99,6 +139,11 @@ function resolveConnection(session: SessionRecord): ProviderConnectionRecord | n
 }
 
 function resolveModel(session: SessionRecord, connection: ProviderConnectionRecord): string | null {
+  const binding = session.metadata?.agent_binding_snapshot;
+  if (binding && typeof binding === "object" && typeof (binding as { model?: unknown }).model === "string") {
+    const selected = (binding as { model: string }).model;
+    if (connection.models.includes(selected)) return selected;
+  }
   const selectedModel = sessionMetadataString(session, "conversation_model");
   if (selectedModel && connection.models.includes(selectedModel)) return selectedModel;
   return connection.default_model || connection.models[0] || null;
@@ -121,7 +166,14 @@ function messageText(message: SessionMessageRecord): string {
   return "";
 }
 
-const CONVERSATION_TIMEOUT_MS = 180_000;
+export function resolveConversationTimeoutMs(value = process.env.MY_MATE_CONVERSATION_TIMEOUT_MS): number {
+  const configured = Number(value);
+  return Number.isFinite(configured)
+    ? Math.max(30_000, Math.min(30 * 60_000, Math.trunc(configured)))
+    : 30 * 60_000;
+}
+
+const CONVERSATION_TIMEOUT_MS = resolveConversationTimeoutMs();
 const MESSAGE_TOKEN_OVERHEAD = 8;
 function toolDefinitionTokenReserve(enabled = true): number {
   return enabled ? Math.ceil(JSON.stringify(getConversationToolDefinitions()).length / 4) + 64 : 0;
@@ -244,17 +296,25 @@ function attachmentContextPrompt(
     : null;
 }
 
-function baseSystemPrompt(session: SessionRecord, toolsEnabled = true): string {
+function baseSystemPrompt(session: SessionRecord, toolsEnabled = true, allowedToolNames?: Iterable<string>): string {
   const goal = session.current_goal?.trim();
+  const memoryPolicy = sessionAgentMemoryPolicy(session);
   const availableTools = new Set(toolsEnabled
-    ? getConversationToolDefinitions(session.workspace_id || "default").map((tool) => tool.name)
+    ? getConversationToolDefinitions(session.workspace_id || "default", allowedToolNames).map((tool) => tool.name)
     : []);
-  const memoryAvailable = availableTools.has("memory_search") &&
+  const memoryAvailable = memoryPolicy.enabled && availableTools.has("memory_search") &&
     availableTools.has("memory_remember") &&
     availableTools.has("memory_forget");
   const sessionRecallAvailable = availableTools.has("session_recall");
+  const codingWorkspaceAvailable = availableTools.has("workspace_apply_operations") &&
+    availableTools.has("workspace_status");
+  const scheduleManagementAvailable = availableTools.has("schedule_create") && availableTools.has("schedule_list");
+  const delegationAvailable = availableTools.has("delegate_task") && availableTools.has("dag_status");
+  const dagProposalAvailable = availableTools.has("dag_propose") && availableTools.has("dag_status");
   const memorySettings = getMemorySettings(session.workspace_id || "default");
-  const frozenMemory = renderCoreMemorySnapshot(ensureCoreMemorySnapshot(session));
+  const frozenMemory = memoryPolicy.enabled && memoryPolicy.automatic_recall
+    ? renderCoreMemorySnapshot(ensureCoreMemorySnapshot(session))
+    : null;
   return [
     "You are My Mate, the conversational orchestrator for a task workspace.",
     "Talk directly to the user in concise, natural language.",
@@ -263,7 +323,32 @@ function baseSystemPrompt(session: SessionRecord, toolsEnabled = true): string {
     "Those are internal implementation choices that My Mate will make when the task is ready.",
     "Do not claim that planning or execution has happened unless the conversation explicitly contains that evidence.",
     "Never invent file creation results, artifact identifiers, or download URLs. Only the server can create downloadable artifacts.",
+    "After using tools, the final response must deliver the requested answer from the evidence already collected. Never end the turn with only a promise such as 'let me search more', 'I am processing this', 'please wait', or an equivalent progress update.",
     "Use the provided tools when the answer depends on current system facts or files in the authorized Workspace.",
+    scheduleManagementAvailable
+      ? "When the user asks for future or recurring work, call schedule_create before doing the work. For recurring requests, convert the requested local time into a five-field cron_expression. For one-time relative requests such as 'in 5 minutes', first use system_clock_read when needed, then pass an exact ISO timestamp in run_at instead of creating a recurring cron. Never claim a schedule exists until the tool returns a real schedule_id and next_run_at. Use schedule_list before changing or deleting an existing schedule."
+      : null,
+    dagProposalAvailable
+      ? "You are the Main Agent. Before assigning nodes, call agent_list and optionally agent_team_list so every Agent id, Role, Skill, and tool policy comes from durable registry evidence. For multi-Agent work, use dag_propose as the default atomic planning tool and submit the complete workflow in one call. A proposal does not execute work. Report the editable proposal and wait for the server's explicit confirmation or compiled AgentDag evidence before using dag_run."
+      : null,
+    dagProposalAvailable
+      ? "Design every proposed DAG around one shared JSON state. Declare state_schema and initial_state when downstream routing depends on structured values. Use state_input to map shared-state paths into a node, and state_output to write verified node output back with replace, merge, or append reducers. Do not pass hidden state through prose."
+      : null,
+    dagProposalAvailable
+      ? "Use join_policy=all when every dependency is required, any when the first completed dependency is sufficient, and quorum with join_quorum for threshold joins. A condition is evaluated against shared state only after the join is satisfied; a false condition skips the node rather than failing the DAG. Keep the graph acyclic and express bounded rework through retries, a revised proposal, or a delegated child DAG."
+      : null,
+    dagProposalAvailable
+      ? "Use kind=human_gate only for a real user approval or structured user input boundary. Supply human_gate.gate_type, prompt, input_schema, and auto_resume. Never approve, reject, or submit a Human Gate on the user's behalf, and never claim the DAG resumed until the gate tool or DAG status provides that evidence."
+      : null,
+    delegationAvailable
+      ? "Use delegate_task for one focused child assignment. Delegation must return real DAG, task, node, and AgentRun handles. Use dag_status to inspect progress, never invent Sub Agent results, and keep user interaction in this Main Agent conversation."
+      : null,
+    codingWorkspaceAvailable
+      ? "For repository changes, inspect first, then use workspace_apply_operations with stable idempotency keys. All edits stay in a persistent sandbox until the server creates one reviewable Change Set; never use an artifact script as a substitute for repository edits."
+      : null,
+    codingWorkspaceAvailable
+      ? "For long or resumed coding tasks, call workspace_status before continuing, trust its operation ledger, and do not repeat succeeded batches. Run focused builds or tests with workspace_run_command before claiming completion."
+      : null,
     "Never claim that you are waiting for permission or approval unless a structured tool result explicitly reports pending_approval and includes an Action ID.",
     "Do not ask the user to run a local command when an available read-only tool can answer the request.",
     memoryAvailable
@@ -287,10 +372,26 @@ function baseSystemPrompt(session: SessionRecord, toolsEnabled = true): string {
 }
 
 function contextSummaryPrompt(session: SessionRecord): string | null {
-  const summary = sessionMetadataString(session, "conversation_context_summary");
+  const rollingSummary = sessionMetadataString(session, "conversation_context_summary");
+  const loopSnapshot = session.metadata?.conversation_loop_context_snapshot;
+  const loopSummary = loopSnapshot && typeof loopSnapshot === "object" && !Array.isArray(loopSnapshot) &&
+    typeof (loopSnapshot as Record<string, unknown>).summary === "string"
+    ? String((loopSnapshot as Record<string, unknown>).summary).trim()
+    : "";
+  const summary = [rollingSummary, loopSummary && loopSummary !== rollingSummary ? loopSummary : null]
+    .filter(Boolean)
+    .join("\n\n");
   return summary
-    ? `Long-running task context summary from earlier conversation turns:\n${summary}`
+    ? `Long-running task context summary from earlier conversation turns and tool loops:\n${summary}`
     : null;
+}
+
+const DEFERRED_SCHEDULE_INTENT_PATTERN =
+  /(?:\bin\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\b|\d+\s*(?:\u79d2|\u5206\u949f|\u5c0f\u65f6|\u5929)\s*\u540e|\u7a0d\u540e|\u660e\u5929|\u540e\u5929|\u4e0b\u5468|\blater\b|\btomorrow\b|\bnext\s+(?:hour|day|week)\b)/iu;
+
+function isDeferredScheduleIntent(messages: SessionMessageRecord[]): boolean {
+  const latestUser = [...messages].reverse().find((message) => message.role === "user");
+  return Boolean(latestUser && DEFERRED_SCHEDULE_INTENT_PATTERN.test(messageText(latestUser)));
 }
 
 function conversationPrompt(
@@ -300,33 +401,35 @@ function conversationPrompt(
   responseContract?: string,
   attachmentIds?: string[],
   toolsEnabled = true,
-): {
-  system: string;
-  history: Array<{ role: "user" | "assistant"; content: string }>;
-} {
-  const baseSystem = [baseSystemPrompt(session, toolsEnabled), contextSummaryPrompt(session)].filter(Boolean).join("\n\n");
+  allowedToolNames?: Iterable<string>,
+  additionalSegments: Array<{ id: string; content: string | null; priority: number; required?: boolean; max_token_share?: number }> = [],
+): ContextAssemblyResult {
+  const baseSystem = baseSystemPrompt(session, toolsEnabled, allowedToolNames);
+  const worldState = buildConversationWorldState(session).text;
   const normalizedResponseContract = responseContract?.trim() || null;
   const attachments = conversationAttachments(session, attachmentIds);
-  const fixedSystem = [baseSystem, normalizedResponseContract].filter(Boolean).join("\n\n");
-  const available = Math.max(
-    0,
-    maxInputTokens - estimateTokens(fixedSystem) - toolDefinitionTokenReserve(toolsEnabled) - 64,
+  const attachmentContext = attachmentContextPrompt(
+    attachments,
+    Math.min(Math.max(1_024, attachmentTokenEstimate(attachments)), Math.floor(maxInputTokens * 0.45)),
   );
-  const attachmentReserve = attachments.length
-    ? Math.min(attachmentTokenEstimate(attachments), Math.floor(available * 0.65))
-    : 0;
-  const history = conversationHistory(session, messages, Math.max(0, available - attachmentReserve));
-  const historyTokens = history.reduce(
-    (total, message) => total + estimateTokens(message.content) + MESSAGE_TOKEN_OVERHEAD,
-    0,
-  );
-  const attachmentContext = attachmentContextPrompt(attachments, Math.max(0, available - historyTokens));
-  return {
-    system: [baseSystem, attachmentContext, normalizedResponseContract]
-      .filter(Boolean)
-      .join("\n\n"),
-    history,
-  };
+  return getContextEngine().assemble({
+    session,
+    messages,
+    segments: [
+      { id: "base_system", content: baseSystem, priority: 100, required: true, max_token_share: 0.28 },
+      { id: "world_state", content: worldState, priority: 98, required: true, max_token_share: 0.12 },
+      { id: "rolling_summary", content: contextSummaryPrompt(session), priority: 97, required: true, max_token_share: 0.2 },
+      ...additionalSegments,
+      { id: "attachments", content: attachmentContext, priority: 55, max_token_share: 0.4 },
+      { id: "response_contract", content: normalizedResponseContract, priority: 99, required: true, max_token_share: 0.12 },
+    ],
+    maxInputTokens,
+    reservedTokens: Math.min(toolDefinitionTokenReserve(toolsEnabled), Math.floor(maxInputTokens * 0.25)) + 64,
+    estimateTokens,
+    selectHistory: (budget) => conversationHistory(session, messages, budget),
+    truncate: takeTextWithinTokenBudget,
+    textOf: messageText,
+  });
 }
 
 function readAnthropicText(body: unknown): {
@@ -582,6 +685,7 @@ async function maybeCompactConversationContext(input: {
   model: string;
   fetchImpl: typeof fetch;
   signal?: AbortSignal;
+  onBeforeContextCompaction?: (event: ConversationContextCompactionEvent) => void | Promise<void>;
 }): Promise<{ contextCompacted: boolean; compactionCount: number }> {
   const currentCount = sessionMetadataNumber(input.session, "conversation_context_compaction_count");
   if (!input.connection.context_compression_enabled) {
@@ -594,7 +698,7 @@ async function maybeCompactConversationContext(input: {
     0,
   );
   const fixedTokens = estimateTokens(baseSystemPrompt(input.session))
-    + estimateTokens(sessionMetadataString(input.session, "conversation_context_summary") || "")
+    + estimateTokens(contextSummaryPrompt(input.session) || "")
     + attachmentTokenEstimate(conversationAttachments(input.session))
     + toolDefinitionTokenReserve();
   const threshold = Math.floor(
@@ -616,20 +720,72 @@ async function maybeCompactConversationContext(input: {
   const compactable = candidates.slice(0, keepStart);
   if (!compactable.length) return { contextCompacted: false, compactionCount: currentCount };
 
+  const throughMessage = compactable[compactable.length - 1]!;
   try {
-    const summary = await requestContextSummary({ ...input, messages: compactable });
-    const throughMessage = compactable[compactable.length - 1]!;
+    const guarded = await getContextEngine().compact({
+      workspaceId: input.session.workspace_id || "default",
+      sessionId: input.session.session_id,
+      execute: async () => {
+        try {
+          await input.onBeforeContextCompaction?.({
+            source_text: compactable.map((message) => `${message.role}: ${messageText(message)}`).join("\n\n"),
+            message_ids: compactable.map((message) => message.message_id),
+            through_message_id: throughMessage.message_id,
+          });
+        } catch {
+          // Memory and observability hooks are fail-open and must not block context compaction.
+        }
+        const configuredCompressionModel = typeof input.connection.metadata?.context_compression_model === "string"
+          ? input.connection.metadata.context_compression_model.trim()
+          : "";
+        const compressionModel = configuredCompressionModel && input.connection.models.includes(configuredCompressionModel)
+          ? configuredCompressionModel
+          : input.model;
+        try {
+          return await requestContextSummary({ ...input, model: compressionModel, messages: compactable });
+        } catch (error) {
+          if (compressionModel === input.model) throw error;
+          return requestContextSummary({ ...input, model: input.model, messages: compactable });
+        }
+      },
+    });
+    if (!guarded.acquired || !guarded.value) {
+      return { contextCompacted: false, compactionCount: currentCount };
+    }
+    const summary = guarded.value;
     const nextCount = currentCount + 1;
+    const estimatedAfter = fixedTokens + keptTokens + estimateTokens(summary);
+    const estimatedBefore = fixedTokens + messageTokens;
+    const savingsRatio = estimatedBefore > 0
+      ? Math.max(0, (estimatedBefore - estimatedAfter) / estimatedBefore)
+      : 0;
     input.session.metadata = {
       ...(input.session.metadata || {}),
       conversation_context_summary: summary,
       conversation_context_summary_through_message_id: throughMessage.message_id,
       conversation_context_compacted_at: new Date().toISOString(),
       conversation_context_compaction_count: nextCount,
+      conversation_context_compaction_metrics: {
+        estimated_tokens_before: estimatedBefore,
+        estimated_tokens_after: estimatedAfter,
+        savings_ratio: Number(savingsRatio.toFixed(6)),
+        low_yield: savingsRatio < 0.1,
+        compression_model: typeof input.connection.metadata?.context_compression_model === "string"
+          ? input.connection.metadata.context_compression_model
+          : input.model,
+      },
     };
     saveSession(input.session);
     return { contextCompacted: true, compactionCount: nextCount };
-  } catch {
+  } catch (error) {
+    input.session.metadata = {
+      ...(input.session.metadata || {}),
+      conversation_context_compaction_last_error: error instanceof Error
+        ? error.message.slice(0, 1_000)
+        : "Context compression failed.",
+      conversation_context_compaction_failed_at: new Date().toISOString(),
+    };
+    saveSession(input.session);
     return { contextCompacted: false, compactionCount: currentCount };
   }
 }
@@ -643,6 +799,9 @@ async function conversationRequestContext(input: {
   attachmentIds?: string[];
   memoryRecall?: boolean;
   toolsEnabled?: boolean;
+  allowedToolNames?: Iterable<string>;
+  skillActivation?: boolean;
+  onBeforeContextCompaction?: (event: ConversationContextCompactionEvent) => void | Promise<void>;
 }): Promise<{
   connection: ProviderConnectionRecord;
   apiKey: string;
@@ -652,6 +811,15 @@ async function conversationRequestContext(input: {
   contextCompacted: boolean;
   compactionCount: number;
   memoryContextId: string | null;
+  activeSkill: {
+    skillId: string;
+    version: string;
+    invocationId: string;
+    activationSource: string;
+    allowedTools: string[];
+  } | null;
+  agentBinding: import("./types.js").AgentBindingSnapshot;
+  contextAssembly: ContextAssemblyResult;
 }> {
   const connection = resolveConnection(input.session);
   if (!connection) {
@@ -665,6 +833,11 @@ async function conversationRequestContext(input: {
   if (!connection.base_url) throw new Error(`Provider Connection ${connection.connection_id} has no HTTP endpoint.`);
   const model = resolveModel(input.session, connection);
   if (!model) throw new Error(`Provider Connection ${connection.connection_id} has no default model.`);
+  let binding = resolveSessionAgentBinding(input.session);
+  if (input.session.metadata?.agent_binding_snapshot !== binding) {
+    input.session.metadata = { ...(input.session.metadata || {}), agent_binding_snapshot: binding };
+    saveSession(input.session);
+  }
   const compaction = await maybeCompactConversationContext({
     session: input.session,
     messages: input.messages,
@@ -673,24 +846,21 @@ async function conversationRequestContext(input: {
     model,
     fetchImpl: input.fetchImpl || providerFetch,
     signal: input.signal,
+    onBeforeContextCompaction: input.onBeforeContextCompaction,
   });
-  const prompt = conversationPrompt(
-    input.session,
-    input.messages,
-    connection.max_input_tokens,
-    input.responseContract,
-    input.attachmentIds,
-    input.toolsEnabled !== false,
-  );
-  const automaticRecall = input.memoryRecall === false
+  const memoryPolicy = sessionAgentMemoryPolicy(input.session);
+  const memoryEnabled = input.memoryRecall !== false && memoryPolicy.enabled;
+  const automaticRecall = !memoryEnabled || !memoryPolicy.automatic_recall
     ? { text: null, entries: [] }
     : await buildAutomaticMemoryRecallContext(input.session, input.messages);
   let memoryContextId: string | null = null;
   let activatedMemory: string | null = automaticRecall.text;
-  if (input.memoryRecall !== false) {
+  if (memoryEnabled) {
     const latestUser = [...input.messages].reverse().find((message) => message.role === "user");
     if (latestUser) {
-      const core = ensureCoreMemorySnapshot(input.session);
+      const core = memoryPolicy.automatic_recall
+        ? ensureCoreMemorySnapshot(input.session)
+        : { entries: [], project_entries: [] };
       const frozen = freezeTurnMemoryContext({
         session: input.session,
         sourceUserMessageId: latestUser.message_id,
@@ -698,22 +868,107 @@ async function conversationRequestContext(input: {
         model,
         coreEntries: [...core.entries, ...core.project_entries].map(contextEntryFromCore),
         automaticEntries: automaticRecall.entries,
-        prompt: prompt.system,
+        prompt: [
+          binding.system_prompt,
+          baseSystemPrompt(input.session, input.toolsEnabled !== false, input.allowedToolNames),
+          buildConversationWorldState(input.session).text,
+          contextSummaryPrompt(input.session),
+        ].filter(Boolean).join("\n\n"),
       });
       memoryContextId = frozen.snapshot.context_id;
       activatedMemory = renderActivatedMemoryContext(frozen.snapshot);
     }
   }
+  const latestUserText = [...input.messages].reverse().find((message) => message.role === "user");
+  const preserveScheduleTools = isDeferredScheduleIntent(input.messages);
+  const recommendation = input.skillActivation !== false && latestUserText
+    ? getSkillHost().recommend(input.session.workspace_id || "default", messageText(latestUserText))
+    : null;
+  const activated = recommendation
+    ? getSkillHost().load({
+        workspaceId: input.session.workspace_id || "default",
+        session: input.session,
+        skillId: recommendation.status.skill_id,
+        actionId: null,
+        activationSource: recommendation.source,
+      })
+    : null;
+  const activeSkillPrompt = activated
+    ? [
+        `Active Skill: ${activated.status.skill_id} v${activated.status.version}. Follow these exact instructions for this turn.`,
+        activated.instructions,
+        `Output contract: ${JSON.stringify(activated.status.output_contract)}`,
+      ].join("\n\n")
+    : null;
+  const prompt = conversationPrompt(
+    input.session,
+    input.messages,
+    connection.max_input_tokens,
+    input.responseContract,
+    input.attachmentIds,
+    input.toolsEnabled !== false,
+    input.allowedToolNames,
+    [
+      { id: "agent_binding", content: binding.system_prompt, priority: 100, required: true, max_token_share: 0.14 },
+      { id: "activated_memory", content: activatedMemory, priority: 90, max_token_share: 0.18 },
+      { id: "active_skill", content: activeSkillPrompt, priority: 86, max_token_share: 0.18 },
+      { id: "skill_catalog", content: renderSkillCatalog(input.session.workspace_id || "default"), priority: 58, max_token_share: 0.12 },
+    ],
+  );
   return {
     connection,
     apiKey,
     model,
-    system: [prompt.system, activatedMemory].filter(Boolean).join("\n\n"),
+    system: prompt.system,
     history: prompt.history,
     contextCompacted: compaction.contextCompacted,
     compactionCount: compaction.compactionCount,
     memoryContextId,
+    activeSkill: activated ? {
+      skillId: activated.status.skill_id,
+      version: activated.status.version,
+      invocationId: activated.invocation.invocation_id,
+      activationSource: activated.invocation.activation_source,
+      allowedTools: [
+        ...activated.status.allowed_tools,
+        ...skillControlToolNames(),
+        ...(preserveScheduleTools
+          ? ["schedule_create", "schedule_list", "schedule_update", "schedule_delete", "system_clock_read"]
+          : []),
+        ...(binding.agent_role === "orchestrator"
+          ? ["agent_list", "agent_team_list", "dag_propose", "dag_status", "dag_run", "dag_cancel", "delegate_task"]
+          : ["dag_status"]),
+      ],
+  } : null,
+    agentBinding: binding,
+    contextAssembly: prompt,
   };
+}
+
+function finalizeContextEngineTurn(
+  session: SessionRecord,
+  assembly: ContextAssemblyResult,
+  outcome: "completed" | "failed",
+): void {
+  const engine = getContextEngine();
+  engine.afterTurn(session, assembly);
+  const lastMaintenance = sessionMetadataString(session, "context_engine_maintained_at");
+  if (!lastMaintenance || Date.now() - Date.parse(lastMaintenance) >= 24 * 60 * 60_000) {
+    try {
+      engine.maintain(session.workspace_id || "default");
+      session.metadata = {
+        ...(session.metadata || {}),
+        context_engine_maintained_at: new Date().toISOString(),
+      };
+    } catch {
+      // Context maintenance is fail-open and must not interrupt a completed turn.
+    }
+  }
+  session.metadata = {
+    ...(session.metadata || {}),
+    context_engine_last_turn_outcome: outcome,
+  };
+  saveSession(session);
 }
 
 function conversationSignal(signal?: AbortSignal): AbortSignal {
@@ -768,6 +1023,240 @@ type ProviderConversationMessage =
   | { role: "user" | "assistant"; content: string }
   | { role: "assistant"; content: string; toolCalls: ConversationToolCall[] }
   | { role: "tool_results"; results: ConversationToolResult[] };
+
+interface LoopContextSnapshot {
+  snapshotId: string;
+  history: ProviderConversationMessage[];
+  estimatedTokensBefore: number;
+  estimatedTokensAfter: number;
+  prunedToolResults: number;
+  summary: string;
+}
+
+function providerMessageText(message: ProviderConversationMessage): string {
+  if (message.role === "tool_results") return JSON.stringify(message.results);
+  if (message.role === "assistant" && "toolCalls" in message) {
+    return `${message.content}\n${JSON.stringify(message.toolCalls)}`;
+  }
+  return message.content;
+}
+
+function providerHistoryTokenEstimate(
+  system: string,
+  history: ProviderConversationMessage[],
+  maxInputTokens: number,
+  toolsEnabled: boolean,
+): number {
+  const toolReserve = toolsEnabled
+    ? Math.min(toolDefinitionTokenReserve(), Math.max(256, Math.floor(maxInputTokens * 0.2)))
+    : 0;
+  return estimateTokens(system) + toolReserve + history.reduce(
+    (total, message) => total + estimateTokens(providerMessageText(message)) + MESSAGE_TOKEN_OVERHEAD,
+    0,
+  );
+}
+
+function compactToolResultContent(content: Record<string, unknown>): Record<string, unknown> {
+  const serialized = JSON.stringify(content);
+  if (estimateTokens(serialized) <= 1_024) return content;
+  const compacted: Record<string, unknown> = {
+    compacted: true,
+    original_size_bytes: Buffer.byteLength(serialized, "utf8"),
+    keys: Object.keys(content).slice(0, 40),
+  };
+  for (const key of ["ok", "code", "message", "path", "url", "title", "status", "transaction_id", "change_set_id", "idempotent_replay"]) {
+    const value = content[key];
+    if (["string", "number", "boolean"].includes(typeof value)) compacted[key] = value;
+  }
+  for (const key of ["entries", "matches", "operations", "changes", "items", "results"]) {
+    const value = content[key];
+    if (Array.isArray(value)) compacted[`${key}_count`] = value.length;
+  }
+  const text = [content.content, content.text, content.stdout, content.stderr]
+    .find((value) => typeof value === "string" && value.trim()) as string | undefined;
+  if (text) {
+    compacted.content_excerpt = text.length <= 2_000
+      ? text
+      : `${text.slice(0, 1_400)}\n...[compacted]...\n${text.slice(-400)}`;
+  }
+  return compacted;
+}
+
+function compactProviderToolResults(history: ProviderConversationMessage[]): {
+  history: ProviderConversationMessage[];
+  prunedToolResults: number;
+} {
+  const seen = new Map<string, string>();
+  let prunedToolResults = 0;
+  return {
+    history: history.map((message) => {
+      if (message.role !== "tool_results") return message;
+      return {
+        role: "tool_results" as const,
+        results: message.results.map((result) => {
+          const signature = `${result.tool_name}:${JSON.stringify(result.content)}`;
+          const duplicateOf = seen.get(signature);
+          seen.set(signature, duplicateOf || result.action_id);
+          if (duplicateOf) {
+            prunedToolResults += 1;
+            return {
+              ...result,
+              content: {
+                compacted: true,
+                duplicate_of_action_id: duplicateOf,
+                ok: !result.is_error,
+                code: result.content.code,
+                message: result.content.message,
+              },
+            };
+          }
+          const content = compactToolResultContent(result.content);
+          if (content !== result.content) prunedToolResults += 1;
+          return { ...result, content };
+        }),
+      };
+    }),
+    prunedToolResults,
+  };
+}
+
+function contextSnapshotSummary(
+  session: SessionRecord,
+  messages: ProviderConversationMessage[],
+): string {
+  const lines = [
+    "LONG_TASK_CONTEXT_SNAPSHOT: Earlier context was compacted. Continue from the remaining recent history.",
+    session.current_goal ? `Goal: ${session.current_goal}` : null,
+  ].filter((value): value is string => Boolean(value));
+  const actions: string[] = [];
+  const dialogue: string[] = [];
+  for (const message of messages) {
+    if (message.role === "tool_results") {
+      for (const result of message.results) {
+        const code = typeof result.content.code === "string" ? ` code=${result.content.code}` : "";
+        const path = typeof result.content.path === "string" ? ` path=${result.content.path}` : "";
+        const evidence = [result.content.content_excerpt, result.content.content, result.content.text]
+          .find((value) => typeof value === "string" && value.trim()) as string | undefined;
+        actions.push(
+          `- ${result.tool_name} action=${result.action_id} status=${result.is_error ? "failed" : "succeeded"}${code}${path}` +
+          (evidence ? ` evidence=${evidence.replace(/\s+/gu, " ").slice(0, 500)}` : ""),
+        );
+      }
+      continue;
+    }
+    const content = message.content.replace(/\s+/gu, " ").trim();
+    if (content) dialogue.push(`- ${message.role}: ${content.slice(0, 500)}`);
+  }
+  if (actions.length) lines.push("Completed operation ledger:", ...actions.slice(-80));
+  if (dialogue.length) lines.push("Earlier dialogue:", ...dialogue.slice(-20));
+  return takeTextWithinTokenBudget(lines.join("\n"), 8_000);
+}
+
+function persistProviderRecoverySnapshot(
+  session: SessionRecord,
+  history: ProviderConversationMessage[],
+  reason: string,
+): string {
+  const summary = contextSnapshotSummary(session, history);
+  const snapshotId = `ctxsnap_${Date.now()}_recovery`;
+  session.metadata = {
+    ...(session.metadata || {}),
+    conversation_loop_context_snapshot: {
+      schema_version: 1,
+      snapshot_id: snapshotId,
+      created_at: new Date().toISOString(),
+      reason,
+      summary,
+    },
+  };
+  saveSession(session);
+  return snapshotId;
+}
+
+function compactProviderRequestHistory(input: {
+  session: SessionRecord;
+  history: ProviderConversationMessage[];
+  system: string;
+  connection: ProviderConnectionRecord;
+  toolsEnabled: boolean;
+  reportedInputTokens: number | null;
+  compactionCount: number;
+}): LoopContextSnapshot | null {
+  if (!input.connection.context_compression_enabled) return null;
+  const estimatedBefore = providerHistoryTokenEstimate(
+    input.system,
+    input.history,
+    input.connection.max_input_tokens,
+    input.toolsEnabled,
+  );
+  const pressure = Math.max(estimatedBefore, input.reportedInputTokens || 0);
+  const threshold = Math.floor(
+    input.connection.max_input_tokens * input.connection.context_compression_threshold_percent / 100,
+  );
+  const hasToolResults = input.history.some((message) => message.role === "tool_results");
+  if (pressure < threshold || (!hasToolResults && input.history.length < 3)) return null;
+
+  const compactedTools = compactProviderToolResults(input.history);
+  let history = compactedTools.history;
+  let estimatedAfter = providerHistoryTokenEstimate(
+    input.system,
+    history,
+    input.connection.max_input_tokens,
+    input.toolsEnabled,
+  );
+  let summary = contextSnapshotSummary(input.session, compactedTools.history);
+  if (estimatedAfter >= threshold && history.length > 4) {
+    const tailBudget = Math.max(1_024, Math.floor(input.connection.max_input_tokens * 0.25));
+    let keepStart = history.length;
+    let keptTokens = 0;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const cost = estimateTokens(providerMessageText(history[index]!)) + MESSAGE_TOKEN_OVERHEAD;
+      if (history.length - index >= 4 && keptTokens + cost > tailBudget) break;
+      keepStart = index;
+      keptTokens += cost;
+    }
+    if (history[keepStart]?.role === "tool_results" && keepStart > 0) keepStart -= 1;
+    const prefix = history.slice(0, keepStart);
+    if (prefix.length) {
+      summary = contextSnapshotSummary(input.session, prefix);
+      history = [{ role: "user", content: summary }, ...history.slice(keepStart)];
+      estimatedAfter = providerHistoryTokenEstimate(
+        input.system,
+        history,
+        input.connection.max_input_tokens,
+        input.toolsEnabled,
+      );
+    }
+  }
+  if (estimatedAfter >= estimatedBefore && compactedTools.prunedToolResults === 0) return null;
+  const savingsRatio = estimatedBefore > 0 ? (estimatedBefore - estimatedAfter) / estimatedBefore : 0;
+  if (savingsRatio < 0.1 && pressure < input.connection.max_input_tokens * 0.95) return null;
+  const snapshotId = `ctxsnap_${Date.now()}_${input.compactionCount + 1}`;
+  input.session.metadata = {
+    ...(input.session.metadata || {}),
+    conversation_context_compaction_count: input.compactionCount + 1,
+    conversation_loop_context_snapshot: {
+      schema_version: 1,
+      snapshot_id: snapshotId,
+      created_at: new Date().toISOString(),
+      reason: "provider_loop_context_pressure",
+      estimated_tokens_before: estimatedBefore,
+      estimated_tokens_after: estimatedAfter,
+      reported_input_tokens: input.reportedInputTokens,
+      pruned_tool_result_count: compactedTools.prunedToolResults,
+      summary,
+    },
+  };
+  saveSession(input.session);
+  return {
+    snapshotId,
+    history,
+    estimatedTokensBefore: estimatedBefore,
+    estimatedTokensAfter: estimatedAfter,
+    prunedToolResults: compactedTools.prunedToolResults,
+    summary,
+  };
+}
 
 function anthropicMessages(messages: ProviderConversationMessage[]): Array<Record<string, unknown>> {
   return messages.map((message) => {
@@ -828,8 +1317,8 @@ function openAiMessages(messages: ProviderConversationMessage[]): Array<Record<s
   return result;
 }
 
-function openAiToolDefinitions(workspaceId?: string): Array<Record<string, unknown>> {
-  return getConversationToolDefinitions(workspaceId).map((tool) => ({
+function openAiToolDefinitions(workspaceId?: string, allowedToolNames?: Iterable<string>): Array<Record<string, unknown>> {
+  return getConversationToolDefinitions(workspaceId, allowedToolNames).map((tool) => ({
     type: "function",
     function: {
       name: tool.name,
@@ -841,6 +1330,190 @@ function openAiToolDefinitions(workspaceId?: string): Array<Record<string, unkno
 
 function continuationPrompt(): string {
   return "Continue exactly from where the previous response was truncated. Do not repeat completed text, restart the answer, or add a preface. Finish the pending response.";
+}
+
+function semanticFinalizationPrompt(): string {
+  return "Your previous response only narrated planned or in-progress work and did not deliver the requested outcome. Do not use any more tools. Using the evidence already collected, provide a complete, self-contained final answer now. Do not say that you will search, fetch, analyze, process, generate, or continue later. Clearly state any material uncertainty instead.";
+}
+
+function looksLikeUnfinishedProgressResponse(value: string, toolRounds: number): boolean {
+  if (toolRounds <= 0) return false;
+  const text = value.replace(/\s+/gu, " ").trim();
+  if (!text) return false;
+  const tail = text.slice(-320);
+  const progressPattern = /(?:请稍等|稍等一下|正在(?:搜索|查询|搜集|抓取|浏览|读取|分析|整理|生成|处理|研究|检查)|(?:让我|我会|我将|接下来我?|现在我?)(?:再|继续|开始|先|马上)?(?:帮你|为你)?(?:搜索|查询|查找|搜集|抓取|浏览|读取|分析|整理|生成|处理|研究|检查)|(?:let me|i(?:'ll| will)|next i(?:'ll| will)|i am|i'm)\s+(?:now\s+|continue\s+to\s+|keep\s+)?(?:search|fetch|browse|read|analy[sz]e|collect|gather|process|generate|research|check)|please\s+(?:wait|hold on))/giu;
+  const tailMatches = tail.match(progressPattern) || [];
+  if (!tailMatches.length) return false;
+  const allMatches = text.match(progressPattern) || [];
+  const substantiveStructure = /(?:^|\n)(?:#{1,6}\s|\d+[.)]\s|[-*]\s|\|[^\n]+\|)/mu.test(value);
+  if ((text.length >= 700 || substantiveStructure) && allMatches.length < 2) return false;
+  return text.length < 700 || allMatches.length >= 2;
+}
+
+function completionContractForReply(input: {
+  text: string;
+  finishReason: ConversationFinishReason;
+  continuationLimitReached: boolean;
+  toolRoundLimitReached: boolean;
+  toolResults: ConversationToolResult[];
+}): ConversationProviderEvidence["completion_contract"] {
+  const successfulActionIds = input.toolResults
+    .filter((result) => !result.is_error)
+    .map((result) => result.action_id);
+  const failed = input.toolResults.filter((result) => result.is_error);
+  const failedActionIds = failed.map((result) => result.action_id);
+  const blockingCodes = new Set([
+    "workspace_not_bound",
+    "workspace_write_not_authorized",
+    "desktop_workspace_authorization_unavailable",
+    "desktop_approval_unavailable",
+    "desktop_approval_unattested",
+    "desktop_capability_timeout",
+    "workspace_review_pending",
+  ]);
+  const blockingFailure = failed.find((result) => blockingCodes.has(String(result.content.code || "")));
+  if (blockingFailure) {
+    return {
+      status: "blocked",
+      reason: String(blockingFailure.content.message || "The task is waiting for a required authorization."),
+      successful_action_ids: successfulActionIds,
+      failed_action_ids: failedActionIds,
+    };
+  }
+  if (failed.length) {
+    return {
+      status: "incomplete",
+      reason: `The Provider returned ${failed.length} failed tool action(s); the task is not complete until they are resolved.`,
+      successful_action_ids: successfulActionIds,
+      failed_action_ids: failedActionIds,
+    };
+  }
+  if (input.continuationLimitReached || input.toolRoundLimitReached || input.finishReason === "length") {
+    return {
+      status: "incomplete",
+      reason: input.toolRoundLimitReached
+        ? "The bounded tool budget ended before the task completion contract was satisfied."
+        : "The bounded response continuation budget ended before the task completion contract was satisfied.",
+      successful_action_ids: successfulActionIds,
+      failed_action_ids: failedActionIds,
+    };
+  }
+  if (looksLikeUnfinishedProgressResponse(input.text, input.toolResults.length ? 1 : 0)) {
+    return {
+      status: "incomplete",
+      reason: "The response still describes pending work instead of a delivered outcome.",
+      successful_action_ids: successfulActionIds,
+      failed_action_ids: failedActionIds,
+    };
+  }
+  return {
+    status: "satisfied",
+    reason: "The Provider returned a terminal response and no unresolved execution boundary remains.",
+    successful_action_ids: successfulActionIds,
+    failed_action_ids: failedActionIds,
+  };
+}
+
+function toolBudgetWarningPrompt(remainingRounds: number): string {
+  return `Tool budget: ${remainingRounds} round remains. Use it only if essential; otherwise answer now from the evidence already collected.`;
+}
+
+function toolBudgetFinalizationPrompt(): string {
+  return "The tool budget is exhausted. Do not request or claim to use more tools. Provide the best complete final answer now from the evidence already collected, clearly noting any material uncertainty.";
+}
+
+function webResearchFinalizationPrompt(): string {
+  return "Web research is sufficiently bounded for this turn. Do not request more web_search or web_fetch calls. Use the evidence already collected, continue only with necessary non-web tools, and complete the requested outcome.";
+}
+
+function toolsAllowedForRound(
+  workspaceId: string,
+  current: Set<string> | null,
+  webState: ConversationWebTurnState,
+): Set<string> | null {
+  if (!webState.budget_exhausted) return current;
+  const allowed = current
+    ? new Set(current)
+    : new Set(getConversationToolDefinitions(workspaceId).map((tool) => tool.name));
+  allowed.delete("web_search");
+  allowed.delete("web_fetch");
+  allowed.delete("browser_navigate");
+  allowed.delete("browser_snapshot");
+  allowed.delete("browser_back");
+  allowed.delete("browser_click");
+  allowed.delete("browser_type");
+  allowed.delete("browser_close");
+  return allowed;
+}
+
+function appendUniqueActionIds(target: string[], results: ConversationToolResult[]): void {
+  const seen = new Set(target);
+  for (const actionId of resultActionIds(results)) {
+    if (!actionId || seen.has(actionId)) continue;
+    seen.add(actionId);
+    target.push(actionId);
+  }
+}
+
+function resultActionIds(results: ConversationToolResult[]): string[] {
+  const ids = results.map((result) => result.action_id);
+  const relatedIds = new Set(ids.filter(Boolean));
+  for (const result of results) {
+    const related = Array.isArray(result.content.related_action_ids) ? result.content.related_action_ids : [];
+    for (const actionId of related) {
+      if (typeof actionId !== "string" || !actionId || relatedIds.has(actionId)) continue;
+      ids.push(actionId);
+      relatedIds.add(actionId);
+    }
+  }
+  return ids;
+}
+
+function allowedToolsAfterSkillLoad(
+  current: Set<string> | null,
+  results: ConversationToolResult[],
+  ceiling?: Iterable<string>,
+): Set<string> | null {
+  const loaded = results.find((result) => result.tool_name === "skill_load" && !result.is_error && result.content?.activated === true);
+  if (!loaded) return current;
+  const declared = Array.isArray(loaded.content?.allowed_tools)
+    ? loaded.content.allowed_tools.filter((item): item is string => typeof item === "string")
+    : [];
+  const loadedTools = new Set([...skillControlToolNames(), ...declared]);
+  if (!ceiling) return loadedTools;
+  const allowed = new Set(ceiling);
+  return new Set([...loadedTools].filter((toolName) => allowed.has(toolName)));
+}
+
+function initialAllowedTools(ceiling: Iterable<string> | undefined, skillTools: string[] | undefined): Set<string> | null {
+  const ceilingSet = ceiling ? new Set(ceiling) : null;
+  if (!skillTools) return ceilingSet;
+  const activeSkillTools = new Set([...skillControlToolNames(), ...skillTools]);
+  if (!ceilingSet) return activeSkillTools;
+  return new Set([...activeSkillTools].filter((toolName) => ceilingSet.has(toolName)));
+}
+
+const MEMORY_TOOL_NAMES = new Set(["memory_search", "memory_remember", "memory_forget"]);
+
+function enforceAgentMemoryToolPolicy(session: SessionRecord, tools: Set<string> | null): Set<string> | null {
+  if (sessionAgentMemoryPolicy(session).enabled) return tools;
+  const available = tools || new Set(
+    getConversationToolDefinitions(session.workspace_id || "default").map((tool) => tool.name),
+  );
+  return new Set([...available].filter((toolName) => !MEMORY_TOOL_NAMES.has(toolName)));
+}
+
+function recordLoadedSkills(
+  active: ConversationProviderEvidence["active_skills"],
+  results: ConversationToolResult[],
+): void {
+  for (const result of results) {
+    if (result.tool_name !== "skill_load" || result.is_error || result.content?.activated !== true) continue;
+    const skillId = String(result.content.skill_id || "");
+    const invocationId = String(result.content.invocation_id || "");
+    if (!skillId || !invocationId || active.some((item) => item.invocation_id === invocationId)) continue;
+    active.push({ skill_id: skillId, version: String(result.content.version || ""), invocation_id: invocationId, activation_source: "model" });
+  }
 }
 
 function rejectUnsupportedApprovalClaim(text: string): void {
@@ -857,27 +1530,44 @@ function sumUsage(current: number | null, next: number | null): number | null {
   return (current || 0) + (next || 0);
 }
 
-const MAX_CONVERSATION_TOOL_ROUNDS = 8;
+const MAX_CONVERSATION_TOOL_CALLS_PER_ROUND = 16;
 
 async function runConversationToolCalls(input: {
   session: SessionRecord;
   calls: ConversationToolCall[];
+  allowedToolNames?: Iterable<string>;
   onProgress?: (progress: ConversationToolProgress) => void | Promise<void>;
   onDesktopCapability?: (request: ConversationDesktopCapabilityRequest) => void | Promise<void>;
+  webTurnState: ConversationWebTurnState;
 }): Promise<ConversationToolResult[]> {
-  if (input.calls.length > 8) {
-    throw Object.assign(new Error("Conversation Provider requested too many tools in one round."), {
-      code: "conversation_tool_call_limit",
-    });
-  }
   const results: ConversationToolResult[] = [];
-  for (const call of input.calls) {
+  const allowed = input.allowedToolNames ? new Set(input.allowedToolNames) : null;
+  const executableCalls = input.calls.slice(0, MAX_CONVERSATION_TOOL_CALLS_PER_ROUND);
+  for (const call of executableCalls) {
+    if (allowed && !allowed.has(call.name)) {
+      results.push({ tool_call_id: call.id, tool_name: call.name, action_id: "", is_error: true, content: { ok: false, code: "tool_not_allowed", message: "This tool is not allowed by the active Skill." } });
+      continue;
+    }
     results.push(await executeConversationTool({
       session: input.session,
       call,
       onProgress: input.onProgress,
       onDesktopCapability: input.onDesktopCapability,
+      webTurnState: input.webTurnState,
     }));
+  }
+  for (const call of input.calls.slice(MAX_CONVERSATION_TOOL_CALLS_PER_ROUND)) {
+    results.push({
+      tool_call_id: call.id,
+      tool_name: call.name,
+      action_id: "",
+      is_error: true,
+      content: {
+        ok: false,
+        code: "tool_call_batch_limit",
+        message: `This round executed the first ${MAX_CONVERSATION_TOOL_CALLS_PER_ROUND} tool calls. Retry this unfinished call in the next round.`,
+      },
+    });
   }
   return results;
 }
@@ -893,6 +1583,7 @@ async function streamProviderRound(input: {
   onDelta: (text: string) => void | Promise<void>;
   workspaceId: string;
   toolsEnabled: boolean;
+  allowedToolNames?: Iterable<string>;
 }): Promise<ProviderRoundResult> {
   let responseModel: string | null = null;
   let inputTokens: number | null = null;
@@ -921,7 +1612,7 @@ async function streamProviderRound(input: {
         stream: true,
         system: input.system,
         messages: anthropicMessages(input.history),
-        tools: input.toolsEnabled ? getConversationToolDefinitions(input.workspaceId) : undefined,
+        tools: input.toolsEnabled ? getConversationToolDefinitions(input.workspaceId, input.allowedToolNames) : undefined,
       }),
       signal: conversationSignal(input.signal),
     });
@@ -999,7 +1690,7 @@ async function streamProviderRound(input: {
           { role: "system", content: input.system },
           ...input.history,
         ] as ProviderConversationMessage[]),
-        tools: input.toolsEnabled ? openAiToolDefinitions(input.workspaceId) : undefined,
+        tools: input.toolsEnabled ? openAiToolDefinitions(input.workspaceId, input.allowedToolNames) : undefined,
       }),
       signal: conversationSignal(input.signal),
     });
@@ -1065,6 +1756,7 @@ async function generateProviderRound(input: {
   signal?: AbortSignal;
   workspaceId: string;
   toolsEnabled: boolean;
+  allowedToolNames?: Iterable<string>;
 }): Promise<ProviderRoundResult> {
   let response: Response;
   let parsed: ProviderRoundResult;
@@ -1081,7 +1773,7 @@ async function generateProviderRound(input: {
         max_tokens: input.connection.max_output_tokens,
         system: input.system,
         messages: anthropicMessages(input.history),
-        tools: input.toolsEnabled ? getConversationToolDefinitions(input.workspaceId) : undefined,
+        tools: input.toolsEnabled ? getConversationToolDefinitions(input.workspaceId, input.allowedToolNames) : undefined,
       }),
       signal: conversationSignal(input.signal),
     });
@@ -1102,7 +1794,7 @@ async function generateProviderRound(input: {
           { role: "system", content: input.system },
           ...input.history,
         ] as ProviderConversationMessage[]),
-        tools: input.toolsEnabled ? openAiToolDefinitions(input.workspaceId) : undefined,
+        tools: input.toolsEnabled ? openAiToolDefinitions(input.workspaceId, input.allowedToolNames) : undefined,
       }),
       signal: conversationSignal(input.signal),
     });
@@ -1130,50 +1822,138 @@ export async function streamProviderConversationReply(
     contextCompacted,
     compactionCount,
     memoryContextId,
+    activeSkill,
+    agentBinding,
+    contextAssembly,
   } = await conversationRequestContext(input);
   const fetchImpl = input.fetchImpl || providerFetch;
   let responseModel: string | null = null;
   let inputTokens: number | null = null;
+  let reportedInputTokens = 0;
+  let estimatedInputTokens = 0;
   let outputTokens: number | null = null;
   let text = "";
   let finishReason: ConversationFinishReason = "unknown";
   let continuationRounds = 0;
+  let semanticRepairRounds = 0;
   let continuationLimitReached = false;
   let toolRounds = 0;
   let toolRoundLimitReached = false;
+  let toolFinalizationRequested = false;
+  let semanticFinalizationRequested = false;
   let desktopActionAttempts = 0;
+  let requestHistory: ProviderConversationMessage[] = [...history];
+  let lastReportedInputTokens: number | null = null;
+  let effectiveCompactionCount = compactionCount;
+  let inLoopCompactionCount = 0;
+  let contextSnapshotId: string | null = null;
+  let contextPressurePeakTokens = 0;
+  let prunedToolResultCount = 0;
+  let repeatedToolCallLimitReached = false;
+  const toolCallCounts = new Map<string, number>();
   const actionIds: string[] = [];
-  const requestHistory: ProviderConversationMessage[] = [...history];
+  const toolResults: ConversationToolResult[] = [];
+  const webTurnState = createConversationWebTurnState();
+  let allowedToolNames = enforceAgentMemoryToolPolicy(
+    input.session,
+    initialAllowedTools(input.allowedToolNames, activeSkill?.allowedTools),
+  );
+  const activeSkills: ConversationProviderEvidence["active_skills"] = activeSkill ? [{
+    skill_id: activeSkill.skillId, version: activeSkill.version, invocation_id: activeSkill.invocationId, activation_source: activeSkill.activationSource,
+  }] : [];
+  const agentRun = createAgentRun({ workspaceId: input.session.workspace_id || "default", kind: "conversation", bindingSnapshot: agentBinding, sessionId: input.session.session_id, parentAgentRunId: sessionMetadataString(input.session, "parent_agent_run_id") });
 
-  while (true) {
+  try {
+    while (true) {
+    const toolsEnabled = input.toolsEnabled !== false && !toolFinalizationRequested && !semanticFinalizationRequested;
+    const remainingToolRounds = connection.max_tool_rounds - toolRounds;
+    const systemAdditions = [
+      ...(toolFinalizationRequested ? [toolBudgetFinalizationPrompt()] : []),
+      ...(semanticFinalizationRequested ? [semanticFinalizationPrompt()] : []),
+      ...(!toolFinalizationRequested && !semanticFinalizationRequested && toolsEnabled && remainingToolRounds === 1
+        ? [toolBudgetWarningPrompt(remainingToolRounds)]
+        : []),
+      ...(webTurnState.budget_exhausted ? [webResearchFinalizationPrompt()] : []),
+    ];
+    const roundSystem = systemAdditions.length ? `${system}\n\n${systemAdditions.join("\n\n")}` : system;
+    const estimatedPressure = providerHistoryTokenEstimate(
+      roundSystem,
+      requestHistory,
+      connection.max_input_tokens,
+      toolsEnabled,
+    );
+    estimatedInputTokens += estimatedPressure;
+    contextPressurePeakTokens = Math.max(contextPressurePeakTokens, estimatedPressure, lastReportedInputTokens || 0);
+    const loopSnapshot = compactProviderRequestHistory({
+      session: input.session,
+      history: requestHistory,
+      system: roundSystem,
+      connection,
+      toolsEnabled,
+      reportedInputTokens: lastReportedInputTokens,
+      compactionCount: effectiveCompactionCount,
+    });
+    if (loopSnapshot) {
+      requestHistory = loopSnapshot.history;
+      effectiveCompactionCount += 1;
+      inLoopCompactionCount += 1;
+      contextSnapshotId = loopSnapshot.snapshotId;
+      prunedToolResultCount += loopSnapshot.prunedToolResults;
+      lastReportedInputTokens = null;
+      const progressId = `context_compaction_${effectiveCompactionCount}`;
+      await input.onToolProgress?.({
+        action_id: progressId,
+        tool_call_id: progressId,
+        tool_name: "context_compaction",
+        risk_level: "T0",
+        status: "succeeded",
+        summary: `Compacted long-task context (${loopSnapshot.estimatedTokensBefore} -> ${loopSnapshot.estimatedTokensAfter} estimated tokens)`,
+      });
+    }
+    const roundAllowedToolNames = toolsAllowedForRound(
+      input.session.workspace_id || "default",
+      allowedToolNames,
+      webTurnState,
+    );
     const round = await streamProviderRound({
       connection,
       apiKey,
       model,
-      system,
+      system: roundSystem,
       history: requestHistory,
       fetchImpl,
       signal: input.signal,
       workspaceId: input.session.workspace_id || "default",
-      toolsEnabled: input.toolsEnabled !== false,
+      toolsEnabled,
+      allowedToolNames: roundAllowedToolNames || undefined,
       onDelta: async (delta) => {
         text += delta;
         await input.onDelta(delta);
       },
     });
     responseModel = round.responseModel || responseModel;
+    if (typeof round.inputTokens === "number" && round.inputTokens > 0) {
+      reportedInputTokens += round.inputTokens;
+      estimatedInputTokens = Math.max(0, estimatedInputTokens - estimatedPressure);
+    }
     inputTokens = sumUsage(inputTokens, round.inputTokens);
     outputTokens = sumUsage(outputTokens, round.outputTokens);
+    lastReportedInputTokens = round.inputTokens;
     finishReason = round.finishReason;
     if (round.toolCalls.length) {
       if (input.toolsEnabled === false) throw new Error("Conversation Provider returned a tool call while tools were disabled.");
-      if (toolRounds >= MAX_CONVERSATION_TOOL_ROUNDS) {
-        toolRoundLimitReached = true;
+      if (toolFinalizationRequested) {
         throw Object.assign(new Error("Conversation Agent reached the tool round limit."), {
           code: "conversation_tool_round_limit",
         });
       }
       toolRounds += 1;
+      for (const call of round.toolCalls) {
+        const signature = `${call.name}:${JSON.stringify(call.arguments)}`;
+        const count = (toolCallCounts.get(signature) || 0) + 1;
+        toolCallCounts.set(signature, count);
+        if (count >= 3) repeatedToolCallLimitReached = true;
+      }
       const desktopCalls = round.toolCalls.filter((call) => call.name === "desktop_application_open").length;
       if (desktopActionAttempts + desktopCalls > 1) {
         throw Object.assign(
@@ -1186,11 +1966,36 @@ export async function streamProviderConversationReply(
       const results = await runConversationToolCalls({
         session: input.session,
         calls: round.toolCalls,
+        allowedToolNames: roundAllowedToolNames || undefined,
         onProgress: input.onToolProgress,
         onDesktopCapability: input.onDesktopCapability,
+        webTurnState,
       });
-      actionIds.push(...results.map((result) => result.action_id));
+      toolResults.push(...results);
+      appendUniqueActionIds(actionIds, results);
+      allowedToolNames = enforceAgentMemoryToolPolicy(
+        input.session,
+        allowedToolsAfterSkillLoad(allowedToolNames, results, input.allowedToolNames),
+      );
+      recordLoadedSkills(activeSkills, results);
       requestHistory.push({ role: "tool_results", results });
+      if (toolRounds >= connection.max_tool_rounds) {
+        toolRoundLimitReached = true;
+        toolFinalizationRequested = true;
+      }
+      if (repeatedToolCallLimitReached) toolFinalizationRequested = true;
+      continue;
+    }
+    if (finishReason !== "length" && looksLikeUnfinishedProgressResponse(round.text, toolRounds)) {
+      if (continuationRounds >= connection.max_continuation_rounds) {
+        continuationLimitReached = true;
+        break;
+      }
+      continuationRounds += 1;
+      semanticRepairRounds += 1;
+      semanticFinalizationRequested = true;
+      if (round.text) requestHistory.push({ role: "assistant", content: round.text });
+      requestHistory.push({ role: "user", content: semanticFinalizationPrompt() });
       continue;
     }
     if (finishReason !== "length") break;
@@ -1206,6 +2011,18 @@ export async function streamProviderConversationReply(
   const normalizedText = text.trim();
   if (!normalizedText) throw new Error("Conversation Provider returned an empty response.");
   rejectUnsupportedApprovalClaim(normalizedText);
+  getSkillHost().completeInvocations(input.session, actionIds, activeSkills.map((item) => item.invocation_id));
+  agentRun.status = "completed";
+  agentRun.finished_at = new Date().toISOString();
+  saveAgentRun(agentRun);
+  finalizeContextEngineTurn(input.session, contextAssembly, "completed");
+  const completionContract = completionContractForReply({
+    text: normalizedText,
+    finishReason,
+    continuationLimitReached,
+    toolRoundLimitReached,
+    toolResults,
+  });
   return {
     text: normalizedText,
     evidence: {
@@ -1217,20 +2034,107 @@ export async function streamProviderConversationReply(
       requested_model: model,
       response_model: responseModel,
       usage: {
-        input_tokens: inputTokens,
+        input_tokens: reportedInputTokens + estimatedInputTokens || inputTokens,
         output_tokens: outputTokens,
+        input_tokens_reported: reportedInputTokens,
+        input_tokens_estimated: estimatedInputTokens,
+        input_token_accounting: estimatedInputTokens > 0
+          ? reportedInputTokens > 0 ? "mixed" : "estimated"
+          : reportedInputTokens > 0 ? "reported" : "unavailable",
       },
       finish_reason: finishReason,
       continuation_rounds: continuationRounds,
+      semantic_repair_rounds: semanticRepairRounds,
       continuation_limit_reached: continuationLimitReached,
-      context_compacted: contextCompacted,
-      compaction_count: compactionCount,
+      context_compacted: contextCompacted || inLoopCompactionCount > 0,
+      compaction_count: effectiveCompactionCount,
+      in_loop_compaction_count: inLoopCompactionCount,
+      context_snapshot_id: contextSnapshotId,
+      context_pressure_peak_tokens: contextPressurePeakTokens,
+      pruned_tool_result_count: prunedToolResultCount,
+      repeated_tool_call_limit_reached: repeatedToolCallLimitReached,
       tool_rounds: toolRounds,
       tool_round_limit_reached: toolRoundLimitReached,
       action_ids: actionIds,
       memory_context_id: memoryContextId,
+      active_skills: activeSkills,
+      agent_id: agentBinding.agent_id,
+      agent_version: agentBinding.agent_version,
+      agent_binding_snapshot_digest: agentBinding.snapshot_digest,
+      completion_contract: completionContract,
     },
-  };
+    };
+  } catch (error) {
+    if (toolResults.length) {
+      contextSnapshotId = persistProviderRecoverySnapshot(
+        input.session,
+        requestHistory,
+        "provider_interrupted_with_tool_evidence",
+      );
+    }
+    const successfulActionIds = toolResults
+      .filter((result) => !result.is_error && result.action_id)
+      .map((result) => result.action_id);
+    const failedActionIds = toolResults
+      .filter((result) => result.is_error && result.action_id)
+      .map((result) => result.action_id);
+    if (error && typeof error === "object") {
+      (error as { partial_evidence?: ConversationProviderEvidence }).partial_evidence = {
+        response_source: "provider",
+        provider_connection_id: connection.connection_id,
+        provider: connection.provider,
+        protocol: connection.protocol,
+        model,
+        requested_model: model,
+        response_model: responseModel,
+        usage: {
+          input_tokens: reportedInputTokens + estimatedInputTokens || inputTokens,
+          output_tokens: outputTokens,
+          input_tokens_reported: reportedInputTokens,
+          input_tokens_estimated: estimatedInputTokens,
+          input_token_accounting: estimatedInputTokens > 0
+            ? reportedInputTokens > 0 ? "mixed" : "estimated"
+            : reportedInputTokens > 0 ? "reported" : "unavailable",
+        },
+        finish_reason: finishReason,
+        continuation_rounds: continuationRounds,
+        semantic_repair_rounds: semanticRepairRounds,
+        continuation_limit_reached: false,
+        context_compacted: contextCompacted || inLoopCompactionCount > 0,
+        compaction_count: effectiveCompactionCount,
+        in_loop_compaction_count: inLoopCompactionCount,
+        context_snapshot_id: contextSnapshotId,
+        context_pressure_peak_tokens: contextPressurePeakTokens,
+        pruned_tool_result_count: prunedToolResultCount,
+        repeated_tool_call_limit_reached: repeatedToolCallLimitReached,
+        tool_rounds: toolRounds,
+        tool_round_limit_reached: false,
+        action_ids: [...actionIds],
+        memory_context_id: memoryContextId,
+        active_skills: activeSkills,
+        agent_id: agentBinding.agent_id,
+        agent_version: agentBinding.agent_version,
+        agent_binding_snapshot_digest: agentBinding.snapshot_digest,
+        completion_contract: {
+          status: "incomplete",
+          reason: `Provider interrupted after ${toolRounds} completed tool rounds; resume from persisted action evidence.`,
+          successful_action_ids: successfulActionIds,
+          failed_action_ids: failedActionIds,
+        },
+      };
+    }
+    const errorCode = error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code || "conversation_provider_failed").slice(0, 80)
+      : "conversation_provider_failed";
+    getSkillHost().failInvocations(input.session, errorCode);
+    agentRun.status = "failed";
+    agentRun.error_code = errorCode;
+    agentRun.error_message = error instanceof Error ? error.message.slice(0, 2_000) : "Conversation Provider failed.";
+    agentRun.finished_at = new Date().toISOString();
+    saveAgentRun(agentRun);
+    finalizeContextEngineTurn(input.session, contextAssembly, "failed");
+    throw error;
+  }
 }
 
 export async function generateProviderConversationReply(input: {
@@ -1241,6 +2145,8 @@ export async function generateProviderConversationReply(input: {
   attachmentIds?: string[];
   memoryRecall?: boolean;
   toolsEnabled?: boolean;
+  allowedToolNames?: Iterable<string>;
+  onBeforeContextCompaction?: (event: ConversationContextCompactionEvent) => void | Promise<void>;
   signal?: AbortSignal;
   onToolProgress?: (progress: ConversationToolProgress) => void | Promise<void>;
   onDesktopCapability?: (request: ConversationDesktopCapabilityRequest) => void | Promise<void>;
@@ -1254,6 +2160,9 @@ export async function generateProviderConversationReply(input: {
     contextCompacted,
     compactionCount,
     memoryContextId,
+    activeSkill,
+    agentBinding,
+    contextAssembly,
   } = await conversationRequestContext(input);
   const fetchImpl = input.fetchImpl || providerFetch;
   let responseModel: string | null = null;
@@ -1261,40 +2170,118 @@ export async function generateProviderConversationReply(input: {
   let outputTokens: number | null = null;
   let finishReason: ConversationFinishReason = "unknown";
   let continuationRounds = 0;
+  let semanticRepairRounds = 0;
   let continuationLimitReached = false;
   let toolRounds = 0;
   let toolRoundLimitReached = false;
+  let toolFinalizationRequested = false;
+  let semanticFinalizationRequested = false;
   let desktopActionAttempts = 0;
+  let requestHistory: ProviderConversationMessage[] = [...history];
+  let lastReportedInputTokens: number | null = null;
+  let effectiveCompactionCount = compactionCount;
+  let inLoopCompactionCount = 0;
+  let contextSnapshotId: string | null = null;
+  let contextPressurePeakTokens = 0;
+  let prunedToolResultCount = 0;
+  let repeatedToolCallLimitReached = false;
+  const toolCallCounts = new Map<string, number>();
   const actionIds: string[] = [];
+  const toolResults: ConversationToolResult[] = [];
+  const webTurnState = createConversationWebTurnState();
   let text = "";
-  const requestHistory: ProviderConversationMessage[] = [...history];
+  let allowedToolNames = enforceAgentMemoryToolPolicy(
+    input.session,
+    initialAllowedTools(input.allowedToolNames, activeSkill?.allowedTools),
+  );
+  const activeSkills: ConversationProviderEvidence["active_skills"] = activeSkill ? [{
+    skill_id: activeSkill.skillId, version: activeSkill.version, invocation_id: activeSkill.invocationId, activation_source: activeSkill.activationSource,
+  }] : [];
+  const agentRun = createAgentRun({ workspaceId: input.session.workspace_id || "default", kind: "conversation", bindingSnapshot: agentBinding, sessionId: input.session.session_id, parentAgentRunId: sessionMetadataString(input.session, "parent_agent_run_id") });
 
-  while (true) {
+  try {
+    while (true) {
+    const toolsEnabled = input.toolsEnabled !== false && !toolFinalizationRequested && !semanticFinalizationRequested;
+    const remainingToolRounds = connection.max_tool_rounds - toolRounds;
+    const systemAdditions = [
+      ...(toolFinalizationRequested ? [toolBudgetFinalizationPrompt()] : []),
+      ...(semanticFinalizationRequested ? [semanticFinalizationPrompt()] : []),
+      ...(!toolFinalizationRequested && !semanticFinalizationRequested && toolsEnabled && remainingToolRounds === 1
+        ? [toolBudgetWarningPrompt(remainingToolRounds)]
+        : []),
+      ...(webTurnState.budget_exhausted ? [webResearchFinalizationPrompt()] : []),
+    ];
+    const roundSystem = systemAdditions.length ? `${system}\n\n${systemAdditions.join("\n\n")}` : system;
+    const estimatedPressure = providerHistoryTokenEstimate(
+      roundSystem,
+      requestHistory,
+      connection.max_input_tokens,
+      toolsEnabled,
+    );
+    contextPressurePeakTokens = Math.max(contextPressurePeakTokens, estimatedPressure, lastReportedInputTokens || 0);
+    const loopSnapshot = compactProviderRequestHistory({
+      session: input.session,
+      history: requestHistory,
+      system: roundSystem,
+      connection,
+      toolsEnabled,
+      reportedInputTokens: lastReportedInputTokens,
+      compactionCount: effectiveCompactionCount,
+    });
+    if (loopSnapshot) {
+      requestHistory = loopSnapshot.history;
+      effectiveCompactionCount += 1;
+      inLoopCompactionCount += 1;
+      contextSnapshotId = loopSnapshot.snapshotId;
+      prunedToolResultCount += loopSnapshot.prunedToolResults;
+      lastReportedInputTokens = null;
+      const progressId = `context_compaction_${effectiveCompactionCount}`;
+      await input.onToolProgress?.({
+        action_id: progressId,
+        tool_call_id: progressId,
+        tool_name: "context_compaction",
+        risk_level: "T0",
+        status: "succeeded",
+        summary: `Compacted long-task context (${loopSnapshot.estimatedTokensBefore} -> ${loopSnapshot.estimatedTokensAfter} estimated tokens)`,
+      });
+    }
+    const roundAllowedToolNames = toolsAllowedForRound(
+      input.session.workspace_id || "default",
+      allowedToolNames,
+      webTurnState,
+    );
     const round = await generateProviderRound({
       connection,
       apiKey,
       model,
-      system,
+      system: roundSystem,
       history: requestHistory,
       fetchImpl,
       signal: input.signal,
       workspaceId: input.session.workspace_id || "default",
-      toolsEnabled: input.toolsEnabled !== false,
+      toolsEnabled,
+      allowedToolNames: roundAllowedToolNames || undefined,
     });
     text += round.text;
     responseModel = round.responseModel || responseModel;
     inputTokens = sumUsage(inputTokens, round.inputTokens);
     outputTokens = sumUsage(outputTokens, round.outputTokens);
+    lastReportedInputTokens = round.inputTokens;
     finishReason = round.finishReason;
     if (round.toolCalls.length) {
       if (input.toolsEnabled === false) throw new Error("Conversation Provider returned a tool call while tools were disabled.");
-      if (toolRounds >= MAX_CONVERSATION_TOOL_ROUNDS) {
-        toolRoundLimitReached = true;
+      if (toolFinalizationRequested) {
         throw Object.assign(new Error("Conversation Agent reached the tool round limit."), {
           code: "conversation_tool_round_limit",
         });
       }
       toolRounds += 1;
+      for (const call of round.toolCalls) {
+        const signature = `${call.name}:${JSON.stringify(call.arguments)}`;
+        const count = (toolCallCounts.get(signature) || 0) + 1;
+        toolCallCounts.set(signature, count);
+        if (count >= 3) repeatedToolCallLimitReached = true;
+      }
       const desktopCalls = round.toolCalls.filter((call) => call.name === "desktop_application_open").length;
       if (desktopActionAttempts + desktopCalls > 1) {
         throw Object.assign(
@@ -1307,14 +2294,39 @@ export async function generateProviderConversationReply(input: {
       const results = await runConversationToolCalls({
         session: input.session,
         calls: round.toolCalls,
+        allowedToolNames: roundAllowedToolNames || undefined,
         onProgress: input.onToolProgress,
         onDesktopCapability: input.onDesktopCapability,
+        webTurnState,
       });
-      actionIds.push(...results.map((result) => result.action_id));
+      toolResults.push(...results);
+      appendUniqueActionIds(actionIds, results);
+      allowedToolNames = enforceAgentMemoryToolPolicy(
+        input.session,
+        allowedToolsAfterSkillLoad(allowedToolNames, results, input.allowedToolNames),
+      );
+      recordLoadedSkills(activeSkills, results);
       requestHistory.push({ role: "tool_results", results });
+      if (toolRounds >= connection.max_tool_rounds) {
+        toolRoundLimitReached = true;
+        toolFinalizationRequested = true;
+      }
+      if (repeatedToolCallLimitReached) toolFinalizationRequested = true;
       continue;
     }
     if (!round.text) throw new Error("Conversation Provider returned an empty response.");
+    if (finishReason !== "length" && looksLikeUnfinishedProgressResponse(round.text, toolRounds)) {
+      if (continuationRounds >= connection.max_continuation_rounds) {
+        continuationLimitReached = true;
+        break;
+      }
+      continuationRounds += 1;
+      semanticRepairRounds += 1;
+      semanticFinalizationRequested = true;
+      requestHistory.push({ role: "assistant", content: round.text });
+      requestHistory.push({ role: "user", content: semanticFinalizationPrompt() });
+      continue;
+    }
     if (finishReason !== "length") break;
     if (continuationRounds >= connection.max_continuation_rounds) {
       continuationLimitReached = true;
@@ -1327,6 +2339,18 @@ export async function generateProviderConversationReply(input: {
 
   const normalizedText = text.trim();
   rejectUnsupportedApprovalClaim(normalizedText);
+  getSkillHost().completeInvocations(input.session, actionIds, activeSkills.map((item) => item.invocation_id));
+  agentRun.status = "completed";
+  agentRun.finished_at = new Date().toISOString();
+  saveAgentRun(agentRun);
+  finalizeContextEngineTurn(input.session, contextAssembly, "completed");
+  const completionContract = completionContractForReply({
+    text: normalizedText,
+    finishReason,
+    continuationLimitReached,
+    toolRoundLimitReached,
+    toolResults,
+  });
   return {
     text: normalizedText,
     evidence: {
@@ -1343,13 +2367,44 @@ export async function generateProviderConversationReply(input: {
       },
       finish_reason: finishReason,
       continuation_rounds: continuationRounds,
+      semantic_repair_rounds: semanticRepairRounds,
       continuation_limit_reached: continuationLimitReached,
-      context_compacted: contextCompacted,
-      compaction_count: compactionCount,
+      context_compacted: contextCompacted || inLoopCompactionCount > 0,
+      compaction_count: effectiveCompactionCount,
+      in_loop_compaction_count: inLoopCompactionCount,
+      context_snapshot_id: contextSnapshotId,
+      context_pressure_peak_tokens: contextPressurePeakTokens,
+      pruned_tool_result_count: prunedToolResultCount,
+      repeated_tool_call_limit_reached: repeatedToolCallLimitReached,
       tool_rounds: toolRounds,
       tool_round_limit_reached: toolRoundLimitReached,
       action_ids: actionIds,
       memory_context_id: memoryContextId,
+      active_skills: activeSkills,
+      agent_id: agentBinding.agent_id,
+      agent_version: agentBinding.agent_version,
+      agent_binding_snapshot_digest: agentBinding.snapshot_digest,
+      completion_contract: completionContract,
     },
-  };
+    };
+  } catch (error) {
+    if (toolResults.length) {
+      contextSnapshotId = persistProviderRecoverySnapshot(
+        input.session,
+        requestHistory,
+        "provider_interrupted_with_tool_evidence",
+      );
+    }
+    const errorCode = error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code || "conversation_provider_failed").slice(0, 80)
+      : "conversation_provider_failed";
+    getSkillHost().failInvocations(input.session, errorCode);
+    agentRun.status = "failed";
+    agentRun.error_code = errorCode;
+    agentRun.error_message = error instanceof Error ? error.message.slice(0, 2_000) : "Conversation Provider failed.";
+    agentRun.finished_at = new Date().toISOString();
+    saveAgentRun(agentRun);
+    finalizeContextEngineTurn(input.session, contextAssembly, "failed");
+    throw error;
+  }
 }

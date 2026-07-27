@@ -6,18 +6,29 @@ import { markObservabilityRunDirty } from "./observability-index-dirty.js";
 import type { CreateRunRequest, RunRecord } from "./types.js";
 import { ensureDir, generateRunId, nowIso, writeJsonAtomic } from "./utils.js";
 import { validateRunState } from "./validators.js";
+import {
+  RUN_LIFECYCLE,
+  assertLifecycleTransition,
+  parseLifecycleStatus,
+} from "@my-mate/shared-types/domain-lifecycle";
 
 function runPath(runId: string): string {
   return path.join(RUNS_DIR, `${runId}.json`);
 }
 
-export function saveRun(run: RunRecord): RunRecord {
+export function saveRun(run: RunRecord, options: { recovery?: boolean } = {}): RunRecord {
   const normalized = normalizeRunRecord(run);
   const activeWorkspaceId = getActiveWorkspaceId();
   if (activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId) {
     throw new Error("WORKSPACE_SCOPE_MISMATCH");
   }
-  assertValidRun(run);
+  const storage = getJsonStorageBackend();
+  const target = runPath(normalized.run_id);
+  if (storage.exists(target)) {
+    const previous = normalizeRunRecord(storage.readJson<RunRecord>(target));
+    assertLifecycleTransition(RUN_LIFECYCLE, previous.status, normalized.status, options);
+  }
+  assertValidRun(normalized);
   writeJsonAtomic(runPath(normalized.run_id), normalized);
   markObservabilityRunDirty(normalized.run_id);
   return normalized;
@@ -26,6 +37,7 @@ export function saveRun(run: RunRecord): RunRecord {
 function normalizeRunRecord(record: RunRecord): RunRecord {
   return {
     ...record,
+    status: parseLifecycleStatus(RUN_LIFECYCLE, record.status),
     workspace_id:
       typeof record.workspace_id === "string" && record.workspace_id.trim()
         ? record.workspace_id.trim()

@@ -48,12 +48,10 @@ function compiledNode(input: {
   agentRuntime?: string | null;
   runtimeAgentRef?: string | null;
   harnessProfile?: string | null;
-  openClawAgentId?: string | null;
   nodeConfig?: Record<string, unknown>;
   maxAttempts?: number;
 }): CompiledNodeRecord {
   const runtimeAgentRef = input.runtimeAgentRef ?? "backend-runtime";
-  const openClawAgentId = input.openClawAgentId ?? runtimeAgentRef;
   return {
     node_run_id: input.nodeRunId,
     node_id: input.nodeId,
@@ -61,9 +59,8 @@ function compiledNode(input: {
     type: "agent_task",
     agent_profile: "backend",
     runtime_agent_ref: runtimeAgentRef,
-    agent_runtime: input.agentRuntime ?? "openclaw",
+    agent_runtime: input.agentRuntime ?? "local",
     harness_profile: input.harnessProfile ?? null,
-    openclaw_agent_id: openClawAgentId,
     allowed_skills: [],
     allowed_tools: [],
     approval_kind: null,
@@ -84,12 +81,11 @@ function compiledNode(input: {
     output_contract: {},
     execution_ref: createEmptyExecutionRef(),
     registry_provenance: {
-      agent_profile_requested: "backend",
-      agent_profile_resolved: "backend",
-      agent_profile_status: "active",
-      agent_profile_source: "registry",
+      agent_id_requested: "backend",
+      agent_id_resolved: "backend",
+      agent_status: "active",
+      agent_source: "registry",
       runtime_agent_ref_source: "registry",
-      openclaw_agent_id_source: "registry",
       skill_bindings: [],
       tool_bindings: [],
     },
@@ -179,8 +175,7 @@ class CapturingRuntimeDispatcher implements RuntimeDispatcher {
         adapter_kind: null,
         raw_ref: {
           dispatch_id: `runtime-dispatch-${job.node_run_id}`,
-          openclaw_task_id: null,
-          openclaw_session_id: null,
+          provider_refs: {},
         },
       },
     };
@@ -290,8 +285,10 @@ test("RuntimeEngine applyExecutionReport completes terminal node and persists ar
     ],
     raw_ref: {
       dispatch_id: "disp_runtime_001",
-      openclaw_task_id: "task_runtime_001",
-      openclaw_session_id: "sess_runtime_001",
+      provider_refs: {
+        task_id: "task_runtime_001",
+        session_id: "sess_runtime_001",
+      },
     },
     created_at: timestamp,
   });
@@ -310,11 +307,9 @@ test("RuntimeEngine applyExecutionReport completes terminal node and persists ar
     target_kind: null,
     dispatch_id: "disp_runtime_001",
     provider_refs: {
-      openclaw_task_id: "task_runtime_001",
-      openclaw_session_id: "sess_runtime_001",
+      task_id: "task_runtime_001",
+      session_id: "sess_runtime_001",
     },
-    openclaw_task_id: "task_runtime_001",
-    openclaw_session_id: "sess_runtime_001",
   });
 
   const refreshedNodeRuns = listNodeRuns(run.run_id);
@@ -398,8 +393,10 @@ test("RuntimeEngine applyExecutionReport unlocks downstream nodes after completi
     artifacts: [],
     raw_ref: {
       dispatch_id: "disp_runtime_unlock_a",
-      openclaw_task_id: "task_runtime_unlock_a",
-      openclaw_session_id: "sess_runtime_unlock_a",
+      provider_refs: {
+        task_id: "task_runtime_unlock_a",
+        session_id: "sess_runtime_unlock_a",
+      },
     },
     created_at: timestamp,
   });
@@ -468,8 +465,10 @@ test("RuntimeEngine applyExecutionReport creates approval gate for waiting_human
     artifacts: [],
     raw_ref: {
       dispatch_id: "disp_runtime_wait_a",
-      openclaw_task_id: "task_runtime_wait_a",
-      openclaw_session_id: "sess_runtime_wait_a",
+      provider_refs: {
+        task_id: "task_runtime_wait_a",
+        session_id: "sess_runtime_wait_a",
+      },
     },
     human_gate: {
       gate_id: "gate-runtime-a",
@@ -551,8 +550,10 @@ for (const terminalStatus of ["failed", "cancelled"] as const) {
       },
       raw_ref: {
         dispatch_id: `disp_runtime_${terminalStatus}_a`,
-        openclaw_task_id: `task_runtime_${terminalStatus}_a`,
-        openclaw_session_id: `sess_runtime_${terminalStatus}_a`,
+        provider_refs: {
+          task_id: `task_runtime_${terminalStatus}_a`,
+          session_id: `sess_runtime_${terminalStatus}_a`,
+        },
       },
       created_at: timestamp,
     });
@@ -641,7 +642,6 @@ test("RuntimeEngine queueReadyNodes dispatches RuntimeWorkerJob through dispatch
         agentRuntime: "codex",
         runtimeAgentRef: "codex-runtime",
         harnessProfile: "coding",
-        openClawAgentId: null,
         nodeConfig: {
           worker_image: "my-mate-runtime-worker:0.1.0",
         },
@@ -878,8 +878,6 @@ test("RuntimeEngine ignores duplicate, out-of-order, and post-terminal worker ev
         target_kind: "docker-worker",
         dispatch_id: `dispatch:${jobId}`,
         provider_refs: {},
-        openclaw_task_id: null,
-        openclaw_session_id: null,
       },
       created_at: timestamp,
     },
@@ -1108,8 +1106,6 @@ test("RuntimeEngine routes handoff ports and skips untaken branches", async () =
         target_kind: "docker-worker",
         dispatch_id: `dispatch:${jobId}`,
         provider_refs: {},
-        openclaw_task_id: null,
-        openclaw_session_id: null,
       },
       created_at: timestamp,
     },
@@ -1208,7 +1204,7 @@ test("RuntimeEngine routes terminal failure to recovery and completes with faile
     progress: { percent: 100, message: "Provider failed" },
     artifacts: [],
     error: { code: "provider_failed", message: "Provider failed" },
-    raw_ref: { dispatch_id: "dispatch-failure-source", openclaw_task_id: null, openclaw_session_id: null },
+    raw_ref: { dispatch_id: "dispatch-failure-source", provider_refs: {} },
     created_at: timestamp,
   }, { workerEventId: "event-failure-source", jobId: "job-failure-source" });
 
@@ -1235,7 +1231,7 @@ test("RuntimeEngine routes terminal failure to recovery and completes with faile
     progress: { percent: 100, message: "Recovery completed" },
     artifacts: [],
     error: null,
-    raw_ref: { dispatch_id: "dispatch-failure-recovery", openclaw_task_id: null, openclaw_session_id: null },
+    raw_ref: { dispatch_id: "dispatch-failure-recovery", provider_refs: {} },
     created_at: timestamp,
   }, { workerEventId: "event-failure-recovery", jobId: "job-failure-recovery" });
 
@@ -1293,7 +1289,7 @@ test("RuntimeEngine fails closed when failure conditions do not match", async ()
     progress: { percent: 100, message: "Authentication failed" },
     artifacts: [],
     error: { code: "auth", message: "Authentication failed" },
-    raw_ref: { dispatch_id: "dispatch-mismatch", openclaw_task_id: null, openclaw_session_id: null },
+    raw_ref: { dispatch_id: "dispatch-mismatch", provider_refs: {} },
     created_at: timestamp,
   }, { workerEventId: "event-mismatch", jobId: "job-mismatch" });
 
@@ -1353,7 +1349,7 @@ test("RuntimeEngine leaves the run failed for an explicit unrouted failure hando
     progress: { percent: 100, message: "Authentication failure" },
     artifacts: [],
     error: { code: "auth", message: "Authentication failure" },
-    raw_ref: { dispatch_id: "dispatch-explicit-failure", openclaw_task_id: null, openclaw_session_id: null },
+    raw_ref: { dispatch_id: "dispatch-explicit-failure", provider_refs: {} },
     created_at: timestamp,
   }, { workerEventId: "event-explicit-failure-report", jobId: "job-explicit-failure" });
 
@@ -1413,7 +1409,7 @@ test("RuntimeEngine exhausts retry before evaluating failure recovery", async ()
     progress: { percent: 100, message: "Transient failure" },
     artifacts: [],
     error: { code: "transient", message: "Transient failure" },
-    raw_ref: { dispatch_id: "dispatch-retry-before-recovery", openclaw_task_id: null, openclaw_session_id: null },
+    raw_ref: { dispatch_id: "dispatch-retry-before-recovery", provider_refs: {} },
     created_at: timestamp,
   }, { workerEventId: "event-retry-before-recovery", jobId: "job-retry-before-recovery" });
 
@@ -1429,7 +1425,7 @@ test("RuntimeEngine exhausts retry before evaluating failure recovery", async ()
     progress: { percent: 100, message: "Retry succeeded" },
     artifacts: [],
     error: null,
-    raw_ref: { dispatch_id: "dispatch-retry-success", openclaw_task_id: null, openclaw_session_id: null },
+    raw_ref: { dispatch_id: "dispatch-retry-success", provider_refs: {} },
     created_at: timestamp,
   }, { workerEventId: "event-retry-success", jobId: "job-retry-success" });
   assert.equal(getRun(run.run_id)?.status, "completed");
@@ -1486,8 +1482,7 @@ test("RuntimeEngine retries a failed worker node while retry budget remains", as
       error: { code: "transient", message: "Transient backend failure" },
       raw_ref: {
         dispatch_id: "dispatch-auto-retry",
-        openclaw_task_id: null,
-        openclaw_session_id: null,
+        provider_refs: {},
       },
       created_at: timestamp,
     },
@@ -1519,7 +1514,6 @@ test("runtime recovery releases interrupted leases and redispatches retryable no
         maxAttempts: 2,
         agentRuntime: "codex",
         runtimeAgentRef: "codex-recovery",
-        openClawAgentId: null,
       }),
     ],
     nodeRuns: [

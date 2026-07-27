@@ -33,7 +33,6 @@ export function buildJob(): RuntimeWorkerJob {
       runtime_agent_ref: null,
       agent_runtime: "local",
       harness_profile: null,
-      openclaw_agent_id: null,
       allowed_skills: [],
       allowed_tools: [],
       registry_provenance: {
@@ -42,7 +41,6 @@ export function buildJob(): RuntimeWorkerJob {
         agent_profile_status: "active",
         agent_profile_source: "registry",
         runtime_agent_ref_source: "registry",
-        openclaw_agent_id_source: "registry",
         skill_bindings: [],
         tool_bindings: [],
       },

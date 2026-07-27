@@ -40,20 +40,18 @@ function buildEnvelope(overrides: Partial<DispatchEnvelope> = {}): DispatchEnvel
     node_id: "node_dispatcher",
     node_name: "Dispatcher Node",
     node_type: "agent_task",
-    agent_profile: "dispatcher-agent",
+    agent_id: "dispatcher-agent",
     runtime_agent_ref: "dispatcher-runtime",
-    agent_runtime: "openclaw",
+    agent_runtime: "codex",
     harness_profile: null,
-    openclaw_agent_id: "dispatcher-runtime",
     allowed_skills: [],
     allowed_tools: [],
     registry_provenance: {
-      agent_profile_requested: "dispatcher-agent",
-      agent_profile_resolved: "dispatcher-agent",
-      agent_profile_status: "active",
-      agent_profile_source: "registry",
+      agent_id_requested: "dispatcher-agent",
+      agent_id_resolved: "dispatcher-agent",
+      agent_status: "active",
+      agent_source: "registry",
       runtime_agent_ref_source: "registry",
-      openclaw_agent_id_source: "registry",
       skill_bindings: [],
       tool_bindings: [],
     },
@@ -89,7 +87,7 @@ test("ExecutionAdapterRuntimeDispatcher wraps adapter dispatch in runtime result
   assert.equal(adapter.dispatchEnvelopes.length, 1);
   assert.equal(adapter.dispatchEnvelopes[0]?.node_run_id, "node-run-dispatcher-001");
   assert.equal(result.job, job);
-  assert.equal(result.target_kind, "external-bridge");
+  assert.equal(result.target_kind, "docker-worker");
   assert.equal(result.status, "accepted");
   assert.equal(result.dispatch_id, "disp_stub_node-run-dispatcher-001");
   assert.equal(result.worker_id, null);
@@ -97,8 +95,7 @@ test("ExecutionAdapterRuntimeDispatcher wraps adapter dispatch in runtime result
   assert.equal(result.compatibility.adapter_kind, "stub");
   assert.deepEqual(result.compatibility.raw_ref, {
     dispatch_id: "disp_stub_node-run-dispatcher-001",
-    openclaw_task_id: null,
-    openclaw_session_id: null,
+    provider_refs: {},
   });
 });
 
@@ -123,8 +120,7 @@ test("ExecutionAdapterRuntimeDispatcher forwards worker report events to legacy 
     error: null,
     raw_ref: {
       dispatch_id: "disp-runtime",
-      openclaw_task_id: null,
-      openclaw_session_id: null,
+      provider_refs: {},
     },
     created_at: "2026-07-10T00:00:00.000Z",
   };
@@ -162,7 +158,6 @@ test("WorkerRuntimeDispatcher executes low-risk local jobs without provisioning 
   const job = buildRuntimeWorkerJob(buildEnvelope({
     agent_runtime: "local",
     runtime_agent_ref: null,
-    openclaw_agent_id: null,
     allowed_tools: ["read"],
     input_payload: { node_config: { worker_target_kind: "local" } },
   }));
@@ -236,7 +231,6 @@ test("DockerWorkerProvisioner builds an isolated worker container and filters se
   const job = buildRuntimeWorkerJob(
     buildEnvelope({
       agent_runtime: "glm",
-      openclaw_agent_id: null,
       provider_connection: {
         connection_id: "glm-docker-test",
         agent_runtime: "glm",
@@ -382,7 +376,6 @@ function buildDockerTestJob(jobId: string) {
       run_id: `run-${jobId}`,
       node_run_id: `node-${jobId}`,
       agent_runtime: "codex",
-      openclaw_agent_id: null,
     }),
     { jobId, createdAt: "2026-07-10T00:00:00.000Z" },
   );
@@ -627,7 +620,7 @@ test("DockerWorkerProvisioner cleans up a container name when docker run fails",
     },
   });
   const job = buildRuntimeWorkerJob(
-    buildEnvelope({ agent_runtime: "codex", openclaw_agent_id: null }),
+    buildEnvelope({ agent_runtime: "codex" }),
     { createdAt: "2026-07-10T00:00:00.000Z" },
   );
 
@@ -868,7 +861,7 @@ test("WorkerRuntimeDispatcher releases provisioned workers when capability or AC
     createStubExecutionAdapter(),
   );
   const capabilityJob = buildRuntimeWorkerJob(
-    buildEnvelope({ agent_runtime: "codex", openclaw_agent_id: null }),
+    buildEnvelope({ agent_runtime: "codex" }),
   );
   capabilityJob.provision.required_capabilities = ["browser"];
 
@@ -880,7 +873,7 @@ test("WorkerRuntimeDispatcher releases provisioned workers when capability or AC
   assert.equal(dispatchCalls, 0);
 
   const ackJob = buildRuntimeWorkerJob(
-    buildEnvelope({ agent_runtime: "codex", openclaw_agent_id: null }),
+    buildEnvelope({ agent_runtime: "codex" }),
     { jobId: "job-dispatch-check" },
   );
   await assert.rejects(dispatcher.dispatchJob(ackJob), /worker rejected test job/);

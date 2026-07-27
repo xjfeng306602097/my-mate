@@ -57,6 +57,27 @@ function sendError(socket: WebSocket, code: string, message: string, requestId?:
   }));
 }
 
+function validForwardedCloseCode(code: number): number {
+  if (code === 1000) return code;
+  if (code >= 1001 && code <= 1014 && ![1004, 1005, 1006].includes(code)) return code;
+  if (code >= 3000 && code <= 4999) return code;
+  return 1011;
+}
+
+function boundedCloseReason(value: string): string {
+  let result = "";
+  for (const character of value) {
+    if (Buffer.byteLength(result + character, "utf8") > 123) break;
+    result += character;
+  }
+  return result || "Upstream connection closed";
+}
+
+function closeSocket(socket: WebSocket, code: number, reason: string): void {
+  if (socket.readyState !== WebSocket.OPEN) return;
+  socket.close(validForwardedCloseCode(code), boundedCloseReason(reason));
+}
+
 function upstreamUrl(req: IncomingMessage, config: GatewayConfig): string {
   const target = new URL(req.url || "/", config.controlPlaneBaseUrl);
   target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
@@ -132,7 +153,7 @@ export class ConversationWebSocketProxy {
         if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
       });
       upstream.on("close", (code, reason) => {
-        if (client.readyState === WebSocket.OPEN) client.close(code || 1011, reason.toString());
+        closeSocket(client, code, reason.toString());
       });
       upstream.on("error", (error) => {
         sendError(client, "upstream_unavailable", error.message, message.request_id);

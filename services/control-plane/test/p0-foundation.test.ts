@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { saveArtifact } from "../src/artifact-store.js";
 import { EVALUATION_SNAPSHOTS_DIR, RUN_ROUTES_DIR } from "../src/config.js";
 import { evidenceDigest } from "../src/evaluation/canonical-json.js";
 import {
@@ -173,6 +174,20 @@ test("P0 evidence snapshots have stable digests and redact secret fields", async
     run.finished_at = "2026-07-10T02:00:00.000Z";
     run.updated_at = run.finished_at;
     saveRun(run);
+    saveArtifact({
+      artifact_id: `artifact-${runId}`,
+      run_id: runId,
+      node_run_id: null,
+      type: "report",
+      name: "p0-report.txt",
+      storage_uri: `workspace://artifacts/${runId}/p0-report.txt`,
+      mime_type: "text/plain",
+      size_bytes: 64,
+      created_at: "2026-07-10T02:00:00.000Z",
+      publication_status: "published",
+      published_relative_path: "reports/p0-report.txt",
+      publication_error: null,
+    });
 
     assert.throws(
       () =>
@@ -191,6 +206,17 @@ test("P0 evidence snapshots have stable digests and redact secret fields", async
     assert.equal(first.snapshot_state, "terminal");
     assert.equal(first.evidence_digest, second.evidence_digest);
     assert.equal(first.run.inputs.api_key, "[REDACTED]");
+    assert.deepEqual(Object.keys(first.artifacts[0]!).sort(), [
+      "artifact_id",
+      "created_at",
+      "mime_type",
+      "name",
+      "node_run_id",
+      "run_id",
+      "size_bytes",
+      "storage_uri",
+      "type",
+    ]);
     assert.equal(
       evidenceDigest({ z: 1, nested: { token: "one", a: 2 } }),
       evidenceDigest({ nested: { a: 2, token: "two" }, z: 1 }),

@@ -17,6 +17,7 @@
       "permission_scopes": ["memory.read"],
       "executor": "control-plane",
       "timeout_ms": 10000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Searching long-term memory",
       "input_schema": {
         "type": "object",
@@ -40,6 +41,7 @@
       "permission_scopes": ["memory.read"],
       "executor": "control-plane",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Recalling earlier Sessions",
       "input_schema": {
         "type": "object",
@@ -61,6 +63,7 @@
       "permission_scopes": ["memory.propose", "memory.write"],
       "executor": "control-plane",
       "timeout_ms": 10000,
+      "execution_policy": { "side_effects": "external_mutation", "max_attempts": 1 },
       "progress_label": "Saving long-term memory",
       "input_schema": {
         "type": "object",
@@ -92,6 +95,7 @@
       "permission_scopes": ["memory.write"],
       "executor": "control-plane",
       "timeout_ms": 10000,
+      "execution_policy": { "side_effects": "external_mutation", "max_attempts": 1 },
       "progress_label": "Forgetting long-term memory",
       "input_schema": {
         "type": "object",

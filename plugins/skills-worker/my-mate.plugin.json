@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "skills.worker",
+  "name": "Sandboxed Skill Script Runner",
+  "version": "1.0.0",
+  "description": "Expose declared Skill scripts through the governed Docker Worker execution boundary.",
+  "runtime": "worker",
+  "enabled_by_default": true,
+  "capabilities": [
+    {
+      "id": "skill_script_run",
+      "kind": "tool",
+      "name": "Run a Skill script",
+      "description": "Run one script declared by the active Skill inside the governed Docker Worker sandbox.",
+      "risk_level": "T2",
+      "permission_scopes": ["skill.execute", "workspace.artifact.write"],
+      "executor": "worker",
+      "timeout_ms": 120000,
+      "execution_policy": { "side_effects": "external_mutation", "max_attempts": 1 },
+      "progress_label": "Running Skill script in sandbox",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "skill_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "script_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "arguments": { "type": "object" }
+        },
+        "required": ["skill_id", "script_id", "arguments"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "metadata": {
+    "execution_boundary": "docker",
+    "package_mount": "read-only"
+  }
+}

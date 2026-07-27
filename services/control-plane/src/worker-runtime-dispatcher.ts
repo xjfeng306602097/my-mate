@@ -195,9 +195,6 @@ export class WorkerRuntimeDispatcher implements RuntimeDispatcher {
   }
 
   async dispatchJob(job: RuntimeWorkerJob): Promise<RuntimeDispatchResult> {
-    if (job.provision.target_kind === "external-bridge") {
-      return await this.fallbackAdapterBridge.dispatchJob(job);
-    }
     if (job.provision.target_kind === "local") {
       if (job.harness.agent_runtime !== "local") {
         throw new Error(`Local execution is unavailable for runtime ${job.harness.agent_runtime}.`);
@@ -216,8 +213,10 @@ export class WorkerRuntimeDispatcher implements RuntimeDispatcher {
           adapter_kind: "in-process-runtime-worker",
           raw_ref: {
             dispatch_id: `runtime-worker:${job.job_id}`,
-            openclaw_task_id: `local-task:${job.node_run_id}`,
-            openclaw_session_id: `local-session:${job.node_run_id}`,
+            provider_refs: {
+              task_id: `local-task:${job.node_run_id}`,
+              session_id: `local-session:${job.node_run_id}`,
+            },
           },
         },
       };
@@ -344,8 +343,6 @@ export class WorkerRuntimeDispatcher implements RuntimeDispatcher {
           target_kind: job.provision.target_kind,
           dispatch_id: `worker:${lease.worker_id}:${job.job_id}`,
           provider_refs: {},
-          openclaw_task_id: null,
-          openclaw_session_id: null,
         },
       },
     };
@@ -356,9 +353,7 @@ export class WorkerRuntimeDispatcher implements RuntimeDispatcher {
   }
 
   async handleReport(report: NormalizedExecutionReport): Promise<void> {
-    if (report.raw_ref.openclaw_task_id || report.raw_ref.openclaw_session_id) {
-      await this.fallbackAdapterBridge.handleReport(report);
-    }
+    void report;
   }
 
   getRuntimeStatus() {

@@ -118,7 +118,6 @@ function buildJob(provider, model, token) {
       runtime_agent_ref: model,
       agent_runtime: provider,
       harness_profile: "agent-harness-v1",
-      openclaw_agent_id: null,
       allowed_skills: [],
       allowed_tools: ["read", "shell"],
       registry_provenance: {
@@ -127,7 +126,6 @@ function buildJob(provider, model, token) {
         agent_profile_status: null,
         agent_profile_source: "none",
         runtime_agent_ref_source: model ? "template_binding" : "none",
-        openclaw_agent_id_source: model ? "template_binding" : "none",
         skill_bindings: [],
         tool_bindings: [],
       },

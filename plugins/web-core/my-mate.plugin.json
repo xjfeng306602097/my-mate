@@ -17,6 +17,7 @@
       "permission_scopes": ["network.public.read"],
       "executor": "control-plane",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Searching the web",
       "input_schema": {
         "type": "object",
@@ -47,6 +48,7 @@
       "permission_scopes": ["network.public.read"],
       "executor": "control-plane",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Reading a webpage",
       "input_schema": {
         "type": "object",

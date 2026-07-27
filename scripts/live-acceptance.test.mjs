@@ -17,13 +17,6 @@ const manifest = {
       credential_mode: "agent_session",
       model_env: "MY_MATE_LIVE_MODEL",
     },
-    {
-      id: "openclaw",
-      harness_env: "MY_MATE_OPENCLAW_WORKER_BRIDGE_URL",
-      credential_envs: ["MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY"],
-      credential_optional: true,
-      model_env: "MY_MATE_LIVE_MODEL",
-    },
   ],
   judges: [{
     id: "anthropic",
@@ -44,7 +37,6 @@ test("live acceptance auto-selects only credential-ready lanes without exposing 
   const plan = buildLiveAcceptancePlan(manifest, env);
   assert.equal(plan.find((lane) => lane.id === "provider:codex")?.runnable, true);
   assert.equal(plan.find((lane) => lane.id === "provider:codex")?.credential_source, "OPENAI_API_KEY");
-  assert.equal(plan.find((lane) => lane.id === "provider:openclaw")?.selected, false);
   assert.equal(plan.find((lane) => lane.id === "judge:anthropic")?.runnable, true);
   assert.equal(JSON.stringify(plan).includes("secret-openai-value"), false);
   assert.equal(JSON.stringify(plan).includes("secret-anthropic-value"), false);
@@ -60,17 +52,7 @@ test("live acceptance accepts a built-in Agent Harness session without an API ke
   assert.equal(codex?.credential_source, "agent_session");
 });
 
-test("live acceptance fails explicit missing configuration and redacts execution errors", async () => {
-  const missing = await runLiveAcceptance({
-    manifest,
-    env: { MY_MATE_LIVE_PROVIDERS: "openclaw" },
-    startedAt: "2026-07-12T00:00:00.000Z",
-    completedAt: "2026-07-12T00:00:01.000Z",
-    async execute() { throw new Error("must not execute"); },
-  });
-  assert.equal(missing.status, "failed");
-  assert.match(missing.lanes.find((lane) => lane.id === "provider:openclaw")?.error || "", /Missing configuration/);
-
+test("live acceptance redacts execution errors", async () => {
   const secret = "provider-secret-value";
   const failed = await runLiveAcceptance({
     manifest,

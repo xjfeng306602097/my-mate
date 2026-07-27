@@ -7,6 +7,9 @@ import { getActivePrincipalId } from "./request-security.js";
 import { getTaskWorkspace } from "./task-workspace-store.js";
 import { listSharedMemoryViews } from "./memory-sharing-store.js";
 import type { SessionMessageRecord, SessionRecord, TurnMemoryContextEntry } from "./types.js";
+import { resolveSessionAgentId } from "./session-agent-id.js";
+import { getContextEngine } from "./context-engine.js";
+import { memoryWorkingSetScore, recordMemoryAccesses } from "./memory-tier-store.js";
 
 export interface AutomaticMemoryRecallContext {
   text: string | null;
@@ -19,12 +22,6 @@ function messageText(message: SessionMessageRecord): string {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
-}
-
-function currentAgentId(session: SessionRecord): string {
-  return typeof session.metadata.agent_profile_id === "string" && session.metadata.agent_profile_id.trim()
-    ? session.metadata.agent_profile_id.trim()
-    : "default-agent";
 }
 
 function searchTerms(value: string): Set<string> {
@@ -43,14 +40,13 @@ export async function buildAutomaticMemoryRecallContext(
   const workspaceId = session.workspace_id || "default";
   const settings = getMemorySettings(workspaceId);
   if (!settings.automatic_recall.enabled) return { text: null, entries: [] };
-  const latestUser = [...messages].reverse().find((message) => message.role === "user" && !!messageText(message));
-  const query = latestUser ? messageText(latestUser) : "";
+  const query = getContextEngine().ingest(session, messages, messageText);
   if (!query) return { text: null, entries: [] };
   const startedAt = Date.now();
   try {
     const principalId = getActivePrincipalId() || session.created_by;
     const taskWorkspace = getTaskWorkspace(session.session_id);
-    const agentId = currentAgentId(session);
+  const agentId = resolveSessionAgentId(session);
     const snapshotIds = new Set([
       ...(getCoreMemorySnapshot(session.session_id, workspaceId)?.entries || []),
       ...(getCoreMemorySnapshot(session.session_id, workspaceId)?.project_entries || []),
@@ -78,7 +74,17 @@ export async function buildAutomaticMemoryRecallContext(
         if (memory.scope_kind === "project") return !!taskWorkspace && memory.scope_id === taskWorkspace.project_id;
         return settings.scope_policy.agent_memory_enabled && memory.scope_id === agentId;
       })
-      .sort((left, right) => Number(snapshotIds.has(right.memory.memory_id)) - Number(snapshotIds.has(left.memory.memory_id)))
+      .map((hit) => ({
+        ...hit,
+        workingSet: memoryWorkingSetScore({
+          memory: hit.memory,
+          evidence: hit.evidence,
+          pinned: snapshotIds.has(hit.memory.memory_id),
+        }),
+      }))
+      .sort((left, right) => right.workingSet.score - left.workingSet.score
+        || Number(snapshotIds.has(right.memory.memory_id)) - Number(snapshotIds.has(left.memory.memory_id))
+        || right.memory.updated_at.localeCompare(left.memory.updated_at))
       .slice(0, settings.automatic_recall.max_results);
     const lines: string[] = [];
     const entries: TurnMemoryContextEntry[] = [];
@@ -99,6 +105,11 @@ export async function buildAutomaticMemoryRecallContext(
         content_digest: createHash("sha256").update(hit.memory.content, "utf8").digest("hex"),
       });
       characters += line.length;
+    }
+    if (entries.length) {
+      recordMemoryAccesses(visible
+        .filter((hit) => entries.some((entry) => entry.memory_id === hit.memory.memory_id))
+        .map((hit) => hit.memory));
     }
     recordAutomaticMemoryRecall(lines.length, false, {
       cacheHit: cached.cache_hit,

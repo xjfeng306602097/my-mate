@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { RUN_PLAN_INITIAL_DIR } from "../src/config.js";
+import { RUN_PLAN_INITIAL_DIR, RUNS_DIR } from "../src/config.js";
 import { appendRunEvent } from "../src/event-store.js";
 import { listNodeRuns, saveNodeRuns } from "../src/node-run-store.js";
 import { getRunPlan, saveRunPlan } from "../src/run-plan-store.js";
@@ -138,7 +138,8 @@ test("replay reports legacy partial and detects persisted projection drift", asy
     const drifted = getRun(driftRunId)!;
     drifted.status = "failed";
     drifted.current_summary = "Projection drift injected by test";
-    saveRun(drifted);
+    // Bypass the guarded store deliberately: this test verifies replay detection of on-disk corruption.
+    fs.writeFileSync(path.join(RUNS_DIR, `${driftRunId}.json`), `${JSON.stringify(drifted, null, 2)}\n`, "utf8");
     const failed = await postJson(`${server.baseUrl}/api/runs/${driftRunId}/replays`, {});
     assert.equal(failed.body.event_completeness, "complete");
     assert.equal(failed.body.verification, "fail");
@@ -209,7 +210,7 @@ test("trace pairs provider-native tool calls and results under the model span", 
       node_id: node.node_id,
       node_name: node.name,
       node_type: node.type,
-      agent_profile: node.agent_profile,
+      agent_id: node.agent_id ?? node.agent_binding_snapshot?.agent_id ?? null,
       runtime_agent_ref: node.runtime_agent_ref,
       agent_runtime: "codex",
       harness_profile: node.harness_profile || null,

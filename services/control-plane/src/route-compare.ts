@@ -214,9 +214,8 @@ function buildComparableNodes(compiledNodes: unknown): ComparableItem[] {
       const outputContract = getNodeOutputContract(node);
       const signature = stableSerialize({
         type: asString(node.type),
-        agent_profile: asString(node.agent_profile),
-        runtime_agent_ref: asString(node.runtime_agent_ref) || asString(node.openclaw_agent_id),
-        openclaw_agent_id: asString(node.openclaw_agent_id),
+        agent_id: asString(node.agent_id),
+        runtime_agent_ref: asString(node.runtime_agent_ref),
         allowed_skills: uniqueSorted(extractStringArray(node.allowed_skills)),
         allowed_tools: uniqueSorted(extractStringArray(node.allowed_tools)),
         approval_kind: asString(node.approval_kind),

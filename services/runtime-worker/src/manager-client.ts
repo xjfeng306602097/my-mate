@@ -278,8 +278,6 @@ export class RuntimeWorkerManagerClient {
           target_kind: job.provision.target_kind,
           dispatch_id: `worker:${this.options.workerId}:${job.job_id}`,
           provider_refs: {},
-          openclaw_task_id: null,
-          openclaw_session_id: null,
         },
         created_at: new Date().toISOString(),
       };

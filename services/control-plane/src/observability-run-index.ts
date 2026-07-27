@@ -25,7 +25,7 @@ export interface ObservabilityJobPoint {
   node_run_id: string;
   node_id: string;
   node_name: string;
-  agent_profile_id: string | null;
+  agent_id: string | null;
   work_package_id: string | null;
   work_package_label: string | null;
   agent_runtime: string;
@@ -40,7 +40,7 @@ export interface ObservabilityJobPoint {
 export interface ObservabilityUsagePoint {
   job_id: string;
   node_run_id: string;
-  agent_profile_id: string | null;
+  agent_id: string | null;
   work_package_id: string | null;
   work_package_label: string | null;
   provider: string | null;
@@ -146,9 +146,9 @@ function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord
   const usage = [...latestUsageByJob.values()].map((item) => {
     const job = jobsById.get(item.job_id) || null;
     const compiledNode = compiledNodesByRunId.get(item.node_run_id) || null;
-    const envelope = job?.job?.envelope as unknown as { agent_profile?: unknown } | undefined;
-    const agentProfileId = compiledNode?.agent_profile ||
-      (typeof envelope?.agent_profile === "string" ? envelope.agent_profile : null);
+    const envelope = job?.job?.envelope as unknown as { agent_id?: unknown } | undefined;
+    const agentId = compiledNode?.agent_id || compiledNode?.agent_binding_snapshot?.agent_id ||
+      (typeof envelope?.agent_id === "string" ? envelope.agent_id : null);
     const workPackage = compiledNode?.work_package || null;
     if (item.usage?.total_tokens !== null && item.usage?.total_tokens !== undefined) {
       totalTokens += item.usage.total_tokens;
@@ -159,7 +159,7 @@ function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord
     return {
       job_id: item.job_id,
       node_run_id: item.node_run_id,
-      agent_profile_id: agentProfileId,
+      agent_id: agentId,
       work_package_id: workPackage?.key || null,
       work_package_label: workPackage?.label || null,
       provider: item.source?.provider || null,
@@ -187,15 +187,15 @@ function buildObservabilityRunIndex(run: RunRecord): ObservabilityRunIndexRecord
     duration_ms: durationMs(run.started_at, run.finished_at),
     jobs: jobs.map((job) => {
       const compiledNode = compiledNodesByRunId.get(job.node_run_id) || null;
-      const envelope = job.job?.envelope as unknown as { agent_profile?: unknown } | undefined;
+      const envelope = job.job?.envelope as unknown as { agent_id?: unknown } | undefined;
       const workPackage = compiledNode?.work_package || null;
       return {
         job_id: job.job_id,
         node_run_id: job.node_run_id,
         node_id: compiledNode?.node_id || job.job?.node_id || job.node_run_id,
         node_name: compiledNode?.name || job.job?.node_name || job.node_run_id,
-        agent_profile_id: compiledNode?.agent_profile ||
-          (typeof envelope?.agent_profile === "string" ? envelope.agent_profile : null),
+        agent_id: compiledNode?.agent_id || compiledNode?.agent_binding_snapshot?.agent_id ||
+          (typeof envelope?.agent_id === "string" ? envelope.agent_id : null),
         work_package_id: workPackage?.key || null,
         work_package_label: workPackage?.label || null,
         agent_runtime: job.agent_runtime,

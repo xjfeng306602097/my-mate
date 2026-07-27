@@ -12,13 +12,37 @@ import type {
 } from "./types.js";
 import { ensureDir, isPlainObject, nowIso, slugify, writeJsonAtomic } from "./utils.js";
 import { validateWorkflowTemplate } from "./validators.js";
+import { createAgentBindingSnapshot, normalizeAgentBindingSnapshot } from "./agent-runtime-store.js";
 
 function templatePath(templateId: string): string {
   return path.join(TEMPLATES_DIR, `${templateId}.json`);
 }
 
 function loadTemplate(filePath: string): WorkflowTemplateRecord {
-  return getJsonStorageBackend().readJson<WorkflowTemplateRecord>(filePath);
+  return canonicalizeTemplate(
+    getJsonStorageBackend().readJson<WorkflowTemplateRecord>(filePath),
+  );
+}
+
+function canonicalizeTemplate(template: WorkflowTemplateRecord): WorkflowTemplateRecord {
+  const legacy = template as WorkflowTemplateRecord & {
+    agent_profile_bindings?: Record<string, unknown>;
+  };
+  const { agent_profile_bindings: _legacyBindings, ...canonicalTemplate } = legacy;
+  return {
+    ...canonicalTemplate,
+    nodes: template.nodes.map((node) => {
+      const legacyNode = node as typeof node & { agent_profile?: string | null; openclaw_agent_id?: string | null };
+      const { agent_profile: legacyAgentId, openclaw_agent_id: _legacyRuntimeAgentId, ...canonicalNode } = legacyNode;
+      return {
+        ...canonicalNode,
+        agent_id: canonicalNode.agent_id || legacyAgentId || null,
+        agent_binding_snapshot: canonicalNode.agent_binding_snapshot
+          ? normalizeAgentBindingSnapshot(canonicalNode.agent_binding_snapshot)
+          : null,
+      };
+    }),
+  };
 }
 
 function assertValidTemplate(template: WorkflowTemplateRecord): void {
@@ -95,9 +119,10 @@ function saveTemplate(template: WorkflowTemplateRecord): WorkflowTemplateRecord 
   if (activeWorkspaceId && template.workspace_scope !== activeWorkspaceId) {
     throw new Error("WORKSPACE_SCOPE_MISMATCH");
   }
-  assertValidTemplate(template);
-  writeJsonAtomic(templatePath(template.template_id), template);
-  return template;
+  const canonical = canonicalizeTemplate(template);
+  assertValidTemplate(canonical);
+  writeJsonAtomic(templatePath(canonical.template_id), canonical);
+  return canonical;
 }
 
 function resolveTemplateId(preferredId: string): string {
@@ -212,6 +237,103 @@ export function listTemplates(): WorkflowTemplateRecord[] {
   return templates;
 }
 
+export function listCurrentPublishedTemplates(): WorkflowTemplateRecord[] {
+  const families = new Map<string, WorkflowTemplateRecord[]>();
+  for (const template of listTemplates()) {
+    if (template.status !== "published") continue;
+    const familyId = normalizeVersioning(template).family_id;
+    const items = families.get(familyId) || [];
+    items.push(template);
+    families.set(familyId, items);
+  }
+  return [...families.values()]
+    .map((items) => items.sort((left, right) => {
+      const leftVersioning = normalizeVersioning(left);
+      const rightVersioning = normalizeVersioning(right);
+      if (leftVersioning.generation !== rightVersioning.generation) {
+        return rightVersioning.generation - leftVersioning.generation;
+      }
+      if (left.version !== right.version) return right.version - left.version;
+      return right.updated_at.localeCompare(left.updated_at);
+    })[0])
+    .filter((item): item is WorkflowTemplateRecord => Boolean(item))
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+}
+
+export function migrateWorkflowAgentBindings(workspaceId = "default"): {
+  scanned_templates: number;
+  migrated_templates: number;
+  migrated_nodes: number;
+  unresolved_nodes: Array<{ template_id: string; node_id: string; agent_id: string | null; error: string }>;
+  compatibility_fields_retained: boolean;
+} {
+  const templates = listTemplates().filter((template) => template.workspace_scope === workspaceId);
+  let migratedTemplates = 0;
+  let migratedNodes = 0;
+  const unresolvedNodes: Array<{ template_id: string; node_id: string; agent_id: string | null; error: string }> = [];
+  for (const template of templates) {
+    let changed = false;
+    let templateUnresolved = false;
+    const nodes = template.nodes.map((node) => {
+      const existing = node.agent_binding_snapshot;
+      if (existing?.schema_version === 2 && existing.agent_role) {
+        return node;
+      }
+      const agentId = node.agent_id || node.agent_profile || null;
+      if (!agentId) {
+        if (node.type === "agent_task") {
+          templateUnresolved = true;
+          unresolvedNodes.push({
+            template_id: template.template_id,
+            node_id: node.id,
+            agent_id: null,
+            error: "Agent task has no Agent selector or binding snapshot.",
+          });
+        }
+        return node;
+      }
+      try {
+        const snapshot = createAgentBindingSnapshot({
+          workspaceId,
+          agentId,
+          agentVersion: node.agent_version || null,
+          bindingMode: "pinned",
+        });
+        changed = true;
+        migratedNodes += 1;
+        return { ...node, agent_id: snapshot.agent_id, agent_version: snapshot.agent_version, agent_binding_snapshot: snapshot };
+      } catch (error) {
+        templateUnresolved = true;
+        unresolvedNodes.push({ template_id: template.template_id, node_id: node.id, agent_id: agentId, error: error instanceof Error ? error.message : "Agent binding migration failed." });
+        return node;
+      }
+    });
+    if (!changed) continue;
+    const timestamp = nowIso();
+    saveTemplate({
+      ...template,
+      nodes,
+      metadata: {
+        ...template.metadata,
+        agent_binding_migration: {
+          schema_version: 2,
+          migrated_at: timestamp,
+          compatibility_fields_retained: templateUnresolved,
+        },
+      },
+      updated_at: timestamp,
+    });
+    migratedTemplates += 1;
+  }
+  return {
+    scanned_templates: templates.length,
+    migrated_templates: migratedTemplates,
+    migrated_nodes: migratedNodes,
+    unresolved_nodes: unresolvedNodes,
+    compatibility_fields_retained: unresolvedNodes.length > 0,
+  };
+}
+
 export function getTemplate(templateId: string): WorkflowTemplateRecord | null {
   const storage = getJsonStorageBackend();
   const filePath = templatePath(templateId);
@@ -247,7 +369,6 @@ export function createTemplate(input: CreateTemplateRequest): WorkflowTemplateRe
     workspace_scope: getActiveWorkspaceId() || input.workspace_scope || "default",
     input_schema: input.input_schema,
     policy: input.policy,
-    agent_profile_bindings: input.agent_profile_bindings || {},
     nodes: input.nodes,
     edges: input.edges,
     metadata: input.metadata || {},
@@ -291,8 +412,6 @@ export function updateTemplateDraft(
     nodes: patch.nodes ?? current.nodes,
     edges: patch.edges ?? current.edges,
     workspace_scope: patch.workspace_scope ?? current.workspace_scope,
-    agent_profile_bindings:
-      patch.agent_profile_bindings ?? current.agent_profile_bindings,
     metadata: patch.metadata ?? current.metadata,
     updated_at: nowIso(),
   };
@@ -393,17 +512,32 @@ export function createNextTemplateVersion(
   sourceTemplateId: string,
   input: DeriveTemplateRequest = {},
 ): WorkflowTemplateRecord {
-  const source = getTemplate(sourceTemplateId);
-  if (!source) {
+  const requestedSource = getTemplate(sourceTemplateId);
+  if (!requestedSource) {
     throw new Error("TEMPLATE_NOT_FOUND");
   }
-  if (source.status !== "published") {
+  if (requestedSource.status !== "published") {
     throw new Error("TEMPLATE_NOT_PUBLISHED");
   }
 
+  const requestedVersioning = normalizeVersioning(requestedSource);
+  const family = listTemplates().filter(
+    (template) => normalizeVersioning(template).family_id === requestedVersioning.family_id,
+  );
+  const existingDraft = family
+    .filter((template) => template.status === "draft" && normalizeVersioning(template).derivation_kind === "version")
+    .sort((left, right) => normalizeVersioning(right).generation - normalizeVersioning(left).generation)[0];
+  if (existingDraft) return existingDraft;
+
+  const source = family
+    .filter((template) => template.status === "published")
+    .sort((left, right) => {
+      const generationDelta = normalizeVersioning(right).generation - normalizeVersioning(left).generation;
+      return generationDelta || right.version - left.version;
+    })[0] || requestedSource;
   const sourceVersioning = normalizeVersioning(source);
   const nextVersion = source.version + 1;
-  const name = input.name?.trim() || `${source.name} v${nextVersion}`;
+  const name = input.name?.trim() || source.name;
   const templateId = resolveTemplateIdForClone({
     preferredId: input.template_id,
     fallbackName: `${source.template_id}-v${nextVersion}`,

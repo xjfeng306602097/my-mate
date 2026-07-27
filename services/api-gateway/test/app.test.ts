@@ -88,6 +88,7 @@ async function startUpstreamServer() {
     authSignature?: string | undefined;
     workspaceId?: string | undefined;
     idempotencyKey?: string | undefined;
+    lastEventId?: string | undefined;
   }> = [];
 
   app.all(/^\/api\/(?:memory-settings|memory-observability|memory-effectiveness|memory-onboarding(?:\/.*)?|memory-maintenance|memory-operations|memory-keys(?:\/.*)?|memory-integrity(?:\/.*)?|memory-retention(?:\/.*)?|memory-backups(?:\/.*)?|memory-collections(?:\/.*)?|memory-shares(?:\/.*)?|memory-conflicts(?:\/.*)?|memory-external-sources(?:\/.*)?|memory-intelligence\/evaluation|memories(?:\/.*)?|memory-candidates(?:\/.*)?|sessions\/[^/]+\/memory-(?:review|recommendations(?:\/.*)?|overlay(?:\/.*)?|contexts(?:\/.*)?))$/u, (req, res) => {
@@ -98,6 +99,85 @@ async function startUpstreamServer() {
       gatewayHeader: req.header("x-my-mate-gateway"),
     });
     res.json({ ok: true, method: req.method, path: req.path, items: [] });
+  });
+
+  app.all(/^\/api\/(?:schedules(?:\/.*)?|notifications(?:\/.*)?)$/u, (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.status(req.method === "POST" && req.path === "/api/schedules" ? 201 : 200).json({
+      ok: true,
+      method: req.method,
+      path: req.path,
+      items: [],
+    });
+  });
+
+  app.all(/^\/api\/(?:agents(?!\/hosting$)(?:\/[^/]+(?:\/(?:bind|disable))?)?|agent-runs|agent-teams|agent-dags(?:\/.*)?)$/u, (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: req.body,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.status(req.method === "POST" && !req.path.endsWith("/run") && !req.path.endsWith("/cancel") && !req.path.endsWith("/retry") ? 201 : 200).json({
+      ok: true,
+      method: req.method,
+      path: req.path,
+      items: [],
+    });
+  });
+
+  app.get("/api/agent-runs/:agentRunId/events", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.path,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.json({
+      items: [{
+        event_id: "evt_agent_gateway_1",
+        agent_run_id: req.params.agentRunId,
+        sequence: 1,
+        type: "agent.started",
+        status: "running",
+        summary: "Agent started.",
+      }],
+      next_after_sequence: 1,
+    });
+  });
+
+  app.get("/api/agent-runs/:agentRunId/events/stream", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.originalUrl,
+      body: null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+      lastEventId: req.header("last-event-id"),
+    });
+    const sequence = Number(req.query.after_sequence || req.header("last-event-id") || 0) + 1;
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    res.write(`id: ${sequence}\n`);
+    res.write("event: agent.event\n");
+    res.write(`data: ${JSON.stringify({
+      event_id: `evt_agent_gateway_${sequence}`,
+      agent_run_id: req.params.agentRunId,
+      sequence,
+      type: "agent.message.delta",
+      status: "running",
+      summary: "Agent response updated.",
+      payload: { text: "Live delta" },
+    })}\n\n`);
+    res.end();
   });
 
   app.get("/api/mobile/home", (req, res) => {
@@ -290,7 +370,7 @@ async function startUpstreamServer() {
           startedAt: null,
           finishedAt: null,
           agentProfile: "backend",
-          openclawAgentId: "backend",
+          runtimeAgentRef: "backend",
           approvalKind: null,
           humanInputRequired: false,
           expectedArtifacts: ["agent-report"],
@@ -1005,34 +1085,11 @@ async function startUpstreamServer() {
     });
     res.json({
       execution_runtime: {
-        adapter_kind: "openclaw",
+        adapter_kind: "local",
         runtime_health: {
           status: "ok",
           detail: "Configured",
         },
-      },
-      agent_hosting: {
-        ownership: {
-          execution_runtime: "openclaw",
-          orchestration_binding: "my_mate",
-        },
-        profiles: [
-          {
-            profile_id: "backend",
-            name: "Backend",
-            status: "active",
-            openclaw_agent_id: "openclaw-backend",
-            default_skills: ["coding-agent"],
-            provider: "anthropic",
-            model: "claude-opus",
-            runtime_mode: "native-agent",
-            managed_by: "my_mate_registry",
-            health: {
-              status: "ready",
-              detail: "Profile is bound.",
-            },
-          },
-        ],
       },
       planner: {
         provider_id: "rule_based_v1",
@@ -1045,8 +1102,8 @@ async function startUpstreamServer() {
         llm_timeout_ms: 8000,
       },
       registry: {
-        agent_profile_count: 1,
-        active_agent_profile_count: 1,
+        agent_definition_count: 1,
+        active_agent_definition_count: 1,
         skill_count: 0,
         active_skill_count: 0,
         template_count: 1,
@@ -1147,7 +1204,7 @@ async function startUpstreamServer() {
       generated_at: "2026-07-07T10:00:00.000Z",
       runtime_health: {
         storage_backend_kind: "file-json",
-        execution_adapter_kind: "openclaw",
+        execution_adapter_kind: "local",
         attention_tone: "warn",
         summary_lines: [
           "3 active run(s)",
@@ -1991,36 +2048,6 @@ async function startUpstreamServer() {
     });
   }
 
-  app.get("/api/orchestrator-profiles", (req, res) => {
-    requests.push({
-      method: req.method,
-      path: req.path,
-      body: null,
-      gatewayHeader: req.header("x-my-mate-gateway"),
-    });
-    res.json({
-      items: [
-        {
-          orchestrator_id: "studio-orchestrator",
-          name: "Studio Orchestrator",
-        },
-      ],
-    });
-  });
-
-  app.post("/api/orchestrator-profiles", (req, res) => {
-    requests.push({
-      method: req.method,
-      path: req.path,
-      body: req.body,
-      gatewayHeader: req.header("x-my-mate-gateway"),
-    });
-    res.status(201).json({
-      orchestrator_id: req.body?.orchestrator_id || "studio-orchestrator",
-      name: req.body?.name || "Studio Orchestrator",
-    });
-  });
-
   app.get("/api/supervision/alerts", (req, res) => {
     requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
     res.json({ items: [] });
@@ -2044,6 +2071,19 @@ async function startUpstreamServer() {
   app.post("/api/sessions/session-1/autopilot/tick", (req, res) => {
     requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
     res.json({ session_id: "session-1", mode: "autopilot", status: "running" });
+  });
+  app.use("/api/skill-host", (req, res) => {
+    requests.push({
+      method: req.method,
+      path: req.originalUrl.split("?")[0],
+      body: req.body || null,
+      gatewayHeader: req.header("x-my-mate-gateway"),
+    });
+    res.status(req.method === "POST" && req.path === "/install" ? 201 : 200).json({
+      items: [],
+      item: { skill_id: "web-research", status: "ready" },
+      instructions: "# Web Research",
+    });
   });
 
   return await new Promise<{
@@ -2551,7 +2591,7 @@ test("proxies session routes with body payloads", async () => {
         {
           node_id: "node_backend",
           node_name: "Backend",
-          subagent_profile_id: "backend",
+          agent_id: "backend",
           provider: null,
           model: "gateway-model",
           allowed_tools: [],
@@ -2727,6 +2767,125 @@ test("proxies Core Memory snapshot and Session Recall routes", async () => {
     assert.equal(upstream.requests.at(-2)?.path, "/api/sessions/sess_gateway_test/memory-snapshot");
     assert.equal(upstream.requests.at(-1)?.path, "/api/session-recall/search");
     assert.deepEqual(upstream.requests.at(-1)?.body, recallPayload);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies schedule lifecycle and in-app notification routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const scheduleId = "schedule_gateway";
+    const notificationId = "notification_gateway";
+    const responses = [];
+    responses.push(await getJson(`${server.baseUrl}/api/schedules`));
+    responses.push(await postJson(`${server.baseUrl}/api/schedules`, {
+      name: "Review",
+      prompt: "Review",
+      timezone: "UTC",
+      recurrence: { kind: "cron", expression: "0 9 * * *" },
+    }));
+    responses.push(await patchJson(`${server.baseUrl}/api/schedules/${scheduleId}`, { enabled: false }));
+    responses.push(await getJson(`${server.baseUrl}/api/schedules/${scheduleId}/runs`));
+    responses.push(await postJson(`${server.baseUrl}/api/schedules/${scheduleId}/run`, {}));
+    responses.push(await getJson(`${server.baseUrl}/api/notifications?status=active`));
+    responses.push(await postJson(`${server.baseUrl}/api/notifications/${notificationId}/read`, {}));
+    responses.push(await postJson(`${server.baseUrl}/api/notifications/${notificationId}/dismiss`, {}));
+    assert.equal(responses.every((response) => response.status >= 200 && response.status < 300), true);
+    assert.deepEqual(upstream.requests.slice(-8).map((request) => `${request.method} ${request.path}`), [
+      "GET /api/schedules",
+      "POST /api/schedules",
+      `PATCH /api/schedules/${scheduleId}`,
+      `GET /api/schedules/${scheduleId}/runs`,
+      `POST /api/schedules/${scheduleId}/run`,
+      "GET /api/notifications",
+      `POST /api/notifications/${notificationId}/read`,
+      `POST /api/notifications/${notificationId}/dismiss`,
+    ]);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies versioned Agent, Team, DAG protocol, and recovery routes", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const dagId = "agent_dag_gateway";
+    const gateId = "agent_gate_gateway";
+    const responses = [
+      await getJson(`${server.baseUrl}/api/agents`),
+      await postJson(`${server.baseUrl}/api/agents`, { name: "Worker" }),
+      await getJson(`${server.baseUrl}/api/agent-runs`),
+      await getJson(`${server.baseUrl}/api/agent-teams`),
+      await postJson(`${server.baseUrl}/api/agent-teams`, { name: "Team" }),
+      await getJson(`${server.baseUrl}/api/agent-dags`),
+      await postJson(`${server.baseUrl}/api/agent-dags`, { title: "DAG" }),
+      await getJson(`${server.baseUrl}/api/agent-dags/${dagId}`),
+      await postJson(`${server.baseUrl}/api/agent-dags/${dagId}/tasks`, { name: "Node" }),
+      await postJson(`${server.baseUrl}/api/agent-dags/${dagId}/run`, {}),
+      await postJson(`${server.baseUrl}/api/agent-dags/${dagId}/cancel`, {}),
+      await postJson(`${server.baseUrl}/api/agent-dags/${dagId}/retry`, {}),
+      await postJson(`${server.baseUrl}/api/agent-dags/${dagId}/aggregate`, {}),
+      await getJson(`${server.baseUrl}/api/agent-dags/${dagId}/gates`),
+      await postJson(`${server.baseUrl}/api/agent-dags/${dagId}/gates/${gateId}/resolve`, { approved: true }),
+    ];
+    assert.equal(responses.every((response) => response.status >= 200 && response.status < 300), true);
+    assert.deepEqual(upstream.requests.slice(-15).map((request) => `${request.method} ${request.path}`), [
+      "GET /api/agents",
+      "POST /api/agents",
+      "GET /api/agent-runs",
+      "GET /api/agent-teams",
+      "POST /api/agent-teams",
+      "GET /api/agent-dags",
+      "POST /api/agent-dags",
+      `GET /api/agent-dags/${dagId}`,
+      `POST /api/agent-dags/${dagId}/tasks`,
+      `POST /api/agent-dags/${dagId}/run`,
+      `POST /api/agent-dags/${dagId}/cancel`,
+      `POST /api/agent-dags/${dagId}/retry`,
+      `POST /api/agent-dags/${dagId}/aggregate`,
+      `GET /api/agent-dags/${dagId}/gates`,
+      `POST /api/agent-dags/${dagId}/gates/${gateId}/resolve`,
+    ]);
+  } finally {
+    await server.close();
+    await upstream.close();
+  }
+});
+
+test("proxies Agent run events and resumable SSE activity", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const agentRunId = "agent_run_gateway";
+    const events = await getJson(
+      `${server.baseUrl}/api/agent-runs/${agentRunId}/events?after_sequence=0&limit=25`,
+    );
+    assert.equal(events.status, 200);
+    assert.equal(events.body.items[0].agent_run_id, agentRunId);
+
+    const stream = await fetch(
+      `${server.baseUrl}/api/agent-runs/${agentRunId}/events/stream`,
+      { headers: { "Last-Event-ID": "7" } },
+    );
+    assert.equal(stream.status, 200);
+    assert.match(stream.headers.get("content-type") || "", /^text\/event-stream/);
+    assert.equal(stream.headers.get("x-accel-buffering"), "no");
+    const streamText = await stream.text();
+    assert.match(streamText, /id: 8/);
+    assert.match(streamText, /event: agent\.event/);
+    assert.match(streamText, /"text":"Live delta"/);
+
+    assert.equal(upstream.requests.at(-2)?.path, `/api/agent-runs/${agentRunId}/events`);
+    assert.equal(
+      upstream.requests.at(-1)?.path,
+      `/api/agent-runs/${agentRunId}/events/stream`,
+    );
+    assert.equal(upstream.requests.at(-1)?.lastEventId, "7");
   } finally {
     await server.close();
     await upstream.close();
@@ -3029,7 +3188,7 @@ test("proxies session DAG proposal routes", async () => {
         {
           node_id: "node_backend",
           node_name: "Backend",
-          subagent_profile_id: "backend",
+          agent_id: "backend",
           provider: null,
           model: "claude-haiku-4-5",
           allowed_tools: ["read"],
@@ -3107,7 +3266,6 @@ test("gateway smoke covers planner preview strict block and explicit warn overri
   process.env.MY_MATE_ENABLE_LOCAL_EXECUTION = "true";
   process.env.MY_MATE_EXECUTION_ADAPTER = "local";
   process.env.MY_MATE_AUTO_APPROVE_HUMAN_GATES = "false";
-  process.env.MY_MATE_OPENCLAW_CALLBACK_TOKEN = "test-callback-token";
 
   controlPlaneHelpers.seedTemplate(
     controlPlaneHelpers.buildPublishedTemplate({
@@ -3137,7 +3295,7 @@ test("gateway smoke covers planner preview strict block and explicit warn overri
     assert.ok(
       preview.body.validation.details.some(
         (detail: { code: string; category: string; node_id: string | null }) =>
-          detail.code === "unknown_agent_profile" &&
+          detail.code === "unknown_agent" &&
           detail.category === "registry" &&
           detail.node_id === "node_backend",
       ),
@@ -3158,7 +3316,7 @@ test("gateway smoke covers planner preview strict block and explicit warn overri
     assert.ok(
       strictCreate.body.validation.details.some(
         (detail: { code: string; category: string; node_id: string | null }) =>
-          detail.code === "unknown_agent_profile" &&
+          detail.code === "unknown_agent" &&
           detail.category === "registry" &&
           detail.node_id === "node_backend",
       ),
@@ -3180,7 +3338,7 @@ test("gateway smoke covers planner preview strict block and explicit warn overri
     assert.ok(
       warnCreate.body.validation.details.some(
         (detail: { code: string; category: string; node_id: string | null }) =>
-          detail.code === "unknown_agent_profile" &&
+          detail.code === "unknown_agent" &&
           detail.category === "registry" &&
           detail.node_id === "node_backend",
       ),
@@ -3222,7 +3380,7 @@ test("proxies planner DAG draft requests", async () => {
   }
 });
 
-test("proxies template versioning registry and orchestrator profile requests", async () => {
+test("proxies template versioning and Agent V2 while blocking retired profile routes", async () => {
   const upstream = await startUpstreamServer();
   const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
 
@@ -3238,30 +3396,17 @@ test("proxies template versioning registry and orchestrator profile requests", a
     assert.equal(derived.status, 201);
     assert.equal(derived.body.template_id, "template-derived");
 
-    const profiles = await getJson(`${server.baseUrl}/api/registry/agent-profiles`);
-    assert.equal(profiles.status, 200);
-    assert.equal(profiles.body.items[0].profile_id, "backend");
+    const agents = await getJson(`${server.baseUrl}/api/agents`);
+    assert.equal(agents.status, 200);
+    assert.deepEqual(agents.body.items, []);
 
     const orchestrators = await getJson(`${server.baseUrl}/api/orchestrator-profiles`);
-    assert.equal(orchestrators.status, 200);
-    assert.equal(orchestrators.body.items[0].orchestrator_id, "studio-orchestrator");
+    assert.equal(orchestrators.status, 404);
+    assert.equal(orchestrators.body.code, "route_not_found");
 
-    const orchestratorPayload = {
-      orchestrator_id: "studio-coding-orchestrator",
-      name: "Studio Coding Orchestrator",
-    };
-    const savedOrchestrator = await postJson(
-      `${server.baseUrl}/api/orchestrator-profiles`,
-      orchestratorPayload,
-    );
-    assert.equal(savedOrchestrator.status, 201);
-
-    assert.equal(upstream.requests.at(-4)?.path, "/api/templates/template-source/derive");
-    assert.deepEqual(upstream.requests.at(-4)?.body, derivePayload);
-    assert.equal(upstream.requests.at(-3)?.path, "/api/registry/agent-profiles");
-    assert.equal(upstream.requests.at(-2)?.path, "/api/orchestrator-profiles");
-    assert.equal(upstream.requests.at(-1)?.path, "/api/orchestrator-profiles");
-    assert.deepEqual(upstream.requests.at(-1)?.body, orchestratorPayload);
+    assert.equal(upstream.requests.at(-2)?.path, "/api/templates/template-source/derive");
+    assert.deepEqual(upstream.requests.at(-2)?.body, derivePayload);
+    assert.equal(upstream.requests.at(-1)?.path, "/api/agents");
   } finally {
     await server.close();
     await upstream.close();
@@ -3370,7 +3515,7 @@ test("proxies runtime summary and session stream requests", async () => {
   try {
     const runtime = await getJson(`${server.baseUrl}/api/runtime/summary`);
     assert.equal(runtime.status, 200);
-    assert.equal(runtime.body.execution_runtime.adapter_kind, "openclaw");
+    assert.equal(runtime.body.execution_runtime.adapter_kind, "local");
     const workspaceChanges = await getJson(`${server.baseUrl}/api/runtime/workspace-change-sets`);
     const workspaceChange = await getJson(`${server.baseUrl}/api/runtime/workspace-change-sets/wschange_gateway`);
     const appliedWorkspaceChange = await postJson(
@@ -3386,19 +3531,6 @@ test("proxies runtime summary and session stream requests", async () => {
     assert.equal(appliedWorkspaceChange.body.status, "applied");
     assert.equal(rejectedWorkspaceChange.body.status, "rejected");
 
-    const hosting = await getJson(`${server.baseUrl}/api/agents/hosting`);
-    assert.equal(hosting.status, 200);
-    assert.equal(hosting.body.profiles[0].profile_id, "backend");
-
-    const update = await putJson(`${server.baseUrl}/api/agents/backend/hosting`, {
-      openclaw_agent_id: "openclaw-backend-v2",
-      provider: "openai",
-      model: "gpt-5",
-      runtime_mode: "bridge",
-    });
-    assert.equal(update.status, 200);
-    assert.equal(update.body.profile.openclaw_agent_id, "openclaw-backend-v2");
-
     const response = await fetch(
       `${server.baseUrl}/api/sessions/sess_gateway_test/stream?run_id=run_gateway_stream_selected_001`,
     );
@@ -3410,16 +3542,6 @@ test("proxies runtime summary and session stream requests", async () => {
     assert.match(text, /"selected_run_id":"run_gateway_stream_selected_001"/);
 
     assert.equal(upstream.requests.some((item) => item.path === "/api/runtime/summary"), true);
-    assert.equal(upstream.requests.some((item) => item.path === "/api/agents/hosting"), true);
-    assert.deepEqual(
-      upstream.requests.find((item) => item.path === "/api/agents/backend/hosting")?.body,
-      {
-        openclaw_agent_id: "openclaw-backend-v2",
-        provider: "openai",
-        model: "gpt-5",
-        runtime_mode: "bridge",
-      },
-    );
     assert.equal(
       upstream.requests.some(
         (item) => item.path === "/api/sessions/sess_gateway_test/stream?run_id=run_gateway_stream_selected_001",
@@ -3439,7 +3561,7 @@ test("proxies dashboard summary requests", async () => {
   try {
     const dashboard = await getJson(`${server.baseUrl}/api/dashboard/summary`);
     assert.equal(dashboard.status, 200);
-    assert.equal(dashboard.body.runtime_health.execution_adapter_kind, "openclaw");
+    assert.equal(dashboard.body.runtime_health.execution_adapter_kind, "local");
     assert.equal(dashboard.body.backlog.pending_patch_confirmations, 2);
     assert.equal(dashboard.body.hotspots.waiting_runs[0].run_id, "run_waiting_b");
     assert.equal(dashboard.body.hotspots.waiting_runs[0].session_id, "session_waiting_b");
@@ -3503,11 +3625,40 @@ test("proxies governance policy, proposal, review, and apply requests", async ()
 test("blocks routes outside the gateway allowlist", async () => {
   const server = await startTestServer();
   try {
-    const response = await getJson(`${server.baseUrl}/api/internal/openclaw/reports`);
+    const response = await getJson(`${server.baseUrl}/api/internal/runtime/reports`);
     assert.equal(response.status, 404);
     assert.equal(response.body.code, "route_not_found");
   } finally {
     await server.close();
+  }
+});
+
+test("proxies the M12 Skill Host management surface", async () => {
+  const upstream = await startUpstreamServer();
+  const server = await startTestServer({ controlPlaneBaseUrl: upstream.baseUrl });
+  try {
+    const packages = await getJson(`${server.baseUrl}/api/skill-host/packages`);
+    const detail = await getJson(`${server.baseUrl}/api/skill-host/packages/web-research`);
+    const reload = await postJson(`${server.baseUrl}/api/skill-host/reload`, {});
+    const install = await postJson(`${server.baseUrl}/api/skill-host/install`, { source_path: "C:\\fixture" });
+    const disabled = await postJson(`${server.baseUrl}/api/skill-host/packages/web-research/disable`, {});
+    const enabled = await postJson(`${server.baseUrl}/api/skill-host/packages/web-research/enable`, {});
+    const invocations = await getJson(`${server.baseUrl}/api/skill-host/invocations`);
+    const profile = await getJson(`${server.baseUrl}/api/skill-host/profile`);
+    const savedProfile = await putJson(`${server.baseUrl}/api/skill-host/profile`, { auto_activation: true });
+    const lock = await postJson(`${server.baseUrl}/api/skill-host/lockfile/sync`, {});
+    const versions = await getJson(`${server.baseUrl}/api/skill-host/packages/web-research/versions`);
+    const sources = await getJson(`${server.baseUrl}/api/skill-host/sources`);
+    const scan = await postJson(`${server.baseUrl}/api/skill-host/marketplace/scan`, { source_path: "C:\\fixture" });
+    const hermes = await postJson(`${server.baseUrl}/api/skill-host/hermes/inspect`, { source_path: "C:\\fixture" });
+    const evaluations = await getJson(`${server.baseUrl}/api/skill-host/evaluations`);
+    const observability = await getJson(`${server.baseUrl}/api/skill-host/observability`);
+    const responses = [packages, detail, reload, install, disabled, enabled, invocations, profile, savedProfile, lock, versions, sources, scan, hermes, evaluations, observability];
+    assert.ok(responses.every((response) => response.status < 400));
+    assert.ok(upstream.requests.slice(-responses.length).every((request) => request.gatewayHeader === "api-gateway"));
+  } finally {
+    await server.close();
+    await upstream.close();
   }
 });
 

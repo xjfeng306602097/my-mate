@@ -13,8 +13,9 @@ import { getRun, saveRun } from "./run-store.js";
 import { getRunPlan, saveRunPlan } from "./run-plan-store.js";
 import type { CompiledNodeRecord, NodeStatus, RunStatus } from "./types.js";
 import { nowIso } from "./utils.js";
+import type { RunAction as SharedRunAction } from "@my-mate/shared-types/domain-lifecycle";
 
-export type RunAction = "pause" | "resume" | "cancel";
+export type RunAction = SharedRunAction;
 export type NodeAction = "retry" | "skip";
 
 function isTerminalRunStatus(status: RunStatus): boolean {
@@ -189,9 +190,9 @@ export function applyNodeAction(
     run.finished_at = null;
     run.last_event_id = event.event_id;
     plan.status = "running";
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(runId, nodeRuns);
+    saveRun(run, { recovery: true });
+    saveRunPlan(plan, { recovery: true });
+    saveNodeRuns(runId, nodeRuns, { recovery: true });
     return { run_id: run.run_id, node_run_id: nodeRunId, status: nodeRun.status };
   }
 

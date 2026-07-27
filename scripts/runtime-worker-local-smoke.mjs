@@ -44,7 +44,6 @@ function seedRuntimeData() {
     harness_profile: null,
     provider_connection_id: null,
     model: null,
-    openclaw_agent_id: "local:smoke",
     default_skills: ["local-smoke"],
     allowed_tools: ["read"],
     disallowed_skills: [],

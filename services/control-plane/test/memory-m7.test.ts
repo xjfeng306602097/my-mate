@@ -64,7 +64,7 @@ function sessionWithTurn(text: string, autonomyMode = "assisted"): SessionRecord
     autonomy_mode: autonomyMode,
     conversation_provider_connection_id: "m7-intelligence",
     conversation_model: "memory-test",
-    agent_profile_id: "m7-agent",
+    agent_id: "m7-agent",
   };
   saveSession(session);
   createSessionMessage({ session_id: session.session_id, role: "user", kind: "text", content: { text } });

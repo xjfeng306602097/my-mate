@@ -333,6 +333,7 @@ export async function recoverRuntimeState(input: {
           timestamp,
           `Recovered for retry (${nodeRun.attempt + 1}/${node.retry_policy.max_attempts})`,
           0,
+          { recovery: true },
         );
         node.execution_ref = createEmptyExecutionRef();
         nodeRun.finished_at = null;
@@ -401,9 +402,9 @@ export async function recoverRuntimeState(input: {
       run.updated_at = timestamp;
       plan.status = "running";
     }
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(run.run_id, nodeRuns);
+    saveRun(run, { recovery: true });
+    saveRunPlan(plan, { recovery: true });
+    saveNodeRuns(run.run_id, nodeRuns, { recovery: true });
 
     const cleanupBlocksDispatch = inventoryUnavailable || failedCleanupRunIds.has(run.run_id);
     if (cleanupBlocksDispatch && !exhausted) {

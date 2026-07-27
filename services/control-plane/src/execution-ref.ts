@@ -1,5 +1,5 @@
 import type { RuntimeDispatchResult } from "./runtime-dispatcher.js";
-import type { ExecutionRef, OpenClawReportCallbackRequest } from "./types.js";
+import type { ExecutionRef, RuntimeReportCallbackRequest } from "./types.js";
 
 function normalizeProviderRefs(
   value: Record<string, unknown> | null | undefined,
@@ -9,6 +9,7 @@ function normalizeProviderRefs(
     return next;
   }
   for (const [key, raw] of Object.entries(value)) {
+    if (key === "openclaw_task_id" || key === "openclaw_session_id") continue;
     next[key] = typeof raw === "string" ? raw : raw === null ? null : null;
   }
   return next;
@@ -25,34 +26,14 @@ export function createExecutionRef(input?: {
   target_kind?: ExecutionRef["target_kind"];
   dispatch_id?: string | null;
   provider_refs?: Record<string, string | null>;
-  openclaw_task_id?: string | null;
-  openclaw_session_id?: string | null;
 }): ExecutionRef {
-  const providerRefs = {
-    ...(input?.provider_refs || {}),
-  };
-  const openclawTaskId =
-    input?.openclaw_task_id !== undefined
-      ? input.openclaw_task_id
-      : providerRefs.openclaw_task_id ?? null;
-  const openclawSessionId =
-    input?.openclaw_session_id !== undefined
-      ? input.openclaw_session_id
-      : providerRefs.openclaw_session_id ?? null;
-
   return {
     job_id: input?.job_id ?? null,
     worker_id: input?.worker_id ?? null,
     lease_id: input?.lease_id ?? null,
     target_kind: input?.target_kind ?? null,
     dispatch_id: input?.dispatch_id ?? null,
-    provider_refs: {
-      ...providerRefs,
-      openclaw_task_id: openclawTaskId,
-      openclaw_session_id: openclawSessionId,
-    },
-    openclaw_task_id: openclawTaskId,
-    openclaw_session_id: openclawSessionId,
+    provider_refs: { ...(input?.provider_refs || {}) },
   };
 }
 
@@ -62,24 +43,23 @@ export function normalizeExecutionRef(value: unknown): ExecutionRef {
   }
 
   const record = value as Record<string, unknown>;
-  const providerRefs = normalizeProviderRefs(
-    typeof record.provider_refs === "object" && record.provider_refs !== null
-      ? (record.provider_refs as Record<string, unknown>)
-      : null,
-  );
+  const rawProviderRefs = typeof record.provider_refs === "object" && record.provider_refs !== null
+    ? (record.provider_refs as Record<string, unknown>)
+    : null;
+  const providerRefs = normalizeProviderRefs(rawProviderRefs);
 
-  const openclawTaskId =
+  const legacyTaskId =
     typeof record.openclaw_task_id === "string"
       ? record.openclaw_task_id
       : record.openclaw_task_id === null
         ? null
-        : providerRefs.openclaw_task_id ?? null;
-  const openclawSessionId =
+        : typeof rawProviderRefs?.openclaw_task_id === "string" ? rawProviderRefs.openclaw_task_id : null;
+  const legacySessionId =
     typeof record.openclaw_session_id === "string"
       ? record.openclaw_session_id
       : record.openclaw_session_id === null
         ? null
-        : providerRefs.openclaw_session_id ?? null;
+        : typeof rawProviderRefs?.openclaw_session_id === "string" ? rawProviderRefs.openclaw_session_id : null;
 
   return {
     job_id: typeof record.job_id === "string" ? record.job_id : null,
@@ -87,24 +67,27 @@ export function normalizeExecutionRef(value: unknown): ExecutionRef {
     lease_id: typeof record.lease_id === "string" ? record.lease_id : null,
     target_kind:
       record.target_kind === "local" ||
-      record.target_kind === "external-bridge" ||
       record.target_kind === "docker-worker" ||
       record.target_kind === "node-worker"
         ? record.target_kind
+        : record.target_kind === "external-bridge"
+          ? "docker-worker"
         : null,
     dispatch_id: typeof record.dispatch_id === "string" ? record.dispatch_id : null,
     provider_refs: {
       ...providerRefs,
-      openclaw_task_id: openclawTaskId,
-      openclaw_session_id: openclawSessionId,
+      ...(legacyTaskId !== null && providerRefs.task_id === undefined
+        ? { task_id: legacyTaskId }
+        : {}),
+      ...(legacySessionId !== null && providerRefs.session_id === undefined
+        ? { session_id: legacySessionId }
+        : {}),
     },
-    openclaw_task_id: openclawTaskId,
-    openclaw_session_id: openclawSessionId,
   };
 }
 
 export function createExecutionRefFromRawRef(
-  rawRef: NonNullable<OpenClawReportCallbackRequest["raw_ref"]>,
+  rawRef: NonNullable<RuntimeReportCallbackRequest["raw_ref"]>,
   current?: ExecutionRef | null,
 ): ExecutionRef {
   const base = current ? normalizeExecutionRef(current) : createEmptyExecutionRef();
@@ -113,11 +96,8 @@ export function createExecutionRefFromRawRef(
     dispatch_id: rawRef.dispatch_id,
     provider_refs: {
       ...base.provider_refs,
-      openclaw_task_id: rawRef.openclaw_task_id,
-      openclaw_session_id: rawRef.openclaw_session_id,
+      ...(rawRef.provider_refs || {}),
     },
-    openclaw_task_id: rawRef.openclaw_task_id,
-    openclaw_session_id: rawRef.openclaw_session_id,
   });
 }
 
@@ -131,10 +111,7 @@ export function createExecutionRefFromRuntimeDispatch(
     target_kind: result.target_kind,
     dispatch_id: result.dispatch_id,
     provider_refs: {
-      openclaw_task_id: result.compatibility.raw_ref.openclaw_task_id,
-      openclaw_session_id: result.compatibility.raw_ref.openclaw_session_id,
+      ...(result.compatibility.raw_ref.provider_refs || {}),
     },
-    openclaw_task_id: result.compatibility.raw_ref.openclaw_task_id,
-    openclaw_session_id: result.compatibility.raw_ref.openclaw_session_id,
   });
 }

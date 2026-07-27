@@ -563,8 +563,8 @@ function buildCostReport(records: ObservabilityRunIndexRecord[]): DashboardCostR
       estimated_costs: totals.estimated_costs,
     },
     by_agent: buildCostGroups(records, (job) => ({
-      key: job.agent_profile_id || "unassigned",
-      label: job.agent_profile_id || "Unassigned",
+      key: job.agent_id || "unassigned",
+      label: job.agent_id || "Unassigned",
     })),
     by_provider_model: buildCostGroups(records, (_job, usage) => ({
       key: `${usage?.provider || "unknown"}/${usage?.model || "unknown"}`,

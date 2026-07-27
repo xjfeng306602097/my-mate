@@ -75,6 +75,8 @@ let recoveryWatchdog: NodeJS.Timeout | null = null;
 let recoveryScanRunning = false;
 let memoryMaintenanceWatchdog: NodeJS.Timeout | null = null;
 let memoryMaintenanceRunning = false;
+let userScheduleWatchdog: NodeJS.Timeout | null = null;
+let userScheduleScanRunning = false;
 
 async function startControlPlane(): Promise<void> {
   await getMcpHost().initialize();
@@ -128,6 +130,15 @@ async function startControlPlane(): Promise<void> {
         console.log(`Conversation recovery: ${summary.recovered} interrupted checkpoint(s) inspected.`);
       }
     }).catch((error: unknown) => console.error("Conversation checkpoint recovery failed:", error));
+    void runtime.app.locals.recoverAgentDags?.().then((summary: {
+      recovered?: number;
+      resumed?: string[];
+      deferred?: string[];
+    }) => {
+      if (summary?.recovered) {
+        console.log(`Agent DAG recovery: ${summary.resumed?.length || 0} resumed, ${summary.deferred?.length || 0} waiting for human input.`);
+      }
+    }).catch((error: unknown) => console.error("Agent DAG recovery failed:", error));
   });
   if (runtime.runtimeEngine) {
     const engine = runtime.runtimeEngine;
@@ -159,6 +170,16 @@ async function startControlPlane(): Promise<void> {
     }
   }, 60_000);
   memoryMaintenanceWatchdog.unref();
+  const runUserScheduleScan = () => {
+    if (userScheduleScanRunning) return;
+    userScheduleScanRunning = true;
+    void runtime.app.locals.runDueUserSchedules?.(10)
+      .catch((error: unknown) => console.error("User schedule scan failed:", error))
+      .finally(() => { userScheduleScanRunning = false; });
+  };
+  runUserScheduleScan();
+  userScheduleWatchdog = setInterval(runUserScheduleScan, 15_000);
+  userScheduleWatchdog.unref();
 }
 
 void startControlPlane().catch((error) => {
@@ -173,6 +194,7 @@ async function shutdown(): Promise<void> {
   shutdownStarted = true;
   if (recoveryWatchdog) clearInterval(recoveryWatchdog);
   if (memoryMaintenanceWatchdog) clearInterval(memoryMaintenanceWatchdog);
+  if (userScheduleWatchdog) clearInterval(userScheduleWatchdog);
   if (runtime.app.locals.productIntelligenceWatchdog) {
     clearInterval(runtime.app.locals.productIntelligenceWatchdog);
   }

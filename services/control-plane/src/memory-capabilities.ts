@@ -25,6 +25,21 @@ import type {
   SessionRecord,
 } from "./types.js";
 import { getMemorySettings } from "./memory-settings-store.js";
+import { sessionAgentMemoryPolicy } from "./agent-memory-policy.js";
+
+function requireMemoryEnabled(session: SessionRecord): ReturnType<typeof sessionAgentMemoryPolicy> {
+  const policy = sessionAgentMemoryPolicy(session);
+  if (!policy.enabled) throw new CapabilityToolError("agent_memory_disabled", "Memory is disabled for this Agent version.");
+  return policy;
+}
+
+function requireMemoryWrite(session: SessionRecord): ReturnType<typeof sessionAgentMemoryPolicy> {
+  const policy = requireMemoryEnabled(session);
+  if (policy.write_mode === "disabled") {
+    throw new CapabilityToolError("agent_memory_write_disabled", "Memory writes are disabled for this Agent version.");
+  }
+  return policy;
+}
 
 function capabilityError(error: unknown): never {
   if (error instanceof MemoryStoreError) {
@@ -84,6 +99,7 @@ function publicMemory(record: MemoryRecord) {
 export const memoryCorePlugin: CapabilityPluginModule = {
   register(context) {
     context.registerTool("memory_search", async ({ session, arguments: args }) => {
+      requireMemoryEnabled(session);
       const configuredLimit = getMemorySettings(session.workspace_id || "default").automatic_recall.max_results;
       const limit = Math.min(20, Math.max(1, Number(args.limit || configuredLimit)));
       const principalId = getActivePrincipalId() || session.created_by;
@@ -132,6 +148,7 @@ export const memoryCorePlugin: CapabilityPluginModule = {
 
     context.registerTool("memory_remember", ({ session, arguments: args, action_id: actionId }) => {
       try {
+        const agentMemoryPolicy = requireMemoryWrite(session);
         const evidence = resolveMemorySourceOrigin(session, "create");
         const proposal = proposalFromArguments(session, args, evidence.origin, evidence.messageId, actionId);
         const scopeKind = typeof args.scope_kind === "string" ? args.scope_kind as MemoryScopeKind : "workspace";
@@ -178,7 +195,7 @@ export const memoryCorePlugin: CapabilityPluginModule = {
           risk,
           sensitivity,
         });
-        if (decision.outcome === "stage") {
+        if (decision.outcome === "stage" || agentMemoryPolicy.write_mode === "review") {
           const candidate = createMemoryCandidate({
             operation: "create",
             proposed_memory: proposal,
@@ -210,6 +227,7 @@ export const memoryCorePlugin: CapabilityPluginModule = {
 
     context.registerTool("memory_forget", ({ session, arguments: args, action_id: actionId }) => {
       try {
+        const agentMemoryPolicy = requireMemoryWrite(session);
         const memoryId = String(args.memory_id || "").trim();
         const memory = getMemory(memoryId);
         if (!memory) throw new CapabilityToolError("memory_not_found", "Memory was not found in this Workspace.");
@@ -230,7 +248,7 @@ export const memoryCorePlugin: CapabilityPluginModule = {
           risk,
           sensitivity: memory.sensitivity,
         });
-        if (decision.outcome === "stage") {
+        if (decision.outcome === "stage" || agentMemoryPolicy.write_mode === "review") {
           const candidate = createMemoryCandidate({
             operation: "delete",
             target_memory_id: memory.memory_id,

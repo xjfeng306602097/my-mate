@@ -32,13 +32,6 @@ const PROXY_RULES: RouteRule[] = [
   { method: "POST", pattern: /^\/api\/templates\/[^/]+\/archive$/ },
   { method: "POST", pattern: /^\/api\/templates\/[^/]+\/derive$/ },
   { method: "POST", pattern: /^\/api\/templates\/[^/]+\/new-version$/ },
-  { method: "GET", pattern: /^\/api\/orchestrator-profiles$/ },
-  { method: "POST", pattern: /^\/api\/orchestrator-profiles$/ },
-  { method: "GET", pattern: /^\/api\/orchestrator-profiles\/[^/]+$/ },
-  { method: "GET", pattern: /^\/api\/registry\/agent-profiles$/ },
-  { method: "POST", pattern: /^\/api\/registry\/agent-profiles$/ },
-  { method: "GET", pattern: /^\/api\/registry\/agent-profiles\/[^/]+$/ },
-  { method: "POST", pattern: /^\/api\/registry\/agent-profiles\/[^/]+\/disable$/ },
   { method: "GET", pattern: /^\/api\/registry\/provider-connections$/ },
   { method: "POST", pattern: /^\/api\/registry\/provider-connections$/ },
   { method: "GET", pattern: /^\/api\/registry\/provider-connections\/[^/]+$/ },
@@ -53,6 +46,18 @@ const PROXY_RULES: RouteRule[] = [
   { method: "POST", pattern: /^\/api\/registry\/skills$/ },
   { method: "GET", pattern: /^\/api\/registry\/skills\/[^/]+$/ },
   { method: "POST", pattern: /^\/api\/registry\/skills\/[^/]+\/disable$/ },
+  { method: "GET", pattern: /^\/api\/skill-host\/packages$/ },
+  { method: "GET", pattern: /^\/api\/skill-host\/packages\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/skill-host\/(?:reload|install)$/ },
+  { method: "POST", pattern: /^\/api\/skill-host\/packages\/[^/]+\/(?:enable|disable)$/ },
+  { method: "GET", pattern: /^\/api\/skill-host\/invocations$/ },
+  { method: "GET", pattern: /^\/api\/skill-host\/(?:profile|lockfile|sources|evaluations|observability)$/ },
+  { method: "PUT", pattern: /^\/api\/skill-host\/profile$/ },
+  { method: "POST", pattern: /^\/api\/skill-host\/lockfile\/sync$/ },
+  { method: "GET", pattern: /^\/api\/skill-host\/packages\/[^/]+\/versions$/ },
+  { method: "POST", pattern: /^\/api\/skill-host\/packages\/[^/]+\/rollback$/ },
+  { method: "POST", pattern: /^\/api\/skill-host\/sources$/ },
+  { method: "POST", pattern: /^\/api\/skill-host\/(?:marketplace\/(?:scan|install)|hermes\/inspect|evaluations)$/ },
   { method: "POST", pattern: /^\/api\/planner\/template-selection$/ },
   { method: "POST", pattern: /^\/api\/planner\/dag-draft$/ },
   { method: "POST", pattern: /^\/api\/planner\/candidate-plan$/ },
@@ -62,9 +67,32 @@ const PROXY_RULES: RouteRule[] = [
   { method: "POST", pattern: /^\/api\/missions\/[^/]+\/materializer\/(?:rebuild|verify)$/ },
   { method: "GET", pattern: /^\/api\/runtime\/summary$/ },
   { method: "GET", pattern: /^\/api\/dashboard\/summary$/ },
-  { method: "GET", pattern: /^\/api\/agents\/hosting$/ },
-  { method: "PUT", pattern: /^\/api\/agents\/[^/]+\/hosting$/ },
+  { method: "GET", pattern: /^\/api\/agents$/ },
+  { method: "GET", pattern: /^\/api\/agents\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/agents$/ },
+  { method: "POST", pattern: /^\/api\/agents\/[^/]+\/bind$/ },
+  { method: "POST", pattern: /^\/api\/agents\/[^/]+\/disable$/ },
+  { method: "GET", pattern: /^\/api\/agent-runs$/ },
+  { method: "GET", pattern: /^\/api\/agent-runs\/[^/]+\/events$/ },
+  { method: "GET", pattern: /^\/api\/agent-runs\/[^/]+\/events\/stream$/ },
+  { method: "GET", pattern: /^\/api\/agent-teams$/ },
+  { method: "POST", pattern: /^\/api\/agent-teams$/ },
+  { method: "GET", pattern: /^\/api\/agent-dags$/ },
+  { method: "POST", pattern: /^\/api\/agent-dags$/ },
+  { method: "GET", pattern: /^\/api\/agent-dags\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/agent-dags\/[^/]+\/tasks$/ },
+  { method: "POST", pattern: /^\/api\/agent-dags\/[^/]+\/(?:run|cancel|retry|aggregate)$/ },
+  { method: "GET", pattern: /^\/api\/agent-dags\/[^/]+\/gates$/ },
+  { method: "POST", pattern: /^\/api\/agent-dags\/[^/]+\/gates\/[^/]+\/resolve$/ },
   { method: "GET", pattern: /^\/api\/sessions$/ },
+  { method: "GET", pattern: /^\/api\/schedules$/ },
+  { method: "POST", pattern: /^\/api\/schedules$/ },
+  { method: "PATCH", pattern: /^\/api\/schedules\/[^/]+$/ },
+  { method: "DELETE", pattern: /^\/api\/schedules\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/schedules\/[^/]+\/runs$/ },
+  { method: "POST", pattern: /^\/api\/schedules\/[^/]+\/run$/ },
+  { method: "GET", pattern: /^\/api\/notifications$/ },
+  { method: "POST", pattern: /^\/api\/notifications\/[^/]+\/(?:read|dismiss)$/ },
   { method: "POST", pattern: /^\/api\/sessions$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/autopilot$/ },
@@ -241,6 +269,11 @@ function copyHeaders(
     headers.set("x-request-id", requestId);
   }
 
+  const lastEventId = req.header("last-event-id");
+  if (lastEventId && isSseRequest(req)) {
+    headers.set("last-event-id", lastEventId);
+  }
+
   const idempotencyKey = req.header("idempotency-key");
   if (
     idempotencyKey &&
@@ -256,13 +289,18 @@ function copyHeaders(
 }
 
 function isSseRequest(req: Request): boolean {
-  return /^\/api\/sessions\/[^/]+\/stream$/.test(getOriginalPath(req));
+  const path = getOriginalPath(req);
+  return /^\/api\/sessions\/[^/]+\/stream$/.test(path) ||
+    /^\/api\/agent-runs\/[^/]+\/events\/stream$/.test(path);
 }
 
 function proxyTimeoutMs(req: Request, config: GatewayConfig): number {
   if (
     req.method.toUpperCase() === "POST" &&
-    /^\/api\/sessions\/[^/]+\/messages$/.test(getOriginalPath(req))
+    (
+      /^\/api\/sessions\/[^/]+\/messages$/.test(getOriginalPath(req)) ||
+      /^\/api\/schedules\/[^/]+\/run$/.test(getOriginalPath(req))
+    )
   ) {
     return Math.max(config.requestTimeoutMs, 600_000);
   }
@@ -312,6 +350,7 @@ async function proxyToControlPlane(
     if (isSseRequest(req)) {
       res.setHeader("cache-control", upstream.headers.get("cache-control") || "no-cache");
       res.setHeader("connection", "keep-alive");
+      res.setHeader("x-accel-buffering", upstream.headers.get("x-accel-buffering") || "no");
       if (!upstream.body) {
         res.end();
         return;
@@ -363,7 +402,7 @@ export function createApp(overrides: Partial<GatewayConfig> = {}) {
     }
     next();
   });
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: "12mb" }));
 
   app.get("/health", (_req: Request, res: Response) => {
     res.json({

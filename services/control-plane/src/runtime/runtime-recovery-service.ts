@@ -3,9 +3,9 @@ import { appendRunEvent } from "../event-store.js";
 import { createEmptyExecutionRef } from "../execution-ref.js";
 import type { NodeProvisioner, WorkerCleanupResult } from "../node-provisioner.js";
 import { applyNodeStatus, getCompiledNode, getMutableNodeRun, recomputeFrontier } from "../node-scheduler.js";
-import { listNodeRuns, saveNodeRuns } from "../node-run-store.js";
-import { getRunPlan, saveRunPlan } from "../run-plan-store.js";
-import { getRun, listRuns, saveRun } from "../run-store.js";
+import { listNodeRuns } from "../node-run-store.js";
+import { getRunPlan } from "../run-plan-store.js";
+import { getRun, listRuns } from "../run-store.js";
 import type { RuntimeDispatcher } from "../runtime-dispatcher.js";
 import { nowIso } from "../utils.js";
 import {
@@ -23,6 +23,7 @@ import {
   type RuntimeJobRecord,
 } from "./runtime-job-store.js";
 import type { RuntimeEngine } from "./runtime-engine.js";
+import { saveRuntimeAggregate } from "./runtime-aggregate-store.js";
 import {
   findRuntimeCompensationForJob,
   listRuntimeCompensations,
@@ -218,9 +219,7 @@ async function executeCompensation(input: {
   run.finished_at = timestamp;
   run.updated_at = timestamp;
   plan.status = "failed";
-  saveRun(run);
-  saveRunPlan(plan);
-  saveNodeRuns(run.run_id, nodeRuns);
+  saveRuntimeAggregate(run, plan, nodeRuns);
 
   record.status = "cleanup_pending";
   record.updated_at = timestamp;
@@ -251,9 +250,7 @@ async function executeCompensation(input: {
       run.blocked_reason = null;
       run.finished_at = null;
       plan.status = "running";
-      saveRun(run);
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
+      saveRuntimeAggregate(run, plan, nodeRuns, { recovery: true });
       record.retry_scheduled = true;
       await input.engine.queueReadyNodes(run.run_id, "timeout_compensation");
       const redispatched = findLatestRuntimeJobRecordForNode(run.run_id, node.node_run_id);
@@ -461,9 +458,7 @@ export async function createOrGetFailureReplay(input: {
   run.updated_at = timestamp;
   run.last_event_id = requested.event_id;
   plan.status = "running";
-  saveRun(run);
-  saveRunPlan(plan);
-  saveNodeRuns(run.run_id, nodeRuns);
+  saveRuntimeAggregate(run, plan, nodeRuns, { recovery: true });
 
   await input.engine.queueReadyNodes(input.runId, "failure_replay");
   const persisted = getExecutionReplay(input.runId, record.replay_id) || record;
@@ -525,9 +520,7 @@ export async function resumeRequestedFailureReplays(input: {
     run.blocked_reason = null;
     run.current_summary = `Resuming failure replay: ${node.name}`;
     plan.status = "running";
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(run.run_id, nodeRuns);
+    saveRuntimeAggregate(run, plan, nodeRuns, { recovery: true });
     await input.engine.queueReadyNodes(run.run_id, "failure_replay_recovery");
     resumed.push(replay.replay_id);
   }

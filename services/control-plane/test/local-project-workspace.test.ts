@@ -56,6 +56,23 @@ test("Desktop Projects bind Tasks and publish durable outputs without exposing h
     assert.equal(published?.published_relative_path, "deliverables/report.md");
     assert.equal(fs.readFileSync(path.join(projectRoot, "deliverables", "report.md"), "utf8"), "# Durable output\n");
 
+    const versionOne = publishTaskArtifact({
+      sessionId,
+      fileName: "report.md",
+      content: Buffer.from("# Revised output\n", "utf8"),
+      overwrite: false,
+    });
+    const versionTwo = publishTaskArtifact({
+      sessionId,
+      fileName: "report.md",
+      content: Buffer.from("# Revised again\n", "utf8"),
+      overwrite: false,
+    });
+    assert.equal(versionOne?.published_relative_path, "deliverables/report_v1.md");
+    assert.equal(versionTwo?.published_relative_path, "deliverables/report_v2.md");
+    assert.equal(fs.readFileSync(path.join(projectRoot, "deliverables", "report.md"), "utf8"), "# Durable output\n");
+    assert.equal(fs.readFileSync(path.join(projectRoot, "deliverables", "report_v2.md"), "utf8"), "# Revised again\n");
+
     const archived = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/archive`, { reason: "Done" });
     assert.equal(archived.status, 200);
     assert.equal(getTaskWorkspace(sessionId)?.status, "archived");
@@ -127,6 +144,16 @@ test("Desktop can move assigned and unassigned Tasks between authorized Projects
       moved.body.project.project_id,
     );
     assert.equal(assignedToB.status, 201);
+    assert.equal(getTaskWorkspace(unassignedSessionId)?.project_id, moved.body.project.project_id);
+
+    const recovered = await bind(
+      unassignedSessionId,
+      projectRootB,
+      "capability-b",
+      "project-missing-after-storage-migration",
+    );
+    assert.equal(recovered.status, 201);
+    assert.equal(recovered.body.project.project_id, moved.body.project.project_id);
     assert.equal(getTaskWorkspace(unassignedSessionId)?.project_id, moved.body.project.project_id);
 
     const rejected = await bind(

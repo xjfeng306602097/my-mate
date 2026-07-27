@@ -42,10 +42,32 @@ export function saveConversationAction(action: ConversationActionRecord): Conver
   return action;
 }
 
+function normalizeConversationAction(action: ConversationActionRecord): ConversationActionRecord {
+  return {
+    ...action,
+    idempotency_key: typeof action.idempotency_key === "string" && action.idempotency_key.trim()
+      ? action.idempotency_key.trim()
+      : null,
+  };
+}
+
 export function getConversationAction(sessionId: string, actionId: string): ConversationActionRecord | null {
   const storage = getJsonStorageBackend();
   const file = actionPath(sessionId, actionId);
-  return storage.exists(file) ? storage.readJson<ConversationActionRecord>(file) : null;
+  return storage.exists(file) ? normalizeConversationAction(storage.readJson<ConversationActionRecord>(file)) : null;
+}
+
+export function findConversationActionByIdempotencyKey(
+  sessionId: string,
+  toolName: string,
+  idempotencyKey: string,
+  excludeActionId?: string,
+): ConversationActionRecord | null {
+  const normalized = idempotencyKey.trim();
+  if (!normalized) return null;
+  return listConversationActions(sessionId)
+    .reverse()
+    .find((action) => action.action_id !== excludeActionId && action.tool_name === toolName && action.idempotency_key === normalized) || null;
 }
 
 export function createConversationAction(input: {
@@ -54,6 +76,7 @@ export function createConversationAction(input: {
   toolCallId: string;
   toolName: string;
   arguments: Record<string, unknown>;
+  idempotencyKey?: string | null;
   riskLevel: ConversationActionRiskLevel;
   executor?: Exclude<CapabilityExecutor, "worker"> | "runtime-worker";
 }): ConversationActionRecord {
@@ -65,6 +88,7 @@ export function createConversationAction(input: {
     tool_call_id: input.toolCallId,
     tool_name: input.toolName,
     arguments: input.arguments,
+    idempotency_key: input.idempotencyKey?.trim() || null,
     arguments_digest: conversationActionArgumentsDigest(input.arguments),
     risk_level: input.riskLevel,
     executor: input.executor || "control-plane",
@@ -119,6 +143,6 @@ export function markConversationActionApproved(
 export function listConversationActions(sessionId: string): ConversationActionRecord[] {
   const storage = getJsonStorageBackend();
   return storage.listJsonFiles(sessionDir(sessionId))
-    .map((file) => storage.readJson<ConversationActionRecord>(file))
+    .map((file) => normalizeConversationAction(storage.readJson<ConversationActionRecord>(file)))
     .sort((left, right) => left.created_at.localeCompare(right.created_at));
 }

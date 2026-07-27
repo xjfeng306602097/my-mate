@@ -8,6 +8,7 @@ import {
   type CapabilityDescriptor,
   type CapabilityExecutor,
   type CapabilityKind,
+  type ToolExecutionPolicyInput,
   type CapabilityToolHandler,
 } from "./capability-registry.js";
 import { DATA_DIR, REPO_ROOT } from "./config.js";
@@ -31,6 +32,7 @@ export interface CapabilityPluginManifestCapability {
   executor: CapabilityExecutor;
   input_schema?: Record<string, unknown>;
   timeout_ms?: number;
+  execution_policy?: ToolExecutionPolicyInput;
   progress_label?: string;
   metadata?: Record<string, unknown>;
 }
@@ -98,6 +100,46 @@ function stringArray(value: unknown): string[] | null {
   return value.map((item) => item.trim()).filter(Boolean);
 }
 
+function executionPolicy(value: unknown, label: string): ToolExecutionPolicyInput {
+  if (!isPlainObject(value) || !["none", "external_mutation"].includes(String(value.side_effects || ""))) {
+    throw new Error(`${label} must declare execution_policy.side_effects.`);
+  }
+  const numericFields = ["timeout_ms", "max_attempts", "initial_backoff_ms", "max_backoff_ms"] as const;
+  for (const field of numericFields) {
+    if (value[field] !== undefined && (typeof value[field] !== "number" || !Number.isFinite(value[field]))) {
+      throw new Error(`${label} execution_policy.${field} must be a finite number.`);
+    }
+  }
+  const circuit = value.circuit_breaker;
+  if (circuit !== undefined && !isPlainObject(circuit)) {
+    throw new Error(`${label} execution_policy.circuit_breaker must be an object.`);
+  }
+  if (isPlainObject(circuit)) {
+    for (const field of ["failure_threshold", "reset_timeout_ms"] as const) {
+      if (circuit[field] !== undefined && (typeof circuit[field] !== "number" || !Number.isFinite(circuit[field]))) {
+        throw new Error(`${label} execution_policy.circuit_breaker.${field} must be a finite number.`);
+      }
+    }
+  }
+  const retryable = value.retryable_error_codes;
+  if (retryable !== undefined && stringArray(retryable) === null) {
+    throw new Error(`${label} execution_policy.retryable_error_codes must be a string array.`);
+  }
+  return {
+    side_effects: value.side_effects as "none" | "external_mutation",
+    timeout_ms: typeof value.timeout_ms === "number" ? value.timeout_ms : undefined,
+    max_attempts: typeof value.max_attempts === "number" ? value.max_attempts : undefined,
+    initial_backoff_ms: typeof value.initial_backoff_ms === "number" ? value.initial_backoff_ms : undefined,
+    max_backoff_ms: typeof value.max_backoff_ms === "number" ? value.max_backoff_ms : undefined,
+    retryable_error_codes: retryable === undefined ? undefined : stringArray(retryable) || undefined,
+    circuit_breaker: isPlainObject(circuit) ? {
+      failure_threshold: typeof circuit.failure_threshold === "number" ? circuit.failure_threshold : undefined,
+      reset_timeout_ms: typeof circuit.reset_timeout_ms === "number" ? circuit.reset_timeout_ms : undefined,
+    } : undefined,
+    idempotency_required: value.idempotency_required === true,
+  };
+}
+
 function assertManifest(value: unknown, manifestPath: string): CapabilityPluginManifest {
   if (!isPlainObject(value) || value.schema_version !== 1) {
     throw new Error(`${manifestPath} must declare schema_version 1.`);
@@ -147,6 +189,9 @@ function assertManifest(value: unknown, manifestPath: string): CapabilityPluginM
     if (kind === "tool" && !isPlainObject(candidate.input_schema)) {
       throw new Error(`${manifestPath} tool ${capabilityId} requires input_schema.`);
     }
+    const policy = kind === "tool"
+      ? executionPolicy(candidate.execution_policy, `${manifestPath} tool ${capabilityId}`)
+      : undefined;
     seen.add(capabilityId);
     return {
       id: capabilityId,
@@ -158,6 +203,7 @@ function assertManifest(value: unknown, manifestPath: string): CapabilityPluginM
       executor: executor as CapabilityExecutor,
       input_schema: isPlainObject(candidate.input_schema) ? candidate.input_schema : undefined,
       timeout_ms: typeof candidate.timeout_ms === "number" ? candidate.timeout_ms : undefined,
+      execution_policy: policy,
       progress_label: typeof candidate.progress_label === "string" ? candidate.progress_label : undefined,
       metadata: isPlainObject(candidate.metadata) ? candidate.metadata : undefined,
     };
@@ -224,7 +270,7 @@ function pluginRoots(): Array<{ path: string; source: CapabilityPluginStatus["so
 }
 
 function publicStatus(plugin: DiscoveredPlugin): CapabilityPluginStatus {
-  const unsupported = !["control-plane", "desktop", "browser"].includes(plugin.manifest.runtime);
+  const unsupported = !["control-plane", "desktop", "worker", "browser"].includes(plugin.manifest.runtime);
   return {
     plugin_id: plugin.manifest.id,
     name: plugin.manifest.name,
@@ -322,7 +368,7 @@ export class CapabilityPluginHost {
     this.ensureDiscovered();
     const plugin = this.plugins.get(pluginId);
     if (!plugin) throw new Error(`Capability plugin ${pluginId} was not found.`);
-    if (enabled && !["control-plane", "desktop", "browser"].includes(plugin.manifest.runtime)) {
+    if (enabled && !["control-plane", "desktop", "worker", "browser"].includes(plugin.manifest.runtime)) {
       throw new Error(`Capability plugin ${pluginId} requires the ${plugin.manifest.runtime} host.`);
     }
     const state = readState();
@@ -349,7 +395,7 @@ export class CapabilityPluginHost {
   private load(pluginId: string): void {
     const plugin = this.plugins.get(pluginId);
     if (!plugin || !plugin.enabled || plugin.loaded) return;
-    if (!["control-plane", "desktop", "browser"].includes(plugin.manifest.runtime)) return;
+    if (!["control-plane", "desktop", "worker", "browser"].includes(plugin.manifest.runtime)) return;
     if (plugin.manifest.runtime !== "control-plane") {
       try {
         for (const capability of plugin.manifest.capabilities) {
@@ -374,6 +420,7 @@ export class CapabilityPluginHost {
               descriptor,
               input_schema: capability.input_schema,
               timeout_ms: capability.timeout_ms,
+              execution_policy: capability.execution_policy,
               progress_label: capability.progress_label,
             });
           } else {
@@ -420,7 +467,7 @@ export class CapabilityPluginHost {
       }
       const declared = new Map(plugin.manifest.capabilities.map((capability) => [capability.id, capability]));
       const registered = new Set<string>();
-      const descriptor = (capability: CapabilityPluginManifestCapability): Omit<CapabilityDescriptor, "kind" | "enabled"> => ({
+      const descriptor = (capability: CapabilityPluginManifestCapability): Omit<CapabilityDescriptor, "kind" | "enabled" | "execution_policy"> => ({
         capability_id: capability.id,
         plugin_id: pluginId,
         name: capability.name,
@@ -442,6 +489,7 @@ export class CapabilityPluginHost {
             input_schema: capability.input_schema,
             handler,
             timeout_ms: capability.timeout_ms,
+            execution_policy: capability.execution_policy,
             progress_label: capability.progress_label,
           });
           registered.add(capabilityId);

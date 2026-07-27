@@ -4,6 +4,11 @@ import { getJsonStorageBackend } from "./storage-backend.js";
 import type { NodeRunRecord } from "./types.js";
 import { ensureDir, writeJsonAtomic } from "./utils.js";
 import { validateNodeRun } from "./validators.js";
+import {
+  NODE_LIFECYCLE,
+  assertLifecycleTransition,
+  parseLifecycleStatus,
+} from "@my-mate/shared-types/domain-lifecycle";
 
 function runNodeRunsDir(runId: string): string {
   return path.join(NODE_RUNS_DIR, runId);
@@ -24,11 +29,27 @@ function assertValidNodeRun(nodeRun: NodeRunRecord): void {
   }
 }
 
-export function saveNodeRuns(runId: string, nodeRuns: NodeRunRecord[]): NodeRunRecord[] {
+export function saveNodeRuns(
+  runId: string,
+  nodeRuns: NodeRunRecord[],
+  options: { recovery?: boolean } = {},
+): NodeRunRecord[] {
   ensureDir(runNodeRunsDir(runId));
   for (const nodeRun of nodeRuns) {
-    assertValidNodeRun(nodeRun);
-    writeJsonAtomic(nodeRunPath(runId, nodeRun.node_run_id), nodeRun);
+    const normalized = { ...nodeRun, status: parseLifecycleStatus(NODE_LIFECYCLE, nodeRun.status) };
+    const target = nodeRunPath(runId, nodeRun.node_run_id);
+    const storage = getJsonStorageBackend();
+    if (storage.exists(target)) {
+      const previous = storage.readJson<NodeRunRecord>(target);
+      assertLifecycleTransition(
+        NODE_LIFECYCLE,
+        parseLifecycleStatus(NODE_LIFECYCLE, previous.status),
+        normalized.status,
+        options,
+      );
+    }
+    assertValidNodeRun(normalized);
+    writeJsonAtomic(target, normalized);
   }
   return nodeRuns;
 }
@@ -36,7 +57,10 @@ export function saveNodeRuns(runId: string, nodeRuns: NodeRunRecord[]): NodeRunR
 export function listNodeRuns(runId: string): NodeRunRecord[] {
   const storage = getJsonStorageBackend();
   const files = storage.listJsonFiles(runNodeRunsDir(runId));
-  const nodeRuns = files.map((file) => storage.readJson<NodeRunRecord>(file));
+  const nodeRuns = files.map((file) => {
+    const record = storage.readJson<NodeRunRecord>(file);
+    return { ...record, status: parseLifecycleStatus(NODE_LIFECYCLE, record.status) };
+  });
 
   nodeRuns.sort((a, b) => a.node_run_id.localeCompare(b.node_run_id));
   return nodeRuns;
@@ -49,5 +73,6 @@ export function getNodeRun(runId: string, nodeRunId: string): NodeRunRecord | nu
     return null;
   }
 
-  return storage.readJson<NodeRunRecord>(filePath);
+  const record = storage.readJson<NodeRunRecord>(filePath);
+  return { ...record, status: parseLifecycleStatus(NODE_LIFECYCLE, record.status) };
 }

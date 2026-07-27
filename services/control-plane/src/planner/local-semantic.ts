@@ -1,9 +1,8 @@
 import { compileRunPlan } from "../run-plan-compiler.js";
-import { listAgentProfiles, listSkills } from "../registry-store.js";
-import { getTemplate, listTemplates } from "../template-store.js";
+import { listSkills } from "../registry-store.js";
+import { getTemplate, listCurrentPublishedTemplates } from "../template-store.js";
 import type {
   CreateTemplateRequest,
-  AgentProfileRecord,
   PlannerCandidatePlanRequest,
   PlannerCandidatePlanResponse,
   PlannerDagDraftRequest,
@@ -20,12 +19,14 @@ import { isPlainObject, nowIso, slugify } from "../utils.js";
 import type { PlannerInvocationOptions, PlannerProvider } from "./provider.js";
 import {
   collectRegistryValidation,
+  listRegistryAgents,
   ruleBasedGenerateDagDraftSync,
   ruleBasedGenerateCandidatePlanSync,
   ruleBasedRecommendTemplateSync,
   ruleBasedScoreTemplate,
   ruleBasedTokenizeIntent,
   validateRunRequestForTemplate,
+  type PlannerAgentRecord,
 } from "./rule-based.js";
 import { registerPlannerProvider } from "./registry.js";
 
@@ -215,7 +216,7 @@ function templateText(template: WorkflowTemplateRecord): string {
     node.id,
     node.name,
     node.type,
-    node.agent_profile || "",
+    node.agent_binding_snapshot?.agent_id || node.agent_id || node.agent_profile || "",
     ...node.allowed_skills,
   ]);
   return [
@@ -230,24 +231,19 @@ function templateText(template: WorkflowTemplateRecord): string {
     .join(" ");
 }
 
-function profileText(profile: AgentProfileRecord): string {
+function agentText(agent: PlannerAgentRecord): string {
   return [
-    profile.profile_id,
-    profile.name,
-    profile.description,
-    getRuntimeAgentRef(profile),
-    ...profile.default_skills,
-    ...profile.allowed_tools,
-    ...profile.policy_tags,
-    ...Object.values(profile.metadata || {})
+    agent.agent_id,
+    agent.name,
+    agent.description,
+    ...agent.skill_ids,
+    ...agent.allowed_tools,
+    ...agent.capability_tags,
+    ...Object.values(agent.metadata || {})
       .filter((value): value is string => typeof value === "string"),
   ]
     .filter((part) => part)
     .join(" ");
-}
-
-function getRuntimeAgentRef(profile: AgentProfileRecord): string {
-  return (profile.runtime_agent_ref || profile.openclaw_agent_id || "").trim();
 }
 
 function skillText(skill: SkillRecord): string {
@@ -261,6 +257,13 @@ function skillText(skill: SkillRecord): string {
   ]
     .filter((part) => part)
     .join(" ");
+}
+
+function skillDomains(skill: SkillRecord): Map<string, number> {
+  const declared = uniqueStrings([skill.category, ...skill.tags])
+    .map((value) => slugify(value))
+    .filter((value) => DOMAINS.some((domain) => domain.id === value));
+  return declared.length ? domainMapFromIds(declared) : detectDomains(skillText(skill).toLowerCase());
 }
 
 function domainOverlap(intentDomains: Map<string, number>, candidateDomains: Map<string, number>):
@@ -303,8 +306,7 @@ function scoreSkillForIntent(
   intentDomains: Map<string, number>,
   intentTokens: string[],
 ): SkillSemanticScore {
-  const skillDomains = detectDomains(skillText(skill).toLowerCase());
-  const { overlap: domainScore } = domainOverlap(intentDomains, skillDomains);
+  const { overlap: domainScore } = domainOverlap(intentDomains, skillDomains(skill));
   const tokenScore = overlapScore(intentTokens, ruleBasedTokenizeIntent(skillText(skill)));
   const combinedScore = Number((domainScore * 0.65 + tokenScore * 0.35).toFixed(4));
   return {
@@ -316,7 +318,7 @@ function scoreSkillForIntent(
 }
 
 interface ProfileSemanticScore {
-  profile: AgentProfileRecord;
+  agent: PlannerAgentRecord;
   overlap: number;
   matched: string[];
   profileTokenScore: number;
@@ -327,7 +329,7 @@ interface ProfileSemanticScore {
   defaultSkillHealth: number;
   disallowedHitCount: number;
   disallowedPenalty: number;
-  openclawReady: boolean;
+  runtimeReady: boolean;
   preferredRank: number | null;
   score: number;
 }
@@ -344,18 +346,18 @@ interface RegistryDagNode {
   recommendationIndex: number;
 }
 
-function scoreProfileForIntent(
-  profile: AgentProfileRecord,
+function scoreAgentForIntent(
+  agent: PlannerAgentRecord,
   intentDomains: Map<string, number>,
   intentTokens: string[],
   activeSkillMap: Map<string, SkillRecord>,
   preferredRanks: Map<string, number>,
 ): ProfileSemanticScore {
-  const profileDomains = detectDomains(profileText(profile).toLowerCase());
+  const profileDomains = detectDomains(agentText(agent).toLowerCase());
   const { overlap, matched } = domainOverlap(intentDomains, profileDomains);
-  const profileTokenScore = overlapScore(intentTokens, ruleBasedTokenizeIntent(profileText(profile)));
-  const disallowedSet = stringAndSlugSet(profile.disallowed_skills);
-  const defaultSkillEntries = profile.default_skills.map((skillId) => ({
+  const profileTokenScore = overlapScore(intentTokens, ruleBasedTokenizeIntent(agentText(agent)));
+  const disallowedSet = stringAndSlugSet(agent.denied_skills);
+  const defaultSkillEntries = agent.skill_ids.map((skillId) => ({
     skillId,
     skill: activeSkillMap.get(skillId) || activeSkillMap.get(slugify(skillId)) || null,
   }));
@@ -386,19 +388,19 @@ function scoreProfileForIntent(
     )
     .map((entry) => scoreSkillForIntent(entry.skill, intentDomains, intentTokens).combinedScore)
     .filter((score) => score > 0);
-  const disallowedTokenHits = profile.disallowed_skills
+  const disallowedTokenHits = agent.denied_skills
     .map((value) => overlapScore(intentTokens, ruleBasedTokenizeIntent(value)))
     .filter((score) => score > 0);
   const defaultSkillHealth =
-    profile.default_skills.length === 0 ? 1 : eligibleDefaultSkills.length / profile.default_skills.length;
+    agent.skill_ids.length === 0 ? 1 : eligibleDefaultSkills.length / agent.skill_ids.length;
   const disallowedHitCount = disallowedMatchedSkillScores.length + disallowedTokenHits.length;
   const disallowedSignal = Math.max(0, ...disallowedMatchedSkillScores, ...disallowedTokenHits);
   const disallowedPenalty = Number(
     Math.min(0.35, disallowedSignal * 0.3 + (disallowedHitCount > 0 ? 0.05 : 0)).toFixed(4),
   );
-  const openclawReady = getRuntimeAgentRef(profile).length > 0;
-  const readinessScore = (openclawReady ? 0.6 : 0) + defaultSkillHealth * 0.4;
-  const preferredRank = preferredRanks.get(profile.profile_id) ?? preferredRanks.get(slugify(profile.profile_id)) ?? null;
+  const runtimeReady = Boolean(agent.agent_id);
+  const readinessScore = (runtimeReady ? 0.6 : 0) + defaultSkillHealth * 0.4;
+  const preferredRank = preferredRanks.get(agent.agent_id) ?? preferredRanks.get(slugify(agent.agent_id)) ?? null;
   const score = Number(
     Math.max(
       0,
@@ -407,7 +409,7 @@ function scoreProfileForIntent(
   );
 
   return {
-    profile,
+    agent,
     overlap,
     matched,
     profileTokenScore,
@@ -418,7 +420,7 @@ function scoreProfileForIntent(
     defaultSkillHealth,
     disallowedHitCount,
     disallowedPenalty: Number(disallowedPenalty.toFixed(4)),
-    openclawReady,
+    runtimeReady,
     preferredRank,
     score,
   };
@@ -440,7 +442,7 @@ function compareProfileSemanticScore(a: ProfileSemanticScore, b: ProfileSemantic
   if (b.profileTokenScore !== a.profileTokenScore) {
     return b.profileTokenScore - a.profileTokenScore;
   }
-  return a.profile.profile_id.localeCompare(b.profile.profile_id);
+  return a.agent.agent_id.localeCompare(b.agent.agent_id);
 }
 
 function compareCoverageGain(
@@ -467,7 +469,7 @@ function selectProfilesForRegistrySynthesis(
   const desiredCount = Math.max(1, maxAgentNodes);
 
   const selectEntry = (entry: ProfileSemanticScore) => {
-    if (selectedProfileIds.has(entry.profile.profile_id)) {
+    if (selectedProfileIds.has(entry.agent.agent_id)) {
       return;
     }
     const coverageDomains = entry.matched.filter((domainId) => !coveredDomains.has(domainId));
@@ -475,7 +477,7 @@ function selectProfilesForRegistrySynthesis(
       entry,
       coverageDomains,
     });
-    selectedProfileIds.add(entry.profile.profile_id);
+    selectedProfileIds.add(entry.agent.agent_id);
     for (const domainId of coverageDomains) {
       coveredDomains.add(domainId);
     }
@@ -495,7 +497,7 @@ function selectProfilesForRegistrySynthesis(
   if (selected.length === 0 && remaining.length > 0) {
     const preferredDomainMatch = preferredSelected.find((entry) => entry.overlap > 0);
     const firstPick = preferredDomainMatch || remaining.find((entry) => entry.overlap > 0) || remaining[0];
-    const firstPickIndex = remaining.findIndex((entry) => entry.profile.profile_id === firstPick?.profile.profile_id);
+    const firstPickIndex = remaining.findIndex((entry) => entry.agent.agent_id === firstPick?.agent.agent_id);
     const [topScoring] = firstPickIndex >= 0 ? remaining.splice(firstPickIndex, 1) : [];
     if (topScoring) {
       selectEntry(topScoring);
@@ -548,7 +550,7 @@ function recommendTemplate(
   // Score every published template ourselves so domain rerank is not limited
   // to the rule-based top-5 (which can drop a domain-aligned template before
   // it ever reaches the rerank step).
-  const publishedTemplates = listTemplates().filter((t) => t.status === "published");
+  const publishedTemplates = listCurrentPublishedTemplates();
   const intentTokens = ruleBasedTokenizeIntent(intent);
   const reranked: PlannerTemplateCandidate[] = publishedTemplates.map((template) => {
     const baseCandidate = ruleBasedScoreTemplate(template, intentTokens);
@@ -622,9 +624,9 @@ function generateRegistryRecommendations(
 ): PlannerRegistryRecommendation[] {
   const intentDomains = detectDomains(lower(intent));
   const intentTokens = ruleBasedTokenizeIntent(intent);
-  const activeProfiles = listAgentProfiles("active");
+  const activeAgents = listRegistryAgents("active");
   const activeSkills = listSkills("active");
-  if (activeProfiles.length === 0 || intentDomains.size === 0) {
+  if (activeAgents.length === 0 || intentDomains.size === 0) {
     return [];
   }
   const preferredRanks = buildPreferredProfileRankMap(preferredProfileIds);
@@ -634,9 +636,13 @@ function generateRegistryRecommendations(
     activeSkillMap.set(slugify(skill.skill_id), skill);
   }
 
-  const scored = activeProfiles
-    .map((profile) => scoreProfileForIntent(profile, intentDomains, intentTokens, activeSkillMap, preferredRanks))
-    .filter((entry) => entry.overlap > 0 || entry.preferredRank !== null)
+  const scored = activeAgents
+    .map((agent) => scoreAgentForIntent(agent, intentDomains, intentTokens, activeSkillMap, preferredRanks))
+    .filter(
+      (entry) =>
+        entry.defaultSkillHealth === 1 &&
+        (entry.overlap > 0 || entry.profileTokenScore > 0 || entry.combinedSkillScore > 0 || entry.preferredRank !== null),
+    )
     .sort(compareProfileSemanticScore);
   const selected = selectProfilesForRegistrySynthesis(scored, intentDomains, maxAgentNodes);
 
@@ -646,7 +652,7 @@ function generateRegistryRecommendations(
 
   return selected.map(({ entry, coverageDomains }, index) => {
     const {
-      profile,
+      agent,
       overlap,
       matched,
       preferredRank,
@@ -656,14 +662,14 @@ function generateRegistryRecommendations(
       defaultSkillHealth,
       disallowedHitCount,
       disallowedPenalty,
-      openclawReady,
+      runtimeReady,
       score: profileScore,
     } = entry;
     const matchedDomains = matched
       .map((id) => DOMAINS.find((d) => d.id === id)?.label || id)
       .join(", ");
-    const disallowedSet = stringAndSlugSet(profile.disallowed_skills);
-    const defaultSkills = profile.default_skills.filter((skillId) =>
+    const disallowedSet = stringAndSlugSet(agent.denied_skills);
+    const defaultSkills = agent.skill_ids.filter((skillId) =>
       activeSkills.some((skill) => skill.skill_id === skillId),
     );
     const defaultSkillSet = stringAndSlugSet(defaultSkills);
@@ -696,21 +702,21 @@ function generateRegistryRecommendations(
     const skillIds = uniqueStrings([...defaultSkills, ...rankedSkills]).filter(
       (skillId) => !disallowedSet.has(skillId) && !disallowedSet.has(slugify(skillId)),
     );
-    const allowedTools = uniqueStrings(profile.allowed_tools);
+    const allowedTools = uniqueStrings(agent.allowed_tools);
     const warnings: string[] = [];
-    if (!openclawReady) {
-      warnings.push(`Agent profile ${profile.profile_id} has no runtime agent ref.`);
+    if (!runtimeReady) {
+      warnings.push(`Agent ${agent.agent_id} is not available in the Native Runtime.`);
     }
-    if (defaultSkillHealth < 1 && profile.default_skills.length > 0) {
+    if (defaultSkillHealth < 1 && agent.skill_ids.length > 0) {
       warnings.push(
-        `Agent profile ${profile.profile_id} has disabled default skills; ${(defaultSkillHealth * 100).toFixed(0)}% of defaults are active.`,
+        `Agent ${agent.agent_id} has unavailable locked Skills; ${(defaultSkillHealth * 100).toFixed(0)}% are active.`,
       );
     }
     if (disallowedHitCount > 0) {
-      warnings.push(`Intent terms overlap with disallowed skills on agent profile ${profile.profile_id}.`);
+      warnings.push(`Intent terms overlap with denied Skills on Agent ${agent.agent_id}.`);
     }
     if (skillIds.length === 0) {
-      warnings.push(`Agent profile ${profile.profile_id} has no domain-aligned skill.`);
+      warnings.push(`Agent ${agent.agent_id} has no domain-aligned Skill.`);
     }
     const score = preferredRank !== null ? Number(Math.max(profileScore, 0.1).toFixed(4)) : profileScore;
     const coverageLabels = coverageDomains
@@ -725,10 +731,9 @@ function generateRegistryRecommendations(
     return {
       node_id: `node_task_${index + 1}`,
       node_name: selected.length === 1 ? "Execute Task" : `Execute Task ${index + 1}`,
-      agent_profile_id: profile.profile_id,
-      agent_profile_name: profile.name,
-      runtime_agent_ref: getRuntimeAgentRef(profile) || null,
-      openclaw_agent_id: profile.openclaw_agent_id || getRuntimeAgentRef(profile) || null,
+      agent_id: agent.agent_id,
+      agent_name: agent.name,
+      runtime_agent_ref: agent.agent_id,
       skill_ids: skillIds,
       allowed_tools: allowedTools,
       score,
@@ -779,7 +784,7 @@ function buildRegistryTaskNode(recommendation: PlannerRegistryRecommendation, in
     id: recommendation.node_id,
     name: recommendation.node_name,
     type: "agent_task",
-    agent_profile: recommendation.agent_profile_id,
+    agent_id: recommendation.agent_id,
     allowed_skills: recommendation.skill_ids,
     config: {
       allowed_tools: recommendation.allowed_tools.length
@@ -807,7 +812,7 @@ function buildReviewGateNode(): WorkflowNode {
     id: "node_review_gate",
     name: "Review Gate",
     type: "approval",
-    agent_profile: null,
+    agent_id: null,
     allowed_skills: [],
     config: {
       planner_review_gate: true,
@@ -828,7 +833,7 @@ function buildEndNode(): WorkflowNode {
     id: "node_end",
     name: "End",
     type: "end",
-    agent_profile: null,
+    agent_id: null,
     allowed_skills: [],
     config: {},
     retry_policy: { max_attempts: 0, backoff_seconds: 0 },
@@ -994,7 +999,7 @@ function generateDagDraft(
       : options?.defaultMaxAgentNodes && options.defaultMaxAgentNodes > 0
         ? options.defaultMaxAgentNodes
         : ruleResult.registry_recommendations.length || 1,
-    options?.preferredSubagentProfileIds || [],
+    options?.preferredAgentIds || [],
   );
 
   if (synthesizedRecommendations.length === 0) {
@@ -1006,20 +1011,12 @@ function generateDagDraft(
   const draftTemplate = ruleResult.draft_template;
   const requireReview = options?.requireReview === true;
   const synthesizedDag = buildDomainAwareRegistryDag(synthesizedRecommendations, requireReview);
-  const agentProfileBindings: Record<string, string> = {};
-  for (const recommendation of synthesizedRecommendations) {
-    if (recommendation.agent_profile_id && recommendation.runtime_agent_ref) {
-      agentProfileBindings[recommendation.agent_profile_id] = recommendation.runtime_agent_ref;
-    }
-  }
-
   const updatedDraft = {
     ...draftTemplate,
     name: draftTemplate.name,
     description: `Domain-aware planner draft for: ${intent}`,
     nodes: synthesizedDag.nodes,
     edges: synthesizedDag.edges,
-    agent_profile_bindings: agentProfileBindings,
     metadata: {
       ...(draftTemplate.metadata || {}),
       planner_strategy: "domain_aligned_synthesis",
@@ -1039,7 +1036,6 @@ function generateDagDraft(
     workspace_scope: updatedDraft.workspace_scope || "default",
     input_schema: updatedDraft.input_schema,
     policy: updatedDraft.policy,
-    agent_profile_bindings: updatedDraft.agent_profile_bindings || {},
     nodes: updatedDraft.nodes,
     edges: updatedDraft.edges,
     metadata: updatedDraft.metadata || {},

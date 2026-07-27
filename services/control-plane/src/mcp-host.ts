@@ -348,6 +348,11 @@ export class McpHost {
         },
         input_schema: normalizeSchema(tool.inputSchema),
         timeout_ms: Math.min(120_000, connection.record.tool_timeout_ms),
+        execution_policy: {
+          side_effects: tool.annotations?.readOnlyHint === true ? "none" : "external_mutation",
+          max_attempts: tool.annotations?.readOnlyHint === true ? 2 : 1,
+          retryable_error_codes: ["mcp_server_unavailable", "mcp_tool_call_failed", "capability_tool_timeout"],
+        },
         progress_label: `Running ${connection.record.name}: ${tool.title || tool.name}`,
         handler: async ({ arguments: args }) => await this.callTool(connection.record.workspace_id, connection.record.server_id, tool.name, args),
       });

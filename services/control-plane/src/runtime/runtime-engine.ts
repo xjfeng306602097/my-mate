@@ -49,7 +49,7 @@ import type {
   CompiledNodeRecord,
   NodeRunRecord,
   NormalizedExecutionReport,
-  OpenClawReportCallbackRequest,
+  RuntimeReportCallbackRequest,
   RunRecord,
   RunPlanRecord,
 } from "../types.js";
@@ -89,6 +89,12 @@ import {
   saveExecutionReplay,
 } from "./execution-replay-store.js";
 import { getWorkspaceContextSnapshotForRun } from "./workspace-context-snapshot.js";
+import {
+  completeWorkflowAgentRun,
+  createAgentRun,
+  findWorkflowAgentRun,
+} from "../agent-runtime-store.js";
+import { saveRuntimeAggregate } from "./runtime-aggregate-store.js";
 
 export type RuntimeQueueReason =
   | "run_created"
@@ -115,7 +121,7 @@ export interface RuntimeEngineOptions {
 }
 
 export type RuntimeExecutionReport =
-  | OpenClawReportCallbackRequest
+  | RuntimeReportCallbackRequest
   | NormalizedExecutionReport;
 
 function countActiveDispatchNodes(plan: RunPlanRecord): number {
@@ -323,6 +329,7 @@ export class RuntimeEngine {
       input.timestamp,
       `Retrying after failure (${nextAttempt}/${maxAttempts})`,
       0,
+      { recovery: true },
     );
     input.node.execution_ref = createEmptyExecutionRef();
     input.nodeRun.finished_at = null;
@@ -350,9 +357,7 @@ export class RuntimeEngine {
     input.run.updated_at = input.timestamp;
     input.run.last_event_id = readyEvent.event_id;
     input.plan.status = "running";
-    saveRun(input.run);
-    saveRunPlan(input.plan);
-    saveNodeRuns(input.run.run_id, input.nodeRuns);
+    saveRuntimeAggregate(input.run, input.plan, input.nodeRuns, { recovery: true });
     this.refreshSessionsLinkedToRun?.(input.run.run_id, input.run.status);
     this.scheduleRetry(input.run.run_id);
     return readyEvent.event_id;
@@ -654,9 +659,7 @@ export class RuntimeEngine {
     run.current_summary =
       event.handoff.summary ||
       `Handoff ${event.handoff.port} routed to ${routedNodeRunIds.length} node(s)`;
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(run.run_id, nodeRuns);
+    saveRuntimeAggregate(run, plan, nodeRuns);
     this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
     return {
       routed_node_run_ids: routedNodeRunIds,
@@ -699,8 +702,7 @@ export class RuntimeEngine {
           },
           raw_ref: {
             dispatch_id: null,
-            openclaw_task_id: null,
-            openclaw_session_id: null,
+            provider_refs: {},
           },
           created_at: event.created_at,
         },
@@ -766,8 +768,7 @@ export class RuntimeEngine {
       record.compatibility = {
         ...record.compatibility,
         dispatch_id: input.report.raw_ref.dispatch_id,
-        openclaw_task_id: input.report.raw_ref.openclaw_task_id,
-        openclaw_session_id: input.report.raw_ref.openclaw_session_id,
+        provider_refs: { ...(input.report.raw_ref.provider_refs || {}) },
       };
     }
     saveRuntimeJobRecord(record);
@@ -1071,15 +1072,16 @@ export class RuntimeEngine {
       run.updated_at = timestamp;
       run.last_event_id = event.event_id;
       plan.status = run.status;
-      saveRun(run);
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
+      saveRuntimeAggregate(run, plan, nodeRuns);
       this.updateRuntimeJobFromReport({
         report,
         status: report.status,
         timestamp,
         lastEventId: jobEvent.event_id,
       });
+      if (report.status === "waiting_human" && !shouldAutoResumeNode) {
+        completeWorkflowAgentRun({ workflowRunId: run.run_id, nodeRunId: report.node_run_id, jobId: context?.jobId, status: "waiting_human" });
+      }
       this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
       if (shouldAutoResumeNode) {
         void this.queueReadyNodes(run.run_id);
@@ -1135,15 +1137,21 @@ export class RuntimeEngine {
       run.updated_at = timestamp;
       run.last_event_id = event.event_id;
       plan.status = run.status;
-      saveRun(run);
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
+      saveRuntimeAggregate(run, plan, nodeRuns);
       this.updateRuntimeJobFromReport({
         report,
         status: report.status,
         timestamp,
         lastEventId: jobEvent.event_id,
         lastError: report.error?.message || normalizedMessage,
+      });
+      completeWorkflowAgentRun({
+        workflowRunId: run.run_id,
+        nodeRunId: report.node_run_id,
+        jobId: context?.jobId,
+        status: report.status,
+        errorCode: report.error?.code || "workflow_agent_failed",
+        errorMessage: report.error?.message || normalizedMessage,
       });
       if (
         report.status === "failed" &&
@@ -1259,8 +1267,8 @@ export class RuntimeEngine {
           recoveredRun.updated_at = timestamp;
           recoveredRun.last_event_id = recoveryEvent.event_id;
           recoveredPlan.status = "running";
-          saveRun(recoveredRun);
-          saveRunPlan(recoveredPlan);
+          saveRun(recoveredRun, { recovery: true });
+          saveRunPlan(recoveredPlan, { recovery: true });
           this.refreshSessionsLinkedToRun?.(run.run_id, recoveredRun.status);
           void this.queueReadyNodes(run.run_id, "failure_recovery");
           return;
@@ -1430,6 +1438,12 @@ export class RuntimeEngine {
       created_at: timestamp,
       causation_id: nodeCompletedEvent.event_id,
     });
+    completeWorkflowAgentRun({
+      workflowRunId: run.run_id,
+      nodeRunId: report.node_run_id,
+      jobId: context?.jobId,
+      status: "completed",
+    });
     let lastEventId = nodeCompletedEvent.event_id;
 
     const unlockedNodes = unlockReadyNodeRuns(plan, nodeRuns, timestamp, {
@@ -1480,9 +1494,7 @@ export class RuntimeEngine {
         run.updated_at = timestamp;
         run.last_event_id = blockedEvent.event_id;
         plan.status = "blocked";
-        saveRun(run);
-        saveRunPlan(plan);
-        saveNodeRuns(run.run_id, nodeRuns);
+        saveRuntimeAggregate(run, plan, nodeRuns);
         this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
         return;
       }
@@ -1506,9 +1518,7 @@ export class RuntimeEngine {
       run.updated_at = timestamp;
       run.last_event_id = completedEvent.event_id;
       plan.status = "completed";
-      saveRun(run);
-      saveRunPlan(plan);
-      saveNodeRuns(run.run_id, nodeRuns);
+      saveRuntimeAggregate(run, plan, nodeRuns);
       this.updateRuntimeJobFromReport({
         report,
         status: "completed",
@@ -1527,9 +1537,7 @@ export class RuntimeEngine {
     run.updated_at = timestamp;
     run.last_event_id = lastEventId;
     plan.status = "running";
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(run.run_id, nodeRuns);
+    saveRuntimeAggregate(run, plan, nodeRuns);
     this.updateRuntimeJobFromReport({
       report,
       status: "completed",
@@ -1670,9 +1678,7 @@ export class RuntimeEngine {
             run.updated_at = dispatchTime;
             run.last_event_id = blockedEvent.event_id;
             plan.status = "blocked";
-            saveRun(run);
-            saveRunPlan(plan);
-            saveNodeRuns(runId, nodeRuns);
+            saveRuntimeAggregate(run, plan, nodeRuns);
             this.refreshSessionsLinkedToRun?.(run.run_id, run.status);
             return {
               run_id: runId,
@@ -1702,9 +1708,7 @@ export class RuntimeEngine {
           run.updated_at = dispatchTime;
           run.last_event_id = runCompletedEvent.event_id;
           plan.status = "completed";
-          saveRun(run);
-          saveRunPlan(plan);
-          saveNodeRuns(runId, nodeRuns);
+          saveRuntimeAggregate(run, plan, nodeRuns);
           return {
             run_id: runId,
             scanned_ready_nodes: readyNodes.length,
@@ -1819,6 +1823,22 @@ export class RuntimeEngine {
         targetKind: failureReplay?.frozen_job.provision.target_kind,
         workspaceContext,
       });
+      if (envelope.agent_binding_snapshot && !findWorkflowAgentRun(run.run_id, node.node_run_id, job.job_id)) {
+        const upstream = Array.isArray(node.input_payload.upstream_handoffs)
+          ? node.input_payload.upstream_handoffs as Array<Record<string, unknown>>
+          : [];
+        const parentNodeRunId = upstream.map((item) => typeof item.source_node_run_id === "string" ? item.source_node_run_id : null).find(Boolean) || null;
+        const parentAgentRun = parentNodeRunId ? findWorkflowAgentRun(run.run_id, parentNodeRunId) : null;
+        createAgentRun({
+          workspaceId: run.workspace_id,
+          kind: "workflow_node",
+          bindingSnapshot: envelope.agent_binding_snapshot,
+          workflowRunId: run.run_id,
+          nodeRunId: node.node_run_id,
+          parentAgentRunId: parentAgentRun?.agent_run_id || null,
+          metadata: { job_id: job.job_id, dispatch_sequence: job.dispatch_sequence },
+        });
+      }
       const jobCreatedEvent = appendRunEvent({
         run_id: runId,
         node_run_id: node.node_run_id,
@@ -1951,8 +1971,7 @@ export class RuntimeEngine {
             agent_runtime: job.harness.agent_runtime,
             runtime_agent_ref: job.harness.runtime_agent_ref,
             dispatch_id: dispatch.dispatch_id,
-            openclaw_task_id: rawRef.openclaw_task_id,
-            openclaw_session_id: rawRef.openclaw_session_id,
+            provider_refs: rawRef.provider_refs || {},
             dispatch_status: dispatch.status,
           };
 
@@ -2028,6 +2047,14 @@ export class RuntimeEngine {
             causation_id: failedEvent.event_id,
             idempotency_key: `job.failed:${job.job_id}:dispatch`,
           });
+          completeWorkflowAgentRun({
+            workflowRunId: runId,
+            nodeRunId: node.node_run_id,
+            jobId: job.job_id,
+            status: "failed",
+            errorCode: "runtime_dispatch_failed",
+            errorMessage: error instanceof Error ? error.message : "Runtime dispatch failed",
+          });
           this.markRuntimeJobDispatchFailed({
             record: getRuntimeJobRecord(runId, job.job_id) || runtimeJobRecord,
             error,
@@ -2057,16 +2084,12 @@ export class RuntimeEngine {
           latestRun.updated_at = failedAt;
           latestRun.last_event_id = failedEvent.event_id;
           latestPlan.status = "failed";
-          saveRun(latestRun);
-          saveRunPlan(latestPlan);
-          saveNodeRuns(runId, latestNodeRuns);
+          saveRuntimeAggregate(latestRun, latestPlan, latestNodeRuns);
         });
     }
 
     run.last_event_id = lastEventId ?? run.last_event_id;
-    saveRun(run);
-    saveRunPlan(plan);
-    saveNodeRuns(runId, nodeRuns);
+    saveRuntimeAggregate(run, plan, nodeRuns);
 
     return {
       run_id: runId,

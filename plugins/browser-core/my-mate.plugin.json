@@ -16,12 +16,14 @@
       "permission_scopes": ["browser.public.navigate"],
       "executor": "browser",
       "timeout_ms": 60000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Opening webpage",
       "input_schema": {
         "type": "object",
         "properties": {
           "url": { "type": "string", "minLength": 8, "maxLength": 2048 },
           "mode": { "type": "string", "enum": ["isolated", "chrome", "edge"], "default": "isolated" },
+          "read_only_extract": { "type": "boolean", "default": false, "description": "Stop nonessential loading after DOM readiness for a bounded read-only extraction." },
           "browser_session_id": { "type": "string", "minLength": 8, "maxLength": 120 }
         },
         "required": ["url"],
@@ -37,6 +39,7 @@
       "permission_scopes": ["browser.page.read"],
       "executor": "browser",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Reading browser page",
       "input_schema": {
         "type": "object",
@@ -57,6 +60,7 @@
       "permission_scopes": ["browser.page.interact"],
       "executor": "browser",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "external_mutation", "max_attempts": 1 },
       "progress_label": "Clicking browser element",
       "input_schema": {
         "type": "object",
@@ -77,6 +81,7 @@
       "permission_scopes": ["browser.page.input"],
       "executor": "browser",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "external_mutation", "max_attempts": 1 },
       "progress_label": "Typing into browser field",
       "input_schema": {
         "type": "object",
@@ -98,6 +103,7 @@
       "permission_scopes": ["browser.public.navigate"],
       "executor": "browser",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Going back in browser",
       "input_schema": {
         "type": "object",
@@ -115,6 +121,7 @@
       "permission_scopes": ["browser.session.close"],
       "executor": "browser",
       "timeout_ms": 30000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
       "progress_label": "Closing browser session",
       "input_schema": {
         "type": "object",

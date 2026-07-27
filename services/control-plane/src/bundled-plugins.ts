@@ -1,6 +1,7 @@
 import type { CapabilityPluginModule } from "./plugin-host.js";
 import { fetchWeb, searchWeb } from "./web-capabilities.js";
 import { memoryCorePlugin } from "./memory-capabilities.js";
+import { skillsCorePlugin } from "./skill-capabilities.js";
 
 const webCorePlugin: CapabilityPluginModule = {
   register(context) {
@@ -20,6 +21,7 @@ const webCorePlugin: CapabilityPluginModule = {
 const bundledPlugins = new Map<string, CapabilityPluginModule>([
   ["web.core", webCorePlugin],
   ["memory.core", memoryCorePlugin],
+  ["skills.core", skillsCorePlugin],
 ]);
 
 export function getBundledPluginModule(pluginId: string): CapabilityPluginModule | null {

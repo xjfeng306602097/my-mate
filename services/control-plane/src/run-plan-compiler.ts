@@ -1,119 +1,23 @@
 import type {
-  AgentProfileRecord,
   CompiledNodeRecord,
   RegistryProvenance,
-  RegistrySkillProvenance,
-  RegistryToolProvenance,
   RunPlanRecord,
   RunRecord,
-  SkillRecord,
   WorkflowTemplateRecord,
 } from "./types.js";
 import { createEmptyExecutionRef } from "./execution-ref.js";
-import { getAgentProfile, getSkill } from "./registry-store.js";
+import { getSkill } from "./registry-store.js";
 import { snapshotProviderConnection } from "./provider-connection-store.js";
 import { generateNodeRunId, isPlainObject, slugify } from "./utils.js";
 import { compileWorkPackage } from "./work-package.js";
+import { createAgentBindingSnapshot, getAgentDefinition } from "./agent-runtime-store.js";
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((item) => item.trim()).map((item) => item.trim()))];
 }
 
-function getActiveAgentProfile(agentProfile: string | null): AgentProfileRecord | null {
-  if (!agentProfile) {
-    return null;
-  }
-  const profile = getAgentProfile(agentProfile) || getAgentProfile(slugify(agentProfile));
-  if (!profile || profile.status !== "active") {
-    return null;
-  }
-  return profile;
-}
-
-function getAnyAgentProfile(agentProfile: string | null): AgentProfileRecord | null {
-  if (!agentProfile) {
-    return null;
-  }
-  return getAgentProfile(agentProfile) || getAgentProfile(slugify(agentProfile));
-}
-
-function getRegistrySkill(skillId: string): SkillRecord | null {
+function getRegistrySkill(skillId: string) {
   return getSkill(skillId) || getSkill(slugify(skillId));
-}
-
-function stringAndSlugSet(values: string[]): Set<string> {
-  const result = new Set<string>();
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      continue;
-    }
-    result.add(trimmed);
-    const slug = slugify(trimmed);
-    if (slug) {
-      result.add(slug);
-    }
-  }
-  return result;
-}
-
-function pushSource<T extends string>(sources: T[], source: T): void {
-  if (!sources.includes(source)) {
-    sources.push(source);
-  }
-}
-
-function getProfileRuntimeAgentRef(profile: AgentProfileRecord): string {
-  return (profile.runtime_agent_ref || profile.openclaw_agent_id || "").trim();
-}
-
-function resolveRuntimeAgentRef(input: {
-  template: WorkflowTemplateRecord;
-  agentProfile: string | null;
-  registryProfile: AgentProfileRecord | null;
-}): string | null {
-  if (!input.agentProfile) {
-    return null;
-  }
-
-  if (input.registryProfile) {
-    return getProfileRuntimeAgentRef(input.registryProfile);
-  }
-
-  const binding = input.template.agent_profile_bindings[input.agentProfile];
-  if (typeof binding === "string" && binding.trim()) {
-    return binding;
-  }
-  if (isPlainObject(binding) && typeof binding.runtime_agent_ref === "string") {
-    return binding.runtime_agent_ref;
-  }
-  if (isPlainObject(binding) && typeof binding.openclaw_agent_id === "string") {
-    return binding.openclaw_agent_id;
-  }
-
-  return input.agentProfile;
-}
-
-function resolveRuntimeAgentRefSource(input: {
-  template: WorkflowTemplateRecord;
-  agentProfile: string | null;
-  registryProfile: AgentProfileRecord | null;
-}): RegistryProvenance["runtime_agent_ref_source"] {
-  if (!input.agentProfile) {
-    return "none";
-  }
-  if (input.registryProfile) {
-    return "registry";
-  }
-  const binding = input.template.agent_profile_bindings[input.agentProfile];
-  if (
-    (typeof binding === "string" && binding.trim()) ||
-    (isPlainObject(binding) && typeof binding.runtime_agent_ref === "string") ||
-    (isPlainObject(binding) && typeof binding.openclaw_agent_id === "string")
-  ) {
-    return "template_binding";
-  }
-  return "fallback";
 }
 
 function resolveNodeAllowedTools(nodeConfig: Record<string, unknown>): string[] {
@@ -125,149 +29,27 @@ function resolveNodeAllowedTools(nodeConfig: Record<string, unknown>): string[] 
   return uniqueStrings(allowedTools.filter((item): item is string => typeof item === "string"));
 }
 
-function resolveAllowedTools(input: {
-  nodeConfig: Record<string, unknown>;
-  registryProfile: AgentProfileRecord | null;
-}): string[] {
-  return uniqueStrings([
-    ...(input.registryProfile?.allowed_tools || []),
-    ...resolveNodeAllowedTools(input.nodeConfig),
-  ]);
-}
-
-function resolveAllowedSkills(input: {
-  nodeSkills: string[];
-  registryProfile: AgentProfileRecord | null;
-}): string[] {
-  const combined = uniqueStrings([
-    ...(input.registryProfile?.default_skills || []),
-    ...input.nodeSkills,
-  ]);
-  const disallowed = stringAndSlugSet(input.registryProfile?.disallowed_skills || []);
-  return combined.filter((skill) => !disallowed.has(skill) && !disallowed.has(slugify(skill)));
-}
-
-function resolveSkillProvenance(input: {
-  nodeSkills: string[];
-  registryProfile: AgentProfileRecord | null;
-}): RegistrySkillProvenance[] {
-  const bindings = new Map<string, RegistrySkillProvenance>();
-  const disallowed = stringAndSlugSet(input.registryProfile?.disallowed_skills || []);
-
-  function ensure(skillId: string): RegistrySkillProvenance {
-    const trimmed = skillId.trim();
-    const existing = bindings.get(trimmed);
-    if (existing) {
-      return existing;
-    }
-
-    const skill = getRegistrySkill(trimmed);
-    const skillDisallowed = disallowed.has(trimmed) || disallowed.has(slugify(trimmed));
-    const registryStatus = skill?.status || "missing";
-    const excludedReason =
-      input.registryProfile?.status === "active" && skillDisallowed
-        ? "disallowed_by_agent_profile"
-        : null;
-    const item: RegistrySkillProvenance = {
-      skill_id: skill?.skill_id || trimmed,
-      sources: [],
-      registry_status: registryStatus,
-      included: excludedReason === null,
-      excluded_reason: excludedReason,
-    };
-    bindings.set(trimmed, item);
-    return item;
-  }
-
-  for (const skillId of input.registryProfile?.default_skills || []) {
-    if (!skillId.trim()) {
-      continue;
-    }
-    pushSource(ensure(skillId).sources, "agent_profile_default");
-  }
-  for (const skillId of input.nodeSkills) {
-    if (!skillId.trim()) {
-      continue;
-    }
-    pushSource(ensure(skillId).sources, "node_allowed");
-  }
-
-  return [...bindings.values()];
-}
-
-function resolveToolProvenance(input: {
-  nodeConfig: Record<string, unknown>;
-  registryProfile: AgentProfileRecord | null;
-}): RegistryToolProvenance[] {
-  const bindings = new Map<string, RegistryToolProvenance>();
-  function ensure(toolId: string): RegistryToolProvenance {
-    const trimmed = toolId.trim();
-    const existing = bindings.get(trimmed);
-    if (existing) {
-      return existing;
-    }
-    const item: RegistryToolProvenance = {
-      tool_id: trimmed,
-      sources: [],
-    };
-    bindings.set(trimmed, item);
-    return item;
-  }
-
-  for (const toolId of input.registryProfile?.allowed_tools || []) {
-    if (!toolId.trim()) {
-      continue;
-    }
-    pushSource(ensure(toolId).sources, "agent_profile_allowed");
-  }
-  for (const toolId of resolveNodeAllowedTools(input.nodeConfig)) {
-    if (!toolId.trim()) {
-      continue;
-    }
-    pushSource(ensure(toolId).sources, "node_allowed");
-  }
-
-  return [...bindings.values()];
-}
-
-function resolveRegistryProvenance(input: {
-  template: WorkflowTemplateRecord;
-  agentProfile: string | null;
-  registryProfile: AgentProfileRecord | null;
-  anyRegistryProfile: AgentProfileRecord | null;
-  nodeSkills: string[];
-  nodeConfig: Record<string, unknown>;
+function buildBindingProvenance(input: {
+  requestedAgentId: string | null;
+  resolvedAgentId: string | null;
+  agentStatus: RegistryProvenance["agent_status"];
+  allowedSkills: string[];
+  allowedTools: string[];
 }): RegistryProvenance {
-  const requested = input.agentProfile?.trim() || null;
-  const hasTemplateBinding =
-    !!requested && Object.prototype.hasOwnProperty.call(input.template.agent_profile_bindings, requested);
-  const runtimeAgentRefSource = resolveRuntimeAgentRefSource({
-    template: input.template,
-    agentProfile: input.agentProfile,
-    registryProfile: input.registryProfile,
-  });
-
   return {
-    agent_profile_requested: requested,
-    agent_profile_resolved: input.anyRegistryProfile?.profile_id || null,
-    agent_profile_status: input.anyRegistryProfile?.status || (requested ? "missing" : null),
-    agent_profile_source: input.registryProfile
-      ? "registry"
-      : hasTemplateBinding
-        ? "template_binding"
-        : requested
-          ? "fallback"
-          : "none",
-    runtime_agent_ref_source: runtimeAgentRefSource,
-    openclaw_agent_id_source: runtimeAgentRefSource,
-    skill_bindings: resolveSkillProvenance({
-      nodeSkills: input.nodeSkills,
-      registryProfile: input.registryProfile,
-    }),
-    tool_bindings: resolveToolProvenance({
-      nodeConfig: input.nodeConfig,
-      registryProfile: input.registryProfile,
-    }),
+    agent_id_requested: input.requestedAgentId,
+    agent_id_resolved: input.resolvedAgentId,
+    agent_status: input.agentStatus,
+    agent_source: input.resolvedAgentId ? "registry" : "none",
+    runtime_agent_ref_source: input.resolvedAgentId ? "registry" : "none",
+    skill_bindings: input.allowedSkills.map((skillId) => ({
+      skill_id: skillId,
+      sources: ["node_allowed"],
+      registry_status: getRegistrySkill(skillId)?.status || "missing",
+      included: true,
+      excluded_reason: null,
+    })),
+    tool_bindings: input.allowedTools.map((toolId) => ({ tool_id: toolId, sources: ["node_allowed"] })),
   };
 }
 
@@ -294,40 +76,65 @@ export function compileRunPlan(
   const compiledNodes: CompiledNodeRecord[] = template.nodes.map((node, index) => {
     const nodeRunId = generateNodeRunId(node.id);
     const initialStatus = (incomingCount.get(node.id) || 0) === 0 ? "ready" : "pending";
-    const anyRegistryProfile = getAnyAgentProfile(node.agent_profile);
-    const registryProfile =
-      anyRegistryProfile?.status === "active"
-        ? anyRegistryProfile
-        : getActiveAgentProfile(node.agent_profile);
-    const runtimeAgentRef = resolveRuntimeAgentRef({
-      template,
-      agentProfile: node.agent_profile,
-      registryProfile,
+    let agentBindingSnapshot = node.agent_binding_snapshot || null;
+    if (!agentBindingSnapshot && node.agent_id) {
+      try {
+        agentBindingSnapshot = createAgentBindingSnapshot({
+          workspaceId: run.workspace_id,
+          agentId: node.agent_id,
+          agentVersion: node.agent_version || null,
+          bindingMode: "pinned",
+        });
+      } catch {
+        // The runtime surfaces unavailable Agent bindings through normal evidence.
+      }
+    }
+    const runtimeAgentRef = agentBindingSnapshot?.agent_id || node.agent_id || null;
+    const providerConnection = agentBindingSnapshot
+      ? snapshotProviderConnection(agentBindingSnapshot.provider_connection_id, agentBindingSnapshot.model)
+      : null;
+    const snapshotSkills = agentBindingSnapshot?.skill_policy.locked_skills.map((item) => item.skill_id) || [];
+    const snapshotTools = agentBindingSnapshot?.tool_policy.allowed_tools || [];
+    const deniedSnapshotTools = new Set(agentBindingSnapshot?.tool_policy.denied_tools || []);
+    const requestedSkills = uniqueStrings(node.allowed_skills);
+    const requestedTools = resolveNodeAllowedTools(node.config);
+    const allowedSkills = agentBindingSnapshot
+      ? requestedSkills.length
+        ? requestedSkills.filter((skill) => snapshotSkills.includes(skill))
+        : snapshotSkills
+      : requestedSkills;
+    const allowedTools = (agentBindingSnapshot
+      ? requestedTools.length
+        ? requestedTools.filter((tool) => snapshotTools.includes(tool))
+        : snapshotTools
+      : requestedTools)
+      .filter((tool) => !deniedSnapshotTools.has(tool));
+    const requestedAgentId = node.agent_id || null;
+    const requestedDefinition = requestedAgentId
+      ? getAgentDefinition(requestedAgentId, run.workspace_id)
+      : null;
+    const registryProvenance = buildBindingProvenance({
+      requestedAgentId,
+      resolvedAgentId: agentBindingSnapshot?.agent_id || null,
+      agentStatus: requestedDefinition?.status || (requestedAgentId ? "missing" : null),
+      allowedSkills,
+      allowedTools,
     });
-    const providerConnection = snapshotProviderConnection(
-      registryProfile?.provider_connection_id,
-      runtimeAgentRef,
-    );
 
     return {
       node_run_id: nodeRunId,
       node_id: node.id,
       name: node.name,
       type: node.type,
-      agent_profile: node.agent_profile,
+      agent_id: agentBindingSnapshot?.agent_id || node.agent_id || null,
+      agent_version: agentBindingSnapshot?.agent_version || null,
+      agent_binding_snapshot: agentBindingSnapshot,
       runtime_agent_ref: runtimeAgentRef,
-      agent_runtime: registryProfile?.agent_runtime ?? null,
-      harness_profile: registryProfile?.harness_profile ?? null,
+      agent_runtime: providerConnection?.agent_runtime || "local",
+      harness_profile: null,
       provider_connection: providerConnection,
-      openclaw_agent_id: runtimeAgentRef,
-      allowed_skills: resolveAllowedSkills({
-        nodeSkills: node.allowed_skills,
-        registryProfile,
-      }),
-      allowed_tools: resolveAllowedTools({
-        nodeConfig: node.config,
-        registryProfile,
-      }),
+      allowed_skills: allowedSkills,
+      allowed_tools: allowedTools,
       approval_kind: node.approval_kind,
       human_input_schema: node.human_input_schema,
       status: initialStatus,
@@ -343,14 +150,7 @@ export function compileRunPlan(
       },
       output_contract: resolveOutputContract(node.config),
       execution_ref: createEmptyExecutionRef(),
-      registry_provenance: resolveRegistryProvenance({
-        template,
-        agentProfile: node.agent_profile,
-        registryProfile,
-        anyRegistryProfile,
-        nodeSkills: node.allowed_skills,
-        nodeConfig: node.config,
-      }),
+      registry_provenance: registryProvenance,
       work_package: compileWorkPackage(node, index),
     };
   });
@@ -376,6 +176,8 @@ export function compileRunPlan(
     planner_context: {
       template_selected_by: "explicit_request",
       validation_passed: true,
+      agent_binding_schema_version: 2,
+      legacy_profile_fallback_reads: 0,
     },
     status: run.status,
     created_at: run.created_at,

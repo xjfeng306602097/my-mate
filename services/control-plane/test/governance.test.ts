@@ -6,7 +6,7 @@ import {
   type RequestAuthContext,
   type WorkspaceRole,
 } from "@my-mate/shared-types/identity";
-import { upsertAgentProfile } from "../src/registry-store.js";
+import { upsertAgentDefinition } from "../src/agent-runtime-store.js";
 import { getJson, postJson, resetTestRoot, startTestServer } from "./helpers.js";
 
 const SECRET = "governance-test-secret";
@@ -44,19 +44,16 @@ function authHeaders(input: {
   };
 }
 
-const profilePayload = {
-  profile_id: "governed-agent",
+const agentPayload = {
+  agent_id: "governed-agent",
   name: "Governed Agent",
   description: "Governance protocol fixture",
-  runtime_agent_ref: "runtime-governed-agent",
-  agent_runtime: "docker-worker",
-  openclaw_agent_id: "runtime-governed-agent",
-  default_skills: [],
-  allowed_tools: ["read"],
-  disallowed_skills: [],
-  policy_tags: ["governed"],
-  status: "active" as const,
-  metadata: {},
+  version: {
+    role: "worker" as const,
+    responsibility: "Execute governed test work.",
+    tool_policy: { allowed_tools: ["read"], denied_tools: [], max_tool_rounds: 8 },
+    runtime_policy: { runtime: "native" as const, sandbox: "auto" as const, timeout_seconds: 300 },
+  },
 };
 
 const templateDraftPayload = {
@@ -127,13 +124,13 @@ test("governance enforced mode requires independent approval and detects baselin
 
     const protectedRequests = [
       {
-        action: "agent_profile.upsert",
-        path: "/api/registry/agent-profiles",
-        body: profilePayload,
+        action: "agent.upsert",
+        path: "/api/agents",
+        body: agentPayload,
       },
       {
-        action: "agent_profile.disable",
-        path: "/api/registry/agent-profiles/governed-agent/disable",
+        action: "agent.disable",
+        path: "/api/agents/governed-agent/disable",
         body: {},
       },
       {
@@ -167,10 +164,10 @@ test("governance enforced mode requires independent approval and detects baselin
     const proposed = await postJson(
       `${server.baseUrl}/api/governance/changes`,
       {
-        action: "agent_profile.upsert",
+        action: "agent.upsert",
         resource_id: "governed-agent",
-        reason: "Introduce a reviewed runtime profile",
-        payload: profilePayload,
+        reason: "Introduce a reviewed Native Agent",
+        payload: agentPayload,
       },
       owner,
     );
@@ -210,24 +207,29 @@ test("governance enforced mode requires independent approval and detects baselin
     assert.equal(applied.body.status, "applied");
     assert.equal(applied.body.result.resource_id, "governed-agent");
 
-    const profiles = await getJson(`${server.baseUrl}/api/registry/agent-profiles`, owner);
-    assert.equal(profiles.body.items.length, 1);
-    assert.equal(profiles.body.items[0].name, "Governed Agent");
+    const agents = await getJson(`${server.baseUrl}/api/agents`, owner);
+    assert.equal(agents.body.items.length, 1);
+    assert.equal(agents.body.items[0].name, "Governed Agent");
 
     const driftProposal = await postJson(
       `${server.baseUrl}/api/governance/changes`,
       {
-        action: "agent_profile.upsert",
+        action: "agent.upsert",
         resource_id: "governed-agent",
-        reason: "Rename the governed profile",
-        payload: { ...profilePayload, name: "Governed Agent V2" },
+        reason: "Rename the governed Agent",
+        payload: { ...agentPayload, name: "Governed Agent V2" },
       },
       owner,
     );
     assert.equal(driftProposal.status, 201);
     const driftChangeId = driftProposal.body.change_id as string;
 
-    upsertAgentProfile({ ...profilePayload, name: "Concurrent Update" });
+    upsertAgentDefinition({
+      workspaceId: "alpha",
+      agentId: "governed-agent",
+      name: "Concurrent Update",
+      version: agentPayload.version,
+    });
 
     const driftApproved = await postJson(
       `${server.baseUrl}/api/governance/changes/${driftChangeId}/approve`,

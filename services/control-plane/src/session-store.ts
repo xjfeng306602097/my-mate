@@ -3,8 +3,15 @@ import { SESSIONS_DIR } from "./config.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getActivePrincipalId, getActiveWorkspaceId } from "./request-security.js";
 import { ensureCoreMemorySnapshot } from "./memory-snapshot-store.js";
+import { resolveSessionAgentBinding } from "./agent-runtime-store.js";
 import type { CreateSessionRequest, SessionRecord } from "./types.js";
 import { ensureDir, generateSessionId, nowIso, writeJsonAtomic } from "./utils.js";
+import {
+  SESSION_LIFECYCLE,
+  assertLifecycleTransition,
+  parseLifecycleStatus,
+} from "@my-mate/shared-types/domain-lifecycle";
+import { assertSchemaValid, validateSession } from "./validators.js";
 
 function sessionPath(sessionId: string): string {
   return path.join(SESSIONS_DIR, `${sessionId}.json`);
@@ -33,7 +40,14 @@ export function saveSession(session: SessionRecord): SessionRecord {
   if (activeWorkspaceId && normalized.workspace_id !== activeWorkspaceId) {
     throw new Error("WORKSPACE_SCOPE_MISMATCH");
   }
-  writeJsonAtomic(sessionPath(normalized.session_id), normalized);
+  const storage = getJsonStorageBackend();
+  const target = sessionPath(normalized.session_id);
+  if (storage.exists(target)) {
+    const previous = normalizeSessionRecord(storage.readJson<SessionRecord>(target));
+    assertLifecycleTransition(SESSION_LIFECYCLE, previous.status, normalized.status);
+  }
+  assertSchemaValid(validateSession, normalized, "Session");
+  writeJsonAtomic(target, normalized);
   return normalized;
 }
 
@@ -44,10 +58,6 @@ export function createSession(input: CreateSessionRequest): SessionRecord {
   const currentGoal =
     typeof input.initial_message === "string" && input.initial_message.trim()
       ? input.initial_message.trim()
-      : null;
-  const orchestratorProfileId =
-    typeof input.orchestrator_profile_id === "string" && input.orchestrator_profile_id.trim()
-      ? input.orchestrator_profile_id.trim()
       : null;
   const providerConnectionId =
     typeof input.provider_connection_id === "string" && input.provider_connection_id.trim()
@@ -91,9 +101,11 @@ export function createSession(input: CreateSessionRequest): SessionRecord {
         ? "Clarify constraints or ask the orchestrator to draft the workflow."
         : "Describe the task so the orchestrator can frame the objective.",
       latest_orchestrator_intent: currentGoal ? "capture_goal" : "idle",
-      orchestrator_profile_id: orchestratorProfileId,
       conversation_provider_connection_id: providerConnectionId,
       conversation_model: conversationModel,
+      agent_id: typeof input.agent_id === "string" && input.agent_id.trim() ? input.agent_id.trim() : "default-agent",
+      agent_version: typeof input.agent_version === "number" && Number.isInteger(input.agent_version) ? input.agent_version : null,
+      agent_binding_mode: input.agent_binding_mode === "follow_latest" ? "follow_latest" : "pinned",
       autonomy_mode:
         input.autonomy_mode === "review_first" || input.autonomy_mode === "autopilot"
           ? input.autonomy_mode
@@ -102,14 +114,40 @@ export function createSession(input: CreateSessionRequest): SessionRecord {
     },
   };
 
+  // Bind a complete Agent snapshot at session creation when a usable provider exists.
+  // Draft sessions without a configured provider remain valid and are bound lazily on first execution.
+  try {
+    const binding = resolveSessionAgentBinding(session);
+    session.metadata = { ...session.metadata, agent_binding_snapshot: binding };
+  } catch {
+    // Provider setup may be completed after creating a draft Session.
+  }
+
   const saved = saveSession(session);
   ensureCoreMemorySnapshot(saved);
   return saved;
 }
 
 function normalizeSessionRecord(record: SessionRecord): SessionRecord {
-  return {
+  const sourceMetadata = record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
+    ? record.metadata
+    : {};
+  const legacyMetadata = sourceMetadata as Record<string, unknown>;
+  const {
+    orchestrator_profile_id: legacyOrchestratorProfileId,
+    agent_profile_id: legacyAgentProfileId,
+    ...canonicalMetadata
+  } = legacyMetadata;
+  const agentId = typeof canonicalMetadata.agent_id === "string" && canonicalMetadata.agent_id.trim()
+    ? canonicalMetadata.agent_id.trim()
+    : typeof legacyOrchestratorProfileId === "string" && legacyOrchestratorProfileId.trim()
+      ? legacyOrchestratorProfileId.trim()
+      : typeof legacyAgentProfileId === "string" && legacyAgentProfileId.trim()
+        ? legacyAgentProfileId.trim()
+        : "default-agent";
+  const normalized = {
     ...record,
+    status: parseLifecycleStatus(SESSION_LIFECYCLE, record.status),
     workspace_id:
       typeof record.workspace_id === "string" && record.workspace_id.trim()
         ? record.workspace_id.trim()
@@ -117,18 +155,25 @@ function normalizeSessionRecord(record: SessionRecord): SessionRecord {
     archived: record.archived === true,
     archived_at: typeof record.archived_at === "string" ? record.archived_at : null,
     archived_by: typeof record.archived_by === "string" ? record.archived_by : null,
-    hidden: record.hidden === true,
-    hidden_at: typeof record.hidden_at === "string" ? record.hidden_at : null,
-    hidden_by: typeof record.hidden_by === "string" ? record.hidden_by : null,
+    hidden: record.hidden === true || record.metadata?.hidden_from_task_list === true,
+    hidden_at: typeof record.hidden_at === "string"
+      ? record.hidden_at
+      : record.metadata?.hidden_from_task_list === true
+        ? record.updated_at
+        : null,
+    hidden_by: typeof record.hidden_by === "string"
+      ? record.hidden_by
+      : record.metadata?.hidden_from_task_list === true
+        ? "session-compatibility-projection"
+        : null,
     confirmed_proposal_id:
       typeof record.confirmed_proposal_id === "string" && record.confirmed_proposal_id.trim()
         ? record.confirmed_proposal_id.trim()
         : null,
-    metadata:
-      record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
-        ? record.metadata
-        : {},
+    metadata: { ...canonicalMetadata, agent_id: agentId },
   };
+  assertSchemaValid(validateSession, normalized, "Session");
+  return normalized;
 }
 
 export function listSessions(): SessionRecord[] {

@@ -13,6 +13,7 @@ import type {
   SessionMessageRecord,
   SessionRecord,
 } from "./types.js";
+import { resolveSessionAgentId } from "./session-agent-id.js";
 
 const OPERATIONS = new Set(["create", "update", "supersede", "delete", "ignore"]);
 const KINDS = new Set<MemoryKind>(["preference", "fact", "convention", "decision", "lesson"]);
@@ -90,9 +91,7 @@ function allowedScope(session: SessionRecord, requested: MemoryScopeKind): { kin
     return { kind: "project", id: taskWorkspace.project_id };
   }
   if (requested === "agent" && settings.scope_policy.agent_memory_enabled) {
-    const agentId = typeof session.metadata.agent_profile_id === "string" && session.metadata.agent_profile_id.trim()
-      ? session.metadata.agent_profile_id.trim()
-      : "default-agent";
+    const agentId = resolveSessionAgentId(session);
     return { kind: "agent", id: agentId };
   }
   return { kind: "user", id: principalId };
@@ -103,9 +102,7 @@ function visibleTargets(session: SessionRecord) {
   const principalId = getActivePrincipalId() || session.created_by;
   const taskWorkspace = getTaskWorkspace(session.session_id);
   const settings = getMemorySettings(workspaceId);
-  const agentId = typeof session.metadata.agent_profile_id === "string" && session.metadata.agent_profile_id.trim()
-    ? session.metadata.agent_profile_id.trim()
-    : "default-agent";
+  const agentId = resolveSessionAgentId(session);
   return listAllMemories({ status: "active" }).filter((memory) =>
     (memory.scope_kind === "workspace" && memory.scope_id === workspaceId) ||
     (memory.scope_kind === "user" && memory.scope_id === principalId) ||

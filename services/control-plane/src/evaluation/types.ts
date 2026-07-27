@@ -29,6 +29,19 @@ export interface SnapshotCompleteness {
   blind_spots: string[];
 }
 
+export type EvidenceArtifactRecord = Pick<
+  ArtifactRecord,
+  | "artifact_id"
+  | "run_id"
+  | "node_run_id"
+  | "type"
+  | "name"
+  | "storage_uri"
+  | "mime_type"
+  | "size_bytes"
+  | "created_at"
+>;
+
 export interface RunEvidenceSnapshot {
   schema_version: 1;
   snapshot_id: string;
@@ -46,7 +59,7 @@ export interface RunEvidenceSnapshot {
   events: EventRecord[];
   evidence: WorkerEvidence[];
   handoffs: NodeHandoffRecord[];
-  artifacts: ArtifactRecord[];
+  artifacts: EvidenceArtifactRecord[];
   approvals: ApprovalRecord[];
   human_inputs: HumanInputRecord[];
   interventions: SessionInterventionRecord[];

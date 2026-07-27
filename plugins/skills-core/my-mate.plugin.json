@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "id": "skills.core",
+  "name": "Executable Skill Host",
+  "version": "1.0.0",
+  "description": "Discover, progressively load, and audit versioned Skill packages without granting package code direct execution.",
+  "runtime": "control-plane",
+  "entrypoint": "builtin:skills.core",
+  "enabled_by_default": true,
+  "capabilities": [
+    {
+      "id": "skill_search",
+      "kind": "tool",
+      "name": "Search installed Skills",
+      "description": "Search the enabled Skill catalog for a reusable workflow that matches the current task. Returns metadata only; use skill_load before following a Skill.",
+      "risk_level": "T0",
+      "permission_scopes": ["skill.read"],
+      "executor": "control-plane",
+      "timeout_ms": 10000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
+      "progress_label": "Searching Skills",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 12, "default": 5 }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "skill_load",
+      "kind": "tool",
+      "name": "Load a Skill",
+      "description": "Load the exact instructions and declared execution boundary for one enabled Skill. After loading, only its declared tools and Skill resource access remain available.",
+      "risk_level": "T0",
+      "permission_scopes": ["skill.read"],
+      "executor": "control-plane",
+      "timeout_ms": 10000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
+      "progress_label": "Loading Skill instructions",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "skill_id": { "type": "string", "minLength": 1, "maxLength": 120 }
+        },
+        "required": ["skill_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "skill_resource_read",
+      "kind": "tool",
+      "name": "Read a Skill resource",
+      "description": "Read one resource explicitly declared by the currently installed Skill package.",
+      "risk_level": "T0",
+      "permission_scopes": ["skill.read"],
+      "executor": "control-plane",
+      "timeout_ms": 10000,
+      "execution_policy": { "side_effects": "none", "max_attempts": 2 },
+      "progress_label": "Reading Skill resource",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "skill_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "resource": { "type": "string", "minLength": 1, "maxLength": 240 }
+        },
+        "required": ["skill_id", "resource"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "metadata": {
+    "package_code_execution": false,
+    "progressive_loading": true
+  }
+}

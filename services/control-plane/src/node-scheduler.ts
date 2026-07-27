@@ -4,6 +4,7 @@ import type {
   NodeStatus,
   RunPlanRecord,
 } from "./types.js";
+import { NODE_LIFECYCLE, assertLifecycleTransition } from "@my-mate/shared-types/domain-lifecycle";
 
 function toProgress(status: NodeRunRecord["status"], timestamp: string) {
   if (status === "ready") {
@@ -68,6 +69,7 @@ export function applyNodeStatus(
   timestamp: string,
   message: string,
   percent: number,
+  options: { recovery?: boolean } = {},
 ): void {
   const compiledNode = getCompiledNode(plan, nodeRunId);
   const nodeRun = getMutableNodeRun(nodeRuns, nodeRunId);
@@ -76,6 +78,7 @@ export function applyNodeStatus(
   }
 
   const previousStatus = nodeRun.status;
+  assertLifecycleTransition(NODE_LIFECYCLE, previousStatus, status, options);
   compiledNode.status = status;
   nodeRun.status = status;
   nodeRun.progress = {

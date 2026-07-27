@@ -13,12 +13,13 @@ export function buildMissionUiPlan(input: {
   run: RunRecord | null;
   pendingApprovals: number;
   pendingHumanInputs: number;
+  pendingWorkspaceChanges?: number;
   resultCount: number;
   qualityState: string;
   alerts: SupervisionAlertRecord[];
   autopilot: AutopilotControllerRecord | null;
 }): MissionUiPlan {
-  const decisions = input.pendingApprovals + input.pendingHumanInputs;
+  const decisions = input.pendingApprovals + input.pendingHumanInputs + (input.pendingWorkspaceChanges || 0);
   const runStatus = input.run?.status || "idle";
   const failed = ["failed", "cancelled"].includes(runStatus);
   const completed = runStatus === "completed";
@@ -83,7 +84,13 @@ export function buildMissionUiPlan(input: {
     generated_at: nowIso(),
     primary_action:
       input.alerts[0]?.recommended_action ||
-      (phase === "clarify" ? "review-task-conversation" : phase === "ready" ? "start-task-work" : null),
+      (phase === "decision"
+        ? "open-task-inbox"
+        : phase === "clarify"
+          ? "review-task-conversation"
+          : phase === "ready"
+            ? "start-task-work"
+            : null),
     blocks: blocks.sort((left, right) => left.priority - right.priority),
     fallback_component: "task_guidance",
   };

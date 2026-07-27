@@ -87,10 +87,7 @@ function inferAgentRuntime(envelope: DispatchEnvelope): RuntimeAgentRuntime {
   if (explicit) {
     return explicit;
   }
-  if (asNonEmptyString(envelope.openclaw_agent_id) || asNonEmptyString(envelope.runtime_agent_ref)) {
-    return "openclaw";
-  }
-  return "local";
+  return asNonEmptyString(envelope.provider_connection?.agent_runtime) || "local";
 }
 
 const HIGH_RISK_TOOL_PATTERN = /(?:^|[-_.])(write|edit|patch|apply_patch|save|delete|remove|rename|move|shell|terminal|exec|command|bash|powershell|cmd|git)(?:$|[-_.])/i;
@@ -100,7 +97,6 @@ function requestedTargetKind(envelope: DispatchEnvelope): WorkerTargetKind | nul
   const explicitTarget = asNonEmptyString(nodeConfig.worker_target_kind);
   if (
     explicitTarget === "local" ||
-    explicitTarget === "external-bridge" ||
     explicitTarget === "docker-worker" ||
     explicitTarget === "node-worker"
   ) {
@@ -119,10 +115,7 @@ function resolveExecutionPolicy(envelope: DispatchEnvelope): RuntimeExecutionPol
   const reasons: string[] = [];
 
   let resolvedTarget: WorkerTargetKind;
-  if (runtime === "openclaw") {
-    resolvedTarget = "external-bridge";
-    reasons.push("OpenClaw execution remains behind the configured external bridge.");
-  } else if (hasMutableProjectAccess) {
+  if (hasMutableProjectAccess) {
     resolvedTarget = "docker-worker";
     reasons.push(`Mutable project tools require sandbox execution: ${highRiskTools.join(", ")}.`);
     if (requestedTarget === "local") {
@@ -143,7 +136,6 @@ function resolveExecutionPolicy(envelope: DispatchEnvelope): RuntimeExecutionPol
     );
     if (
       configuredDefault === "local" ||
-      configuredDefault === "external-bridge" ||
       configuredDefault === "docker-worker" ||
       configuredDefault === "node-worker"
     ) {
@@ -201,7 +193,6 @@ const HARNESS_COMMAND_ENV_NAMES = [
   "MY_MATE_CODEX_COMMAND",
   "MY_MATE_CLAUDE_SDK_COMMAND",
   "MY_MATE_KIMI_COMMAND",
-  "MY_MATE_OPENCLAW_WORKER_BRIDGE_URL",
 ] as const;
 
 function buildProvisionEnv(envelope: DispatchEnvelope): Record<string, string> {
@@ -232,8 +223,6 @@ function buildProvisionEnv(envelope: DispatchEnvelope): Record<string, string> {
     } else if (connection.agent_runtime === "kimi") {
       if (connection.base_url) env.KIMI_BASE_URL = connection.base_url;
       if (model) env.MY_MATE_KIMI_MODEL = model;
-    } else if (connection.agent_runtime === "openclaw") {
-      if (connection.base_url) env.MY_MATE_OPENCLAW_WORKER_BRIDGE_URL = connection.base_url;
     }
   }
   const configuredEnv = isRecord(nodeConfig.worker_env)

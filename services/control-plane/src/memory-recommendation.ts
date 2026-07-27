@@ -17,6 +17,7 @@ import type {
   SessionMessageRecord,
   SessionRecord,
 } from "./types.js";
+import { resolveSessionAgentId } from "./session-agent-id.js";
 
 const MAX_RECOMMENDATIONS = 8;
 const MIN_RELEVANCE_SCORE = 0.12;
@@ -48,11 +49,6 @@ function relevanceScore(query: Set<string>, memory: MemoryRecord): number {
   return Number(Math.min(1, overlap * 0.72 + memory.importance * 0.18 + memory.confidence * 0.1).toFixed(4));
 }
 
-function currentAgentId(session: SessionRecord): string {
-  const value = session.metadata.agent_profile_id;
-  return typeof value === "string" && value.trim() ? value.trim() : "default-agent";
-}
-
 function currentlyValid(memory: MemoryRecord, timestamp: string): boolean {
   if (memory.status !== "active") return false;
   if (memory.valid_from && memory.valid_from > timestamp) return false;
@@ -67,7 +63,7 @@ function visibleToSession(memory: MemoryRecord, session: SessionRecord, principa
   if (memory.scope_kind === "workspace") return memory.scope_id === workspaceId;
   if (memory.scope_kind === "user") return memory.scope_id === principalId;
   if (memory.scope_kind === "project") return memory.scope_id === getTaskWorkspace(session.session_id)?.project_id;
-  return getMemorySettings(workspaceId).scope_policy.agent_memory_enabled && memory.scope_id === currentAgentId(session);
+  return getMemorySettings(workspaceId).scope_policy.agent_memory_enabled && memory.scope_id === resolveSessionAgentId(session);
 }
 
 function summary(memory: MemoryRecord): string {

@@ -1,0 +1,780 @@
+{
+  "template_id": "software-product-delivery-v2",
+  "version": 2,
+  "name": "Software Product Delivery",
+  "status": "draft",
+  "description": "从产品拆分到前后端并行开发、自动化测试、独立验收、发布审批和部署的生产级软件交付流程。",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": {
+        "type": "string",
+        "title": "Product goal"
+      },
+      "acceptance_criteria": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "title": "Acceptance criteria"
+      }
+    },
+    "required": [
+      "goal"
+    ]
+  },
+  "policy": {
+    "max_parallel_nodes": 2,
+    "default_timeout_seconds": 1200,
+    "budget_policy": {
+      "max_total_agent_runs": 12,
+      "max_total_tool_rounds": 160
+    },
+    "approval_policy": {
+      "deployment_requires_human_approval": true
+    }
+  },
+  "nodes": [
+    {
+      "id": "product_breakdown",
+      "name": "Product Manager / Task Breakdown",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-orchestrator",
+      "agent_version": 2,
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "objective": "Clarify the product goal, define acceptance criteria, split the work into frontend, backend, testing, review, and deployment packages, and record the contracts each package must satisfy.",
+        "output_contract": {
+          "type": "object",
+          "properties": {
+            "breakdown": {
+              "type": "array"
+            },
+            "acceptance_criteria": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "breakdown"
+          ]
+        },
+        "acceptance_criteria": [
+          "The work is split into independently actionable frontend and backend packages.",
+          "Each package has a concrete acceptance criterion and handoff."
+        ],
+        "max_tool_rounds": 16
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 900,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_d0d7b4ba-25c9-46fc-a29b-40adddc0e7ad",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-orchestrator",
+        "agent_version": 2,
+        "agent_name": "E2E Product Orchestrator",
+        "agent_role": "orchestrator",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Design complete product delivery DAGs, carry the maximum delegable workspace permission ceiling, and wait for Proposal confirmation.",
+        "tool_policy": {
+          "allowed_tools": [
+            "agent_list",
+            "dag_propose",
+            "dag_status",
+            "dag_run",
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T23:45:07.685Z",
+        "snapshot_digest": "a30571bd486c7f77c88224a12130b8abd5b58299e575c3d794e9ab1ca6526d83"
+      }
+    },
+    {
+      "id": "frontend_implementation",
+      "name": "Frontend Agent / Implementation",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-frontend",
+      "agent_version": 1,
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "objective": "Implement the browser frontend described by the Product Manager, including accessible UI, state handling, and integration points. Return changed files and verification evidence."
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 1200,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_b744be92-d47f-4475-8f7b-3a46856202d9",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-frontend",
+        "agent_version": 1,
+        "agent_name": "E2E Frontend Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Implement accessible dependency-free browser interfaces in the shared Task workspace.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T23:45:07.720Z",
+        "snapshot_digest": "9307cde2761ccd0e9c57884a513baaddcf9fa6d4c8ca587dea69b1758e42df3e"
+      }
+    },
+    {
+      "id": "backend_implementation",
+      "name": "Backend Agent / Implementation",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-backend",
+      "agent_version": 1,
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "objective": "Implement the backend services, APIs, persistence, and validation described by the Product Manager. Return changed files and verification evidence."
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 1200,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_b64d61f1-0021-4a85-a33e-d0e5ef45407a",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-backend",
+        "agent_version": 1,
+        "agent_name": "E2E Backend Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Implement bounded Node.js HTTP services in the shared Task workspace.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T23:45:07.755Z",
+        "snapshot_digest": "efdd2c1530a424b0b2c0649048051d65974af2651ebf9ab8576fe311798a433e"
+      }
+    },
+    {
+      "id": "integration_testing",
+      "name": "Tester / Integration and E2E",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-test",
+      "agent_version": 1,
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "objective": "Integrate the frontend and backend, run or add automated tests, exercise the acceptance criteria, and report reproducible failures with evidence.",
+        "acceptance_criteria": [
+          "Frontend and backend can be exercised together.",
+          "The critical user path has an executable automated test."
+        ],
+        "verification_steps": [
+          "Run the project test command.",
+          "Exercise the primary user flow and capture the result."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 2,
+        "backoff_seconds": 10
+      },
+      "timeout_seconds": 1200,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_d71c4496-e67a-4810-aecc-a25c08a1be1e",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-test",
+        "agent_version": 1,
+        "agent_name": "E2E Test Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Inspect frontend and backend outputs, then add executable Node.js integration tests.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T23:45:07.801Z",
+        "snapshot_digest": "470226c7589062c87393ad0dd39a90bff31d09038b75b9851a9a9758b4a1ac0d"
+      }
+    },
+    {
+      "id": "independent_review",
+      "name": "Reviewer / Acceptance",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-reviewer",
+      "agent_version": 1,
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "objective": "Independently review the delivered implementation and test evidence against the agreed acceptance criteria. Return an explicit accepted or rejected verdict and required revisions.",
+        "acceptance_criteria": [
+          "Every acceptance criterion is backed by observable evidence.",
+          "No unresolved critical defect remains."
+        ],
+        "verification_steps": [
+          "Inspect the changed files.",
+          "Inspect Tester evidence and run results.",
+          "Return a structured verdict."
+        ]
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 900,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_b46a45a1-eb13-451e-bab8-3fe204ebe78c",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-reviewer",
+        "agent_version": 1,
+        "agent_name": "E2E Independent Reviewer",
+        "agent_role": "reviewer",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Review the shared workspace independently and return a structured acceptance verdict.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": false,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "review_first",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T23:45:07.842Z",
+        "snapshot_digest": "fd9d32bb4327c12c17da8adce5feb4efe1cc3e10b0e96c625895790ebc1b7f9e"
+      }
+    },
+    {
+      "id": "release_approval",
+      "name": "Release Approval",
+      "type": "approval",
+      "agent_id": null,
+      "agent_version": null,
+      "allowed_skills": [],
+      "config": {
+        "human_gate": {
+          "gate_type": "approval",
+          "prompt": "Reviewer accepted the implementation. Approve deployment to the selected environment?",
+          "input_schema": {},
+          "auto_resume": true
+        }
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 0
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": "prod_release",
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "deployment",
+      "name": "Deployment Agent / Release",
+      "type": "agent_task",
+      "agent_id": "ops-runner",
+      "agent_version": 1,
+      "allowed_skills": [
+        "systematic-debugging",
+        "desktop-diagnostics"
+      ],
+      "config": {
+        "objective": "Deploy the reviewed build using the approved environment and report the exact command, target, health check, and rollback information."
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 15
+      },
+      "timeout_seconds": 1200,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_94d22593-fbc0-44e7-9375-59084226aec3",
+        "binding_mode": "pinned",
+        "agent_id": "ops-runner",
+        "agent_version": 1,
+        "agent_name": "Ops Runner",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_run_command"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "systematic-debugging",
+              "version": null
+            },
+            {
+              "skill_id": "desktop-diagnostics",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T23:45:07.876Z",
+        "snapshot_digest": "dbc368b8a9c14d7e424175742dc086980c394b601242e349fc4c23d9f6d2068f"
+      }
+    },
+    {
+      "id": "end",
+      "name": "Complete",
+      "type": "end",
+      "agent_id": null,
+      "agent_version": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 0,
+        "backoff_seconds": 0
+      },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    }
+  ],
+  "edges": [
+    {
+      "from": "product_breakdown",
+      "to": "frontend_implementation",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "product_breakdown",
+      "to": "backend_implementation",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "frontend_implementation",
+      "to": "integration_testing",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "backend_implementation",
+      "to": "integration_testing",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "integration_testing",
+      "to": "independent_review",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "independent_review",
+      "to": "release_approval",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "release_approval",
+      "to": "deployment",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "deployment",
+      "to": "end",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    }
+  ],
+  "metadata": {
+    "domain": "software-development",
+    "route_signals": [
+      "frontend",
+      "backend",
+      "api",
+      "application",
+      "game",
+      "full-stack",
+      "deploy",
+      "测试",
+      "前端",
+      "后端"
+    ],
+    "roles": [
+      "product_manager",
+      "frontend",
+      "backend",
+      "tester",
+      "reviewer",
+      "deployment"
+    ],
+    "execution_notes": "Product breakdown is the single root. Frontend and backend run in parallel; testing joins both before review and release approval.",
+    "agent_binding_migration": {
+      "schema_version": 2,
+      "migrated_at": "2026-07-22T23:45:07.879Z",
+      "compatibility_fields_retained": false
+    },
+    "versioning": {
+      "family_id": "software-product-delivery",
+      "root_template_id": "software-product-delivery",
+      "source_template_id": "software-product-delivery",
+      "source_version": 1,
+      "previous_template_id": "software-product-delivery",
+      "previous_version": 1,
+      "derivation_kind": "version",
+      "generation": 2
+    }
+  },
+  "created_at": "2026-07-26T01:01:15.504Z",
+  "updated_at": "2026-07-26T01:01:15.504Z",
+  "published_at": null
+}

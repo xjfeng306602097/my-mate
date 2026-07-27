@@ -38,14 +38,14 @@ function annotatePlannerContext(
   if (options?.model) {
     base.requested_model = options.model;
   }
-  if (options?.orchestratorProfileId) {
-    base.orchestrator_profile_id = options.orchestratorProfileId;
+  if (options?.orchestratorAgentId) {
+    base.orchestrator_agent_id = options.orchestratorAgentId;
   }
   if (options?.orchestratorSystemPrompt) {
     base.orchestrator_system_prompt = options.orchestratorSystemPrompt;
   }
-  if (Array.isArray(options?.preferredSubagentProfileIds) && options.preferredSubagentProfileIds.length > 0) {
-    base.preferred_subagent_profile_ids = [...options.preferredSubagentProfileIds];
+  if (Array.isArray(options?.preferredAgentIds) && options.preferredAgentIds.length > 0) {
+    base.preferred_agent_ids = [...options.preferredAgentIds];
   }
   if (typeof options?.preferDomainMatch === "boolean") {
     base.prefer_domain_match = options.preferDomainMatch;

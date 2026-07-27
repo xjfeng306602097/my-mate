@@ -1,0 +1,708 @@
+{
+  "template_id": "production-full-stack-delivery",
+  "version": 1,
+  "name": "Production Full-Stack Delivery",
+  "status": "published",
+  "description": "Coordinate frontend, backend, integration testing, independent review, approval, and controlled deployment with auditable handoffs.",
+  "workspace_scope": "default",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "goal": {
+        "type": "string",
+        "title": "Goal"
+      }
+    },
+    "required": [
+      "goal"
+    ]
+  },
+  "policy": {
+    "max_parallel_nodes": 1,
+    "default_timeout_seconds": 900,
+    "budget_policy": {},
+    "approval_policy": {}
+  },
+  "nodes": [
+    {
+      "id": "node_backend",
+      "name": "Plan & Architecture",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-orchestrator",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {
+        "allowed_tools": [
+          "read",
+          "write",
+          "shell"
+        ],
+        "output_contract": {
+          "expected_artifacts": [
+            "agent-report"
+          ]
+        }
+      },
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 900,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_170fb831-402e-42d7-a027-557c4bf131c3",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-orchestrator",
+        "agent_version": 2,
+        "agent_name": "E2E Product Orchestrator",
+        "agent_role": "orchestrator",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Design complete product delivery DAGs, carry the maximum delegable workspace permission ceiling, and wait for Proposal confirmation.",
+        "tool_policy": {
+          "allowed_tools": [
+            "agent_list",
+            "dag_propose",
+            "dag_status",
+            "dag_run",
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:25:22.939Z",
+        "snapshot_digest": "8a12cbda26d7a8276ffc4108590d7be1379ddcf5fc24a60b67cdfbd4228046d9"
+      },
+      "agent_version": 2
+    },
+    {
+      "id": "node_end",
+      "name": "End",
+      "type": "end",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 0,
+        "backoff_seconds": 0
+      },
+      "timeout_seconds": 60,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    },
+    {
+      "id": "node_3",
+      "name": "Frontend Development",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-frontend",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_d9faa46b-b70e-4c09-b62e-92ba7a4ffe76",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-frontend",
+        "agent_version": 1,
+        "agent_name": "E2E Frontend Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Implement accessible dependency-free browser interfaces in the shared Task workspace.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:25:22.981Z",
+        "snapshot_digest": "60512a71b471891ea8977bf6c58cdaf61c3d1ce9438fbbb123631cdc935badea"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_4",
+      "name": "Backend Development",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-backend",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_89e3e830-1e5f-4a49-afc6-c2f8afa9a6ac",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-backend",
+        "agent_version": 1,
+        "agent_name": "E2E Backend Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Implement bounded Node.js HTTP services in the shared Task workspace.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:25:23.026Z",
+        "snapshot_digest": "6d1d1938d3ecaeefc8fce53ba518a3e4a5390babf4d232bd3cca1317add91313"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_5",
+      "name": "Integration & E2E Testing",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-test",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_4cdd1a3c-7d48-4e03-9f1b-3eda133eba1b",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-test",
+        "agent_version": 1,
+        "agent_name": "E2E Test Engineer",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Inspect frontend and backend outputs, then add executable Node.js integration tests.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_apply_operations"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "autopilot",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:25:23.074Z",
+        "snapshot_digest": "1f574ece1d40a197976baf1ba20ff238146e398886f90833b56dcef872fdc981"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_6",
+      "name": "Independent Review",
+      "type": "agent_task",
+      "agent_id": "e2e-medium-reviewer",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_192eccfc-f066-4f6f-9f55-948cd646f02a",
+        "binding_mode": "pinned",
+        "agent_id": "e2e-medium-reviewer",
+        "agent_version": 1,
+        "agent_name": "E2E Independent Reviewer",
+        "agent_role": "reviewer",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "Review the shared workspace independently and return a structured acceptance verdict.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": 12
+        },
+        "skill_policy": {
+          "locked_skills": [],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "docker",
+          "timeout_seconds": 600
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": false,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "review_first",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:25:23.120Z",
+        "snapshot_digest": "e363b27f2398ab0f7149419ed926c4fda9c0fe2a8ef20de90d2f021016ad4dc1"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_7",
+      "name": "Controlled Deployment",
+      "type": "agent_task",
+      "agent_id": "ops-runner",
+      "allowed_skills": [
+        "coding-agent"
+      ],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": null,
+      "human_input_schema": null,
+      "agent_binding_snapshot": {
+        "schema_version": 2,
+        "binding_id": "binding_f6057c8d-ac90-4359-b834-77f69154dacb",
+        "binding_mode": "pinned",
+        "agent_id": "ops-runner",
+        "agent_version": 1,
+        "agent_name": "Ops Runner",
+        "agent_role": "specialist",
+        "responsibility": "Complete focused delegated work and return verifiable results.",
+        "provider_id": "provider_big-model-smart-agi",
+        "provider_connection_id": "big-model-smart-agi",
+        "connection_revision": "aae5376979c0e5d8d347d34a5ed36f50fd406271fb40dc91ef49e1467e4b1590",
+        "model_deployment_id": "deployment_big-model-smart-agi_gpt-5-4",
+        "model": "gpt-5.4",
+        "model_routing_policy": {
+          "routing_preference": "balanced",
+          "fallback_models": [],
+          "allow_model_escalation": true
+        },
+        "system_prompt": "You are a reliable My Mate task agent. Complete the user's objective using available tools and report verified results.",
+        "tool_policy": {
+          "allowed_tools": [
+            "workspace_list",
+            "workspace_read_text",
+            "workspace_search",
+            "workspace_run_command"
+          ],
+          "denied_tools": [],
+          "max_tool_rounds": null
+        },
+        "skill_policy": {
+          "locked_skills": [
+            {
+              "skill_id": "systematic-debugging",
+              "version": null
+            },
+            {
+              "skill_id": "desktop-diagnostics",
+              "version": null
+            }
+          ],
+          "dynamic_activation": true,
+          "denied_skills": []
+        },
+        "capability_policy": {
+          "capability_tags": [],
+          "allow_delegation": false,
+          "input_contract": {},
+          "output_contract": {},
+          "acceptance_criteria": [],
+          "verification_steps": []
+        },
+        "memory_policy": {
+          "enabled": true,
+          "automatic_recall": true,
+          "write_mode": "review"
+        },
+        "context_policy": {
+          "compression_enabled": true,
+          "compression_threshold_percent": 80,
+          "max_continuation_rounds": null
+        },
+        "runtime_policy": {
+          "runtime": "native",
+          "sandbox": "auto",
+          "timeout_seconds": 1800
+        },
+        "workspace_policy": {
+          "read": true,
+          "write": true,
+          "allowed_project_ids": []
+        },
+        "autonomy_ceiling": "assisted",
+        "artifact_policy": {},
+        "delivery_policy": {},
+        "created_at": "2026-07-22T12:25:23.166Z",
+        "snapshot_digest": "9b15de66edcd2e543bbdc7d92a480755c8c91e378dd2cad632a76efed0e906a5"
+      },
+      "agent_version": 1
+    },
+    {
+      "id": "node_8",
+      "name": "Production Release Approval",
+      "type": "approval",
+      "agent_id": null,
+      "allowed_skills": [],
+      "config": {},
+      "retry_policy": {
+        "max_attempts": 1,
+        "backoff_seconds": 5
+      },
+      "timeout_seconds": 600,
+      "parallelism": 1,
+      "approval_kind": "prod_release",
+      "human_input_schema": null,
+      "agent_binding_snapshot": null
+    }
+  ],
+  "edges": [
+    {
+      "from": "node_backend",
+      "to": "node_3",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_backend",
+      "to": "node_4",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_3",
+      "to": "node_5",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_4",
+      "to": "node_5",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_5",
+      "to": "node_6",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_6",
+      "to": "node_8",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_8",
+      "to": "node_7",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    },
+    {
+      "from": "node_7",
+      "to": "node_end",
+      "from_port": "success",
+      "to_port": "input",
+      "condition": null,
+      "label": null
+    }
+  ],
+  "metadata": {
+    "domain": "demo",
+    "authoring_layout": {
+      "positions": {
+        "node_6": {
+          "x": 753,
+          "y": 238
+        }
+      }
+    },
+    "versioning": {
+      "family_id": "production-full-stack-delivery",
+      "root_template_id": "production-full-stack-delivery",
+      "source_template_id": null,
+      "source_version": null,
+      "previous_template_id": null,
+      "previous_version": null,
+      "derivation_kind": "initial",
+      "generation": 1
+    },
+    "agent_binding_migration": {
+      "schema_version": 2,
+      "migrated_at": "2026-07-22T12:25:23.169Z",
+      "compatibility_fields_retained": false
+    }
+  },
+  "created_at": "2026-07-22T12:10:46.618Z",
+  "updated_at": "2026-07-22T12:25:23.169Z",
+  "published_at": "2026-07-22T12:11:07.893Z"
+}

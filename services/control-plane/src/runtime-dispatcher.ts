@@ -101,8 +101,7 @@ export class ExecutionAdapterRuntimeDispatcher implements RuntimeDispatcher {
         adapter_kind: this.adapter.kind,
         raw_ref: {
           dispatch_id: dispatch.dispatch_id,
-          openclaw_task_id: dispatch.openclaw_task_id,
-          openclaw_session_id: dispatch.openclaw_session_id,
+          provider_refs: dispatch.provider_refs,
         },
         adapter_dispatch: dispatch,
       },

@@ -21,7 +21,6 @@ const CREDENTIAL_ENVS: Record<string, readonly string[]> = {
   "claude-sdk": ["ANTHROPIC_API_KEY"],
   glm: ["GLM_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY"],
   kimi: ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
-  openclaw: ["MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY", "MY_MATE_OPENCLAW_BRIDGE_API_KEY"],
 };
 
 const DEFAULT_PROTOCOLS: Record<string, ProviderConnectionRecord["protocol"]> = {
@@ -29,7 +28,6 @@ const DEFAULT_PROTOCOLS: Record<string, ProviderConnectionRecord["protocol"]> = 
   "claude-sdk": "anthropic-messages",
   glm: "anthropic-messages",
   kimi: "openai-compatible",
-  openclaw: "openclaw-bridge",
 };
 
 export const DEFAULT_PROVIDER_MAX_INPUT_TOKENS = 524_288;
@@ -37,8 +35,10 @@ export const DEFAULT_PROVIDER_MAX_OUTPUT_TOKENS = 65_536;
 export const DEFAULT_CONTEXT_COMPRESSION_ENABLED = true;
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT = 75;
 export const DEFAULT_MAX_CONTINUATION_ROUNDS = 8;
+export const DEFAULT_MAX_TOOL_ROUNDS = 32;
 export const MAX_PROVIDER_INPUT_TOKENS = 1_048_576;
 export const MAX_PROVIDER_OUTPUT_TOKENS = 131_072;
+export const MAX_PROVIDER_TOOL_ROUNDS = 128;
 
 function normalizeTokenLimit(
   value: unknown,
@@ -93,6 +93,12 @@ function normalizeRecord(record: ProviderConnectionRecord): ProviderConnectionRe
       DEFAULT_MAX_CONTINUATION_ROUNDS,
       0,
       32,
+    ),
+    max_tool_rounds: normalizeTokenLimit(
+      record.max_tool_rounds,
+      DEFAULT_MAX_TOOL_ROUNDS,
+      1,
+      MAX_PROVIDER_TOOL_ROUNDS,
     ),
     credential_source: record.credential_source || "environment",
     verification: record.verification || null,
@@ -179,6 +185,9 @@ export function upsertProviderConnection(input: UpsertProviderConnectionRequest)
   const current = getProviderConnection(connectionId);
   const timestamp = nowIso();
   const agentRuntime = input.agent_runtime.trim();
+  if (agentRuntime === "openclaw") {
+    throw new Error("OpenClaw Provider Connections are retired. Configure the model provider directly.");
+  }
   const defaultModel = input.default_model?.trim() || null;
   const models = uniqueModels(input.models ?? current?.models, defaultModel);
   const credentialSource = input.api_key?.trim()
@@ -222,6 +231,12 @@ export function upsertProviderConnection(input: UpsertProviderConnectionRequest)
       current?.max_continuation_rounds ?? DEFAULT_MAX_CONTINUATION_ROUNDS,
       0,
       32,
+    ),
+    max_tool_rounds: normalizeTokenLimit(
+      input.max_tool_rounds,
+      current?.max_tool_rounds ?? DEFAULT_MAX_TOOL_ROUNDS,
+      1,
+      MAX_PROVIDER_TOOL_ROUNDS,
     ),
     credential_source: credentialSource,
     credential_env: credentialEnv,

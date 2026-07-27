@@ -101,7 +101,6 @@ function seedResearchContentRegistry(): void {
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Research analysis specialist",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["research-analysis"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -110,7 +109,6 @@ function seedResearchContentRegistry(): void {
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Article content writer",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["article-writing"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -169,14 +167,14 @@ test("llm_claude_v1 uses invocation model and orchestrator system prompt", async
     const result = await recommendTemplate("ship a beta integration", {
       providerId: "llm_claude_v1",
       model: "claude-profile-model",
-      orchestratorProfileId: "studio-llm-orchestrator",
+      orchestratorAgentId: "studio-llm-orchestrator",
       orchestratorSystemPrompt: "Prefer rollout-safe templates with an explicit handoff.",
     });
     assert.ok(result, "recommendation expected");
     assert.equal(result?.planner_context.provider_id, "llm_claude_v1");
     const context = result?.planner_context as Record<string, unknown>;
     assert.equal(context.requested_model, "claude-profile-model");
-    assert.equal(context.orchestrator_profile_id, "studio-llm-orchestrator");
+    assert.equal(context.orchestrator_agent_id, "studio-llm-orchestrator");
     assert.equal(capturedRequests.length, 1);
     assert.equal(capturedRequests[0]?.model, "claude-profile-model");
     assert.match(

@@ -16,7 +16,6 @@ const CREDENTIAL_ENVS: Partial<Record<DoctorRuntime, string[]>> = {
   codex: ["OPENAI_API_KEY", "CODEX_API_KEY", "MY_MATE_CODEX_CREDENTIAL_REF"],
   "claude-sdk": ["ANTHROPIC_API_KEY", "MY_MATE_CLAUDE_CREDENTIAL_REF"],
   kimi: ["KIMI_API_KEY", "MOONSHOT_API_KEY", "MY_MATE_KIMI_CREDENTIAL_REF"],
-  openclaw: ["MY_MATE_OPENCLAW_BRIDGE_API_KEY", "MY_MATE_OPENCLAW_CREDENTIAL_REF"],
   glm: ["GLM_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY"],
 };
 
@@ -30,16 +29,6 @@ export function inspectProviderConfiguration(
       harnessConfigured: false,
       credentialConfigured: false,
       credentialSource: null,
-    };
-  }
-  if (runtime === "openclaw") {
-    const bridgeConfigured = !!env.MY_MATE_OPENCLAW_BRIDGE_BASE_URL?.trim();
-    const credentialSource = (CREDENTIAL_ENVS.openclaw || []).find((name) => !!env[name]?.trim());
-    return {
-      harnessEnv: "MY_MATE_OPENCLAW_BRIDGE_BASE_URL",
-      harnessConfigured: bridgeConfigured,
-      credentialConfigured: bridgeConfigured && (!!credentialSource || !env.MY_MATE_OPENCLAW_BRIDGE_API_KEY),
-      credentialSource: credentialSource || (bridgeConfigured ? "bridge_no_auth" : null),
     };
   }
   if (runtime === "codex" || runtime === "claude-sdk") {
@@ -155,19 +144,6 @@ export async function runLiveProviderProbe(input: {
         messages: [{ role: "user", content: "Reply OK" }],
       }),
       signal: AbortSignal.timeout(15_000),
-    });
-    return;
-  }
-  if (input.runtime === "openclaw") {
-    const base = input.env.MY_MATE_OPENCLAW_BRIDGE_BASE_URL;
-    if (!base) throw new Error("OpenClaw bridge URL is not configured.");
-    const headers: Record<string, string> = {};
-    if (input.env.MY_MATE_OPENCLAW_BRIDGE_API_KEY) {
-      headers.authorization = `Bearer ${input.env.MY_MATE_OPENCLAW_BRIDGE_API_KEY}`;
-    }
-    await fetchOk(fetchImpl, new URL("/health", base).toString(), {
-      headers,
-      signal: AbortSignal.timeout(10_000),
     });
     return;
   }

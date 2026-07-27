@@ -12,7 +12,7 @@ import {
 import { getCapabilityPluginHost } from "../src/plugin-host.js";
 import { createSessionMessage } from "../src/session-message-store.js";
 import { createSession } from "../src/session-store.js";
-import type { AutopilotMode, SessionRecord } from "../src/types.js";
+import type { AgentBindingSnapshot, AutopilotMode, SessionRecord } from "../src/types.js";
 import { resetTestRoot } from "./helpers.js";
 
 function sessionWithUserTurn(mode: AutopilotMode, text: string): SessionRecord {
@@ -21,6 +21,13 @@ function sessionWithUserTurn(mode: AutopilotMode, text: string): SessionRecord {
     created_by: "memory-user",
     autonomy_mode: mode,
   });
+  session.metadata.agent_binding_snapshot = {
+    memory_policy: {
+      enabled: true,
+      automatic_recall: true,
+      write_mode: "automatic",
+    },
+  } as AgentBindingSnapshot;
   createSessionMessage({
     session_id: session.session_id,
     role: "user",
@@ -35,12 +42,16 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
 ) {
+  const callId = `call-${name}-${Math.random().toString(36).slice(2, 8)}`;
+  const argumentsWithPolicy = ["memory_remember", "memory_forget"].includes(name)
+    ? { ...args, idempotency_key: `${session.session_id}:${callId}` }
+    : args;
   return await executeConversationTool({
     session,
     call: {
-      id: `call-${name}-${Math.random().toString(36).slice(2, 8)}`,
+      id: callId,
       name,
-      arguments: args,
+      arguments: argumentsWithPolicy,
     },
   });
 }

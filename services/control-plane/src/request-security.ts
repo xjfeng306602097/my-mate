@@ -181,6 +181,9 @@ export function requiredPermission(req: Request): WorkspacePermission {
     return path.endsWith("/rebuild") ? "memory.write" : "memory.read";
   }
   if (path.startsWith("/session-recall")) return "memory.read";
+  if (path.startsWith("/skill-host")) return method === "GET" ? "workspace.read" : "registry.manage";
+  if (path.startsWith("/notifications")) return "workspace.read";
+  if (path.startsWith("/schedules")) return method === "GET" ? "workspace.read" : "mission.edit";
   if (method === "GET") return path === "/audit-events" ? "audit.read" : "workspace.read";
   if (path === "/diagnostics/doctor") return "workspace.read";
   if (path.startsWith("/workspaces")) return "workspace.manage_members";

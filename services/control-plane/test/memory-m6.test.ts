@@ -32,6 +32,11 @@ test("M6 background review is idempotent and follows assisted/autopilot policy",
   assert.equal(listMemoryCandidates("pending").length, 1);
 
   session.metadata = { ...session.metadata, autonomy_mode: "autopilot" };
+  const binding = session.metadata.agent_binding_snapshot as Record<string, unknown>;
+  session.metadata.agent_binding_snapshot = {
+    ...binding,
+    memory_policy: { enabled: true, automatic_recall: true, write_mode: "automatic" },
+  };
   saveSession(session);
   createSessionMessage({
     session_id: session.session_id,
@@ -42,6 +47,30 @@ test("M6 background review is idempotent and follows assisted/autopilot policy",
   const autopilot = await runBackgroundMemoryReview(session.session_id);
   assert.equal(autopilot.committed_memory_ids.length, 1);
   assert.equal(getMemory(autopilot.committed_memory_ids[0]!)?.source.origin, "background_review");
+});
+
+test("M6 event-driven review extracts checkpoint summaries once per trigger", async () => {
+  resetTestRoot();
+  const session = createSession({ title: "M6 event review", created_by: "memory-owner" });
+  const sourceText = "以后请始终在长任务检查点保留验证证据，并使用简洁的中文总结。";
+  const first = await runBackgroundMemoryReview(session.session_id, {
+    trigger: "checkpoint",
+    triggerId: "checkpoint-7:v3",
+    sourceText,
+    sourceMessageId: "checkpoint-7",
+  });
+  const repeated = await runBackgroundMemoryReview(session.session_id, {
+    trigger: "checkpoint",
+    triggerId: "checkpoint-7:v3",
+    sourceText,
+    sourceMessageId: "checkpoint-7",
+  });
+  assert.equal(first.trigger, "checkpoint");
+  assert.equal(first.trigger_id, "checkpoint-7:v3");
+  assert.equal(first.candidate_ids.length, 1);
+  assert.equal(repeated.message_digest, first.message_digest);
+  assert.deepEqual(repeated.candidate_ids, first.candidate_ids);
+  assert.equal(listMemoryCandidates("pending").length, 1);
 });
 
 test("M6 Project memory extends but does not mutate the frozen base snapshot", () => {

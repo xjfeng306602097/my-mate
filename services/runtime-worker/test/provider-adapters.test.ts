@@ -22,7 +22,7 @@ function parseFixture(runtime: RuntimeAgentRuntime): {
   return { events, output: adapter.getOutputText(), usageCount: adapter.usageEventCount() };
 }
 
-for (const runtime of ["codex", "claude-sdk", "kimi", "openclaw"] as const) {
+for (const runtime of ["codex", "claude-sdk", "kimi"] as const) {
   test(`${runtime} recorded native events map to evidence V2 semantics`, () => {
     const { events, output, usageCount } = parseFixture(runtime);
     const kinds = events.map((event) => event.kind);
@@ -114,21 +114,4 @@ test("Claude streaming tool input is emitted only after complete JSON arrives", 
   });
   assert.equal(event?.kind, "tool_call");
   assert.deepEqual((event?.inline_payload as { input?: unknown }).input, { path: "README.md" });
-});
-
-test("OpenClaw normalized usage retains provider-reported cost", () => {
-  const adapter = createProviderAdapterSession("openclaw");
-  assert.ok(adapter);
-  const [event] = adapter.ingest({
-    kind: "usage",
-    usage: {
-      input_tokens: 10,
-      output_tokens: 2,
-      provider_reported_cost: { currency: "USD", amount_decimal: "0.001" },
-    },
-  });
-  assert.deepEqual(event?.usage?.provider_reported_cost, {
-    currency: "USD",
-    amount_decimal: "0.001",
-  });
 });

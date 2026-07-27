@@ -7,6 +7,8 @@ import type { HarnessClient, RuntimeWorkerJob } from "../types.js";
 import { workspaceContextPrompt } from "../workspace-context.js";
 import { artifactOutputPrompt } from "../artifact-collector.js";
 
+const MUTABLE_TOOL_PATTERN = /(?:^|[-_.])(write|edit|patch|apply_patch|save|delete|remove|rename|move|shell|terminal|exec|command|bash|powershell|cmd|git)(?:$|[-_.])/i;
+
 interface PendingRequest {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
@@ -45,7 +47,7 @@ class CodexAppServerSession {
         cwd: this.env.MY_MATE_WORKSPACE || process.cwd(),
         model: this.job.harness.runtime_agent_ref || null,
         approvalPolicy: "never",
-        sandbox: this.job.harness.allowed_tools.some((tool) => tool.toLowerCase() === "write")
+        sandbox: this.job.harness.allowed_tools.some((tool) => MUTABLE_TOOL_PATTERN.test(tool))
           ? "workspace-write"
           : "read-only",
         ephemeral: true,

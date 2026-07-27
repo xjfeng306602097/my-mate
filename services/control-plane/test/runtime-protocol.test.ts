@@ -15,20 +15,18 @@ function buildEnvelope(overrides: Partial<DispatchEnvelope> = {}): DispatchEnvel
     node_id: "node_runtime",
     node_name: "Runtime Node",
     node_type: "agent_task",
-    agent_profile: "runtime-agent",
+    agent_id: "runtime-agent",
     runtime_agent_ref: "runtime-ref-001",
     agent_runtime: "codex",
     harness_profile: "coding",
-    openclaw_agent_id: null,
     allowed_skills: ["coding-agent"],
     allowed_tools: ["read", "write"],
     registry_provenance: {
-      agent_profile_requested: "runtime-agent",
-      agent_profile_resolved: "runtime-agent",
-      agent_profile_status: "active",
-      agent_profile_source: "registry",
+      agent_id_requested: "runtime-agent",
+      agent_id_resolved: "runtime-agent",
+      agent_status: "active",
+      agent_source: "registry",
       runtime_agent_ref_source: "registry",
-      openclaw_agent_id_source: "registry",
       skill_bindings: [],
       tool_bindings: [],
     },
@@ -124,7 +122,6 @@ for (const agentRuntime of ["codex", "claude-sdk", "glm", "kimi"] as const) {
       buildEnvelope({
         agent_runtime: agentRuntime,
         runtime_agent_ref: `${agentRuntime}-runtime`,
-        openclaw_agent_id: null,
       }),
     );
 
@@ -134,22 +131,33 @@ for (const agentRuntime of ["codex", "claude-sdk", "glm", "kimi"] as const) {
   });
 }
 
-test("runtime worker job keeps OpenClaw behind external bridge target", () => {
+test("runtime worker job infers the Provider harness without changing Agent identity", () => {
   const job = buildRuntimeWorkerJob(
     buildEnvelope({
       agent_runtime: null,
       harness_profile: null,
-      openclaw_agent_id: "legacy-openclaw-agent",
+      runtime_agent_ref: "research-agent",
+      provider_connection: {
+        connection_id: "glm-primary",
+        agent_runtime: "glm",
+        provider: "anthropic-compatible",
+        protocol: "anthropic-messages",
+        base_url: "https://glm.example.test/anthropic",
+        model: "glm-5.2",
+        credential_source: "environment",
+        credential_env: "GLM_API_KEY",
+      },
       input_payload: {
         node_config: {},
       },
     }),
   );
 
-  assert.equal(job.harness.agent_runtime, "openclaw");
-  assert.equal(job.provision.target_kind, "external-bridge");
-  assert.equal(job.provision.required, false);
-  assert.equal(job.provision.env.AGENT_BACKEND, "openclaw");
+  assert.equal(job.harness.agent_runtime, "glm");
+  assert.equal(job.harness.runtime_agent_ref, "research-agent");
+  assert.equal(job.provision.target_kind, "docker-worker");
+  assert.equal(job.provision.required, true);
+  assert.equal(job.provision.env.AGENT_BACKEND, "glm");
 });
 
 test("runtime policy keeps low-risk deterministic work local", () => {

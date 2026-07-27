@@ -10,7 +10,7 @@ import {
 } from "./memory-recommendation.js";
 import { getCoreMemorySnapshot } from "./memory-snapshot-store.js";
 import { getProviderConnection } from "./provider-connection-store.js";
-import { getAgentProfile } from "./registry-store.js";
+import { getPublishedAgentVersion } from "./agent-runtime-store.js";
 import { getActiveWorkspaceId, runWithSystemWorkspaceContext } from "./request-security.js";
 import { getRun } from "./run-store.js";
 import { listSessions } from "./session-store.js";
@@ -49,11 +49,73 @@ function candidateFingerprint(candidate: Candidate): string {
   return [candidate.workspaceId, candidate.sessionId, candidate.runId || "none", candidate.category, candidate.key].join(":");
 }
 
-function providerReady(): boolean {
-  const profile = getAgentProfile("default-agent");
-  if (!profile?.provider_connection_id) return false;
-  const connection = getProviderConnection(profile.provider_connection_id);
-  return connection?.status === "active" && connection.verification?.status === "verified";
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function providerReady(session: SessionRecord): boolean {
+  const workspaceId = session.workspace_id || getActiveWorkspaceId() || "default";
+  const metadata = record(session.metadata);
+  const snapshot = record(metadata.agent_binding_snapshot);
+  const agentId = nonEmptyString(metadata.agent_id) || nonEmptyString(snapshot.agent_id) || "default-agent";
+  const agent = getPublishedAgentVersion(agentId, workspaceId);
+  const connectionId =
+    nonEmptyString(metadata.conversation_provider_connection_id) ||
+    nonEmptyString(snapshot.provider_connection_id) ||
+    agent?.model_policy.provider_connection_id ||
+    null;
+  if (!connectionId) return false;
+  const connection = getProviderConnection(connectionId);
+  if (connection?.status !== "active" || connection.verification?.status !== "verified") return false;
+  const model =
+    nonEmptyString(metadata.conversation_model) ||
+    nonEmptyString(snapshot.model) ||
+    agent?.model_policy.model ||
+    connection.default_model ||
+    connection.models[0] ||
+    null;
+  return !!model && (connection.models.length === 0 || connection.models.includes(model));
+}
+
+const STALE_DRAFT_AFTER_MS = 24 * 60 * 60 * 1000;
+
+function hasExplicitExecutionIntent(session: SessionRecord): boolean {
+  const metadata = record(session.metadata);
+  const workspaceState = record(metadata.workspace_state);
+  const intent = nonEmptyString(metadata.latest_orchestrator_intent) || "";
+  const nextAction = nonEmptyString(workspaceState.next_recommended_action) || "";
+  return Boolean(
+    /(?:^|_)(?:run|execute|resume|workspace_change|artifact_worker|agent_dag|schedule|long_task)(?:_|$)/i.test(intent) ||
+    /^(?:start|run|execute|resume|approve|confirm)(?:_|$)/i.test(nextAction) ||
+    metadata.autonomy_mode === "autopilot" ||
+    metadata.product_autonomy_mode === "autopilot",
+  );
+}
+
+function shouldSuperviseProviderConfiguration(
+  session: SessionRecord,
+  run: ReturnType<typeof getRun>,
+  autopilot: ReturnType<typeof getAutopilotController>,
+  timestamp: string,
+): boolean {
+  if (session.archived || session.hidden) return false;
+  if (["completed", "failed", "cancelled"].includes(session.status)) return false;
+  if (run || autopilot && ["running", "blocked", "failed"].includes(autopilot.status)) return true;
+  if (["planning", "ready_to_run", "running", "waiting_human"].includes(session.status)) return true;
+  if (hasExplicitExecutionIntent(session)) return true;
+  if (session.status !== "draft") return false;
+  const updatedAt = Date.parse(session.updated_at || session.created_at || "");
+  const observedAt = Date.parse(timestamp);
+  if (!Number.isFinite(updatedAt) || !Number.isFinite(observedAt)) return true;
+  // A future-dated record is treated as recently created. This also keeps deterministic test clocks stable.
+  if (updatedAt >= observedAt) return true;
+  return observedAt - updatedAt <= STALE_DRAFT_AFTER_MS;
 }
 
 function qualityGap(runId: string): { gap: boolean; detail: string } {
@@ -77,11 +139,12 @@ function qualityGap(runId: string): { gap: boolean; detail: string } {
 function candidatesForSession(session: SessionRecord, timestamp: string, stalledAfterMs: number): Candidate[] {
   const candidates: Candidate[] = [];
   const run = session.latest_run_id ? getRun(session.latest_run_id) : null;
+  const autopilot = getAutopilotController(session.session_id);
   const approvals = run ? listApprovals("pending").filter((item) => item.run_id === run.run_id) : [];
   const humanInputs = run ? listHumanInputs("pending").filter((item) => item.run_id === run.run_id) : [];
   const decisions = approvals.length + humanInputs.length;
 
-  if (!run && !providerReady()) {
+  if (shouldSuperviseProviderConfiguration(session, run, autopilot, timestamp) && !providerReady(session)) {
     candidates.push({
       workspaceId: session.workspace_id || "default",
       sessionId: session.session_id,
@@ -89,7 +152,7 @@ function candidatesForSession(session: SessionRecord, timestamp: string, stalled
       category: "configuration",
       severity: "warning",
       title: "Verify a model before this task can continue",
-      detail: "The task is preserved, but the default agent does not have a verified Provider Connection.",
+      detail: "The task is preserved, but its selected Agent does not have a verified Provider Connection and model.",
       action: "open-task-settings",
       actionLabel: "Verify model",
       key: "provider-not-verified",
@@ -159,7 +222,6 @@ function candidatesForSession(session: SessionRecord, timestamp: string, stalled
       });
     }
   }
-  const autopilot = getAutopilotController(session.session_id);
   const configurationAlreadyExplainsHandoff =
     candidates.some((candidate) => candidate.category === "configuration") &&
     /provider|connection|model|configuration/i.test(autopilot?.handoff_reason || autopilot?.last_detail || "");

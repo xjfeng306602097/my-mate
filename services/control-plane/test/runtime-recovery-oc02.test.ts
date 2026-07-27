@@ -148,8 +148,7 @@ class PassiveDispatcher implements RuntimeDispatcher {
         adapter_kind: this.kind,
         raw_ref: {
           dispatch_id: `test:${job.job_id}`,
-          openclaw_task_id: null,
-          openclaw_session_id: null,
+          provider_refs: {},
         },
       },
     };

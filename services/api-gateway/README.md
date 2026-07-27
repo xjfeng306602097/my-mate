@@ -31,7 +31,7 @@ Current planner/run-create path semantics:
 - `POST /api/runs` defaults to strict validation when `validation_mode` is omitted
 - clients must explicitly send `validation_mode: "warn"` after user confirmation to create a run with known warnings
 
-The gateway intentionally does not expose internal control-plane endpoints such as OpenClaw callbacks.
+The gateway intentionally does not expose internal Control Plane runtime callbacks.
 
 ## P0 Operator API
 

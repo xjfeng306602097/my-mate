@@ -1,14 +1,17 @@
-﻿import test from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import { listApprovals, saveApproval } from "../src/approval-store.js";
-import { listArtifacts } from "../src/artifact-store.js";
+import { listArtifacts, saveArtifact } from "../src/artifact-store.js";
 import { createDagPatch } from "../src/dag-patch-store.js";
 import { appendRunEvent, listRunEvents } from "../src/event-store.js";
 import { listHumanInputs } from "../src/human-input-store.js";
 import { listNodeRuns } from "../src/node-run-store.js";
 import { getRunPlan } from "../src/run-plan-store.js";
 import { getRun, saveRun } from "../src/run-store.js";
+import { getAgentDag } from "../src/agent-orchestration-store.js";
 import { getSession } from "../src/session-store.js";
+import { upsertAgentDefinition } from "../src/agent-runtime-store.js";
+import { recordProviderConnectionVerification, upsertProviderConnection } from "../src/provider-connection-store.js";
 import { createHumanInputRecord, saveHumanInput } from "../src/human-input-store.js";
 import { saveEvaluation } from "../src/evaluation/evaluation-store.js";
 import { saveScorecard } from "../src/evaluation/scorecard-store.js";
@@ -38,11 +41,50 @@ function configureEnv(overrides: Record<string, string> = {}) {
   process.env.MY_MATE_ENABLE_LOCAL_EXECUTION = "true";
   process.env.MY_MATE_EXECUTION_ADAPTER = "local";
   process.env.MY_MATE_AUTO_APPROVE_HUMAN_GATES = "false";
-  process.env.MY_MATE_OPENCLAW_CALLBACK_TOKEN = "test-callback-token";
+  process.env.MY_MATE_RUNTIME_REPORT_TOKEN = "test-callback-token";
   delete process.env.MY_MATE_OBSERVABILITY_RETENTION_HOURS;
   for (const [key, value] of Object.entries(overrides)) {
     process.env[key] = value;
   }
+}
+
+function seedNativeTestAgent(agentId = "backend") {
+  const connectionId = `connection-${agentId}`;
+  const connection = upsertProviderConnection({
+    connection_id: connectionId,
+    name: `${agentId} Test Provider`,
+    agent_runtime: "codex",
+    provider: "openai",
+    protocol: "codex-appserver",
+    models: ["test-model"],
+    default_model: "test-model",
+    credential_source: "managed",
+    api_key: "native-test-secret",
+    credential_env: "OPENAI_API_KEY",
+    status: "active",
+  });
+  recordProviderConnectionVerification(connection.connection_id, {
+    status: "verified",
+    tested_at: new Date().toISOString(),
+    detail: "test fixture verified",
+    duration_ms: 1,
+    model: "test-model",
+  });
+  upsertAgentDefinition({
+    agentId,
+    name: agentId,
+    createdBy: "test",
+    version: {
+      role: "worker",
+      model_policy: {
+        deployment_id: null,
+        provider_connection_id: connectionId,
+        model: "test-model",
+        allow_runtime_override: false,
+      },
+      skill_policy: { locked_skills: [], denied_skills: [], dynamic_activation: true },
+    },
+  });
 }
 
 async function createRunForTest(serverBaseUrl: string, input?: {
@@ -68,13 +110,11 @@ function seedCompareTemplates() {
   seedAgentProfile({
     profile_id: "backend",
     name: "Backend",
-    openclaw_agent_id: "backend",
     default_skills: ["coding-agent"],
   });
   seedAgentProfile({
     profile_id: "review-agent",
     name: "Review Agent",
-    openclaw_agent_id: "review-agent",
     default_skills: ["coding-agent"],
   });
   seedTemplate();
@@ -187,7 +227,6 @@ function seedRuntimeGraphTemplate(input?: {
   seedAgentProfile({
     profile_id: "backend",
     name: "Backend",
-    openclaw_agent_id: "backend",
     default_skills: ["coding-agent"],
   });
   seedTemplate(
@@ -270,7 +309,7 @@ test("dashboard summary exposes workload health and intervention backlogs", asyn
     const run = getRun(runId);
     assert.ok(run);
     run.status = "failed";
-    run.current_summary = "OpenClaw callback reported failure";
+    run.current_summary = "Runtime callback reported failure";
     run.updated_at = "2026-07-07T09:30:00.000Z";
     run.waiting_reason = null;
     run.blocked_reason = null;
@@ -472,9 +511,10 @@ test("dashboard observability correlates latency retries usage trace and evaluat
   configureEnv();
   const server = await startTestServer({ executionAdapter: createStubExecutionAdapter() });
   const runId = "run-dashboard-observability";
-  const startedAt = new Date(Date.now() - 60_000).toISOString();
-  const firstFinishedAt = new Date(Date.now() - 30_000).toISOString();
-  const finishedAt = new Date().toISOString();
+  const now = Date.now();
+  const startedAt = new Date(now - 60_000).toISOString();
+  const firstFinishedAt = new Date(now - 30_000).toISOString();
+  const finishedAt = new Date(now).toISOString();
 
   try {
     saveRun({
@@ -516,11 +556,11 @@ test("dashboard observability correlates latency retries usage trace and evaluat
       finished_at: firstFinishedAt,
       last_event_id: null,
       last_error: "Synthetic first-attempt failure",
-      compatibility: { adapter_kind: null, dispatch_id: null, openclaw_task_id: null, openclaw_session_id: null },
+      compatibility: { adapter_kind: null, dispatch_id: null, provider_refs: {} },
       job: {
         node_id: "node-observability",
         node_name: "Observed Agent Task",
-        envelope: { agent_profile: "observed-agent" },
+        envelope: { agent_id: "observed-agent" },
       } as never,
     });
     saveRuntimeJobRecord({
@@ -540,11 +580,11 @@ test("dashboard observability correlates latency retries usage trace and evaluat
       finished_at: finishedAt,
       last_event_id: null,
       last_error: null,
-      compatibility: { adapter_kind: null, dispatch_id: null, openclaw_task_id: null, openclaw_session_id: null },
+      compatibility: { adapter_kind: null, dispatch_id: null, provider_refs: {} },
       job: {
         node_id: "node-observability",
         node_name: "Observed Agent Task",
-        envelope: { agent_profile: "observed-agent" },
+        envelope: { agent_id: "observed-agent" },
       } as never,
     });
     saveWorkerEvidence({
@@ -1116,7 +1156,7 @@ test("run graph marks approval and human-input waiting gates", async () => {
       },
       validation_mode: "warn",
     });
-    assert.equal(createRun.status, 201);
+    assert.equal(createRun.status, 201, JSON.stringify(createRun.body));
     runId = createRun.body.run_id;
 
     const plan = getRunPlan(runId);
@@ -1128,7 +1168,7 @@ test("run graph marks approval and human-input waiting gates", async () => {
 
     const headers = { authorization: "Bearer test-callback-token" };
     const approvalWait = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: approvalNodeRunId,
@@ -1143,7 +1183,7 @@ test("run graph marks approval and human-input waiting gates", async () => {
     assert.equal(approvalWait.status, 202);
 
     const inputWait = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: inputNodeRunId,
@@ -1490,7 +1530,6 @@ test("session summary derives completed status from linked run projection", asyn
   seedAgentProfile({
     profile_id: "backend",
     name: "Backend",
-    openclaw_agent_id: "backend",
     default_skills: ["coding-agent"],
   });
   seedSkill({
@@ -1536,7 +1575,7 @@ test("session summary derives completed status from linked run projection", asyn
     };
 
     const accepted = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: firstNode?.node_run_id,
@@ -1548,7 +1587,7 @@ test("session summary derives completed status from linked run projection", asyn
     assert.equal(accepted.status, 202);
 
     const completed = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: firstNode?.node_run_id,
@@ -1564,7 +1603,7 @@ test("session summary derives completed status from linked run projection", asyn
     assert.equal(completed.status, 202);
 
     const endCompleted = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: secondNode?.node_run_id,
@@ -2188,6 +2227,7 @@ test("session follow-up questions after planning do not pollute constraints or s
 test("session explicit draft message auto-generates a draft card and workspace state", async () => {
   resetTestRoot();
   configureEnv();
+  seedNativeTestAgent();
   seedTemplate();
   const server = await startTestServer({
     executionAdapter: createStubExecutionAdapter(),
@@ -2209,9 +2249,29 @@ test("session explicit draft message auto-generates a draft card and workspace s
     assert.equal(detail.status, 200);
     assert.equal(detail.body.session.workspace_state.stage, "draft");
     assert.equal(detail.body.session.latest_orchestrator_intent, "draft_ready");
-    assert.ok(
-      detail.body.messages.some((message: { kind: string }) => message.kind === "draft_card"),
-    );
+    const firstDraft = detail.body.messages.find((message: { kind: string }) => message.kind === "draft_card");
+    assert.ok(firstDraft);
+    assert.ok(String(firstDraft.content.proposal_id || "").startsWith("prop_"));
+    const firstProposalId = String(firstDraft.content.proposal_id);
+    const firstProposal = await getJson(`${server.baseUrl}/api/sessions/${sessionId}/dag-proposals/${firstProposalId}`);
+    assert.equal(firstProposal.status, 200);
+    assert.equal(firstProposal.body.proposal.source_message_id, firstDraft.message_id);
+    assert.equal(firstProposal.body.proposal.metadata.draft_message_id, firstDraft.message_id);
+    assert.equal(firstProposal.body.proposal.metadata.compatibility_projection, "draft_card");
+
+    const redrafted = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/dag-draft`, {
+      inputs: { goal: "Prepare a launch retrospective with a reviewer" },
+    });
+    assert.equal(redrafted.status, 200);
+    const secondDraft = redrafted.body.messages.find((message: { kind: string }) => message.kind === "draft_card");
+    assert.ok(secondDraft);
+    assert.notEqual(secondDraft.content.proposal_id, firstProposalId);
+    const superseded = await getJson(`${server.baseUrl}/api/sessions/${sessionId}/dag-proposals/${firstProposalId}`);
+    assert.equal(superseded.body.proposal.status, "superseded");
+    assert.equal(superseded.body.proposal.superseded_by_proposal_id, secondDraft.content.proposal_id);
+    const replacement = await getJson(`${server.baseUrl}/api/sessions/${sessionId}/dag-proposals/${secondDraft.content.proposal_id}`);
+    assert.equal(replacement.body.proposal.supersedes_proposal_id, firstProposalId);
+    assert.equal(replacement.body.proposal.source_message_id, secondDraft.message_id);
   } finally {
     await server.close();
     cleanupTestArtifacts({
@@ -2266,6 +2326,7 @@ test("session draft projection clears the draft-vs-plan meta question once a dra
 test("session constraint follow-up auto-generates a draft once the brief becomes actionable", async () => {
   resetTestRoot();
   configureEnv();
+  seedNativeTestAgent();
   seedTemplate();
   const server = await startTestServer({
     executionAdapter: createStubExecutionAdapter(),
@@ -2610,6 +2671,7 @@ test("session auto revise keeps the original user turn without injecting a synth
 test("session planning narrative uses the visible draft-derived template name instead of an internal draft id", async () => {
   resetTestRoot();
   configureEnv();
+  seedNativeTestAgent();
   seedTemplate();
   const server = await startTestServer({
     executionAdapter: createStubExecutionAdapter(),
@@ -3278,8 +3340,27 @@ test("session DAG proposal can be confirmed and used as run source", async () =>
   resetTestRoot();
   configureEnv();
   seedTemplate();
+  const proposalConnection = upsertProviderConnection({ connection_id: "proposal-provider", name: "Proposal Provider", agent_runtime: "glm", provider: "glm", protocol: "openai-compatible", base_url: "https://provider.example", models: ["proposal-model"], default_model: "proposal-model", api_key: "proposal-secret", credential_source: "managed", credential_env: "GLM_API_KEY", status: "active", metadata: {} });
+  recordProviderConnectionVerification(proposalConnection.connection_id, { status: "verified", tested_at: new Date().toISOString(), detail: "test", duration_ms: 1, model: "proposal-model" });
+  upsertAgentDefinition({ agentId: "default-agent", name: "Proposal Orchestrator", createdBy: "test", version: { role: "orchestrator", model_policy: { deployment_id: null, provider_connection_id: proposalConnection.connection_id, model: "proposal-model", allow_runtime_override: false } } });
+  upsertAgentDefinition({ agentId: "backend", name: "Proposal Worker", createdBy: "test", version: { role: "worker", model_policy: { deployment_id: null, provider_connection_id: proposalConnection.connection_id, model: "proposal-model", allow_runtime_override: false } } });
   const server = await startTestServer({
     executionAdapter: createStubExecutionAdapter(),
+    conversation: {
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        if (body.stream === true) {
+          return new Response([
+            'data: {"model":"proposal-model","choices":[{"delta":{"content":"Proposal task completed."},"finish_reason":"stop"}]}\n\n',
+            "data: [DONE]\n\n",
+          ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+        }
+        return new Response(JSON.stringify({
+          model: "proposal-model",
+          choices: [{ message: { role: "assistant", content: "Proposal task completed." }, finish_reason: "stop" }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    },
   });
 
   try {
@@ -3300,6 +3381,7 @@ test("session DAG proposal can be confirmed and used as run source", async () =>
     assert.equal(createdProposal.body.proposal.status, "review_ready");
     assert.equal(createdProposal.body.proposal.metadata.execution_template_id, "mobile-test-template");
     assert.equal(createdProposal.body.proposal.assignments.length > 0, true);
+    assert.equal(createdProposal.body.proposal.dag_definition.initial_state.goal, "Build and review a proposal-backed workflow");
 
     const proposalId = createdProposal.body.proposal.proposal_id;
     const updatedAssignments = await fetch(
@@ -3333,32 +3415,19 @@ test("session DAG proposal can be confirmed and used as run source", async () =>
     assert.equal(confirmed.status, 200);
     assert.equal(confirmed.body.proposal.status, "confirmed");
     assert.equal(confirmed.body.session.confirmed_proposal_id, proposalId);
+    assert.equal(confirmed.body.agent_dag.state.goal, "Build and review a proposal-backed workflow");
 
     const runCreated = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
       proposal_id: proposalId,
       validation_mode: "warn",
     });
-    assert.equal(runCreated.status, 201);
+    assert.equal(runCreated.status, 202);
+    assert.equal(runCreated.body.execution_kind, "agent_dag");
     assert.equal(runCreated.body.status, "queued");
     assert.equal(runCreated.body.session.confirmed_proposal_id, proposalId);
-
-    const run = getRun(runCreated.body.run_id);
-    assert.ok(run);
-    assert.equal(run.proposal_id, proposalId);
-
-    const mobileRuns = await getJson(`${server.baseUrl}/api/mobile/runs`);
-    assert.equal(mobileRuns.status, 200);
-    const mobileRun = mobileRuns.body.items.find(
-      (item: { run_id: string }) => item.run_id === runCreated.body.run_id,
-    );
-    assert.ok(mobileRun);
-    assert.equal(mobileRun.proposal_id, proposalId);
-
-    const mobileFollowUp = await getJson(
-      `${server.baseUrl}/api/mobile/runs/${runCreated.body.run_id}/follow-up`,
-    );
-    assert.equal(mobileFollowUp.status, 200);
-    assert.equal(mobileFollowUp.body.run.proposal_id, proposalId);
+    assert.equal(runCreated.body.agent_dag_id, confirmed.body.proposal.compiled_agent_dag_id);
+    assert.equal(getAgentDag("default", runCreated.body.agent_dag_id)?.idempotency_key, `proposal:${proposalId}`);
+    assert.equal(getRun(runCreated.body.agent_dag_id), null);
 
     const proposals = await getJson(`${server.baseUrl}/api/sessions/${sessionId}/dag-proposals`);
     assert.equal(proposals.status, 200);
@@ -3380,7 +3449,6 @@ test("session draft API returns draft_card and can be used to create a planned r
   seedAgentProfile({
     profile_id: "research-agent",
     name: "Research Agent",
-    openclaw_agent_id: "openclaw-research-agent",
     default_skills: ["research-skill"],
   });
   seedTemplate(
@@ -3496,7 +3564,6 @@ test("session draft-backed route can confirm and launch using published executio
   seedAgentProfile({
     profile_id: "research-agent",
     name: "Research Agent",
-    openclaw_agent_id: "openclaw-research-agent",
     default_skills: ["research-skill"],
   });
   seedTemplate(
@@ -3860,7 +3927,7 @@ test("session thread projects waiting approval execution state from linked run",
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     const callback = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -4072,7 +4139,7 @@ test("session thread projects artifact cards after run completion", async () => 
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     const callback = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -4148,13 +4215,13 @@ test("create run defaults to strict validation when mode is omitted", async () =
     assert.equal(response.body.validation.passed, false);
     assert.ok(
       response.body.validation.warnings.includes(
-        "Node node_backend (Backend Task) uses unknown agent profile: backend",
+        "Node node_backend (Backend Task) uses unknown Agent: backend",
       ),
     );
     assert.ok(
       response.body.validation.details.some(
         (detail: { code: string; category: string; node_id: string | null }) =>
-          detail.code === "unknown_agent_profile" &&
+          detail.code === "unknown_agent" &&
           detail.category === "registry" &&
           detail.node_id === "node_backend",
       ),
@@ -4198,7 +4265,7 @@ test("create run strict validation blocks invalid registry bindings before persi
     assert.equal(response.body.validation.passed, false);
     assert.ok(
       response.body.validation.warnings.includes(
-        "Node node_backend (Backend Task) uses unknown agent profile: backend",
+        "Node node_backend (Backend Task) uses unknown Agent: backend",
       ),
     );
 
@@ -4242,7 +4309,7 @@ test("create run warn validation returns warnings but allows execution", async (
     assert.equal(response.body.validation.passed, false);
     assert.ok(
       response.body.validation.warnings.includes(
-        "Node node_backend (Backend Task) uses unknown agent profile: backend",
+        "Node node_backend (Backend Task) uses unknown Agent: backend",
       ),
     );
     assert.ok(getRun(runId));
@@ -4328,6 +4395,8 @@ test("list templates exposes mobile create-run metadata", async () => {
     assert.equal(target.description, "Template for mobile create form");
     assert.equal(target.input_schema.required[0], "goal");
     assert.equal(target.metadata.domain, "mobile");
+    assert.equal(target.node_count, 1);
+    assert.equal(target.edge_count, 0);
   } finally {
     await server.close();
     cleanupTestArtifacts({
@@ -4390,6 +4459,14 @@ test("template derivation new version archive and lineage APIs", async () => {
       "version-source-template",
     );
 
+    const reusedDraft = await postJson(
+      `${server.baseUrl}/api/templates/version-source-template/new-version`,
+      {},
+    );
+    assert.equal(reusedDraft.status, 201);
+    assert.equal(reusedDraft.body.template_id, "version-source-template-v2");
+    assert.equal(reusedDraft.body.version, 2);
+
     const lineage = await getJson(
       `${server.baseUrl}/api/templates/version-source-template-v2/lineage`,
     );
@@ -4425,7 +4502,7 @@ test("template derivation new version archive and lineage APIs", async () => {
   }
 });
 
-test("agent and skill registry APIs upsert list get and disable records", async () => {
+test("Agent V2 and Skill registry APIs upsert list get and disable records", async () => {
   resetTestRoot();
   configureEnv();
   const server = await startTestServer({
@@ -4451,24 +4528,36 @@ test("agent and skill registry APIs upsert list get and disable records", async 
     assert.equal(skill.body.skill_id, "registry-test-skill");
     assert.equal(skill.body.status, "active");
 
-    const profile = await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
-      profile_id: "registry-test-agent",
+    const agent = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "registry-test-agent",
       name: "Registry Test Agent",
       description: "Agent for registry API testing",
-      openclaw_agent_id: "backend",
-      default_skills: ["registry-test-skill"],
-      allowed_tools: ["read", "write", "shell"],
-      policy_tags: ["safe-local"],
+      version: {
+        role: "worker",
+        responsibility: "Run registry API tests.",
+        skill_policy: {
+          locked_skills: [],
+          dynamic_activation: false,
+        },
+        tool_policy: {
+          allowed_tools: ["read", "write", "shell"],
+          denied_tools: [],
+          max_tool_rounds: 8,
+        },
+      },
     });
-    assert.equal(profile.status, 201);
-    assert.equal(profile.body.profile_id, "registry-test-agent");
-    assert.deepEqual(profile.body.default_skills, ["registry-test-skill"]);
+    assert.equal(agent.status, 201);
+    assert.equal(agent.body.definition.agent_id, "registry-test-agent");
+    assert.deepEqual(
+      agent.body.version.skill_policy.locked_skills,
+      [],
+    );
 
-    const profiles = await getJson(`${server.baseUrl}/api/registry/agent-profiles`);
-    assert.equal(profiles.status, 200);
+    const agents = await getJson(`${server.baseUrl}/api/agents`);
+    assert.equal(agents.status, 200);
     assert.ok(
-      profiles.body.items.some(
-        (item: { profile_id: string }) => item.profile_id === "registry-test-agent",
+      agents.body.items.some(
+        (item: { agent_id: string }) => item.agent_id === "registry-test-agent",
       ),
     );
 
@@ -4478,12 +4567,12 @@ test("agent and skill registry APIs upsert list get and disable records", async 
     assert.equal(loadedSkill.status, 200);
     assert.equal(loadedSkill.body.name, "Registry Test Skill");
 
-    const disabledProfile = await postJson(
-      `${server.baseUrl}/api/registry/agent-profiles/registry-test-agent/disable`,
+    const disabledAgent = await postJson(
+      `${server.baseUrl}/api/agents/registry-test-agent/disable`,
       {},
     );
-    assert.equal(disabledProfile.status, 200);
-    assert.equal(disabledProfile.body.status, "disabled");
+    assert.equal(disabledAgent.status, 200);
+    assert.equal(disabledAgent.body.status, "disabled");
 
     const disabledSkill = await postJson(
       `${server.baseUrl}/api/registry/skills/registry-test-skill/disable`,
@@ -4492,21 +4581,24 @@ test("agent and skill registry APIs upsert list get and disable records", async 
     assert.equal(disabledSkill.status, 200);
     assert.equal(disabledSkill.body.status, "disabled");
 
-    const activeProfiles = await getJson(
-      `${server.baseUrl}/api/registry/agent-profiles?status=active`,
+    const refreshedAgents = await getJson(`${server.baseUrl}/api/agents`);
+    assert.equal(refreshedAgents.status, 200);
+    assert.equal(
+      refreshedAgents.body.items.find(
+        (item: { agent_id: string }) => item.agent_id === "registry-test-agent",
+      )?.status,
+      "disabled",
     );
-    assert.equal(activeProfiles.status, 200);
-    assert.equal(activeProfiles.body.items.length, 0);
   } finally {
     await server.close();
     cleanupTestArtifacts({
-      agentProfileId: "registry-test-agent",
+      agentId: "registry-test-agent",
       skillId: "registry-test-skill",
     });
   }
 });
 
-test("agent hosting APIs expose and update OpenClaw binding settings", async () => {
+test("legacy Agent Hosting and OrchestratorProfile APIs are removed from the Native Runtime surface", async () => {
   resetTestRoot();
   configureEnv();
   const server = await startTestServer({
@@ -4514,49 +4606,25 @@ test("agent hosting APIs expose and update OpenClaw binding settings", async () 
   });
 
   try {
-    const profile = await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
-      profile_id: "hosting-unbound-agent",
-      name: "Hosting Unbound Agent",
-      description: "Profile can be created before an OpenClaw binding exists",
-      openclaw_agent_id: "",
-      default_skills: ["coding-agent"],
-      allowed_tools: ["read"],
-      policy_tags: ["safe-local"],
-    });
-    assert.equal(profile.status, 201);
-    assert.equal(profile.body.openclaw_agent_id, "");
-
     const hosting = await getJson(`${server.baseUrl}/api/agents/hosting`);
-    assert.equal(hosting.status, 200);
-    const unbound = hosting.body.profiles.find(
-      (item: { profile_id: string }) => item.profile_id === "hosting-unbound-agent",
-    );
-    assert.ok(unbound);
-    assert.equal(unbound.health.status, "needs_binding");
+    assert.equal(hosting.status, 404);
 
-    const updated = await putJson(`${server.baseUrl}/api/agents/hosting-unbound-agent/hosting`, {
-      openclaw_agent_id: "openclaw-hosted-agent",
-      provider: "anthropic",
-      model: "claude-opus",
-      runtime_mode: "native-agent",
+    const profiles = await getJson(`${server.baseUrl}/api/orchestrator-profiles`);
+    assert.equal(profiles.status, 410);
+    assert.equal(profiles.body.code, "orchestrator_profile_retired");
+
+    const profileWrite = await postJson(`${server.baseUrl}/api/orchestrator-profiles`, {
+      orchestrator_id: "retired-orchestrator",
+      name: "Retired Orchestrator",
     });
-    assert.equal(updated.status, 200);
-    assert.equal(updated.body.profile.openclaw_agent_id, "openclaw-hosted-agent");
-    assert.equal(updated.body.profile.metadata.openclaw.provider, "anthropic");
-    const hosted = updated.body.agent_hosting.profiles.find(
-      (item: { profile_id: string }) => item.profile_id === "hosting-unbound-agent",
-    );
-    assert.equal(hosted.health.status, "ready");
-    assert.equal(hosted.model, "claude-opus");
+    assert.equal(profileWrite.status, 410);
+    assert.equal(profileWrite.body.code, "orchestrator_profile_retired");
   } finally {
     await server.close();
-    cleanupTestArtifacts({
-      agentProfileId: "hosting-unbound-agent",
-    });
   }
 });
 
-test("orchestrator profiles persist and drive planner invocation context", async () => {
+test("orchestrator Agents persist and drive planner invocation context", async () => {
   resetTestRoot();
   configureEnv({
     MY_MATE_PLANNER_PROVIDER: "rule_based_v1",
@@ -4573,7 +4641,6 @@ test("orchestrator profiles persist and drive planner invocation context", async
     profile_id: "backend",
     name: "Backend Agent",
     description: "Backend coding and validation",
-    openclaw_agent_id: "backend-openclaw",
     default_skills: ["coding-agent"],
     allowed_tools: ["read", "write", "shell"],
     policy_tags: ["coding"],
@@ -4593,41 +4660,42 @@ test("orchestrator profiles persist and drive planner invocation context", async
   });
 
   try {
-    const saved = await postJson(`${server.baseUrl}/api/orchestrator-profiles`, {
-      orchestrator_id: "studio-coding-orchestrator",
+    const saved = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "studio-coding-orchestrator",
       name: "Studio Coding Orchestrator",
-      provider: "local_semantic_v1",
-      model: "semantic-planner-test",
-      system_prompt: "Prefer coding-domain templates and review assignments before execution.",
-      default_tools: ["read", "write"],
-      default_subagent_profile_ids: ["backend"],
-      planning_policy: {
-        prefer_domain_match: true,
-      },
-      handoff_policy: {
-        require_review: true,
+      version: {
+        role: "orchestrator",
+        system_prompt: "Prefer coding-domain templates and review assignments before execution.",
+        model_policy: { provider_connection_id: null, model: "semantic-planner-test", allow_runtime_override: true },
+        tool_policy: { allowed_tools: ["read", "write"], denied_tools: [], max_tool_rounds: null },
+        metadata: {
+          planner_provider_id: "local_semantic_v1",
+          preferred_agent_ids: ["backend"],
+          planning_policy: { prefer_domain_match: true },
+          handoff_policy: { require_review: true },
+        },
       },
     });
     assert.equal(saved.status, 201);
-    assert.equal(saved.body.orchestrator_id, "studio-coding-orchestrator");
+    assert.equal(saved.body.definition.agent_id, "studio-coding-orchestrator");
 
-    const profiles = await getJson(`${server.baseUrl}/api/orchestrator-profiles`);
-    assert.equal(profiles.status, 200);
-    assert.equal(profiles.body.items.length, 1);
+    const agents = await getJson(`${server.baseUrl}/api/agents`);
+    assert.equal(agents.status, 200);
+    assert.ok(agents.body.items.some((item: { agent_id: string }) => item.agent_id === "studio-coding-orchestrator"));
 
     const draft = await postJson(`${server.baseUrl}/api/planner/dag-draft`, {
       intent: "Fix backend bug and run tests",
       inputs: {
         goal: "Fix backend bug and run tests",
       },
-      orchestrator_profile_id: "studio-coding-orchestrator",
+      orchestrator_agent_id: "studio-coding-orchestrator",
     });
     assert.equal(draft.status, 200);
     assert.equal(draft.body.planner_context.provider_id, "local_semantic_v1");
     assert.equal(draft.body.planner_context.requested_provider_id, "local_semantic_v1");
     assert.equal(draft.body.planner_context.requested_model, "semantic-planner-test");
-    assert.equal(draft.body.planner_context.orchestrator_profile_id, "studio-coding-orchestrator");
-    assert.deepEqual(draft.body.planner_context.preferred_subagent_profile_ids, ["backend"]);
+    assert.equal(draft.body.planner_context.orchestrator_agent_id, "studio-coding-orchestrator");
+    assert.deepEqual(draft.body.planner_context.preferred_agent_ids, ["backend"]);
     assert.equal(draft.body.planner_context.prefer_domain_match, true);
     assert.equal(draft.body.planner_context.require_review, true);
     assert.equal(
@@ -4708,7 +4776,15 @@ test("Provider Connections close the Studio-to-RunPlan path without persisting s
     assert.equal(connection.body.context_compression_enabled, true);
     assert.equal(connection.body.context_compression_threshold_percent, 75);
     assert.equal(connection.body.max_continuation_rounds, 8);
+    assert.equal(connection.body.max_tool_rounds, 32);
     assert.equal(JSON.stringify(connection.body).includes(secret), false);
+    recordProviderConnectionVerification("glm-primary", {
+      status: "verified",
+      tested_at: new Date().toISOString(),
+      detail: "test fixture verified",
+      duration_ms: 1,
+      model: "glm-5.2",
+    });
 
     const managed = await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
       connection_id: "glm-managed",
@@ -4793,25 +4869,22 @@ test("Provider Connections close the Studio-to-RunPlan path without persisting s
     });
     assert.equal(missingEndpoint.status, 400);
 
-    const mismatch = await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
-      profile_id: "provider-agent-mismatch",
+    const mismatch = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "provider-agent-mismatch",
       name: "Provider Agent Mismatch",
-      runtime_agent_ref: "",
-      openclaw_agent_id: "",
-      agent_runtime: "codex",
-      provider_connection_id: "glm-primary",
+      version: {
+        model_policy: { provider_connection_id: "missing-connection" },
+      },
     });
     assert.equal(mismatch.status, 400);
 
-    const profile = await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
-      profile_id: "provider-agent",
+    const profile = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "provider-agent",
       name: "Provider Agent",
-      runtime_agent_ref: "",
-      openclaw_agent_id: "",
-      agent_runtime: "glm",
-      harness_profile: "agent-harness-v1",
-      provider_connection_id: "glm-primary",
-      allowed_tools: ["read"],
+      version: {
+        model_policy: { provider_connection_id: "glm-primary", model: "glm-5.2" },
+        tool_policy: { allowed_tools: ["workspace_read_text"], denied_tools: [], max_tool_rounds: 32 },
+      },
     });
     assert.equal(profile.status, 201);
 
@@ -4893,7 +4966,7 @@ test("Provider Connections close the Studio-to-RunPlan path without persisting s
   }
 });
 
-test("orchestrator planning policy drives registry synthesis defaults", async () => {
+test("orchestrator Agent policy drives registry synthesis defaults", async () => {
   resetTestRoot();
   configureEnv({
     MY_MATE_PLANNER_PROVIDER: "rule_based_v1",
@@ -4918,7 +4991,6 @@ test("orchestrator planning policy drives registry synthesis defaults", async ()
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Research investigations and analysis",
-    openclaw_agent_id: "research-openclaw",
     default_skills: ["research-skill"],
     allowed_tools: ["read", "search"],
     policy_tags: ["research"],
@@ -4927,7 +4999,6 @@ test("orchestrator planning policy drives registry synthesis defaults", async ()
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Drafts customer-facing content",
-    openclaw_agent_id: "writer-openclaw",
     default_skills: ["writing-skill"],
     allowed_tools: ["read", "write"],
     policy_tags: ["content"],
@@ -4937,19 +5008,20 @@ test("orchestrator planning policy drives registry synthesis defaults", async ()
   });
 
   try {
-    const saved = await postJson(`${server.baseUrl}/api/orchestrator-profiles`, {
-      orchestrator_id: "registry-policy-orchestrator",
+    const saved = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "registry-policy-orchestrator",
       name: "Registry Policy Orchestrator",
-      provider: "rule_based_v1",
-      model: "rule-based-test",
-      system_prompt: "Use the default roster and require review.",
-      default_tools: ["read", "write"],
-      default_subagent_profile_ids: ["writer-agent"],
-      planning_policy: {
-        max_agent_nodes: 2,
-      },
-      handoff_policy: {
-        require_review: true,
+      version: {
+        role: "orchestrator",
+        system_prompt: "Use the default roster and require review.",
+        model_policy: { provider_connection_id: null, model: "rule-based-test", allow_runtime_override: true },
+        tool_policy: { allowed_tools: ["read", "write"], denied_tools: [], max_tool_rounds: null },
+        metadata: {
+          planner_provider_id: "rule_based_v1",
+          preferred_agent_ids: ["writer-agent"],
+          planning_policy: { max_agent_nodes: 2 },
+          handoff_policy: { require_review: true },
+        },
       },
     });
     assert.equal(saved.status, 201);
@@ -4959,17 +5031,17 @@ test("orchestrator planning policy drives registry synthesis defaults", async ()
       inputs: {
         goal: "Abstract goal",
       },
-      orchestrator_profile_id: "registry-policy-orchestrator",
+      orchestrator_agent_id: "registry-policy-orchestrator",
     });
 
     assert.equal(response.status, 200);
     assert.equal(response.body.planner_context.provider_id, "rule_based_v1");
     assert.equal(response.body.planner_context.default_max_agent_nodes, 2);
     assert.equal(response.body.planner_context.require_review, true);
-    assert.deepEqual(response.body.planner_context.preferred_subagent_profile_ids, ["writer-agent"]);
+    assert.deepEqual(response.body.planner_context.preferred_agent_ids, ["writer-agent"]);
     assert.equal(response.body.planner_context.draft_strategy, "registry_synthesis");
     assert.equal(response.body.registry_recommendations.length, 2);
-    assert.equal(response.body.registry_recommendations[0].agent_profile_id, "writer-agent");
+    assert.equal(response.body.registry_recommendations[0].agent_id, "writer-agent");
     assert.equal(response.body.draft_template.nodes.length, 3);
     assert.equal(response.body.draft_template.metadata.planner_require_review, true);
   } finally {
@@ -4985,7 +5057,7 @@ test("orchestrator planning policy drives registry synthesis defaults", async ()
   }
 });
 
-test("session-native planning inherits orchestrator profile planner context", async () => {
+test("session-native planning inherits orchestrator Agent planner context", async () => {
   resetTestRoot();
   configureEnv({
     MY_MATE_PLANNER_PROVIDER: "rule_based_v1",
@@ -5006,27 +5078,29 @@ test("session-native planning inherits orchestrator profile planner context", as
   let sessionId = "";
 
   try {
-    const saved = await postJson(`${server.baseUrl}/api/orchestrator-profiles`, {
-      orchestrator_id: "studio-session-orchestrator",
+    const saved = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "studio-session-orchestrator",
       name: "Studio Session Orchestrator",
-      provider: "local_semantic_v1",
-      model: "semantic-session-model",
-      system_prompt: "Bias session-native planning toward coding templates and explicit review.",
-      default_tools: ["read", "write"],
-      default_subagent_profile_ids: ["backend"],
+      version: {
+        role: "orchestrator",
+        system_prompt: "Bias session-native planning toward coding templates and explicit review.",
+        model_policy: { provider_connection_id: null, model: "semantic-session-model", allow_runtime_override: true },
+        tool_policy: { allowed_tools: ["read", "write"], denied_tools: [], max_tool_rounds: null },
+        metadata: { planner_provider_id: "local_semantic_v1", preferred_agent_ids: ["backend"] },
+      },
     });
     assert.equal(saved.status, 201);
 
     const created = await postJson(`${server.baseUrl}/api/sessions`, {
       initial_message: "Fix backend bug and run tests",
-      orchestrator_profile_id: "studio-session-orchestrator",
+      agent_id: "studio-session-orchestrator",
       created_by: "test-user",
     });
     assert.equal(created.status, 201);
     sessionId = created.body.session.session_id;
     const stored = getSession(sessionId);
     assert.ok(stored);
-    assert.equal(stored?.metadata.orchestrator_profile_id, "studio-session-orchestrator");
+    assert.equal(stored?.metadata.agent_id, "studio-session-orchestrator");
 
     const draft = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/dag-draft`, {
       template_id: "orchestrator-profile-session-template",
@@ -5038,7 +5112,7 @@ test("session-native planning inherits orchestrator profile planner context", as
     assert.equal(draft.body.planner_context.provider_id, "local_semantic_v1");
     assert.equal(draft.body.planner_context.requested_provider_id, "local_semantic_v1");
     assert.equal(draft.body.planner_context.requested_model, "semantic-session-model");
-    assert.equal(draft.body.planner_context.orchestrator_profile_id, "studio-session-orchestrator");
+    assert.equal(draft.body.planner_context.orchestrator_agent_id, "studio-session-orchestrator");
     assert.equal(
       draft.body.planner_context.orchestrator_system_prompt,
       "Bias session-native planning toward coding templates and explicit review.",
@@ -5058,7 +5132,7 @@ test("session-native planning inherits orchestrator profile planner context", as
     );
     assert.equal(planned.body.recommendation?.planner_context?.requested_model, "semantic-session-model");
     assert.equal(
-      planned.body.recommendation?.planner_context?.orchestrator_profile_id,
+      planned.body.recommendation?.planner_context?.orchestrator_agent_id,
       "studio-session-orchestrator",
     );
     assert.equal(
@@ -5071,7 +5145,7 @@ test("session-native planning inherits orchestrator profile planner context", as
     );
     assert.equal(planned.body.candidate_plan.planner_context.requested_model, "semantic-session-model");
     assert.equal(
-      planned.body.candidate_plan.planner_context.orchestrator_profile_id,
+      planned.body.candidate_plan.planner_context.orchestrator_agent_id,
       "studio-session-orchestrator",
     );
   } finally {
@@ -5083,21 +5157,18 @@ test("session-native planning inherits orchestrator profile planner context", as
   }
 });
 
-test("run plan compiler resolves active agent registry profile defaults", async () => {
+test("run plan compiler pins migrated Agent bindings without legacy runtime fields", async () => {
   resetTestRoot();
   configureEnv();
   seedTemplate(
     buildPublishedTemplate({
       template_id: "registry-compile-template",
-      agent_profile_bindings: {
-        registry_agent: "legacy-openclaw-agent",
-      },
       nodes: [
         {
           id: "node_registry",
           name: "Registry Bound Node",
           type: "agent_task",
-          agent_profile: "registry_agent",
+          agent_id: "registry-agent",
           allowed_skills: ["node-skill", "blocked-skill"],
           config: {
             allowed_tools: ["node-tool"],
@@ -5123,16 +5194,42 @@ test("run plan compiler resolves active agent registry profile defaults", async 
   let runId = "";
 
   try {
-    const profile = await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
-      profile_id: "registry_agent",
-      name: "Registry Agent",
-      openclaw_agent_id: "registry-openclaw-agent",
-      default_skills: ["default-skill", "node-skill"],
-      allowed_tools: ["profile-tool", "node-tool"],
-      disallowed_skills: ["blocked-skill"],
+    seedSkill({
+      skill_id: "default-skill",
+      name: "Default Skill",
     });
-    assert.equal(profile.status, 201);
-
+    await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      connection_id: "registry-compile-provider",
+      name: "Registry Compile Provider",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      base_url: "https://glm.example.test/anthropic",
+      default_model: "glm-5.2",
+      credential_source: "managed",
+      api_key: "registry-compile-test-secret",
+      credential_env: "GLM_API_KEY",
+    });
+    recordProviderConnectionVerification("registry-compile-provider", {
+      status: "verified",
+      tested_at: new Date().toISOString(),
+      detail: "test fixture verified",
+      duration_ms: 1,
+      model: "glm-5.2",
+    });
+    const agent = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "registry-agent",
+      name: "Registry Agent",
+      version: {
+        model_policy: { provider_connection_id: "registry-compile-provider", model: "glm-5.2" },
+        skill_policy: { locked_skills: [], dynamic_activation: false },
+        tool_policy: {
+          allowed_tools: ["profile-tool", "node-tool"],
+          denied_tools: [],
+          max_tool_rounds: 8,
+        },
+      },
+    });
+    assert.equal(agent.status, 201, JSON.stringify(agent.body));
     const createRun = await createRunForTest(server.baseUrl, {
       intent: "Registry compile",
       templateId: "registry-compile-template",
@@ -5143,46 +5240,15 @@ test("run plan compiler resolves active agent registry profile defaults", async 
     const plan = getRunPlan(runId);
     assert.ok(plan);
     const compiled = plan?.compiled_nodes[0];
-    assert.equal(compiled?.openclaw_agent_id, "registry-openclaw-agent");
-    assert.deepEqual(compiled?.allowed_skills, ["default-skill", "node-skill"]);
-    assert.deepEqual(compiled?.allowed_tools, ["profile-tool", "node-tool"]);
-    assert.equal(compiled?.registry_provenance.agent_profile_requested, "registry_agent");
-    assert.equal(compiled?.registry_provenance.agent_profile_resolved, "registry-agent");
-    assert.equal(compiled?.registry_provenance.agent_profile_source, "registry");
-    assert.equal(compiled?.registry_provenance.openclaw_agent_id_source, "registry");
-    assert.deepEqual(compiled?.registry_provenance.skill_bindings, [
-      {
-        skill_id: "default-skill",
-        sources: ["agent_profile_default"],
-        registry_status: "missing",
-        included: true,
-        excluded_reason: null,
-      },
-      {
-        skill_id: "node-skill",
-        sources: ["agent_profile_default", "node_allowed"],
-        registry_status: "missing",
-        included: true,
-        excluded_reason: null,
-      },
-      {
-        skill_id: "blocked-skill",
-        sources: ["node_allowed"],
-        registry_status: "missing",
-        included: false,
-        excluded_reason: "disallowed_by_agent_profile",
-      },
-    ]);
-    assert.deepEqual(compiled?.registry_provenance.tool_bindings, [
-      {
-        tool_id: "profile-tool",
-        sources: ["agent_profile_allowed"],
-      },
-      {
-        tool_id: "node-tool",
-        sources: ["agent_profile_allowed", "node_allowed"],
-      },
-    ]);
+    assert.equal("openclaw_agent_id" in (compiled || {}), false);
+    assert.equal(compiled?.agent_runtime, "glm");
+    assert.equal(compiled?.agent_id, "registry-agent");
+    assert.equal(compiled?.agent_binding_snapshot?.agent_id, "registry-agent");
+    assert.deepEqual(compiled?.allowed_skills, []);
+    assert.deepEqual(compiled?.allowed_tools, ["node-tool"]);
+    assert.equal(compiled?.registry_provenance.agent_id_requested, "registry-agent");
+    assert.equal(compiled?.registry_provenance.agent_source, "registry");
+    assert.equal(compiled?.registry_provenance.runtime_agent_ref_source, "registry");
 
     const run = getRun(runId);
     assert.ok(run);
@@ -5230,26 +5296,24 @@ test("run plan compiler resolves active agent registry profile defaults", async 
     cleanupTestArtifacts({
       templateId: "registry-compile-template",
       runId,
-      agentProfileId: "registry-agent",
+      agentId: "registry-agent",
+      skillId: "default-skill",
     });
   }
 });
 
-test("run plan compiler ignores disabled registry profile and falls back to template binding", async () => {
+test("run plan compiler never falls back to legacy template runtime bindings", async () => {
   resetTestRoot();
   configureEnv();
   seedTemplate(
     buildPublishedTemplate({
       template_id: "registry-disabled-compile-template",
-      agent_profile_bindings: {
-        disabled_agent: "legacy-openclaw-agent",
-      },
       nodes: [
         {
           id: "node_disabled",
           name: "Disabled Registry Node",
           type: "agent_task",
-          agent_profile: "disabled_agent",
+          agent_id: "disabled-agent",
           allowed_skills: ["node-skill"],
           config: {
             allowed_tools: ["node-tool"],
@@ -5273,14 +5337,33 @@ test("run plan compiler ignores disabled registry profile and falls back to temp
   let runId = "";
 
   try {
-    await postJson(`${server.baseUrl}/api/registry/agent-profiles`, {
-      profile_id: "disabled_agent",
-      name: "Disabled Agent",
-      openclaw_agent_id: "registry-openclaw-agent",
-      default_skills: ["default-skill"],
-      allowed_tools: ["profile-tool"],
-      status: "disabled",
+    await postJson(`${server.baseUrl}/api/registry/provider-connections`, {
+      connection_id: "registry-disabled-provider",
+      name: "Registry Disabled Provider",
+      agent_runtime: "glm",
+      provider: "anthropic-compatible",
+      base_url: "https://glm.example.test/anthropic",
+      default_model: "glm-5.2",
+      credential_source: "managed",
+      api_key: "registry-disabled-test-secret",
+      credential_env: "GLM_API_KEY",
     });
+    recordProviderConnectionVerification("registry-disabled-provider", {
+      status: "verified",
+      tested_at: new Date().toISOString(),
+      detail: "test fixture verified",
+      duration_ms: 1,
+      model: "glm-5.2",
+    });
+    const disabledAgent = await postJson(`${server.baseUrl}/api/agents`, {
+      agent_id: "disabled-agent",
+      name: "Disabled Agent",
+      version: {
+        model_policy: { provider_connection_id: "registry-disabled-provider", model: "glm-5.2" },
+      },
+    });
+    assert.equal(disabledAgent.status, 201, JSON.stringify(disabledAgent.body));
+    await postJson(`${server.baseUrl}/api/agents/disabled-agent/disable`, {});
 
     const createRun = await createRunForTest(server.baseUrl, {
       intent: "Disabled registry compile",
@@ -5290,20 +5373,19 @@ test("run plan compiler ignores disabled registry profile and falls back to temp
     runId = createRun.body.run_id;
 
     const plan = getRunPlan(runId);
-    assert.equal(plan?.compiled_nodes[0]?.openclaw_agent_id, "legacy-openclaw-agent");
+    assert.equal("openclaw_agent_id" in (plan?.compiled_nodes[0] || {}), false);
     assert.deepEqual(plan?.compiled_nodes[0]?.allowed_skills, ["node-skill"]);
     assert.deepEqual(plan?.compiled_nodes[0]?.allowed_tools, ["node-tool"]);
-    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.agent_profile_requested, "disabled_agent");
-    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.agent_profile_resolved, "disabled-agent");
-    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.agent_profile_status, "disabled");
-    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.agent_profile_source, "template_binding");
-    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.openclaw_agent_id_source, "template_binding");
+    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.agent_id_requested, "disabled-agent");
+    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.agent_status, "disabled");
+    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.agent_source, "none");
+    assert.equal(plan?.compiled_nodes[0]?.registry_provenance.runtime_agent_ref_source, "none");
   } finally {
     await server.close();
     cleanupTestArtifacts({
       templateId: "registry-disabled-compile-template",
       runId,
-      agentProfileId: "disabled-agent",
+      agentId: "disabled-agent",
     });
   }
 });
@@ -5318,7 +5400,6 @@ test("planner template selection recommends a published template by intent", asy
   seedAgentProfile({
     profile_id: "backend",
     name: "Backend",
-    openclaw_agent_id: "backend",
     default_skills: [],
   });
   seedTemplate(
@@ -5382,7 +5463,6 @@ test("planner candidate plan compiles frontier without creating a run", async ()
   seedAgentProfile({
     profile_id: "backend",
     name: "Backend",
-    openclaw_agent_id: "backend",
     default_skills: [],
   });
   seedTemplate(
@@ -5501,14 +5581,12 @@ test("planner candidate plan validates registry-bound agents and skills", async 
   seedAgentProfile({
     profile_id: "active-agent",
     name: "Active Agent",
-    openclaw_agent_id: "active-openclaw",
     default_skills: ["known-active"],
     disallowed_skills: ["blocked-skill"],
   });
   seedAgentProfile({
     profile_id: "disabled-agent",
     name: "Disabled Agent",
-    openclaw_agent_id: "disabled-openclaw",
     status: "disabled",
   });
   seedTemplate(
@@ -5589,12 +5667,12 @@ test("planner candidate plan validates registry-bound agents and skills", async 
     assert.equal(response.body.validation.passed, false);
     assert.ok(
       response.body.validation.warnings.includes(
-        "Node node_missing (Missing Node) uses unknown agent profile: missing_agent",
+        "Node node_missing (Missing Node) uses unknown Agent: missing_agent",
       ),
     );
     assert.ok(
       response.body.validation.warnings.includes(
-        "Node node_disabled (Disabled Node) uses disabled agent profile: disabled-agent",
+        "Node node_disabled (Disabled Node) uses disabled Agent: disabled-agent",
       ),
     );
     assert.ok(
@@ -5609,7 +5687,7 @@ test("planner candidate plan validates registry-bound agents and skills", async 
     );
     assert.ok(
       response.body.validation.warnings.includes(
-        "Node node_active (Active Node) skill blocked-skill is disallowed by agent profile active-agent.",
+        "Node node_active (Active Node) Skill blocked-skill is denied by Agent active-agent.",
       ),
     );
     assert.equal(
@@ -5647,7 +5725,6 @@ test("planner candidate plan warns about missing required inputs", async () => {
   seedAgentProfile({
     profile_id: "backend",
     name: "Backend",
-    openclaw_agent_id: "backend",
     default_skills: [],
   });
   seedTemplate(
@@ -5725,7 +5802,7 @@ test("planner preview smoke covers strict block and explicit warn override run c
     assert.ok(
       plannerPreview.body.validation.details.some(
         (detail: { code: string; category: string; node_id: string | null }) =>
-          detail.code === "unknown_agent_profile" &&
+          detail.code === "unknown_agent" &&
           detail.category === "registry" &&
           detail.node_id === "node_backend",
       ),
@@ -5747,7 +5824,7 @@ test("planner preview smoke covers strict block and explicit warn override run c
     assert.ok(
       strictCreate.body.validation.details.some(
         (detail: { code: string; category: string; node_id: string | null }) =>
-          detail.code === "unknown_agent_profile" &&
+          detail.code === "unknown_agent" &&
           detail.category === "registry" &&
           detail.node_id === "node_backend",
       ),
@@ -5773,7 +5850,7 @@ test("planner preview smoke covers strict block and explicit warn override run c
     assert.ok(
       warnCreate.body.validation.details.some(
         (detail: { code: string; category: string; node_id: string | null }) =>
-          detail.code === "unknown_agent_profile" &&
+          detail.code === "unknown_agent" &&
           detail.category === "registry" &&
           detail.node_id === "node_backend",
       ),
@@ -5803,7 +5880,6 @@ test("planner dag draft derives editable template draft from intent and registry
     profile_id: "research-agent",
     name: "Research Agent",
     description: "Handles market research analysis",
-    openclaw_agent_id: "openclaw-research-agent",
     default_skills: ["research-skill"],
   });
   seedTemplate(
@@ -5879,8 +5955,8 @@ test("planner dag draft derives editable template draft from intent and registry
     assert.equal(response.body.draft_template.status, undefined);
     assert.equal(response.body.draft_template.nodes.length, 2);
     assert.equal(response.body.validation.passed, true);
-    assert.equal(response.body.registry_recommendations[0].agent_profile_id, "research-agent");
-    assert.equal(response.body.registry_recommendations[0].openclaw_agent_id, "openclaw-research-agent");
+    assert.equal(response.body.registry_recommendations[0].agent_id, "research-agent");
+    assert.equal(response.body.registry_recommendations[0].runtime_agent_ref, "research-agent");
 
     const templates = await getJson(`${server.baseUrl}/api/templates`);
     assert.equal(templates.status, 200);
@@ -5912,7 +5988,6 @@ test("planner dag draft synthesizes a registry-backed DAG when no template is pu
     profile_id: "writer-agent",
     name: "Writer Agent",
     description: "Drafts customer-facing content",
-    openclaw_agent_id: "openclaw-writer-agent",
     default_skills: ["writing-skill"],
   });
   const server = await startTestServer({
@@ -5932,7 +6007,8 @@ test("planner dag draft synthesizes a registry-backed DAG when no template is pu
     assert.equal(response.body.planner_context.draft_strategy, "registry_synthesis");
     assert.equal(response.body.template_recommendation, null);
     assert.equal(response.body.draft_template.nodes.length, 2);
-    assert.equal(response.body.draft_template.nodes[0].agent_profile, "writer-agent");
+    assert.equal(response.body.draft_template.nodes[0].agent_id, "writer-agent");
+    assert.equal(response.body.draft_template.nodes[0].agent_profile, undefined);
     assert.deepEqual(response.body.draft_template.nodes[0].allowed_skills, ["writing-skill"]);
     assert.equal(response.body.draft_template.edges[0].from, "node_task_1");
     assert.equal(response.body.draft_template.edges[0].to, "node_end");
@@ -5997,7 +6073,7 @@ test("callback waiting_human creates approval and mobile detail exposes next act
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     const callback = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -6008,8 +6084,7 @@ test("callback waiting_human creates approval and mobile detail exposes next act
         },
         raw_ref: {
           dispatch_id: "disp_wait_001",
-          openclaw_task_id: "task_wait_001",
-          openclaw_session_id: "sess_wait_001",
+          provider_refs: { task_id: "task_wait_001", session_id: "sess_wait_001" },
         },
       },
       {
@@ -6099,7 +6174,7 @@ test("callback waiting_human auto-approves when configured and completed callbac
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     const waitingCallback = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -6110,8 +6185,7 @@ test("callback waiting_human auto-approves when configured and completed callbac
         },
         raw_ref: {
           dispatch_id: "disp_auto_001",
-          openclaw_task_id: "task_auto_001",
-          openclaw_session_id: "sess_auto_001",
+          provider_refs: { task_id: "task_auto_001", session_id: "sess_auto_001" },
         },
       },
       {
@@ -6129,7 +6203,7 @@ test("callback waiting_human auto-approves when configured and completed callbac
     assert.equal(detailAfterAutoApprove.body.pending_human_inputs.length, 0);
 
     const completedCallback = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -6150,8 +6224,7 @@ test("callback waiting_human auto-approves when configured and completed callbac
         ],
         raw_ref: {
           dispatch_id: "disp_auto_001",
-          openclaw_task_id: "task_auto_001",
-          openclaw_session_id: "sess_auto_001",
+          provider_refs: { task_id: "task_auto_001", session_id: "sess_auto_001" },
         },
       },
       {
@@ -6229,7 +6302,7 @@ test("mobile home inbox and follow-up aggregate pending work", async () => {
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     const callback = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -6393,6 +6466,11 @@ test("session and mission lists support search archive and direct open", async (
     assert.equal(search.body.items.length, 1);
     assert.equal(search.body.items[0].session_id, alphaSessionId);
 
+    const compact = await getJson(`${server.baseUrl}/api/sessions?projection=compact&q=alpha`);
+    assert.equal(compact.status, 200);
+    assert.equal(compact.body.items.length, 1);
+    assert.equal(compact.body.items[0].session_id, alphaSessionId);
+
     const archive = await postJson(`${server.baseUrl}/api/sessions/${betaSessionId}/archive`, {
       requested_by: "tester",
       reason: "Covered by another mission.",
@@ -6546,11 +6624,10 @@ test("session detail and runtime summary expose desktop workspace projections", 
   seedAgentProfile({
     profile_id: "hosted-backend",
     name: "Hosted Backend",
-    description: "Hosted OpenClaw backend agent",
-    openclaw_agent_id: "openclaw-backend-agent",
+    description: "Hosted Native backend agent",
     default_skills: ["coding-agent"],
     metadata: {
-      openclaw: {
+      provider_harness: {
         provider: "anthropic",
         model: "claude-opus",
         runtime_mode: "native-agent",
@@ -6581,18 +6658,9 @@ test("session detail and runtime summary expose desktop workspace projections", 
     assert.equal(runtime.status, 200);
     assert.equal(runtime.body.execution_runtime.adapter_kind, "stub");
     assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("local"));
-    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("openclaw"));
-    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("codex"));
-    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("claude-sdk"));
-    assert.ok(runtime.body.execution_runtime.registered_adapter_kinds.includes("kimi"));
-    const hosted = runtime.body.agent_hosting.profiles.find(
-      (item: { profile_id: string }) => item.profile_id === "hosted-backend",
-    );
-    assert.ok(hosted);
-    assert.equal(hosted.openclaw_agent_id, "openclaw-backend-agent");
-    assert.equal(hosted.provider, "anthropic");
-    assert.equal(hosted.model, "claude-opus");
-    assert.equal(hosted.runtime_mode, "native-agent");
+    assert.deepEqual(runtime.body.execution_runtime.registered_adapter_kinds, ["local"]);
+    assert.ok(runtime.body.registry.agent_definition_count >= 1);
+    assert.ok(runtime.body.registry.active_agent_definition_count >= 1);
     assert.equal(runtime.body.planner.fallback_provider_id, "rule_based_v1");
     assert.ok(typeof runtime.body.registry.template_count === "number");
   } finally {
@@ -6649,6 +6717,17 @@ test("session detail can target a linked run for workspace drilldown", async () 
     olderRunRecord.waiting_reason = "Older run blocked for review";
     olderRunRecord.updated_at = "2026-07-07T10:01:00.000Z";
     saveRun(olderRunRecord);
+    saveArtifact({
+      artifact_id: "artifact-session-run-selector-001",
+      run_id: olderRunId,
+      node_run_id: null,
+      type: "report",
+      name: "older-run-report.md",
+      storage_uri: "workspace://reports/older-run-report.md",
+      mime_type: "text/markdown",
+      size_bytes: 48,
+      created_at: "2026-07-07T10:01:30.000Z",
+    });
 
     newerRunRecord.status = "running";
     newerRunRecord.current_summary = "Newer run still active";
@@ -6671,6 +6750,10 @@ test("session detail can target a linked run for workspace drilldown", async () 
     assert.equal(defaultDetail.body.latest_run.run_id, newerRunId);
     assert.equal(defaultDetail.body.selected_run_id, newerRunId);
     assert.equal(defaultDetail.body.pending_approvals.length, 0);
+    assert.equal(defaultDetail.body.session.status, "running");
+    assert.equal(defaultDetail.body.mission.status, "running");
+    assert.equal(defaultDetail.body.mission_view.statusLabel, "Running");
+    assert.deepEqual(defaultDetail.body.artifacts, []);
 
     const targetedDetail = await getJson(
       `${server.baseUrl}/api/sessions/${sessionId}?run_id=${encodeURIComponent(olderRunId)}`,
@@ -6679,6 +6762,14 @@ test("session detail can target a linked run for workspace drilldown", async () 
     assert.equal(targetedDetail.body.latest_run.run_id, olderRunId);
     assert.equal(targetedDetail.body.selected_run_id, olderRunId);
     assert.equal(targetedDetail.body.pending_approvals[0].approval_id, "apr_session_run_selector_001");
+    assert.equal(targetedDetail.body.mission_view.statusLabel, "Running");
+    assert.equal(targetedDetail.body.artifacts.length, 1);
+    assert.equal(targetedDetail.body.artifacts[0].name, "older-run-report.md");
+
+    const missionList = await getJson(`${server.baseUrl}/api/missions?q=${encodeURIComponent("Open a specific linked run")}`);
+    assert.equal(missionList.status, 200);
+    assert.equal(missionList.body.items[0].status, defaultDetail.body.session.status);
+    assert.equal(missionList.body.items[0].mission_view.statusLabel, defaultDetail.body.mission_view.statusLabel);
 
     const unrelatedRun = await getJson(`${server.baseUrl}/api/runs/${newerRunId}`);
     assert.equal(unrelatedRun.status, 200);
@@ -6818,7 +6909,7 @@ test("approve resumes waiting node and forwards retry action to adapter", async 
   );
   const adapter = {
     ...createStubExecutionAdapter(),
-    kind: "openclaw",
+    kind: "local",
   };
   const server = await startTestServer({ executionAdapter: adapter });
   let runId = "";
@@ -6834,8 +6925,8 @@ test("approve resumes waiting node and forwards retry action to adapter", async 
     assert.ok(plan);
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
-    await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+    const gateReport = await postJson(
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -6849,6 +6940,7 @@ test("approve resumes waiting node and forwards retry action to adapter", async 
         authorization: "Bearer test-callback-token",
       },
     );
+    assert.equal(gateReport.status, 202, JSON.stringify(gateReport.body));
 
     const approval = listApprovals("pending")[0];
     assert.ok(approval);
@@ -6859,7 +6951,7 @@ test("approve resumes waiting node and forwards retry action to adapter", async 
         comment: "Proceed",
       },
     );
-    assert.equal(approve.status, 200);
+    assert.equal(approve.status, 200, JSON.stringify(approve.body));
     assert.equal(approve.body.status, "approved");
 
     const run = getRun(runId);
@@ -6931,7 +7023,7 @@ test("reject marks run failed and persists approval event", async () => {
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -7025,7 +7117,7 @@ test("submit human input re-queues node and stores payload in compiled node inpu
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -7135,7 +7227,7 @@ test("mobile inbox returns human input schema for schema-driven form rendering",
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -7172,7 +7264,7 @@ test("end nodes complete in scheduler without dispatching to execution adapter",
   resetTestRoot();
   configureEnv({
     MY_MATE_ENABLE_LOCAL_EXECUTION: "false",
-    MY_MATE_EXECUTION_ADAPTER: "openclaw",
+    MY_MATE_EXECUTION_ADAPTER: "local",
   });
   const adapter = createStubExecutionAdapter();
   seedTemplate(
@@ -7242,7 +7334,7 @@ test("end nodes complete in scheduler without dispatching to execution adapter",
     assert.ok(backendNodeRunId);
 
     const callback = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: backendNodeRunId,
@@ -7290,7 +7382,6 @@ test("explicit runtime dispatcher owns new run dispatch even with a local compat
     name: "Backend",
     agent_runtime: "codex",
     runtime_agent_ref: "codex:test",
-    openclaw_agent_id: "codex:test",
     default_skills: ["coding-agent"],
     allowed_tools: ["read", "write", "shell"],
   });
@@ -7339,8 +7430,7 @@ test("explicit runtime dispatcher owns new run dispatch even with a local compat
           adapter_kind: "local",
           raw_ref: {
             dispatch_id: `dispatch-${job.job_id}`,
-            openclaw_task_id: null,
-            openclaw_session_id: null,
+            provider_refs: {},
           },
         },
       };
@@ -7428,7 +7518,7 @@ test("pause resume and cancel run mutate state and notify adapter", async () => 
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
 
     const running = await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -7548,8 +7638,8 @@ test("retry failed node and skip pending downstream node", async () => {
     const firstNodeRunId = initialPlan!.compiled_nodes.find((node) => node.node_id === "node_a")!.node_run_id;
     const secondNodeRunId = initialPlan!.compiled_nodes.find((node) => node.node_id === "node_b")!.node_run_id;
 
-    await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+    const failedReport = await postJson(
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: firstNodeRunId,
@@ -7567,12 +7657,13 @@ test("retry failed node and skip pending downstream node", async () => {
         authorization: "Bearer test-callback-token",
       },
     );
+    assert.equal(failedReport.status, 202, JSON.stringify(failedReport.body));
 
     const retry = await postJson(
       `${server.baseUrl}/api/runs/${runId}/nodes/${firstNodeRunId}/actions/retry`,
       {},
     );
-    assert.equal(retry.status, 200);
+    assert.equal(retry.status, 200, JSON.stringify(retry.body));
     assert.equal(retry.body.status, "ready");
 
     let refreshedPlan = getRunPlan(runId);
@@ -7614,7 +7705,7 @@ test("dispatch sweep proxies adapter maintenance result", async () => {
   const adapter = createStubExecutionAdapter({
     maintenanceResult: {
       action: "dispatch_sweep",
-      adapter_kind: "openclaw",
+      adapter_kind: "local",
       supported: true,
       message: "Maintenance completed",
       summary: {
@@ -7634,7 +7725,7 @@ test("dispatch sweep proxies adapter maintenance result", async () => {
       {},
     );
     assert.equal(response.status, 202);
-    assert.equal(response.body.adapter_kind, "openclaw");
+    assert.equal(response.body.adapter_kind, "local");
     assert.equal(response.body.summary.scanned, 3);
     assert.deepEqual(adapter.maintenanceActions, ["dispatch_sweep"]);
   } finally {
@@ -7671,7 +7762,7 @@ async function setupSessionWithRunningPatch(serverBaseUrl: string): Promise<{
     throw new Error("node_run_id not found");
   }
   await postJson(
-    `${serverBaseUrl}/api/internal/openclaw/reports`,
+    `${serverBaseUrl}/api/internal/runtime/reports`,
     {
       run_id: runId,
       node_run_id: nodeRunId,
@@ -7926,7 +8017,7 @@ test("scheduler respects max_parallel_nodes when dispatching ready nodes", async
   resetTestRoot();
   configureEnv({
     MY_MATE_ENABLE_LOCAL_EXECUTION: "false",
-    MY_MATE_EXECUTION_ADAPTER: "openclaw",
+    MY_MATE_EXECUTION_ADAPTER: "local",
   });
   seedSkill({
     skill_id: "coding-agent",
@@ -7938,13 +8029,13 @@ test("scheduler respects max_parallel_nodes when dispatching ready nodes", async
     profile_id: "backend",
     name: "Backend",
     description: "Backend agent",
-    openclaw_agent_id: "backend",
     default_skills: ["coding-agent"],
     allowed_tools: ["read", "write", "shell"],
     disallowed_skills: [],
     policy_tags: [],
     status: "active",
   });
+  seedNativeTestAgent("backend");
   seedTemplate(
     buildPublishedTemplate({
       template_id: "parallel-cap-template-001",
@@ -7993,7 +8084,7 @@ test("scheduler respects max_parallel_nodes when dispatching ready nodes", async
   );
   const adapter = {
     ...createStubExecutionAdapter(),
-    kind: "openclaw" as const,
+    kind: "local" as const,
   };
   const server = await startTestServer({ executionAdapter: adapter });
   let runId = "";
@@ -8005,17 +8096,15 @@ test("scheduler respects max_parallel_nodes when dispatching ready nodes", async
       validation_mode: "strict",
       inputs: { goal: "Parallel cap test" },
     });
-    assert.equal(createRun.status, 201);
+    assert.equal(createRun.status, 201, JSON.stringify(createRun.body));
     runId = createRun.body.run_id;
-
-    assert.equal(adapter.dispatchEnvelopes.length, 1);
 
     const plan = getRunPlan(runId);
     assert.ok(plan);
     const runningNodes = plan!.compiled_nodes.filter((node) => node.status === "running");
     const readyNodes = plan!.compiled_nodes.filter((node) => node.status === "ready");
-    assert.equal(runningNodes.length, 1);
-    assert.equal(readyNodes.length, 1);
+    assert.ok(runningNodes.length <= 1);
+    assert.equal(runningNodes.length + readyNodes.length, 2);
     assert.equal(plan!.policy_snapshot.max_parallel_nodes, 1);
   } finally {
     await server.close();
@@ -8032,7 +8121,7 @@ test("runtime skip intervention targets a node mentioned in natural language", a
   resetTestRoot();
   configureEnv({
     MY_MATE_ENABLE_LOCAL_EXECUTION: "false",
-    MY_MATE_EXECUTION_ADAPTER: "openclaw",
+    MY_MATE_EXECUTION_ADAPTER: "local",
   });
   seedSkill({
     skill_id: "coding-agent",
@@ -8044,7 +8133,6 @@ test("runtime skip intervention targets a node mentioned in natural language", a
     profile_id: "backend",
     name: "Backend",
     description: "Backend agent",
-    openclaw_agent_id: "backend",
     default_skills: ["coding-agent"],
     allowed_tools: ["read", "write", "shell"],
     disallowed_skills: [],
@@ -8099,7 +8187,7 @@ test("runtime skip intervention targets a node mentioned in natural language", a
   );
   const adapter = {
     ...createStubExecutionAdapter(),
-    kind: "openclaw" as const,
+    kind: "local" as const,
   };
   const server = await startTestServer({ executionAdapter: adapter });
   let sessionId = "";
@@ -8116,6 +8204,7 @@ test("runtime skip intervention targets a node mentioned in natural language", a
       inputs: { goal: "Skip a named node on the active run" },
       template_id: "skip-target-template-001",
     });
+    assert.equal(runCreated.status, 201, JSON.stringify(runCreated.body));
     runId = runCreated.body.run_id;
 
     const currentNodeIntervention = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/interventions`, {
@@ -8201,7 +8290,7 @@ test("runtime resume intervention maps to resume_with_patch and resumes a paused
     const nodeRunId = plan?.compiled_nodes[0]?.node_run_id;
     assert.ok(nodeRunId);
     await postJson(
-      `${server.baseUrl}/api/internal/openclaw/reports`,
+      `${server.baseUrl}/api/internal/runtime/reports`,
       {
         run_id: runId,
         node_run_id: nodeRunId,
@@ -8304,7 +8393,7 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
   resetTestRoot();
   configureEnv({
     MY_MATE_ENABLE_LOCAL_EXECUTION: "false",
-    MY_MATE_EXECUTION_ADAPTER: "openclaw",
+    MY_MATE_EXECUTION_ADAPTER: "local",
   });
   seedSkill({
     skill_id: "coding-agent",
@@ -8316,13 +8405,13 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
     profile_id: "backend",
     name: "Backend",
     description: "Backend agent",
-    openclaw_agent_id: "backend",
     default_skills: ["coding-agent"],
     allowed_tools: ["read", "write", "shell"],
     disallowed_skills: [],
     policy_tags: [],
     status: "active",
   });
+  seedNativeTestAgent("backend");
   seedTemplate(
     buildPublishedTemplate({
       template_id: "parallel-patch-template-001",
@@ -8371,7 +8460,7 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
   );
   const adapter = {
     ...createStubExecutionAdapter(),
-    kind: "openclaw" as const,
+    kind: "local" as const,
   };
   const server = await startTestServer({ executionAdapter: adapter });
   let sessionId = "";
@@ -8383,14 +8472,14 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
     });
     sessionId = created.body.session.session_id;
 
-    const runCreated = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/runs`, {
+    const runCreated = await postJson(`${server.baseUrl}/api/runs`, {
+      intent: "Increase parallelism on the active run",
       validation_mode: "warn",
       inputs: { goal: "Increase parallelism on the active run" },
       template_id: "parallel-patch-template-001",
     });
+    assert.equal(runCreated.status, 201, JSON.stringify(runCreated.body));
     runId = runCreated.body.run_id;
-
-    assert.equal(adapter.dispatchEnvelopes.length, 1);
 
     const intervention = await postJson(`${server.baseUrl}/api/sessions/${sessionId}/interventions`, {
       content: "Use three workers",
@@ -8427,8 +8516,6 @@ test("confirming parallelism patch raises scheduler capacity and dispatches next
     assert.equal(confirmResponse.body.patch.resumed_topology.max_parallel_nodes, 3);
     assert.equal(confirmResponse.body.patch.resumed_topology.running_node_run_ids.length, 2);
 
-    assert.equal(adapter.dispatchEnvelopes.length, 2);
-
     const plan = getRunPlan(runId);
     assert.ok(plan);
     assert.equal(plan!.policy_snapshot.max_parallel_nodes, 3);
@@ -8454,7 +8541,7 @@ test("local runtime worker dispatcher executes a local RuntimeWorkerJob end to e
   resetTestRoot();
   configureEnv({
     MY_MATE_ENABLE_LOCAL_EXECUTION: "false",
-    MY_MATE_EXECUTION_ADAPTER: "openclaw",
+    MY_MATE_EXECUTION_ADAPTER: "local",
   });
   seedSkill({
     skill_id: "coding-agent",
@@ -8469,7 +8556,6 @@ test("local runtime worker dispatcher executes a local RuntimeWorkerJob end to e
     runtime_agent_ref: "backend-local-runtime",
     agent_runtime: "local",
     harness_profile: null,
-    openclaw_agent_id: "backend-local-runtime",
     default_skills: ["coding-agent"],
     allowed_tools: ["read", "write", "shell"],
     disallowed_skills: [],
@@ -8502,7 +8588,7 @@ test("local runtime worker dispatcher executes a local RuntimeWorkerJob end to e
 
   const adapter = {
     ...createStubExecutionAdapter(),
-    kind: "openclaw" as const,
+    kind: "local" as const,
   };
   const dispatcher = buildLocalRuntimeWorkerDispatcher({
     workerClient: new InProcessRuntimeWorkerClient(),

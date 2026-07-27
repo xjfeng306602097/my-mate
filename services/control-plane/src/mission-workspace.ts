@@ -11,13 +11,14 @@ import type {
   SessionMessageRecord,
   SessionRecord,
   RunRouteSnapshot,
+  RouteCompareOption,
   WorkspaceArtifactSurface,
 } from "./types.js";
 import { isPlainObject } from "./utils.js";
 
 export const MISSION_WORKSPACE_CONTRACT_VERSION = 1;
 
-type PlanOptionValue = "primary" | "alternative";
+type PlanOptionValue = RouteCompareOption;
 
 type MissionPlanContext = {
   latestPlanningMessage: SessionMessageRecord | null;
@@ -1606,6 +1607,54 @@ function getLatestTimestamp(
   ]).sort((left, right) => right.localeCompare(left))[0] || session.updated_at;
 }
 
+function buildExecutionContract(
+  session: SessionRecord,
+  missionSpec: MissionSpecSummary,
+  messages: SessionMessageRecord[],
+): NonNullable<MissionSpecContract["executionContract"]> {
+  const conversationText = messages
+    .filter((message) => message.role === "user" && message.kind === "text")
+    .map((message) => String(message.content.text || ""))
+    .join("\n")
+    .toLocaleLowerCase();
+  const deliverables = uniqueStrings(missionSpec.requestedOutputs);
+  const acceptanceCriteria = uniqueStrings([
+    ...deliverables.map((deliverable) => `${deliverable} exists and is available for review.`),
+    ...(missionSpec.constraints.length ? ["All stated constraints remain satisfied."] : []),
+    ...(/test|测试|回归|e2e|验收/u.test(conversationText)
+      ? ["Relevant automated checks complete successfully and their evidence is recorded."]
+      : []),
+    "No blocking execution error or unresolved required decision remains.",
+  ]);
+  const verificationSteps = uniqueStrings([
+    ...(deliverables.length ? ["Verify every requested deliverable exists and can be opened."] : []),
+    ...(/build|compile|编译|构建/u.test(conversationText) ? ["Run the required build or compile command."] : []),
+    ...(/test|测试|回归|e2e|验收/u.test(conversationText) ? ["Run the requested automated and end-to-end checks."] : []),
+    "Record Reviewer or user acceptance before closing the Task.",
+  ]);
+  const status: NonNullable<MissionSpecContract["executionContract"]>["status"] = session.status === "completed"
+    ? "satisfied"
+    : session.status === "failed"
+      ? "blocked"
+      : session.status === "waiting_human"
+        ? "awaiting_acceptance"
+        : session.status === "running"
+          ? "executing"
+          : missionSpec.openQuestions.length || !missionSpec.objective
+            ? "forming"
+            : "ready";
+  return {
+    schemaVersion: 1,
+    status,
+    deliverables,
+    acceptanceCriteria,
+    verificationSteps,
+    boundaries: uniqueStrings(missionSpec.constraints),
+    openQuestions: uniqueStrings(missionSpec.openQuestions),
+    completionRule: "all_required_deliverables_and_acceptance_criteria",
+  };
+}
+
 function buildMissionSpecContract(input: {
   session: SessionRecord;
   messages: SessionMessageRecord[];
@@ -1651,6 +1700,7 @@ function buildMissionSpecContract(input: {
       labels: [...missionSpec.checkpointSummary.labels],
     },
     revisionLineage: { ...missionSpec.revisionLineage },
+    executionContract: buildExecutionContract(session, missionSpec, messages),
     activeRunId,
     latestMessageId: latestMessage?.message_id || null,
     latestUserMessageId: latestUserMessage?.message_id || null,
@@ -1780,6 +1830,8 @@ export function buildMissionWorkspaceProjection(input: {
           ? `Route revision v${activeRouteRevision}`
           : latestDraftMessage
             ? "Draft workflow shape is ready"
+            : missionSpec.route.selectedTemplateName
+              ? missionSpec.route.selectedTemplateName
             : "No route yet",
       detail:
         typeof workspaceState.stale_reason === "string" && workspaceState.stale_reason.trim()
@@ -1790,18 +1842,24 @@ export function buildMissionWorkspaceProjection(input: {
           ? `${isPlainObject(latestPlanningMessage.content.alternative) ? 2 : 1} option(s)`
           : latestDraftMessage
             ? `${typeof workspaceState.draft_node_count === "number" ? workspaceState.draft_node_count : 0} draft node(s)`
+            : missionSpec.route.selectedTemplateName
+              ? "route selected"
             : "route pending",
       tone:
         typeof workspaceState.plan_stale === "boolean" && workspaceState.plan_stale
           ? "warn"
           : latestPlanningMessage || latestDraftMessage
             ? "warn"
+            : missionSpec.route.selectedTemplateName
+              ? "success"
             : "neutral",
       status:
         activeStageKey === "plan"
           ? "active"
           : latestPlanningMessage || latestDraftMessage
             ? "done"
+            : missionSpec.route.selectedTemplateName
+              ? "done"
             : "pending",
     },
     {
@@ -1830,6 +1888,8 @@ export function buildMissionWorkspaceProjection(input: {
       status:
         activeStageKey === "execution"
           ? "active"
+          : session.status === "completed"
+            ? "done"
           : typeof workspaceState.latest_run_id === "string" && workspaceState.latest_run_id.trim()
             ? "done"
             : "pending",

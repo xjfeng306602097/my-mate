@@ -30,14 +30,6 @@
       "model_env": "MY_MATE_KIMI_MODEL"
     },
     {
-      "id": "openclaw",
-      "harness_env": "MY_MATE_OPENCLAW_WORKER_BRIDGE_URL",
-      "credential_envs": ["MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY", "MY_MATE_OPENCLAW_BRIDGE_API_KEY"],
-      "credential_optional": true,
-      "credential_mode": "bridge_session",
-      "model_env": "MY_MATE_OPENCLAW_MODEL"
-    },
-    {
       "id": "glm",
       "harness_builtin": true,
       "harness_name": "claude-agent-sdk",

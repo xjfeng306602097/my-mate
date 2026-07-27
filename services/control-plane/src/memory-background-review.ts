@@ -20,8 +20,10 @@ import { listSessionMessages } from "./session-message-store.js";
 import { getSession } from "./session-store.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getTaskWorkspace } from "./task-workspace-store.js";
-import type { MemoryIntelligenceProposal, MemoryKind, MemoryReviewRecord, MemoryScopeKind, SessionMessageRecord } from "./types.js";
+import type { MemoryIntelligenceProposal, MemoryKind, MemoryReviewRecord, MemoryReviewTrigger, MemoryScopeKind, SessionMessageRecord } from "./types.js";
 import { nowIso } from "./utils.js";
+import { sessionAgentMemoryPolicy } from "./agent-memory-policy.js";
+import { resolveSessionAgentId } from "./session-agent-id.js";
 
 interface ExtractedMemory {
   operation: "create";
@@ -85,11 +87,7 @@ function extract(message: SessionMessageRecord, max: number): ExtractedMemory[] 
   const settings = getMemorySettings(session.workspace_id || "default");
   const taskWorkspace = getTaskWorkspace(message.session_id);
   const principalId = getActivePrincipalId() || session.created_by;
-  const agentId = typeof session.metadata.agent_profile_id === "string"
-    ? session.metadata.agent_profile_id
-    : typeof session.metadata.agent_id === "string"
-      ? session.metadata.agent_id
-      : "default-agent";
+  const agentId = resolveSessionAgentId(session);
   const extracted: ExtractedMemory[] = [];
   for (const sentence of sentenceCandidates(messageText(message))) {
     const classification = classify(sentence);
@@ -122,20 +120,32 @@ function normalizeReviewRecord(record: MemoryReviewRecord): MemoryReviewRecord {
     extractor: record.extractor || "deterministic",
     provider_connection_id: record.provider_connection_id || null,
     proposed_operations: record.proposed_operations || { create: 0, update: 0, supersede: 0, delete: 0 },
+    trigger: record.trigger || "conversation_turn",
+    trigger_id: record.trigger_id || record.message_digest,
   };
 }
 
 export async function runBackgroundMemoryReview(
   sessionId: string,
-  options: { fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
+  options: {
+    fetchImpl?: typeof fetch;
+    signal?: AbortSignal;
+    trigger?: MemoryReviewTrigger;
+    triggerId?: string;
+    sourceText?: string;
+    sourceMessageId?: string;
+  } = {},
 ): Promise<MemoryReviewRecord> {
   const session = getSession(sessionId);
   if (!session) throw new Error("SESSION_NOT_FOUND");
   const workspaceId = session.workspace_id || "default";
   const settings = getMemorySettings(workspaceId);
+  const agentMemoryPolicy = sessionAgentMemoryPolicy(session);
   const latestUser = listSessionMessages(sessionId).filter((message) => message.role === "user" && message.kind === "text").at(-1);
-  const text = latestUser ? messageText(latestUser) : "";
-  const digest = createHash("sha256").update(JSON.stringify([latestUser?.message_id || null, text])).digest("hex");
+  const text = options.sourceText?.trim() || (latestUser ? messageText(latestUser) : "");
+  const trigger = options.trigger || "conversation_turn";
+  const triggerId = options.triggerId || latestUser?.message_id || "latest";
+  const digest = createHash("sha256").update(JSON.stringify([latestUser?.message_id || null, options.sourceMessageId || null, text, trigger, triggerId])).digest("hex");
   const file = reviewPath(workspaceId, sessionId, digest);
   const storage = getJsonStorageBackend();
   if (storage.exists(file)) return normalizeReviewRecord(storage.readJson<MemoryReviewRecord>(file));
@@ -145,7 +155,7 @@ export async function runBackgroundMemoryReview(
     session_id: sessionId,
     message_digest: digest,
     status: "completed",
-    reviewed_message_ids: latestUser ? [latestUser.message_id] : [],
+    reviewed_message_ids: options.sourceMessageId ? [options.sourceMessageId] : latestUser ? [latestUser.message_id] : [],
     candidate_ids: [],
     committed_memory_ids: [],
     extractor: "deterministic",
@@ -153,17 +163,39 @@ export async function runBackgroundMemoryReview(
     proposed_operations: { create: 0, update: 0, supersede: 0, delete: 0 },
     reason: null,
     reviewed_at: nowIso(),
+    trigger,
+    trigger_id: triggerId,
   };
-  if (!settings.background_review.enabled || !latestUser || text.length < settings.background_review.min_user_characters) {
+  if (!agentMemoryPolicy.enabled || agentMemoryPolicy.write_mode === "disabled" || !settings.background_review.enabled || !text || text.length < settings.background_review.min_user_characters) {
     base.status = "skipped";
-    base.reason = !settings.background_review.enabled ? "background_review_disabled" : "insufficient_user_content";
+    base.reason = !agentMemoryPolicy.enabled
+      ? "agent_memory_disabled"
+      : agentMemoryPolicy.write_mode === "disabled"
+        ? "agent_memory_write_disabled"
+        : !settings.background_review.enabled
+          ? "background_review_disabled"
+      : "insufficient_event_content";
     return saveReview(base);
   }
   try {
-    const modeled = await extractModelMemoryProposals({ session, fetchImpl: options.fetchImpl, signal: options.signal });
+    const sourceMessage: SessionMessageRecord = latestUser && !options.sourceText
+      ? latestUser
+      : {
+          message_id: options.sourceMessageId || `memory-event:${triggerId}`,
+          session_id: sessionId,
+          role: "user",
+          kind: "text",
+          content: { text },
+          created_at: nowIso(),
+          linked_run_id: null,
+          linked_node_run_id: null,
+        };
+    const modeled = options.sourceText
+      ? null
+      : await extractModelMemoryProposals({ session, fetchImpl: options.fetchImpl, signal: options.signal });
     const items: Array<MemoryIntelligenceProposal | ExtractedMemory> = modeled
       ? modeled.proposals.filter((proposal) => proposal.operation !== "ignore")
-      : extract(latestUser, settings.background_review.max_candidates_per_review);
+      : extract(sourceMessage, settings.background_review.max_candidates_per_review);
     if (modeled) {
       base.extractor = "model";
       base.provider_connection_id = modeled.providerConnectionId;
@@ -193,10 +225,10 @@ export async function runBackgroundMemoryReview(
         importance: item.importance,
         sensitivity: "sensitivity" in item ? item.sensitivity : "normal",
         tags: item.tags,
-        source: {
-          origin: "background_review",
-          session_id: sessionId,
-          message_ids: [latestUser.message_id],
+          source: {
+            origin: "background_review",
+            session_id: sessionId,
+            message_ids: options.sourceMessageId ? [options.sourceMessageId] : latestUser ? [latestUser.message_id] : [],
           action_id: null,
           provider_id: modeled?.providerConnectionId || null,
           note: "Extracted after a successful Conversation turn.",
@@ -207,7 +239,7 @@ export async function runBackgroundMemoryReview(
       const sensitivity = "sensitivity" in item ? item.sensitivity : "normal";
       const risk = deriveMemoryRisk({ operation: policyOperation, kind: item.kind, sensitivity, confidence: item.confidence });
       const decision = decideMemoryMutation({ session, operation: policyOperation, origin: "background_review", risk, sensitivity });
-      if (decision.outcome === "commit") {
+      if (decision.outcome === "commit" && agentMemoryPolicy.write_mode === "automatic") {
         const memory = item.operation === "delete"
           ? item.target_memory_id ? deleteMemory(item.target_memory_id, "agent:background-review") : null
           : item.operation === "update"

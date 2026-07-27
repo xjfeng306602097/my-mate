@@ -28,6 +28,7 @@ function writePlugin(root: string): void {
         risk_level: "T0",
         permission_scopes: ["conversation.read"],
         executor: "control-plane",
+        execution_policy: { side_effects: "none", max_attempts: 1 },
         progress_label: "Echoing text",
         input_schema: {
           type: "object",

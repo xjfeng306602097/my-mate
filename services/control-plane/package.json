@@ -21,6 +21,7 @@
     "@my-mate/shared-types": "file:../../packages/shared-types",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
+    "cron-parser": "4.9.0",
     "express": "^4.21.2",
     "fflate": "^0.8.2",
     "linkedom": "^0.18.12",

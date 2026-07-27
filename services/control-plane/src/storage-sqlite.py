@@ -69,7 +69,7 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
-def ensure_dir(connection: sqlite3.Connection, relative_dir: str) -> None:
+def ensure_dir(connection: sqlite3.Connection, relative_dir: str, commit: bool = True) -> None:
     normalized = normalize_relative_path(relative_dir)
     current = ""
     if normalized:
@@ -83,7 +83,8 @@ def ensure_dir(connection: sqlite3.Connection, relative_dir: str) -> None:
                 (next_path, current, part),
             )
             current = next_path
-    connection.commit()
+    if commit:
+        connection.commit()
 
 
 def exists(connection: sqlite3.Connection, relative_path: str) -> bool:
@@ -134,10 +135,10 @@ def read_json(connection: sqlite3.Connection, relative_path: str):
     return json.loads(row[0])
 
 
-def write_json(connection: sqlite3.Connection, relative_path: str, payload) -> None:
+def write_json(connection: sqlite3.Connection, relative_path: str, payload, commit: bool = True) -> None:
     normalized = normalize_relative_path(relative_path)
     parent = dir_key(normalized)
-    ensure_dir(connection, parent)
+    ensure_dir(connection, parent, commit=False)
     connection.execute(
         """
         INSERT INTO json_records(path, parent_path, name, json_text)
@@ -154,13 +155,33 @@ def write_json(connection: sqlite3.Connection, relative_path: str, payload) -> N
             json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
         ),
     )
-    connection.commit()
+    if commit:
+        connection.commit()
 
 
-def remove_json(connection: sqlite3.Connection, relative_path: str) -> None:
+def remove_json(connection: sqlite3.Connection, relative_path: str, commit: bool = True) -> None:
     normalized = normalize_relative_path(relative_path)
     connection.execute("DELETE FROM json_records WHERE path = ?", (normalized,))
-    connection.commit()
+    if commit:
+        connection.commit()
+
+
+def apply_batch(connection: sqlite3.Connection, operations: list[dict]) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for operation in operations:
+            kind = operation.get("kind")
+            target = normalize_relative_path(operation.get("target_path", ""))
+            if kind == "write":
+                write_json(connection, target, operation.get("payload"), commit=False)
+            elif kind == "remove":
+                remove_json(connection, target, commit=False)
+            else:
+                raise ValueError(f"Unsupported batch operation: {kind}")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def absolute_result_paths(paths: list[str], data_dir: str) -> list[str]:
@@ -223,6 +244,9 @@ def main() -> None:
             response = {"ok": True}
         elif action == "remove_json":
             remove_json(connection, normalized)
+            response = {"ok": True}
+        elif action == "apply_batch":
+            apply_batch(connection, request.get("operations") or [])
             response = {"ok": True}
         else:
             response = {"ok": False, "error": f"Unsupported sqlite storage action: {action}"}

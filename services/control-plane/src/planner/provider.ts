@@ -9,9 +9,9 @@ import type {
 export interface PlannerInvocationOptions {
   providerId?: string | null;
   model?: string | null;
-  orchestratorProfileId?: string | null;
+  orchestratorAgentId?: string | null;
   orchestratorSystemPrompt?: string | null;
-  preferredSubagentProfileIds?: string[];
+  preferredAgentIds?: string[];
   preferDomainMatch?: boolean;
   defaultMaxAgentNodes?: number | null;
   requireReview?: boolean;

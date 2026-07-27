@@ -101,7 +101,7 @@ function elapsed(start: number): number {
 function defaultRuntime(options: DoctorServiceOptions, mode: DoctorRequest["mode"]): DoctorRuntime {
   if (mode === "docker") return "docker-worker";
   const candidate = options.executionAdapterKind;
-  if (["local", "openclaw", "codex", "claude-sdk", "kimi", "glm"].includes(candidate)) {
+  if (["local", "codex", "claude-sdk", "kimi", "glm"].includes(candidate)) {
     return candidate as DoctorRuntime;
   }
   return options.runtimeStatus.node_provisioner_kind === "docker" ? "docker-worker" : "local";
@@ -142,8 +142,6 @@ export async function runDoctor(
     } else if (providerRuntime === "kimi") {
       if (providerConnection.base_url) providerEnv.KIMI_BASE_URL = providerConnection.base_url;
       if (model) providerEnv.MY_MATE_KIMI_MODEL = model;
-    } else if (providerRuntime === "openclaw" && providerConnection.base_url) {
-      providerEnv.MY_MATE_OPENCLAW_BRIDGE_BASE_URL = providerConnection.base_url;
     }
   }
   const runner = options.commandRunner || defaultDoctorCommandRunner;
@@ -492,7 +490,7 @@ export async function runDoctor(
   }
 
   const provider = inspectProviderConfiguration(providerRuntime, providerEnv);
-  if (["openclaw", "codex", "claude-sdk", "kimi", "glm"].includes(providerRuntime)) {
+  if (["codex", "claude-sdk", "kimi", "glm"].includes(providerRuntime)) {
     add({
       id: "harness.configuration",
       category: "harness",
@@ -525,7 +523,7 @@ export async function runDoctor(
       required_for: [],
       summary: "No model provider was selected.",
       detail: `Runtime ${runtime} is deterministic-only.`,
-      remediation: "Select codex, claude-sdk, glm, kimi, or openclaw for model readiness.",
+      remediation: "Select codex, claude-sdk, glm, or kimi for model readiness.",
       duration_ms: 0,
     });
   }
@@ -573,7 +571,7 @@ export async function runDoctor(
   }
 
   const generatedAt = (options.now || (() => new Date()))().toISOString();
-  const modelCapableRuntime = ["openclaw", "codex", "claude-sdk", "kimi", "glm"].includes(providerRuntime);
+  const modelCapableRuntime = ["codex", "claude-sdk", "kimi", "glm"].includes(providerRuntime);
   return {
     schema_version: 1,
     report_id: `doctor:${randomUUID()}`,

@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { DATA_DIR, RUNTIME_WORKSPACE_CHANGE_SETS_DIR } from "../config.js";
+import {
+  DATA_DIR,
+  RUNTIME_WORKSPACE_CHANGE_SETS_DIR,
+  RUNTIME_WORKSPACE_FILE_PROJECTIONS_DIR,
+} from "../config.js";
+import { getJsonStorageBackend } from "../storage-backend.js";
 import { ensureDir, nowIso, writeJsonAtomic } from "../utils.js";
 
 const MAX_FILES = 50_000;
@@ -73,6 +78,9 @@ export interface RuntimeWorkspaceChangeSet {
   run_id: string;
   node_run_id: string;
   job_id: string;
+  origin?: "runtime" | "conversation";
+  session_id?: string | null;
+  workspace_binding_id?: string | null;
   source_root: string;
   sandbox_root: string;
   status: "pending" | "applied" | "rejected" | "blocked" | "apply_failed";
@@ -82,6 +90,54 @@ export interface RuntimeWorkspaceChangeSet {
   resolved_at: string | null;
   resolved_by: string | null;
   resolution_comment: string | null;
+}
+
+export interface RuntimeWorkspaceFileProjectionRecord {
+  relative_path: string;
+  kind: "added" | "modified" | "deleted";
+  status: "pending" | "applied";
+  change_set_id: string;
+  source_root: string;
+  before_size_bytes: number | null;
+  after_size_bytes: number | null;
+  added_lines: number;
+  deleted_lines: number;
+  created_at: string;
+}
+
+export interface RuntimeWorkspaceFileProjection {
+  schema_version: 1;
+  session_id: string;
+  generated_at: string;
+  source_root: string;
+  latest_change_set_id: string | null;
+  latest_pending_change_set_id: string | null;
+  file_count: number;
+  files: RuntimeWorkspaceFileProjectionRecord[];
+  recent_change_sets: Array<{
+    change_set_id: string;
+    status: RuntimeWorkspaceChangeSet["status"];
+    origin: "runtime" | "conversation";
+    source_root: string;
+    changes: Array<{
+      relative_path: string;
+      kind: WorkspaceChange["kind"];
+      before_size_bytes: number | null;
+      after_size_bytes: number | null;
+      added_lines: number;
+      deleted_lines: number;
+    }>;
+    blocked_reason: string | null;
+    created_at: string;
+    resolved_at: string | null;
+  }>;
+}
+
+export interface WorkspaceChangePreview {
+  source_root: string;
+  sandbox_root: string;
+  changes: WorkspaceChange[];
+  blocked_reason: string | null;
 }
 
 function normalizedRelative(root: string, target: string): string {
@@ -332,13 +388,18 @@ function changeSetPath(changeSetId: string): string {
   return path.join(RUNTIME_WORKSPACE_CHANGE_SETS_DIR, `${encodeURIComponent(changeSetId)}.json`);
 }
 
+function workspaceFileProjectionPath(sessionId: string): string {
+  return path.join(RUNTIME_WORKSPACE_FILE_PROJECTIONS_DIR, `${encodeURIComponent(sessionId)}.json`);
+}
+
 function readJson<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+  return getJsonStorageBackend().readJson<T>(filePath);
 }
 
 function saveChangeSet(changeSet: RuntimeWorkspaceChangeSet): RuntimeWorkspaceChangeSet {
   ensureDir(RUNTIME_WORKSPACE_CHANGE_SETS_DIR);
   writeJsonAtomic(changeSetPath(changeSet.change_set_id), changeSet);
+  if (changeSet.session_id) rebuildRuntimeWorkspaceFileProjection(changeSet.session_id);
   return changeSet;
 }
 
@@ -368,7 +429,7 @@ export function ensureSandboxWorkspace(input: {
   const sourceRoot = fs.realpathSync(path.resolve(input.sourceRoot));
   const sandboxRoot = path.resolve(input.sandboxRoot);
   const baselineFile = baselinePath(sandboxRoot);
-  if (fs.existsSync(baselineFile) && fs.existsSync(sandboxRoot)) {
+  if (getJsonStorageBackend().exists(baselineFile) && fs.existsSync(sandboxRoot)) {
     const baseline = readJson<WorkspaceBaseline>(baselineFile);
     if (baseline.source_root !== sourceRoot || baseline.sandbox_root !== sandboxRoot) {
       throw new Error("RUN_WORKSPACE_BASELINE_MISMATCH");
@@ -378,15 +439,10 @@ export function ensureSandboxWorkspace(input: {
   return prepareSandboxWorkspace({ sourceRoot, sandboxRoot });
 }
 
-export function finalizeSandboxWorkspace(input: {
-  runId: string;
-  nodeRunId: string;
-  jobId: string;
-  sandboxRoot: string;
-}): RuntimeWorkspaceChangeSet | null {
-  const sandboxRoot = path.resolve(input.sandboxRoot);
+export function inspectSandboxWorkspace(sandboxRootInput: string): WorkspaceChangePreview | null {
+  const sandboxRoot = path.resolve(sandboxRootInput);
   const baselineFile = baselinePath(sandboxRoot);
-  if (!fs.existsSync(baselineFile) || !fs.existsSync(sandboxRoot)) return null;
+  if (!getJsonStorageBackend().exists(baselineFile) || !fs.existsSync(sandboxRoot)) return null;
   const baseline = readJson<WorkspaceBaseline>(baselineFile);
   const current = scanWorkspace(sandboxRoot);
   const paths = [...new Set([...Object.keys(baseline.files), ...Object.keys(current.files)])].sort();
@@ -407,19 +463,41 @@ export function finalizeSandboxWorkspace(input: {
     });
   }
   if (changes.length === 0 && current.symlinks.length === 0) return null;
+  return {
+    source_root: baseline.source_root,
+    sandbox_root: baseline.sandbox_root,
+    changes,
+    blocked_reason: current.symlinks.length > 0
+      ? `Sandbox contains unsupported symbolic links: ${current.symlinks.slice(0, 10).join(", ")}`
+      : null,
+  };
+}
+
+export function finalizeSandboxWorkspace(input: {
+  runId: string;
+  nodeRunId: string;
+  jobId: string;
+  sandboxRoot: string;
+  origin?: "runtime" | "conversation";
+  sessionId?: string | null;
+  workspaceBindingId?: string | null;
+}): RuntimeWorkspaceChangeSet | null {
+  const preview = inspectSandboxWorkspace(input.sandboxRoot);
+  if (!preview) return null;
   const changeSet: RuntimeWorkspaceChangeSet = {
     schema_version: 1,
     change_set_id: `wschange_${randomUUID()}`,
     run_id: input.runId,
     node_run_id: input.nodeRunId,
     job_id: input.jobId,
-    source_root: baseline.source_root,
-    sandbox_root: baseline.sandbox_root,
-    status: current.symlinks.length > 0 ? "blocked" : "pending",
-    changes,
-    blocked_reason: current.symlinks.length > 0
-      ? `Sandbox contains unsupported symbolic links: ${current.symlinks.slice(0, 10).join(", ")}`
-      : null,
+    origin: input.origin || "runtime",
+    session_id: input.sessionId || null,
+    workspace_binding_id: input.workspaceBindingId || null,
+    source_root: preview.source_root,
+    sandbox_root: preview.sandbox_root,
+    status: preview.blocked_reason ? "blocked" : "pending",
+    changes: preview.changes,
+    blocked_reason: preview.blocked_reason,
     created_at: nowIso(),
     resolved_at: null,
     resolved_by: null,
@@ -430,16 +508,81 @@ export function finalizeSandboxWorkspace(input: {
 
 export function getRuntimeWorkspaceChangeSet(changeSetId: string): RuntimeWorkspaceChangeSet | null {
   const filePath = changeSetPath(changeSetId);
-  return fs.existsSync(filePath) ? readJson<RuntimeWorkspaceChangeSet>(filePath) : null;
+  return getJsonStorageBackend().exists(filePath) ? readJson<RuntimeWorkspaceChangeSet>(filePath) : null;
 }
 
 export function listRuntimeWorkspaceChangeSets(status?: RuntimeWorkspaceChangeSet["status"]): RuntimeWorkspaceChangeSet[] {
-  if (!fs.existsSync(RUNTIME_WORKSPACE_CHANGE_SETS_DIR)) return [];
-  return fs.readdirSync(RUNTIME_WORKSPACE_CHANGE_SETS_DIR)
-    .filter((name) => name.endsWith(".json"))
-    .map((name) => readJson<RuntimeWorkspaceChangeSet>(path.join(RUNTIME_WORKSPACE_CHANGE_SETS_DIR, name)))
+  return getJsonStorageBackend().listJsonFiles(RUNTIME_WORKSPACE_CHANGE_SETS_DIR)
+    .map((filePath) => readJson<RuntimeWorkspaceChangeSet>(filePath))
     .filter((item) => !status || item.status === status)
     .sort((left, right) => right.created_at.localeCompare(left.created_at));
+}
+
+function projectChangeSetSummary(changeSet: RuntimeWorkspaceChangeSet): RuntimeWorkspaceFileProjection["recent_change_sets"][number] {
+  return {
+    change_set_id: changeSet.change_set_id,
+    status: changeSet.status,
+    origin: changeSet.origin || "runtime",
+    source_root: changeSet.source_root,
+    changes: changeSet.changes.map((change) => ({
+      relative_path: change.relative_path,
+      kind: change.kind,
+      before_size_bytes: change.before_size_bytes,
+      after_size_bytes: change.after_size_bytes,
+      added_lines: change.diff.lines.filter((line) => line.kind === "added").length,
+      deleted_lines: change.diff.lines.filter((line) => line.kind === "deleted").length,
+    })),
+    blocked_reason: changeSet.blocked_reason,
+    created_at: changeSet.created_at,
+    resolved_at: changeSet.resolved_at,
+  };
+}
+
+export function rebuildRuntimeWorkspaceFileProjection(sessionId: string): RuntimeWorkspaceFileProjection {
+  const history = listRuntimeWorkspaceChangeSets()
+    .filter((changeSet) => changeSet.session_id === sessionId)
+    .sort((left, right) => left.created_at.localeCompare(right.created_at));
+  const effective = new Map<string, RuntimeWorkspaceFileProjectionRecord>();
+  for (const changeSet of history) {
+    if (changeSet.status !== "applied" && changeSet.status !== "pending") continue;
+    for (const change of changeSet.changes) {
+      effective.set(change.relative_path, {
+        relative_path: change.relative_path,
+        kind: change.kind,
+        status: changeSet.status,
+        change_set_id: changeSet.change_set_id,
+        source_root: changeSet.source_root,
+        before_size_bytes: change.before_size_bytes,
+        after_size_bytes: change.after_size_bytes,
+        added_lines: change.diff.lines.filter((line) => line.kind === "added").length,
+        deleted_lines: change.diff.lines.filter((line) => line.kind === "deleted").length,
+        created_at: changeSet.created_at,
+      });
+    }
+  }
+  const latest = history.at(-1) || null;
+  const latestPending = [...history].reverse().find((changeSet) => changeSet.status === "pending") || null;
+  const projection: RuntimeWorkspaceFileProjection = {
+    schema_version: 1,
+    session_id: sessionId,
+    generated_at: nowIso(),
+    source_root: latest?.source_root || latestPending?.source_root || "",
+    latest_change_set_id: latest?.change_set_id || null,
+    latest_pending_change_set_id: latestPending?.change_set_id || null,
+    file_count: effective.size,
+    files: [...effective.values()].sort((left, right) => left.relative_path.localeCompare(right.relative_path)),
+    recent_change_sets: history.slice(-20).reverse().map(projectChangeSetSummary),
+  };
+  ensureDir(RUNTIME_WORKSPACE_FILE_PROJECTIONS_DIR);
+  writeJsonAtomic(workspaceFileProjectionPath(sessionId), projection);
+  return projection;
+}
+
+export function getRuntimeWorkspaceFileProjection(sessionId: string): RuntimeWorkspaceFileProjection | null {
+  const filePath = workspaceFileProjectionPath(sessionId);
+  if (getJsonStorageBackend().exists(filePath)) return readJson<RuntimeWorkspaceFileProjection>(filePath);
+  const hasChangeSet = listRuntimeWorkspaceChangeSets().some((changeSet) => changeSet.session_id === sessionId);
+  return hasChangeSet ? rebuildRuntimeWorkspaceFileProjection(sessionId) : null;
 }
 
 function targetPath(root: string, relativePath: string): string {

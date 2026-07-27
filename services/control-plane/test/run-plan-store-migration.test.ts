@@ -34,7 +34,7 @@ test("legacy RunPlans gain required Harness and Registry fields before recovery 
       parallelism_budget: 1,
       input_payload: {},
       output_contract: {},
-      execution_ref: { openclaw_task_id: null, openclaw_session_id: null },
+      execution_ref: { openclaw_task_id: "legacy-task", openclaw_session_id: "legacy-session" },
     }],
     edges: [],
     frontier: ["nr_legacy"],
@@ -54,9 +54,20 @@ test("legacy RunPlans gain required Harness and Registry fields before recovery 
   assert.equal(node.harness_profile, null);
   assert.equal(node.approval_kind, null);
   assert.equal(node.human_input_schema, null);
-  assert.equal(node.registry_provenance.agent_profile_source, "fallback");
+  assert.equal(node.registry_provenance.agent_source, "fallback");
   assert.equal(node.registry_provenance.runtime_agent_ref_source, "fallback");
   assert.equal(node.work_package?.identity_source, "legacy_inferred");
 
   assert.doesNotThrow(() => saveRunPlan(normalized as RunPlanRecord));
+  const persisted = JSON.parse(
+    fs.readFileSync(path.join(RUN_PLANS_DIR, `${runId}.json`), "utf-8"),
+  );
+  assert.equal("agent_profile" in persisted.compiled_nodes[0], false);
+  assert.equal("openclaw_agent_id" in persisted.compiled_nodes[0], false);
+  assert.deepEqual(persisted.compiled_nodes[0]?.execution_ref.provider_refs, {
+    task_id: "legacy-task",
+    session_id: "legacy-session",
+  });
+  assert.equal("agent_profile_source" in persisted.compiled_nodes[0].registry_provenance, false);
+  assert.equal(persisted.compiled_nodes[0].registry_provenance.agent_source, "fallback");
 });

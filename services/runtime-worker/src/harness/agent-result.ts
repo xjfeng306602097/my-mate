@@ -46,8 +46,6 @@ export function buildAgentHarnessResult(input: {
       runtime: input.job.harness.agent_runtime,
       harness: input.backend,
     },
-    openclaw_task_id: null,
-    openclaw_session_id: null,
   };
   const reports: NormalizedExecutionReport[] = [
     {

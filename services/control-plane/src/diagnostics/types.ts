@@ -3,7 +3,6 @@ export type DoctorMode = "quick" | "docker" | "model";
 export type DoctorRuntime =
   | "local"
   | "docker-worker"
-  | "openclaw"
   | "codex"
   | "claude-sdk"
   | "kimi"

@@ -10,6 +10,7 @@ import { getSession } from "../src/session-store.js";
 import { SESSIONS_DIR } from "../src/config.js";
 import { getJsonStorageBackend } from "../src/storage-backend.js";
 import { migrateLegacyWorkspaceRecords } from "../src/workspace-migration.js";
+import { requiredPermission } from "../src/request-security.js";
 import path from "node:path";
 import { getJson, postJson, putJson, resetTestRoot, startTestServer } from "./helpers.js";
 
@@ -50,6 +51,45 @@ function authHeaders(input: {
     "x-my-mate-workspace-id": input.workspaceId,
   };
 }
+
+function permissionFor(method: string, requestPath: string) {
+  return requiredPermission({ method, path: requestPath } as Parameters<typeof requiredPermission>[0]);
+}
+
+test("schedule and notification routes use the intended workspace permissions", async () => {
+  assert.equal(permissionFor("GET", "/schedules"), "workspace.read");
+  assert.equal(permissionFor("GET", "/schedules/schedule-test/runs"), "workspace.read");
+  assert.equal(permissionFor("POST", "/schedules"), "mission.edit");
+  assert.equal(permissionFor("PATCH", "/schedules/schedule-test"), "mission.edit");
+  assert.equal(permissionFor("DELETE", "/schedules/schedule-test"), "mission.edit");
+  assert.equal(permissionFor("POST", "/schedules/schedule-test/run"), "mission.edit");
+  assert.equal(permissionFor("GET", "/notifications"), "workspace.read");
+  assert.equal(permissionFor("POST", "/notifications/notification-test/read"), "workspace.read");
+  assert.equal(permissionFor("POST", "/notifications/notification-test/dismiss"), "workspace.read");
+
+  resetTestRoot();
+  const server = await startTestServer({
+    security: { internalAuthSecret: SECRET, allowDevelopmentIdentity: false },
+  });
+  const viewer = authHeaders({ principalId: "schedule-viewer", workspaceId: "schedule-security", role: "viewer" });
+  try {
+    const schedules = await getJson(`${server.baseUrl}/api/schedules`, viewer);
+    const notifications = await getJson(`${server.baseUrl}/api/notifications`, viewer);
+    const deniedCreate = await postJson(`${server.baseUrl}/api/schedules`, {
+      name: "Viewer schedule",
+      prompt: "This must not be created.",
+      timezone: "UTC",
+      recurrence: { kind: "cron", expression: "0 9 * * *" },
+    }, viewer);
+
+    assert.equal(schedules.status, 200);
+    assert.equal(notifications.status, 200);
+    assert.equal(deniedCreate.status, 403);
+    assert.equal(deniedCreate.body.code, "permission_denied");
+  } finally {
+    await server.close();
+  }
+});
 
 test("legacy workspace records migrate deterministically to default", () => {
   resetTestRoot();
@@ -122,30 +162,29 @@ test("trusted identities enforce workspace isolation, actor integrity, roles, an
     assert.equal(lastOwner.status, 409);
     assert.equal(lastOwner.body.code, "last_workspace_owner");
 
-    const sharedProfile = {
-      profile_id: "shared-agent-id",
+    const sharedAgent = {
+      agent_id: "shared-agent-id",
       name: "Alpha Shared Agent",
       description: "Tenant ownership test",
-      openclaw_agent_id: "alpha-agent",
-      default_skills: [],
-      allowed_tools: ["read"],
-      policy_tags: [],
+      version: {
+        tool_policy: { allowed_tools: ["workspace_read_text"], denied_tools: [], max_tool_rounds: 32 },
+      },
     };
     const alphaProfile = await postJson(
-      `${server.baseUrl}/api/registry/agent-profiles`,
-      sharedProfile,
+      `${server.baseUrl}/api/agents`,
+      sharedAgent,
       alphaOwner,
     );
     assert.equal(alphaProfile.status, 201);
-    const betaProfiles = await getJson(`${server.baseUrl}/api/registry/agent-profiles`, betaOwner);
+    const betaProfiles = await getJson(`${server.baseUrl}/api/agents`, betaOwner);
     assert.equal(betaProfiles.body.items.length, 0);
     const conflictingProfile = await postJson(
-      `${server.baseUrl}/api/registry/agent-profiles`,
-      { ...sharedProfile, name: "Beta Overwrite Attempt" },
+      `${server.baseUrl}/api/agents`,
+      { ...sharedAgent, name: "Beta Overwrite Attempt" },
       betaOwner,
     );
     assert.equal(conflictingProfile.status, 400);
-    const alphaProfiles = await getJson(`${server.baseUrl}/api/registry/agent-profiles`, alphaOwner);
+    const alphaProfiles = await getJson(`${server.baseUrl}/api/agents`, alphaOwner);
     assert.equal(alphaProfiles.body.items[0].name, "Alpha Shared Agent");
 
     const promote = await putJson(

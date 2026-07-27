@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
+import {
+  appendConversationEvent,
+  latestConversationEventSequence,
+  listConversationEvents,
+  subscribeConversationEvents,
+  type ConversationEventRecord,
+} from "./conversation-event-store.js";
 import type {
   ConversationStreamTurnInput,
   ConversationStreamTurnResult,
@@ -22,6 +29,11 @@ interface ConversationCommand {
   target_artifact_id?: string;
 }
 
+interface ConversationAttachCommand {
+  type: "conversation.attach";
+  after_sequence?: number;
+}
+
 interface ConversationSocketOptions {
   security: SecurityOptions;
   turnHandler: (input: ConversationStreamTurnInput) => Promise<ConversationStreamTurnResult>;
@@ -33,12 +45,49 @@ interface DesktopCapabilityResultCommand {
   action_id: string;
 }
 
+interface DesktopCapabilityWaiter {
+  sessionId: string;
+  actionId: string;
+  payload: Record<string, unknown>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+}
+
+interface ActiveConversationTurn {
+  requestId: string;
+  controller: AbortController;
+  providerConnectionId: string;
+  model: string;
+  checkpointId: string;
+  partialText: string;
+  toolProgress: Map<string, Record<string, unknown>>;
+  startedAt: string;
+}
+
+interface ConversationSessionRuntime {
+  workspaceId: string;
+  sockets: Set<WebSocket>;
+  commandChain: Promise<void>;
+  activeTurn: ActiveConversationTurn | null;
+  terminalEvent: Record<string, unknown> | null;
+  cleanupTimer: NodeJS.Timeout | null;
+  eventUnsubscribe: (() => void) | null;
+}
+
+const MAX_ACTIVE_TEXT_CHARACTERS = 200_000;
+
 function isDesktopCapabilityResultCommand(value: unknown): value is DesktopCapabilityResultCommand {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const command = value as Record<string, unknown>;
   return command.type === "conversation.desktop_result" &&
     typeof command.capability_request_id === "string" && !!command.capability_request_id.trim() &&
     typeof command.action_id === "string" && !!command.action_id.trim();
+}
+
+function isConversationAttachCommand(value: unknown): value is ConversationAttachCommand {
+  return !!value && typeof value === "object" && !Array.isArray(value) &&
+    (value as Record<string, unknown>).type === "conversation.attach";
 }
 
 function parseJson(data: RawData): unknown {
@@ -88,6 +137,8 @@ function send(socket: WebSocket, payload: Record<string, unknown>): void {
 
 export class ConversationWebSocketHub {
   private readonly server = new WebSocketServer({ noServer: true });
+  private readonly sessions = new Map<string, ConversationSessionRuntime>();
+  private readonly desktopCapabilityWaiters = new Map<string, DesktopCapabilityWaiter>();
   private attached = false;
 
   constructor(private readonly options: ConversationSocketOptions) {}
@@ -117,7 +168,108 @@ export class ConversationWebSocketHub {
   }
 
   close(): void {
+    for (const runtime of this.sessions.values()) {
+      if (runtime.cleanupTimer) clearTimeout(runtime.cleanupTimer);
+      runtime.eventUnsubscribe?.();
+      runtime.eventUnsubscribe = null;
+      runtime.activeTurn?.controller.abort(new Error("Conversation WebSocket Hub is shutting down."));
+      for (const socket of runtime.sockets) {
+        if (socket.readyState < WebSocket.CLOSING) socket.close(1012, "Conversation service restarting");
+      }
+    }
+    for (const [capabilityRequestId, waiter] of this.desktopCapabilityWaiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error("Conversation WebSocket Hub is shutting down."));
+      this.desktopCapabilityWaiters.delete(capabilityRequestId);
+    }
+    this.sessions.clear();
     this.server.close();
+  }
+
+  private sessionRuntime(sessionId: string, workspaceId = "default"): ConversationSessionRuntime {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
+    const created: ConversationSessionRuntime = {
+      workspaceId,
+      sockets: new Set(),
+      commandChain: Promise.resolve(),
+      activeTurn: null,
+      terminalEvent: null,
+      cleanupTimer: null,
+      eventUnsubscribe: null,
+    };
+    this.sessions.set(sessionId, created);
+    return created;
+  }
+
+  private broadcast(sessionId: string, payload: Record<string, unknown>): void {
+    for (const socket of this.sessions.get(sessionId)?.sockets || []) send(socket, payload);
+  }
+
+  private sendPersisted(socket: WebSocket, event: ConversationEventRecord): void {
+    send(socket, { ...event.payload, sequence: event.sequence });
+  }
+
+  private publish(sessionId: string, payload: Record<string, unknown>, idempotencyKey?: string | null): void {
+    appendConversationEvent({
+      workspaceId: this.sessionRuntime(sessionId).workspaceId,
+      sessionId,
+      type: String(payload.type || "conversation.event"),
+      payload,
+      idempotencyKey,
+    });
+  }
+
+  private subscribeRuntime(sessionId: string, runtime: ConversationSessionRuntime): void {
+    if (runtime.eventUnsubscribe) return;
+    runtime.eventUnsubscribe = subscribeConversationEvents(sessionId, (event) => {
+      for (const socket of runtime.sockets) this.sendPersisted(socket, event);
+    });
+  }
+
+  private replay(sessionId: string, socket: WebSocket, afterSequence: number): void {
+    for (const event of listConversationEvents({
+      workspaceId: this.sessionRuntime(sessionId).workspaceId,
+      sessionId,
+      afterSequence,
+      limit: 1_000,
+    })) this.sendPersisted(socket, event);
+  }
+
+  private sendActiveSnapshot(sessionId: string, socket: WebSocket): void {
+    const active = this.sessions.get(sessionId)?.activeTurn;
+    if (!active) {
+      const terminalEvent = this.sessions.get(sessionId)?.terminalEvent;
+      if (terminalEvent) {
+        send(socket, terminalEvent);
+        return;
+      }
+      send(socket, { type: "conversation.idle", session_id: sessionId });
+      return;
+    }
+    send(socket, {
+      type: "conversation.active",
+      session_id: sessionId,
+      request_id: active.requestId,
+      provider_connection_id: active.providerConnectionId,
+      model: active.model,
+      checkpoint_id: active.checkpointId,
+      partial_text: active.partialText,
+      tool_progress: [...active.toolProgress.values()],
+      started_at: active.startedAt,
+      latest_sequence: latestConversationEventSequence(sessionId, this.sessions.get(sessionId)?.workspaceId || "default"),
+    });
+    for (const waiter of this.desktopCapabilityWaiters.values()) {
+      if (waiter.sessionId === sessionId) send(socket, waiter.payload);
+    }
+  }
+
+  private resolveDesktopCapability(command: DesktopCapabilityResultCommand): void {
+    const waiter = this.desktopCapabilityWaiters.get(command.capability_request_id);
+    if (!waiter || waiter.actionId !== command.action_id) return;
+    clearTimeout(waiter.timeout);
+    this.desktopCapabilityWaiters.delete(command.capability_request_id);
+    waiter.resolve();
   }
 
   private handleConnection(
@@ -125,52 +277,65 @@ export class ConversationWebSocketHub {
     socket: WebSocket,
     context: Parameters<typeof runWithRequestContext>[0],
   ): void {
-    let messageChain = Promise.resolve();
-    let activeController: AbortController | null = null;
-    const desktopCapabilityWaiters = new Map<string, {
-      actionId: string;
-      resolve: () => void;
-      reject: (error: Error) => void;
-      timeout: NodeJS.Timeout;
-    }>();
-    send(socket, { type: "conversation.connected", session_id: sessionId });
+    const runtime = this.sessionRuntime(sessionId, context.selected_workspace.workspace_id);
+    runtime.sockets.add(socket);
+    this.subscribeRuntime(sessionId, runtime);
+    send(socket, {
+      type: "conversation.connected",
+      session_id: sessionId,
+      active: Boolean(runtime.activeTurn),
+      latest_sequence: latestConversationEventSequence(sessionId, runtime.workspaceId),
+    });
 
     socket.on("message", (data) => {
+      let command: unknown;
       try {
-        const immediate = parseJson(data);
-        if (isDesktopCapabilityResultCommand(immediate)) {
-          const waiter = desktopCapabilityWaiters.get(immediate.capability_request_id);
-          if (!waiter || waiter.actionId !== immediate.action_id) return;
-          clearTimeout(waiter.timeout);
-          desktopCapabilityWaiters.delete(immediate.capability_request_id);
-          waiter.resolve();
-          return;
-        }
+        command = parseJson(data);
       } catch {
-        // The regular command path below reports invalid JSON consistently.
+        send(socket, {
+          type: "conversation.error",
+          code: "invalid_json",
+          message: "Conversation command must be valid JSON.",
+        });
+        return;
       }
-      const run = async () => {
-        let command: unknown;
-        try {
-          command = parseJson(data);
-        } catch {
-          send(socket, {
-            type: "conversation.error",
-            code: "invalid_json",
-            message: "Conversation command must be valid JSON.",
-          });
-          return;
+      if (isDesktopCapabilityResultCommand(command)) {
+        this.resolveDesktopCapability(command);
+        return;
+      }
+      if (isConversationAttachCommand(command)) {
+        if (Number.isInteger(command.after_sequence)) {
+          this.replay(sessionId, socket, Math.max(0, command.after_sequence || 0));
         }
-        if (!isConversationCommand(command)) {
-          send(socket, {
-            type: "conversation.error",
-            code: "invalid_command",
-            message: "Unsupported conversation command.",
-          });
-          return;
-        }
+        this.sendActiveSnapshot(sessionId, socket);
+        return;
+      }
+      if (!isConversationCommand(command)) {
+        send(socket, {
+          type: "conversation.error",
+          code: "invalid_command",
+          message: "Unsupported conversation command.",
+        });
+        return;
+      }
 
-        activeController = new AbortController();
+      const run = async () => {
+        if (runtime.cleanupTimer) {
+          clearTimeout(runtime.cleanupTimer);
+          runtime.cleanupTimer = null;
+        }
+        runtime.terminalEvent = null;
+        const activeTurn: ActiveConversationTurn = {
+          requestId: command.request_id,
+          controller: new AbortController(),
+          providerConnectionId: command.provider_connection_id || "",
+          model: command.model || "",
+          checkpointId: "",
+          partialText: "",
+          toolProgress: new Map(),
+          startedAt: new Date().toISOString(),
+        };
+        runtime.activeTurn = activeTurn;
         try {
           const result = await runWithRequestContext(context, () =>
             this.options.turnHandler({
@@ -180,9 +345,12 @@ export class ConversationWebSocketHub {
               providerConnectionId: command.provider_connection_id,
               model: command.model,
               targetArtifactId: command.target_artifact_id,
-              signal: activeController?.signal,
+              signal: activeTurn.controller.signal,
               onStarted: ({ userMessage, providerConnectionId, model, checkpointId }) => {
-                send(socket, {
+                activeTurn.providerConnectionId = providerConnectionId || "";
+                activeTurn.model = model || "";
+                activeTurn.checkpointId = checkpointId;
+                this.publish(sessionId, {
                   type: "conversation.started",
                   request_id: command.request_id,
                   session_id: sessionId,
@@ -190,10 +358,11 @@ export class ConversationWebSocketHub {
                   provider_connection_id: providerConnectionId,
                   model,
                   checkpoint_id: checkpointId,
-                });
+                }, `conversation.started:${command.request_id}`);
               },
               onDelta: (text) => {
-                send(socket, {
+                activeTurn.partialText = `${activeTurn.partialText}${text}`.slice(-MAX_ACTIVE_TEXT_CHARACTERS);
+                this.publish(sessionId, {
                   type: "conversation.delta",
                   request_id: command.request_id,
                   session_id: sessionId,
@@ -201,7 +370,7 @@ export class ConversationWebSocketHub {
                 });
               },
               onToolProgress: (progress) => {
-                send(socket, {
+                const payload = {
                   type: "conversation.tool",
                   request_id: command.request_id,
                   session_id: sessionId,
@@ -210,23 +379,13 @@ export class ConversationWebSocketHub {
                   risk_level: progress.risk_level,
                   status: progress.status,
                   summary: progress.summary,
-                });
+                };
+                activeTurn.toolProgress.set(progress.action_id, payload);
+                this.publish(sessionId, payload, `conversation.tool:${progress.action_id}:${progress.status}`);
               },
               onDesktopCapability: (request) => new Promise<void>((resolve, reject) => {
                 const capabilityRequestId = `desktop_${randomUUID()}`;
-                const timeout = setTimeout(() => {
-                  desktopCapabilityWaiters.delete(capabilityRequestId);
-                  reject(Object.assign(new Error("Desktop capability confirmation timed out."), {
-                    code: "desktop_capability_timeout",
-                  }));
-                }, 120_000);
-                desktopCapabilityWaiters.set(capabilityRequestId, {
-                  actionId: request.action_id,
-                  resolve,
-                  reject,
-                  timeout,
-                });
-                send(socket, {
+                const payload = {
                   type: "conversation.desktop_action",
                   request_id: command.request_id,
                   session_id: sessionId,
@@ -238,19 +397,37 @@ export class ConversationWebSocketHub {
                   executor: request.executor,
                   risk_level: request.risk_level,
                   arguments: request.arguments,
+                  workspace_access: request.workspace_access,
+                  workspace_scope: request.workspace_scope,
+                };
+                const timeout = setTimeout(() => {
+                  this.desktopCapabilityWaiters.delete(capabilityRequestId);
+                  reject(Object.assign(new Error("Desktop capability confirmation timed out."), {
+                    code: "desktop_capability_timeout",
+                  }));
+                }, 120_000);
+                this.desktopCapabilityWaiters.set(capabilityRequestId, {
+                  sessionId,
+                  actionId: request.action_id,
+                  payload,
+                  resolve,
+                  reject,
+                  timeout,
                 });
+                this.publish(sessionId, payload, `conversation.desktop_action:${capabilityRequestId}`);
               }),
             }),
           );
-          send(socket, {
+          runtime.terminalEvent = {
             type: "conversation.completed",
             request_id: command.request_id,
             session_id: sessionId,
             assistant_message: result.assistantMessage,
             session: result.session,
-          });
+          };
+          this.publish(sessionId, runtime.terminalEvent, `conversation.completed:${command.request_id}`);
         } catch (error) {
-          send(socket, {
+          runtime.terminalEvent = {
             type: "conversation.error",
             request_id: command.request_id,
             session_id: sessionId,
@@ -259,20 +436,31 @@ export class ConversationWebSocketHub {
                 ? String((error as { code?: unknown }).code || "conversation_failed")
                 : "conversation_failed",
             message: error instanceof Error ? error.message : "Conversation failed.",
-          });
+          };
+          this.publish(sessionId, runtime.terminalEvent, `conversation.error:${command.request_id}`);
         } finally {
-          activeController = null;
+          if (runtime.activeTurn === activeTurn) runtime.activeTurn = null;
+          if (!runtime.sockets.size) {
+            runtime.cleanupTimer = setTimeout(() => {
+              if (!runtime.sockets.size && !runtime.activeTurn) {
+                runtime.eventUnsubscribe?.();
+                runtime.eventUnsubscribe = null;
+                this.sessions.delete(sessionId);
+              }
+            }, 300_000);
+            runtime.cleanupTimer.unref?.();
+          }
         }
       };
-      messageChain = messageChain.then(run, run);
+      runtime.commandChain = runtime.commandChain.then(run, run);
     });
 
     socket.on("close", () => {
-      activeController?.abort();
-      for (const [capabilityRequestId, waiter] of desktopCapabilityWaiters) {
-        clearTimeout(waiter.timeout);
-        waiter.reject(new Error("Desktop capability connection closed."));
-        desktopCapabilityWaiters.delete(capabilityRequestId);
+      runtime.sockets.delete(socket);
+      if (!runtime.sockets.size && !runtime.activeTurn && !runtime.terminalEvent) {
+        runtime.eventUnsubscribe?.();
+        runtime.eventUnsubscribe = null;
+        this.sessions.delete(sessionId);
       }
     });
   }
