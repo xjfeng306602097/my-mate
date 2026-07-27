@@ -242,38 +242,6 @@ const STUDIO_API_KEY_STORAGE = "my-mate.studio.api-key";
 const STUDIO_WORKSPACE_STORAGE = "my-mate.studio.workspace-id";
 const STUDIO_SETUP_DISMISSED_STORAGE = "my-mate.studio.setup-dismissed";
 const STUDIO_AUTONOMY_STORAGE = "my-mate.studio.autonomy-mode";
-const STUDIO_APPEARANCE_STORAGE = "my-mate.studio.appearance";
-const APPEARANCE_MODES = ["light", "dark", "system"];
-
-function normalizeAppearance(value) {
-  return APPEARANCE_MODES.includes(value) ? value : "system";
-}
-
-function resolveAppearance(mode) {
-  if (mode === "system") {
-    return globalThis.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }
-  return mode;
-}
-
-function applyAppearance() {
-  const resolved = resolveAppearance(state.product.appearance);
-  const root = globalThis.document?.documentElement;
-  if (!root) return;
-  if (resolved === "dark") {
-    root.dataset.theme = "dark";
-  } else {
-    delete root.dataset.theme;
-  }
-}
-
-function appearanceModeCopy(mode) {
-  return {
-    light: { label: "Light", detail: "Always use the light theme." },
-    dark: { label: "Dark", detail: "Experimental dark theme." },
-    system: { label: "Follow system", detail: "Match the operating system." },
-  }[mode];
-}
 const STUDIO_AGENT_DRAFT_STORAGE = "my-mate.studio.agent-draft";
 const SESSION_WORKSPACE_CACHE_TTL_MS = 120_000;
 const desktopHost = globalThis.myMateDesktop || null;
@@ -501,7 +469,6 @@ const state = {
   product: {
     autonomyMode: normalizeAutonomyMode(globalThis.localStorage?.getItem(STUDIO_AUTONOMY_STORAGE)),
     autonomySaving: false,
-    appearance: normalizeAppearance(globalThis.localStorage?.getItem(STUDIO_APPEARANCE_STORAGE)),
   },
   error: null,
   notice: null,
@@ -4670,7 +4637,7 @@ function renderHumanInputSchemaForm(input) {
   const draft = getHumanInputDraft(input.input_request_id, schema);
   if (!fields.length) {
     return `
-      <textarea rows="3" data-field="human-input.payload" data-input-request-id="${escapeHtml(input.input_request_id)}" aria-label="Human input response payload" placeholder='{"approved": true}'></textarea>
+      <textarea rows="3" data-field="human-input.payload" data-input-request-id="${escapeHtml(input.input_request_id)}" placeholder='{"approved": true}'></textarea>
     `;
   }
   return `
@@ -4725,7 +4692,7 @@ function renderHumanInputSchemaForm(input) {
               ${field.description ? `<small>${escapeHtml(field.description)}</small>` : ""}
               ${
                 multiline
-                  ? `<textarea rows="3" data-field="human-input.schema" data-input-request-id="${escapeHtml(input.input_request_id)}" data-schema-key="${escapeHtml(key)}" aria-label="${escapeHtml(`Input field: ${key}`)}" placeholder="${escapeHtml(field.type === "number" || field.type === "integer" ? "Enter a number" : "Enter details")}">${escapeHtml(typeof currentValue === "string" ? currentValue : "")}</textarea>`
+                  ? `<textarea rows="3" data-field="human-input.schema" data-input-request-id="${escapeHtml(input.input_request_id)}" data-schema-key="${escapeHtml(key)}" placeholder="${escapeHtml(field.type === "number" || field.type === "integer" ? "Enter a number" : "Enter details")}">${escapeHtml(typeof currentValue === "string" ? currentValue : "")}</textarea>`
                   : `<input value="${escapeHtml(typeof currentValue === "string" ? currentValue : "")}" data-field="human-input.schema" data-input-request-id="${escapeHtml(input.input_request_id)}" data-schema-key="${escapeHtml(key)}" placeholder="${escapeHtml(field.type === "number" || field.type === "integer" ? "Enter a number" : "Enter value")}" />`
               }
             </label>
@@ -5009,7 +4976,7 @@ function renderExecutionInterventionComposer(detail) {
           </select>
         </label>
         <label class="span-2">Instruction
-          <textarea rows="3" data-field="execution.interventionText" aria-label="Runtime intervention guidance" placeholder="Describe the runtime adjustment or next-pass guidance.">${escapeHtml(state.executionControl.interventionText || "")}</textarea>
+          <textarea rows="3" data-field="execution.interventionText" placeholder="Describe the runtime adjustment or next-pass guidance.">${escapeHtml(state.executionControl.interventionText || "")}</textarea>
         </label>
         <button class="primary" data-action="submit-intervention" ${submitting || !sessionId || !state.executionControl.interventionText.trim() ? "disabled" : ""}>${submitting ? "Submitting..." : "Record intervention"}</button>
       </div>
@@ -12865,19 +12832,8 @@ function renderSessionInventoryControls(kind) {
   `;
 }
 
-function renderSkeletonRows(count = 5) {
-  return `<div class="skeleton-list" aria-hidden="true">${Array.from({ length: count }, () => `<div class="skeleton-row"><span class="skeleton skeleton-dot"></span><span class="skeleton-lines"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line short"></span></span></div>`).join("")}</div>`;
-}
-
-function renderSkeletonCards(count = 2) {
-  return `<div class="skeleton-list" aria-hidden="true">${Array.from({ length: count }, () => `<div class="skeleton-card"><span class="skeleton-lines"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line short"></span></span></div>`).join("")}</div>`;
-}
-
 function renderMissionList() {
   if (!state.missions.length) {
-    if (state.missionsLoading) {
-      return renderSkeletonRows();
-    }
     return `<p class="sidebar-muted">${
       state.missionVisibility === "archived"
         ? "No archived missions."
@@ -12904,9 +12860,6 @@ function renderMissionList() {
 
 function renderSessionList() {
   if (!state.sessions.length) {
-    if (state.sessionsLoading) {
-      return renderSkeletonRows();
-    }
     return `<p class="sidebar-muted">${
       state.sessionVisibility === "archived"
         ? "No archived sessions."
@@ -14001,7 +13954,7 @@ function renderMcpServerModal() {
           <button class="icon-button" data-action="close-mcp-server-modal" aria-label="Close">&times;</button>
         </header>
         <div class="provider-modal-body">
-          ${state.error ? `<div class="alert danger" role="alert">${escapeHtml(state.error)}</div>` : ""}
+          ${state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
           <div class="form-grid compact provider-modal-grid">
             <label class="span-2">Connector
               <select data-field="mcp.presetId" ${editor.mode === "edit" ? "disabled" : ""}>
@@ -14210,7 +14163,7 @@ function renderProviderConnectionModal() {
           <button class="icon-button" data-action="close-provider-connection-modal" title="Close" aria-label="Close">&#10005;</button>
         </header>
         <div class="provider-modal-body">
-          ${state.error ? `<div class="alert danger" role="alert">${escapeHtml(state.error)}</div>` : ""}
+          ${state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
           <div class="form-grid compact provider-modal-grid">
             <label class="span-2">Name<input value="${escapeHtml(editor.name)}" data-field="connection.name" placeholder="Production models" /></label>
             <label>Provider
@@ -16040,7 +15993,7 @@ function renderAgentRuns() {
     && ["completed", "failed", "cancelled"].includes(selectedDag.status)
     && aggregation?.status !== "completed";
   const nodes = `<div class="agent-dag-node-grid">${selectedDag?.nodes?.map((node) => { const task = selectedTasks.find((item) => item.task_id === node.task_id); const condition = node.condition ? `${node.condition.path} ${node.condition.operator}` : "Always"; return `<article class="agent-dag-node ${escapeHtml(node.status)}"><div><span class="status-dot ${node.status === "completed" ? "success" : node.status === "failed" ? "danger" : node.status === "blocked" ? "warn" : "neutral"}"></span><strong>${escapeHtml(node.name)}</strong><span class="badge neutral">${escapeHtml(node.kind || node.role)}</span></div><small>${escapeHtml(`${node.binding_snapshot.agent_name}@${node.binding_snapshot.agent_version}`)}</small><p>${escapeHtml(task?.objective || "")}</p><small>${escapeHtml(node.depends_on.length ? `${node.join_policy || "all"}: ${node.depends_on.join(", ")}` : "Root node")}</small><small>${escapeHtml(`Condition: ${condition}`)}</small></article>`; }).join("") || '<p class="muted">No nodes have been added.</p>'}</div>`;
-  const gates = pendingGates.length ? `<section class="agent-gate-list"><div class="section-heading"><strong>Human gates</strong><small>${pendingGates.length} pending</small></div>${pendingGates.map((gate) => `<article class="agent-gate-row"><div><strong>${escapeHtml(gate.prompt)}</strong><small>${escapeHtml(`${gate.gate_type} / ${gate.node_id}`)}</small></div>${gate.gate_type === "input" ? `<textarea rows="2" data-agent-gate-response="${escapeHtml(gate.gate_id)}" aria-label="Human gate response" placeholder='Structured JSON or plain text'></textarea>` : ""}<div class="agent-gate-actions"><button class="secondary danger-action" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="false">Reject</button><button class="primary" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="true">${gate.gate_type === "input" ? "Submit" : "Approve"}</button></div></article>`).join("")}</section>` : "";
+  const gates = pendingGates.length ? `<section class="agent-gate-list"><div class="section-heading"><strong>Human gates</strong><small>${pendingGates.length} pending</small></div>${pendingGates.map((gate) => `<article class="agent-gate-row"><div><strong>${escapeHtml(gate.prompt)}</strong><small>${escapeHtml(`${gate.gate_type} / ${gate.node_id}`)}</small></div>${gate.gate_type === "input" ? `<textarea rows="2" data-agent-gate-response="${escapeHtml(gate.gate_id)}" placeholder='Structured JSON or plain text'></textarea>` : ""}<div class="agent-gate-actions"><button class="secondary danger-action" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="false">Reject</button><button class="primary" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="true">${gate.gate_type === "input" ? "Submit" : "Approve"}</button></div></article>`).join("")}</section>` : "";
   const stateView = `<details class="agent-dag-state"><summary>DAG state <span>revision ${selectedDag?.state_revision || 0}</span></summary><pre>${escapeHtml(JSON.stringify(selectedDag?.state || {}, null, 2).slice(0, 12000))}</pre></details>`;
   const messages = `<details class="agent-protocol-log"><summary>Agent communication <span>${selectedMessages.length}</span></summary>${selectedMessages.map((message) => `<div class="agent-message-row"><span class="badge neutral">${escapeHtml(message.message_type)}</span><span><strong>${escapeHtml(message.task_id)}</strong><small>${escapeHtml(message.created_at)}</small></span><p>${escapeHtml(String(message.payload?.summary || message.payload?.message || message.payload?.objective || message.payload?.prompt || ""))}</p></div>`).join("") || '<p class="muted">No Agent messages yet.</p>'}</details>`;
   const aggregationAlert = aggregationNeedsRecovery
@@ -18232,13 +18185,12 @@ function renderInboxWorkspace() {
   return `
     <section class="product-surface inbox-surface">
       <div class="product-surface-heading">
-        <div><h3>${state.inbox.loading && !count ? "Checking for decisions…" : count ? "Your attention is needed" : "Nothing needs your attention"}</h3><p>${state.inbox.loading && !count ? "Approvals, questions, and blocked tasks are loading." : count ? "Only decisions that can change or unblock a task appear here." : "My Mate will bring approvals, questions, and blocked tasks here."}</p></div>
+        <div><h3>${count ? "Your attention is needed" : "Nothing needs your attention"}</h3><p>${count ? "Only decisions that can change or unblock a task appear here." : "My Mate will bring approvals, questions, and blocked tasks here."}</p></div>
         <span class="badge ${count ? "warn" : "success"}">${count ? `${count} open` : "All clear"}</span>
       </div>
       ${state.inbox.error ? `<div class="alert danger">${escapeHtml(state.inbox.error)}</div>` : ""}
       ${renderWorkspaceChangeReview()}
       <div class="inbox-list">
-        ${state.inbox.loading && !notifications.length && !approvals.length && !humanInputs.length ? renderSkeletonCards(3) : ""}
         ${notifications.map((notification) => `
           <article class="inbox-item notification-inbox-item ${notification.read_at ? "is-read" : ""}">
             <span class="inbox-item-kind">${escapeHtml(notification.kind.startsWith("schedule_") ? "Schedule" : "Notice")}</span>
@@ -18432,19 +18384,6 @@ function renderProductSettingsPanel() {
             const copy = autonomyModeCopy(mode);
             const selected = state.product.autonomyMode === mode;
             return `<button class="autonomy-option ${selected ? "selected" : ""}" role="radio" aria-checked="${selected}" data-action="save-autonomy-mode" data-mode="${escapeHtml(mode)}" ${state.product.autonomySaving ? "disabled" : ""}><strong>${escapeHtml(copy.label)}</strong><small>${escapeHtml(copy.detail)}</small></button>`;
-          }).join("")}
-        </div>
-      </section>
-      <section class="autonomy-policy-panel">
-        <div class="autonomy-policy-heading">
-          <div><h3>Appearance</h3><p>Choose how Studio looks on this device. Dark is experimental.</p></div>
-          <span class="badge info">${escapeHtml(appearanceModeCopy(state.product.appearance).label)}</span>
-        </div>
-        <div class="autonomy-options" role="radiogroup" aria-label="Appearance">
-          ${APPEARANCE_MODES.map((mode) => {
-            const copy = appearanceModeCopy(mode);
-            const selected = state.product.appearance === mode;
-            return `<button class="autonomy-option ${selected ? "selected" : ""}" role="radio" aria-checked="${selected}" data-action="save-appearance" data-mode="${escapeHtml(mode)}"><strong>${escapeHtml(copy.label)}</strong><small>${escapeHtml(copy.detail)}</small></button>`;
           }).join("")}
         </div>
       </section>
@@ -18962,9 +18901,9 @@ function renderTaskWorkspaceSurface() {
     if (child.classList?.contains("alert") || child.classList?.contains("control-plane-status")) child.remove();
   }
   const alerts = [
-    state.error && !isConnectivityError(state.error) ? `<div class="alert danger" role="alert">${escapeHtml(state.error)}</div>` : "",
-    state.notice ? `<div class="alert success" role="status">${escapeHtml(state.notice)}</div>` : "",
-    state.streamError ? `<div class="alert warn" role="status">${escapeHtml(state.streamError)}</div>` : "",
+    state.error && !isConnectivityError(state.error) ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : "",
+    state.notice ? `<div class="alert success">${escapeHtml(state.notice)}</div>` : "",
+    state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : "",
   ].filter(Boolean).join("");
   const statusBanner = controlPlaneBanner();
   if (statusBanner || alerts) desktopGrid.insertAdjacentHTML("beforebegin", `${statusBanner}${alerts}`);
@@ -19142,7 +19081,7 @@ function render() {
 
         ${controlPlaneBanner()}
         ${state.error && !isConnectivityError(state.error) && state.activeNav !== "agents" ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
-        ${state.notice ? `<div class="alert success" role="status">${escapeHtml(state.notice)}</div>` : ""}
+        ${state.notice ? `<div class="alert success">${escapeHtml(state.notice)}</div>` : ""}
         ${state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : ""}
         ${state.activeNav === "templates" && state.editor.status === "published" ? '<div class="alert info"><strong>Published workflow</strong><span>Edit creates protected unpublished changes. Running tasks keep the workflow they started with.</span></div>' : ""}
         ${state.activeNav === "templates" && state.editor.status === "draft" && selectedWorkflowFamily?.published ? '<div class="alert info"><strong>Unpublished changes</strong><span>The published workflow remains active until these changes are published.</span></div>' : ""}
@@ -20238,12 +20177,6 @@ document.addEventListener("click", (event) => {
   }
   if (action === "save-autonomy-mode") {
     void saveProductAutonomyMode(button.dataset.mode || "assisted");
-  }
-  if (action === "save-appearance") {
-    state.product.appearance = normalizeAppearance(button.dataset.mode);
-    globalThis.localStorage?.setItem(STUDIO_APPEARANCE_STORAGE, state.product.appearance);
-    applyAppearance();
-    render();
   }
   if (action === "open-environment-setup") {
     openStudioSetup("environment");
@@ -21412,10 +21345,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 hydrateStudioLocationState();
-applyAppearance();
-globalThis.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
-  if (state.product.appearance === "system") applyAppearance();
-});
 render();
 void initializeDesktopHost();
 void loadSecurity(false).then(async (securityLoaded) => {
