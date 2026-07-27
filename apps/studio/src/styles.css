@@ -11459,6 +11459,144 @@ button.dashboard-correlation-row:hover {
   font-size: 11px;
 }
 
+.provider-removal-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.provider-removal-heading,
+.provider-delete-ready,
+.provider-delete-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.provider-removal-heading strong,
+.provider-removal-heading span,
+.provider-delete-ready strong,
+.provider-delete-ready small,
+.provider-delete-confirm strong,
+.provider-delete-confirm small {
+  display: block;
+}
+
+.provider-removal-heading strong,
+.provider-delete-ready strong,
+.provider-delete-confirm strong {
+  color: #1d2939;
+  font-size: 13px;
+}
+
+.provider-removal-heading span,
+.provider-delete-ready small,
+.provider-delete-confirm small {
+  margin-top: 3px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.provider-reference-list {
+  display: grid;
+  border-top: 1px solid #e2e8f0;
+}
+
+.provider-reference-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.provider-reference-row > span:nth-child(2) strong,
+.provider-reference-row > span:nth-child(2) small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.provider-reference-row > span:nth-child(2) strong {
+  color: #1d2939;
+  font-size: 12px;
+}
+
+.provider-reference-row > span:nth-child(2) small,
+.provider-reference-row > small {
+  margin-top: 2px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.provider-reference-empty {
+  padding: 14px 0;
+}
+
+.provider-reference-empty strong,
+.provider-reference-empty span {
+  display: block;
+}
+
+.provider-reference-empty strong {
+  color: #1d2939;
+  font-size: 12px;
+}
+
+.provider-reference-empty span {
+  margin-top: 3px;
+  color: #667085;
+  font-size: 11px;
+}
+
+.provider-migration-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.provider-migration-controls label {
+  display: grid;
+  gap: 5px;
+  color: #475467;
+  font-size: 11px;
+}
+
+.provider-delete-ready,
+.provider-delete-confirm {
+  padding: 12px;
+  border: 1px solid #f0b4ad;
+  border-radius: 6px;
+  background: #fff8f7;
+}
+
+.provider-delete-confirm > span,
+.provider-delete-ready > span {
+  min-width: 0;
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .provider-reference-row,
+  .provider-migration-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-removal-heading,
+  .provider-delete-ready,
+  .provider-delete-confirm {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+}
+
 .setup-modal-backdrop {
   position: fixed;
   inset: 0;

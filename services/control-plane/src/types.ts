@@ -2868,6 +2868,58 @@ export interface UpsertProviderConnectionRequest {
   metadata?: Record<string, unknown>;
 }
 
+export type ProviderConnectionReferenceKind =
+  | "agent"
+  | "session"
+  | "schedule"
+  | "workflow_template"
+  | "agent_run"
+  | "agent_dag"
+  | "workflow_run";
+
+export interface ProviderConnectionReference {
+  kind: ProviderConnectionReferenceKind;
+  reference_id: string;
+  label: string;
+  status: string;
+  blocking: boolean;
+  migratable: boolean;
+  detail: string;
+}
+
+export interface ProviderConnectionReferenceReport {
+  connection_id: string;
+  workspace_id: string;
+  connection_status: RegistryStatus;
+  references: ProviderConnectionReference[];
+  blocking_count: number;
+  migratable_count: number;
+  historical_count: number;
+  can_delete: boolean;
+}
+
+export interface MigrateProviderConnectionRequest {
+  target_connection_id: string;
+  target_model?: string | null;
+}
+
+export interface ProviderConnectionMigrationResult {
+  source_connection_id: string;
+  target_connection_id: string;
+  target_model: string;
+  migrated_agents: number;
+  migrated_sessions: number;
+  migrated_schedules: number;
+  migrated_workflow_templates: number;
+  remaining: ProviderConnectionReferenceReport;
+}
+
+export interface DeleteProviderConnectionResult {
+  connection_id: string;
+  deleted: true;
+  credential_deleted: boolean;
+}
+
 export interface ProviderConnectionSnapshot {
   connection_id: string;
   agent_runtime: string;

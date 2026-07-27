@@ -69,12 +69,13 @@ async function fetchOk(
   fetchImpl: typeof fetch,
   url: string,
   init: RequestInit,
-): Promise<void> {
+): Promise<Response> {
   const response = await fetchImpl(url, init);
   if (!response.ok) {
     const body = (await response.text()).slice(0, 300);
     throw new Error(`Provider returned HTTP ${response.status}${body ? `: ${body}` : ""}.`);
   }
+  return response;
 }
 
 export async function runLiveProviderProbe(input: {
@@ -97,10 +98,21 @@ export async function runLiveProviderProbe(input: {
     const key = input.env.KIMI_API_KEY || input.env.MOONSHOT_API_KEY;
     if (!key) throw new Error("No Kimi API credential is available for a live probe.");
     const base = (input.env.KIMI_BASE_URL || "https://api.moonshot.cn").replace(/\/$/, "");
-    await fetchOk(fetchImpl, `${base}/v1/models`, {
+    const apiBase = base.endsWith("/v1") ? base : `${base}/v1`;
+    const response = await fetchOk(fetchImpl, `${apiBase}/models`, {
       headers: { authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(10_000),
     });
+    const selectedModel = input.env.MY_MATE_KIMI_MODEL?.trim();
+    if (selectedModel) {
+      const body = await response.json() as { data?: Array<{ id?: unknown }> };
+      const availableModels = Array.isArray(body.data)
+        ? body.data.map((item) => typeof item.id === "string" ? item.id : "").filter(Boolean)
+        : [];
+      if (!availableModels.includes(selectedModel)) {
+        throw new Error(`Kimi model ${selectedModel} is not available from this endpoint.`);
+      }
+    }
     return;
   }
   if (input.runtime === "claude-sdk") {

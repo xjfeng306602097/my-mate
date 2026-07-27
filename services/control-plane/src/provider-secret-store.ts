@@ -116,3 +116,11 @@ export function getManagedProviderCredential(connectionId: string): string | nul
 export function hasManagedProviderCredential(connectionId: string): boolean {
   return !!getManagedProviderCredential(connectionId);
 }
+
+export function deleteManagedProviderCredential(connectionId: string): boolean {
+  const file = secretPath(connectionId);
+  const storage = getJsonStorageBackend();
+  if (!storage.exists(file)) return false;
+  storage.removeJson(file);
+  return true;
+}

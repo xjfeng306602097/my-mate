@@ -677,6 +677,35 @@ export function createAgentBindingSnapshot(input: {
   return snapshot;
 }
 
+export function rebindAgentBindingSnapshot(
+  inputSnapshot: AgentBindingSnapshot,
+  input: { providerConnectionId: string; model?: string | null; agentVersion?: number | null },
+): AgentBindingSnapshot {
+  const source = normalizeAgentBindingSnapshot(inputSnapshot);
+  const connection = getProviderConnection(input.providerConnectionId);
+  const workspaceId = connection?.workspace_id || "default";
+  const model = input.model?.trim() || connection?.default_model || connection?.models[0] || null;
+  if (!model) throw new Error("Provider Connection migration requires a target model.");
+  validateAgentProviderBinding(connection, workspaceId, model);
+  const provider = providerDefinitionFromConnection(connection);
+  const deployment = deploymentFromConnection(connection, provider, model);
+  const { snapshot_digest: _sourceDigest, ...sourceWithoutDigest } = source;
+  const snapshotBase = {
+    ...sourceWithoutDigest,
+    binding_id: `binding_${randomUUID()}`,
+    agent_version: input.agentVersion || source.agent_version,
+    provider_id: provider.provider_id,
+    provider_connection_id: connection.connection_id,
+    connection_revision: deployment.connection_revision,
+    model_deployment_id: deployment.deployment_id,
+    model: deployment.model,
+    created_at: nowIso(),
+  } satisfies Omit<AgentBindingSnapshot, "snapshot_digest">;
+  const snapshot = normalizeAgentBindingSnapshot({ ...snapshotBase, snapshot_digest: digest(snapshotBase) });
+  write(file(AGENT_BINDING_SNAPSHOTS_DIR, snapshot.binding_id), snapshot);
+  return snapshot;
+}
+
 export function resolveSessionAgentBinding(session: { workspace_id?: string; metadata?: Record<string, unknown> }): AgentBindingSnapshot {
   const metadata = session.metadata || {};
   const existing = metadata.agent_binding_snapshot;

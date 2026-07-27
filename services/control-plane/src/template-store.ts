@@ -12,7 +12,12 @@ import type {
 } from "./types.js";
 import { ensureDir, isPlainObject, nowIso, slugify, writeJsonAtomic } from "./utils.js";
 import { validateWorkflowTemplate } from "./validators.js";
-import { createAgentBindingSnapshot, normalizeAgentBindingSnapshot } from "./agent-runtime-store.js";
+import {
+  createAgentBindingSnapshot,
+  getAgentDefinition,
+  normalizeAgentBindingSnapshot,
+  rebindAgentBindingSnapshot,
+} from "./agent-runtime-store.js";
 
 function templatePath(templateId: string): string {
   return path.join(TEMPLATES_DIR, `${templateId}.json`);
@@ -332,6 +337,74 @@ export function migrateWorkflowAgentBindings(workspaceId = "default"): {
     unresolved_nodes: unresolvedNodes,
     compatibility_fields_retained: unresolvedNodes.length > 0,
   };
+}
+
+export function migrateWorkflowProviderConnectionBindings(input: {
+  workspaceId: string;
+  sourceConnectionId: string;
+  targetConnectionId: string;
+  targetModel: string;
+  migratedAgentVersions?: ReadonlyMap<string, number>;
+}): { migrated_templates: number; migrated_nodes: number } {
+  let migratedTemplates = 0;
+  let migratedNodes = 0;
+  for (const template of listTemplates().filter((item) => item.workspace_scope === input.workspaceId && item.status !== "archived")) {
+    let changed = false;
+    const nodes = template.nodes.map((node) => {
+      const snapshot = node.agent_binding_snapshot;
+      if (!snapshot || snapshot.provider_connection_id !== input.sourceConnectionId) return node;
+      const agentId = node.agent_id || snapshot.agent_id;
+      const migratedVersion = input.migratedAgentVersions?.get(agentId) || null;
+      let rebound;
+      try {
+        const definition = getAgentDefinition(agentId, input.workspaceId);
+        rebound = definition?.status === "active"
+          ? createAgentBindingSnapshot({
+              workspaceId: input.workspaceId,
+              agentId,
+              agentVersion: migratedVersion || definition.published_version,
+              bindingMode: snapshot.binding_mode,
+              providerConnectionId: input.targetConnectionId,
+              model: input.targetModel,
+            })
+          : rebindAgentBindingSnapshot(snapshot, {
+              providerConnectionId: input.targetConnectionId,
+              model: input.targetModel,
+              agentVersion: migratedVersion,
+            });
+      } catch {
+        rebound = rebindAgentBindingSnapshot(snapshot, {
+          providerConnectionId: input.targetConnectionId,
+          model: input.targetModel,
+          agentVersion: migratedVersion,
+        });
+      }
+      changed = true;
+      migratedNodes += 1;
+      return {
+        ...node,
+        agent_id: rebound.agent_id,
+        agent_version: rebound.agent_version,
+        agent_binding_snapshot: rebound,
+      };
+    });
+    if (!changed) continue;
+    saveTemplate({
+      ...template,
+      nodes,
+      metadata: {
+        ...template.metadata,
+        provider_connection_migration: {
+          source_connection_id: input.sourceConnectionId,
+          target_connection_id: input.targetConnectionId,
+          migrated_at: nowIso(),
+        },
+      },
+      updated_at: nowIso(),
+    });
+    migratedTemplates += 1;
+  }
+  return { migrated_templates: migratedTemplates, migrated_nodes: migratedNodes };
 }
 
 export function getTemplate(templateId: string): WorkflowTemplateRecord | null {

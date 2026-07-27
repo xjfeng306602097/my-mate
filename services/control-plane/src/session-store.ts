@@ -3,8 +3,8 @@ import { SESSIONS_DIR } from "./config.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getActivePrincipalId, getActiveWorkspaceId } from "./request-security.js";
 import { ensureCoreMemorySnapshot } from "./memory-snapshot-store.js";
-import { resolveSessionAgentBinding } from "./agent-runtime-store.js";
-import type { CreateSessionRequest, SessionRecord } from "./types.js";
+import { rebindAgentBindingSnapshot, resolveSessionAgentBinding } from "./agent-runtime-store.js";
+import type { AgentBindingSnapshot, CreateSessionRequest, SessionRecord } from "./types.js";
 import { ensureDir, generateSessionId, nowIso, writeJsonAtomic } from "./utils.js";
 import {
   SESSION_LIFECYCLE,
@@ -199,6 +199,34 @@ export function getSession(sessionId: string): SessionRecord | null {
   const session = normalizeSessionRecord(storage.readJson<SessionRecord>(filePath));
   const activeWorkspaceId = getActiveWorkspaceId();
   return activeWorkspaceId && session.workspace_id !== activeWorkspaceId ? null : session;
+}
+
+export function rebindSessionProviderConnection(
+  sessionId: string,
+  providerConnectionId: string,
+  model: string,
+  agentVersion?: number | null,
+): SessionRecord {
+  const session = getSession(sessionId);
+  if (!session) throw new Error("SESSION_NOT_FOUND");
+  const currentSnapshot = session.metadata.agent_binding_snapshot;
+  const nextSnapshot = currentSnapshot && typeof currentSnapshot === "object"
+    ? rebindAgentBindingSnapshot(currentSnapshot as AgentBindingSnapshot, {
+        providerConnectionId,
+        model,
+        agentVersion,
+      })
+    : null;
+  return saveSession({
+    ...session,
+    updated_at: nowIso(),
+    metadata: {
+      ...session.metadata,
+      conversation_provider_connection_id: providerConnectionId,
+      conversation_model: model,
+      ...(nextSnapshot ? { agent_binding_snapshot: nextSnapshot } : {}),
+    },
+  });
 }
 
 export function archiveSession(

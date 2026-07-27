@@ -89,10 +89,25 @@ export function compileRunPlan(
         // The runtime surfaces unavailable Agent bindings through normal evidence.
       }
     }
-    const runtimeAgentRef = agentBindingSnapshot?.agent_id || node.agent_id || null;
-    const providerConnection = agentBindingSnapshot
+    let providerConnection = agentBindingSnapshot
       ? snapshotProviderConnection(agentBindingSnapshot.provider_connection_id, agentBindingSnapshot.model)
       : null;
+    if (agentBindingSnapshot && !providerConnection && (node.agent_id || agentBindingSnapshot.agent_id)) {
+      try {
+        agentBindingSnapshot = createAgentBindingSnapshot({
+          workspaceId: run.workspace_id,
+          agentId: node.agent_id || agentBindingSnapshot.agent_id,
+          bindingMode: "follow_latest",
+        });
+        providerConnection = snapshotProviderConnection(
+          agentBindingSnapshot.provider_connection_id,
+          agentBindingSnapshot.model,
+        );
+      } catch {
+        // Preserve the pinned evidence; runtime validation will explain why no current binding is available.
+      }
+    }
+    const runtimeAgentRef = agentBindingSnapshot?.agent_id || node.agent_id || null;
     const snapshotSkills = agentBindingSnapshot?.skill_policy.locked_skills.map((item) => item.skill_id) || [];
     const snapshotTools = agentBindingSnapshot?.tool_policy.allowed_tools || [];
     const deniedSnapshotTools = new Set(agentBindingSnapshot?.tool_policy.denied_tools || []);

@@ -2219,6 +2219,61 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [connection_id, workspace_id, name, agent_runtime, provider, protocol, base_url, models, default_model, max_input_tokens, max_output_tokens, context_compression_enabled, context_compression_threshold_percent, max_continuation_rounds, max_tool_rounds, credential_source, credential_env, credential_configured, verification, status, metadata, created_at, updated_at]
+    ProviderConnectionReference:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [agent, session, schedule, workflow_template, agent_run, agent_dag, workflow_run]
+        reference_id: { type: string }
+        label: { type: string }
+        status: { type: string }
+        blocking: { type: boolean }
+        migratable: { type: boolean }
+        detail: { type: string }
+      required: [kind, reference_id, label, status, blocking, migratable, detail]
+    ProviderConnectionReferenceReport:
+      type: object
+      properties:
+        connection_id: { type: string }
+        workspace_id: { type: string }
+        connection_status:
+          type: string
+          enum: [active, disabled]
+        references:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderConnectionReference" }
+        blocking_count: { type: integer, minimum: 0 }
+        migratable_count: { type: integer, minimum: 0 }
+        historical_count: { type: integer, minimum: 0 }
+        can_delete: { type: boolean }
+      required: [connection_id, workspace_id, connection_status, references, blocking_count, migratable_count, historical_count, can_delete]
+    MigrateProviderConnectionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        target_connection_id: { type: string }
+        target_model: { type: string }
+      required: [target_connection_id]
+    ProviderConnectionMigrationResult:
+      type: object
+      properties:
+        source_connection_id: { type: string }
+        target_connection_id: { type: string }
+        target_model: { type: string }
+        migrated_agents: { type: integer, minimum: 0 }
+        migrated_sessions: { type: integer, minimum: 0 }
+        migrated_schedules: { type: integer, minimum: 0 }
+        migrated_workflow_templates: { type: integer, minimum: 0 }
+        remaining: { $ref: "#/components/schemas/ProviderConnectionReferenceReport" }
+      required: [source_connection_id, target_connection_id, target_model, migrated_agents, migrated_sessions, migrated_schedules, migrated_workflow_templates, remaining]
+    DeleteProviderConnectionResult:
+      type: object
+      properties:
+        connection_id: { type: string }
+        deleted: { type: boolean }
+        credential_deleted: { type: boolean }
+      required: [connection_id, deleted, credential_deleted]
     UpsertProviderConnectionRequest:
       type: object
       additionalProperties: false
@@ -5792,6 +5847,67 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProviderConnection"
+    delete:
+      tags: [Agents]
+      summary: Permanently delete a disabled Provider Connection without active references
+      parameters:
+        - in: path
+          name: connectionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Provider Connection and its managed credential were deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteProviderConnectionResult" }
+        "409":
+          description: Connection is active or still has references
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/registry/provider-connections/{connectionId}/references:
+    get:
+      tags: [Agents]
+      summary: Inspect active, blocking, and historical references before removing a Provider Connection
+      parameters:
+        - in: path
+          name: connectionId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Provider Connection reference report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderConnectionReferenceReport" }
+
+  /api/registry/provider-connections/{connectionId}/migrate:
+    post:
+      tags: [Agents]
+      summary: Atomically migrate active bindings from a disabled Provider Connection
+      parameters:
+        - in: path
+          name: connectionId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MigrateProviderConnectionRequest" }
+      responses:
+        "200":
+          description: Active Provider Connection references migrated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderConnectionMigrationResult" }
+        "409":
+          description: Running work blocks migration or the replacement is unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/registry/provider-connections/{connectionId}/test:
     post:

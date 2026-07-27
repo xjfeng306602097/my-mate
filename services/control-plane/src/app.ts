@@ -462,6 +462,12 @@ import {
   upsertProviderConnection,
 } from "./provider-connection-store.js";
 import {
+  deleteProviderConnection,
+  inspectProviderConnectionReferences,
+  migrateProviderConnectionReferences,
+  ProviderConnectionLifecycleError,
+} from "./provider-connection-lifecycle.js";
+import {
   applyGovernanceChange,
   createGovernanceChange,
   decideGovernanceChange,
@@ -15767,6 +15773,54 @@ export function createApp(options?: {
         return res.status(404).json({ code: "not_found", message: "Provider Connection not found." });
       }
       return res.status(400).json({ code: "invalid_provider_connection", message: String(error) });
+    }
+  });
+
+  app.get("/api/registry/provider-connections/:connectionId/references", (req: Request, res: Response) => {
+    const connectionId = getSingleParam(req.params.connectionId);
+    if (!connectionId) return res.status(400).json({ code: "invalid_request", message: "connectionId is required." });
+    try {
+      return res.json(inspectProviderConnectionReferences(connectionId));
+    } catch (error) {
+      if (error instanceof ProviderConnectionLifecycleError) {
+        return res.status(error.statusCode).json({ code: error.code, message: error.message, report: error.report });
+      }
+      return res.status(400).json({ code: "provider_connection_reference_scan_failed", message: String(error) });
+    }
+  });
+
+  app.post("/api/registry/provider-connections/:connectionId/migrate", (req: Request, res: Response) => {
+    const connectionId = getSingleParam(req.params.connectionId);
+    const targetConnectionId = typeof req.body?.target_connection_id === "string" ? req.body.target_connection_id.trim() : "";
+    const targetModel = typeof req.body?.target_model === "string" ? req.body.target_model.trim() : null;
+    if (!connectionId || !targetConnectionId) {
+      return res.status(400).json({ code: "invalid_request", message: "connectionId and target_connection_id are required." });
+    }
+    try {
+      return res.json(migrateProviderConnectionReferences({
+        sourceConnectionId: connectionId,
+        targetConnectionId,
+        targetModel,
+        actorId: requestActor(req),
+      }));
+    } catch (error) {
+      if (error instanceof ProviderConnectionLifecycleError) {
+        return res.status(error.statusCode).json({ code: error.code, message: error.message, report: error.report });
+      }
+      return res.status(400).json({ code: "provider_connection_migration_failed", message: String(error) });
+    }
+  });
+
+  app.delete("/api/registry/provider-connections/:connectionId", (req: Request, res: Response) => {
+    const connectionId = getSingleParam(req.params.connectionId);
+    if (!connectionId) return res.status(400).json({ code: "invalid_request", message: "connectionId is required." });
+    try {
+      return res.json(deleteProviderConnection(connectionId));
+    } catch (error) {
+      if (error instanceof ProviderConnectionLifecycleError) {
+        return res.status(error.statusCode).json({ code: error.code, message: error.message, report: error.report });
+      }
+      return res.status(400).json({ code: "provider_connection_delete_failed", message: String(error) });
     }
   });
 

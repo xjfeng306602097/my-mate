@@ -4,7 +4,7 @@ import cronParser from "cron-parser";
 import { USER_SCHEDULES_DIR, USER_SCHEDULE_RUNS_DIR } from "./config.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { nowIso } from "./utils.js";
-import { createAgentBindingSnapshot, normalizeAgentBindingSnapshot } from "./agent-runtime-store.js";
+import { createAgentBindingSnapshot, normalizeAgentBindingSnapshot, rebindAgentBindingSnapshot } from "./agent-runtime-store.js";
 import type { AgentBindingSnapshot } from "./types.js";
 import type { AutonomyMode } from "@my-mate/shared-types/domain-lifecycle";
 
@@ -293,6 +293,28 @@ export function updateUserSchedule(
     trigger_spec: triggerFromRecurrence(recurrence, timezone),
   };
   return saveUserSchedule(next);
+}
+
+export function rebindUserScheduleProviderConnection(
+  current: UserScheduleRecord,
+  providerConnectionId: string,
+  model: string,
+  agentVersion?: number | null,
+): UserScheduleRecord {
+  const binding = current.agent_binding_snapshot
+    ? rebindAgentBindingSnapshot(current.agent_binding_snapshot, {
+        providerConnectionId,
+        model,
+        agentVersion,
+      })
+    : null;
+  return saveUserSchedule({
+    ...current,
+    provider_connection_id: providerConnectionId,
+    model,
+    agent_binding_snapshot: binding,
+    updated_at: nowIso(),
+  });
 }
 
 export function deleteUserSchedule(workspaceId: string, scheduleId: string): boolean {

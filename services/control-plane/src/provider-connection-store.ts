@@ -279,6 +279,15 @@ export function disableProviderConnection(connectionId: string): ProviderConnect
   return next;
 }
 
+export function deleteProviderConnectionRecord(connectionId: string): boolean {
+  const current = getProviderConnection(connectionId);
+  if (!current) throw new Error("PROVIDER_CONNECTION_NOT_FOUND");
+  if (current.status !== "disabled") throw new Error("PROVIDER_CONNECTION_MUST_BE_DISABLED");
+  const file = connectionPath(connectionId);
+  getJsonStorageBackend().removeJson(file);
+  return true;
+}
+
 export function snapshotProviderConnection(
   connectionId: string | null | undefined,
   modelOverride?: string | null,

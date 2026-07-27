@@ -179,8 +179,8 @@ const PROVIDER_DEFAULTS = {
     label: "Kimi",
     provider: "moonshot",
     credentialEnv: "KIMI_API_KEY",
-    modelPlaceholder: "moonshot model id",
-    endpointPlaceholder: "Default Moonshot endpoint",
+    modelPlaceholder: "kimi-k3",
+    endpointPlaceholder: "https://api.moonshot.cn/v1",
   },
 };
 const AGENT_RUNTIMES = Object.keys(PROVIDER_CREDENTIAL_ENVS);
@@ -193,7 +193,22 @@ const PROVIDER_PRESETS = {
   openai: { label: "OpenAI", runtime: "codex", protocol: "codex-appserver", provider: "openai", model: "gpt-5.3-codex" },
   anthropic: { label: "Anthropic", runtime: "claude-sdk", protocol: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5" },
   glm: { label: "GLM", runtime: "glm", protocol: "anthropic-messages", provider: "anthropic-compatible", model: "glm-5.2" },
-  kimi: { label: "Kimi", runtime: "kimi", protocol: "openai-compatible", provider: "moonshot", model: "kimi-k2.5" },
+  kimi: {
+    label: "Kimi K3 API",
+    runtime: "kimi",
+    protocol: "openai-compatible",
+    provider: "moonshot",
+    baseUrl: "https://api.moonshot.cn/v1",
+    model: "kimi-k3",
+  },
+  "kimi-coding": {
+    label: "Kimi Coding",
+    runtime: "kimi",
+    protocol: "openai-compatible",
+    provider: "moonshot-coding",
+    baseUrl: "https://api.kimi.com/coding/v1",
+    model: "k3",
+  },
   custom: { label: "Custom", runtime: "codex", protocol: "openai-compatible", provider: "custom", model: "" },
 };
 
@@ -628,6 +643,7 @@ const state = {
     mcpServer: emptyMcpServerEditor(),
     skill: emptySkillEditor(),
   },
+  providerConnectionLifecycle: emptyProviderConnectionLifecycle(),
   setup: {
     open: false,
     tab: "model",
@@ -916,6 +932,20 @@ function emptyProviderConnectionEditor() {
     apiKey: "",
     credentialConfigured: false,
     metadataText: prettyJson(DEFAULT_REGISTRY_METADATA),
+  };
+}
+
+function emptyProviderConnectionLifecycle() {
+  return {
+    open: false,
+    loading: false,
+    migrating: false,
+    deleting: false,
+    confirmDelete: false,
+    report: null,
+    targetConnectionId: "",
+    targetModel: "",
+    error: null,
   };
 }
 
@@ -5623,6 +5653,7 @@ function resetWorkspaceScopedState() {
     mcpServer: emptyMcpServerEditor(),
     skill: emptySkillEditor(),
   };
+  state.providerConnectionLifecycle = emptyProviderConnectionLifecycle();
   state.setup.open = false;
   state.setup.initialized = false;
   state.setup.hostReport = null;
@@ -6994,7 +7025,7 @@ function buildProviderConnectionPayload(editor = state.registryEditor.connection
   if (!Number.isInteger(editor.maxToolRounds) || editor.maxToolRounds < 1 || editor.maxToolRounds > 128) {
     return { ok: false, message: "Tool rounds must be an integer between 1 and 128." };
   }
-  if ((editor.agentRuntime === "glm" || editor.preset === "custom") && !editor.baseUrl.trim()) {
+  if ((editor.agentRuntime === "glm" || editor.agentRuntime === "kimi" || editor.preset === "custom") && !editor.baseUrl.trim()) {
     return { ok: false, message: "This provider requires an endpoint." };
   }
   if (editor.credentialSource === "managed" && !editor.credentialConfigured && !editor.apiKey.trim()) {
@@ -11723,11 +11754,110 @@ async function disableProviderConnection() {
     state.notice = `Disabled Provider Connection ${disabled.connection_id}`;
     state.registryEditor.connection = editorFromProviderConnection(disabled);
     await loadRegistry(false);
-    state.ui.providerConnectionModalOpen = false;
+    state.providerConnectionLifecycle = { ...emptyProviderConnectionLifecycle(), open: true };
+    await loadProviderConnectionReferences(disabled.connection_id, false);
   } catch (error) {
     state.error = error.message || "Failed to disable Provider Connection.";
   } finally {
     state.registryDisabling = false;
+    render();
+  }
+}
+
+function replacementProviderConnections(sourceConnectionId) {
+  return state.providerConnections.filter((connection) =>
+    connection.connection_id !== sourceConnectionId &&
+    connection.status === "active" &&
+    connection.verification?.status === "verified" &&
+    connection.credential_configured === true
+  );
+}
+
+function syncProviderConnectionMigrationTarget(connectionId) {
+  const connection = replacementProviderConnections(state.registryEditor.connection.connectionId)
+    .find((item) => item.connection_id === connectionId) || null;
+  state.providerConnectionLifecycle.targetConnectionId = connection?.connection_id || "";
+  state.providerConnectionLifecycle.targetModel = connection?.default_model || connection?.models?.[0] || "";
+}
+
+async function loadProviderConnectionReferences(connectionId = state.registryEditor.connection.connectionId, shouldRender = true) {
+  if (!connectionId) return;
+  const lifecycle = state.providerConnectionLifecycle;
+  lifecycle.open = true;
+  lifecycle.loading = true;
+  lifecycle.error = null;
+  if (shouldRender) render();
+  try {
+    lifecycle.report = await request(
+      `/api/registry/provider-connections/${encodeURIComponent(connectionId)}/references`,
+    );
+    const replacements = replacementProviderConnections(connectionId);
+    if (!replacements.some((item) => item.connection_id === lifecycle.targetConnectionId)) {
+      syncProviderConnectionMigrationTarget(replacements[0]?.connection_id || "");
+    }
+  } catch (error) {
+    lifecycle.error = error.message || "Failed to inspect Provider Connection references.";
+  } finally {
+    lifecycle.loading = false;
+    render();
+  }
+}
+
+async function migrateProviderConnectionReferences() {
+  const sourceId = state.registryEditor.connection.connectionId;
+  const lifecycle = state.providerConnectionLifecycle;
+  if (!sourceId || !lifecycle.targetConnectionId || !lifecycle.targetModel) {
+    lifecycle.error = "Choose a replacement Connection and model.";
+    render();
+    return;
+  }
+  lifecycle.migrating = true;
+  lifecycle.error = null;
+  render();
+  try {
+    const result = await request(
+      `/api/registry/provider-connections/${encodeURIComponent(sourceId)}/migrate`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          target_connection_id: lifecycle.targetConnectionId,
+          target_model: lifecycle.targetModel,
+        }),
+      },
+    );
+    lifecycle.report = result.remaining;
+    state.notice = `Migrated ${result.migrated_agents} Agent(s), ${result.migrated_sessions} task(s), ${result.migrated_schedules} schedule(s), and ${result.migrated_workflow_templates} workflow template(s).`;
+    await Promise.all([loadRegistry(false), loadSchedules(false)]);
+  } catch (error) {
+    lifecycle.error = error.message || "Failed to migrate Provider Connection references.";
+    if (error.body?.report) lifecycle.report = error.body.report;
+  } finally {
+    lifecycle.migrating = false;
+    render();
+  }
+}
+
+async function deleteProviderConnectionPermanently() {
+  const connectionId = state.registryEditor.connection.connectionId;
+  const lifecycle = state.providerConnectionLifecycle;
+  if (!connectionId || !lifecycle.confirmDelete) return;
+  lifecycle.deleting = true;
+  lifecycle.error = null;
+  render();
+  try {
+    await request(`/api/registry/provider-connections/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE",
+    });
+    state.notice = `Deleted Provider Connection ${connectionId} and its managed credential.`;
+    state.ui.providerConnectionModalOpen = false;
+    state.providerConnectionLifecycle = emptyProviderConnectionLifecycle();
+    state.registryEditor.connection = emptyProviderConnectionEditor();
+    await loadRegistry(false);
+  } catch (error) {
+    lifecycle.error = error.message || "Failed to delete Provider Connection.";
+    if (error.body?.report) lifecycle.report = error.body.report;
+  } finally {
+    lifecycle.deleting = false;
     render();
   }
 }
@@ -13893,20 +14023,98 @@ function renderProviderConnectionManager() {
   `;
 }
 
+function providerReferenceKindLabel(kind) {
+  return {
+    agent: "Agent",
+    session: "Task",
+    schedule: "Schedule",
+    workflow_template: "Workflow",
+    agent_run: "Agent run",
+    agent_dag: "DAG run",
+    workflow_run: "Workflow run",
+  }[kind] || kind;
+}
+
+function renderProviderConnectionRemoval() {
+  const lifecycle = state.providerConnectionLifecycle;
+  const sourceId = state.registryEditor.connection.connectionId;
+  if (!lifecycle.open || state.registryEditor.connection.status !== "disabled") return "";
+  if (lifecycle.loading) {
+    return `<section class="provider-removal-panel" aria-live="polite"><div class="provider-removal-heading"><div><strong>Checking references</strong><span>Finding Agents, tasks, schedules, workflows, and running executions.</span></div><span class="badge neutral">Scanning</span></div></section>`;
+  }
+  const report = lifecycle.report;
+  if (!report) {
+    return `<section class="provider-removal-panel"><div class="provider-removal-heading"><div><strong>Connection removal</strong><span>${escapeHtml(lifecycle.error || "Reference information is unavailable.")}</span></div><button class="secondary compact-button" data-action="inspect-provider-connection-references">Retry</button></div></section>`;
+  }
+  const replacements = replacementProviderConnections(sourceId);
+  const target = replacements.find((item) => item.connection_id === lifecycle.targetConnectionId) || null;
+  const references = report.references || [];
+  const blockers = references.filter((item) => item.blocking);
+  const migratable = references.filter((item) => item.migratable);
+  const referenceRows = references.length
+    ? references.map((item) => `
+        <div class="provider-reference-row ${item.blocking ? "blocking" : "migratable"}">
+          <span class="badge ${item.blocking ? "danger" : "neutral"}">${escapeHtml(providerReferenceKindLabel(item.kind))}</span>
+          <span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span>
+          <small>${escapeHtml(item.status)}</small>
+        </div>
+      `).join("")
+    : `<div class="provider-reference-empty"><strong>No active references</strong><span>Historical run snapshots remain readable and do not block deletion.</span></div>`;
+  const migrationControls = migratable.length && !blockers.length
+    ? `<div class="provider-migration-controls">
+        <label>Replacement Connection
+          <select data-field="connectionRemoval.targetConnectionId">
+            <option value="">Select connection</option>
+            ${replacements.map((connection) => `<option value="${escapeHtml(connection.connection_id)}" ${connection.connection_id === lifecycle.targetConnectionId ? "selected" : ""}>${escapeHtml(connection.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label>Model
+          <select data-field="connectionRemoval.targetModel" ${target ? "" : "disabled"}>
+            ${(target?.models || []).map((model) => `<option value="${escapeHtml(model)}" ${model === lifecycle.targetModel ? "selected" : ""}>${escapeHtml(model)}</option>`).join("") || '<option value="">Select connection first</option>'}
+          </select>
+        </label>
+        <button class="primary" data-action="migrate-provider-connection-references" ${!target || !lifecycle.targetModel || lifecycle.migrating ? "disabled" : ""}>${lifecycle.migrating ? "Migrating..." : `Migrate ${migratable.length} reference${migratable.length === 1 ? "" : "s"}`}</button>
+      </div>`
+    : "";
+  const blockerMessage = blockers.length
+    ? `<div class="alert danger">${blockers.length} running execution${blockers.length === 1 ? " is" : "s are"} still using this Connection. Finish or cancel them before migration.</div>`
+    : "";
+  const deleteControls = report.can_delete
+    ? lifecycle.confirmDelete
+      ? `<div class="provider-delete-confirm"><span><strong>Delete permanently?</strong><small>The encrypted managed credential will also be removed. Historical evidence remains available.</small></span><button class="secondary" data-action="cancel-delete-provider-connection">Cancel</button><button class="secondary danger-action" data-action="confirm-delete-provider-connection" ${lifecycle.deleting ? "disabled" : ""}>${lifecycle.deleting ? "Deleting..." : "Delete permanently"}</button></div>`
+      : `<div class="provider-delete-ready"><span><strong>Ready to delete</strong><small>No future execution depends on this Connection.</small></span><button class="secondary danger-action" data-action="prepare-delete-provider-connection">Delete connection</button></div>`
+    : "";
+  return `
+    <section class="provider-removal-panel" aria-live="polite">
+      <div class="provider-removal-heading">
+        <div><strong>Connection removal</strong><span>${report.blocking_count} blocking / ${report.migratable_count} migratable / ${report.historical_count} historical</span></div>
+        <button class="secondary compact-button" data-action="inspect-provider-connection-references">Refresh</button>
+      </div>
+      ${lifecycle.error ? `<div class="alert danger">${escapeHtml(lifecycle.error)}</div>` : ""}
+      ${blockerMessage}
+      <div class="provider-reference-list">${referenceRows}</div>
+      ${migrationControls}
+      ${!replacements.length && migratable.length && !blockers.length ? '<div class="alert warn">Create and verify another Connection before migrating these references.</div>' : ""}
+      ${deleteControls}
+    </section>
+  `;
+}
+
 function renderProviderConnectionModal() {
   if (!state.ui.providerConnectionModalOpen) return "";
   const editor = state.registryEditor.connection;
   const credentialOptions = PROVIDER_CREDENTIAL_ENVS[editor.agentRuntime] || [];
   const runtimeDefaults = PROVIDER_DEFAULTS[editor.agentRuntime] || {};
+  const presetDefaults = PROVIDER_PRESETS[editor.preset] || PROVIDER_PRESETS.custom;
   const credentialStatus = editor.credentialSource === "environment"
     ? editor.credentialConfigured ? "Environment key detected" : "Environment key not detected"
     : editor.credentialConfigured ? "API key saved" : "API key required";
-  const endpointRequired = editor.agentRuntime === "glm" || editor.preset === "custom";
+  const endpointRequired = editor.agentRuntime === "glm" || editor.agentRuntime === "kimi" || editor.preset === "custom";
   const savedConnection = state.providerConnections.find(
     (connection) => connection.connection_id === editor.connectionId,
   );
   const verification = savedConnection?.verification || null;
-  const testing = state.providerConnectionTestingId === editor.connectionId;
+  const testing = Boolean(editor.connectionId) && state.providerConnectionTestingId === editor.connectionId;
   const testDisabled = editor.mode !== "edit" || editor.status !== "active" || !editor.credentialConfigured || testing || state.registrySaving;
   return `
     <div class="provider-modal-backdrop">
@@ -13927,7 +14135,7 @@ function renderProviderConnectionModal() {
                 ${Object.entries(PROVIDER_PRESETS).map(([id, preset]) => `<option value="${id}" ${editor.preset === id ? "selected" : ""}>${escapeHtml(preset.label)}</option>`).join("")}
               </select>
             </label>
-            <label>Endpoint${endpointRequired ? "" : " (optional)"}<input value="${escapeHtml(editor.baseUrl)}" data-field="connection.baseUrl" placeholder="${escapeHtml(runtimeDefaults.endpointPlaceholder || "https://provider.example/v1")}" /></label>
+            <label>Endpoint${endpointRequired ? "" : " (optional)"}<input value="${escapeHtml(editor.baseUrl)}" data-field="connection.baseUrl" placeholder="${escapeHtml(presetDefaults.baseUrl || runtimeDefaults.endpointPlaceholder || "https://provider.example/v1")}" /></label>
             ${editor.credentialSource === "managed" ? `
               <label class="span-2">API key
                 <input type="password" value="${escapeHtml(editor.apiKey)}" data-field="connection.apiKey" placeholder="${editor.credentialConfigured ? "Saved key (leave blank to keep)" : "Enter API key"}" autocomplete="new-password" />
@@ -13992,10 +14200,12 @@ function renderProviderConnectionModal() {
               ${verification ? `<small>${escapeHtml(verification.model || "Default model")} / ${verification.duration_ms} ms / ${escapeHtml(formatWorkspaceTimestamp(verification.tested_at))}</small>` : `<small>Testing may consume a small amount of Provider quota.</small>`}
             </div>
           </div>
+          ${renderProviderConnectionRemoval()}
         </div>
         <footer class="provider-modal-footer">
           <div>
-            ${editor.mode === "edit" ? `<button class="secondary danger-action" data-action="disable-provider-connection" ${state.registryDisabling || editor.status === "disabled" ? "disabled" : ""}>Disable</button>` : ""}
+            ${editor.mode === "edit" && editor.status === "active" ? `<button class="secondary danger-action" data-action="disable-provider-connection" ${state.registryDisabling ? "disabled" : ""}>${state.registryDisabling ? "Disabling..." : "Disable"}</button>` : ""}
+            ${editor.mode === "edit" && editor.status === "disabled" ? `<button class="secondary danger-action" data-action="inspect-provider-connection-references" ${state.providerConnectionLifecycle.loading ? "disabled" : ""}>Review removal</button>` : ""}
             <button class="secondary" data-action="test-provider-connection" ${testDisabled ? "disabled" : ""}>${testing ? "Testing..." : "Test connection"}</button>
           </div>
           <div>
@@ -14103,8 +14313,8 @@ function renderStudioSetupModal() {
               <label>Model
                 <input value="${escapeHtml(selectedModel)}" data-field="setup.model" placeholder="${escapeHtml(defaults.modelPlaceholder || "model id")}" />
               </label>
-              <label class="span-2">Endpoint${editor.agentRuntime === "glm" || editor.preset === "custom" ? "" : " (optional)"}
-                <input value="${escapeHtml(editor.baseUrl)}" data-field="connection.baseUrl" placeholder="${escapeHtml(defaults.endpointPlaceholder || "https://provider.example/v1")}" />
+              <label class="span-2">Endpoint${editor.agentRuntime === "glm" || editor.agentRuntime === "kimi" || editor.preset === "custom" ? "" : " (optional)"}
+                <input value="${escapeHtml(editor.baseUrl)}" data-field="connection.baseUrl" placeholder="${escapeHtml(preset.baseUrl || defaults.endpointPlaceholder || "https://provider.example/v1")}" />
               </label>
               ${editor.credentialSource === "managed" ? `
                 <label class="span-2">API key
@@ -19339,6 +19549,17 @@ function handleChange(target) {
     if (key === "transport") render();
     return;
   }
+  if (field === "connectionRemoval.targetConnectionId") {
+    syncProviderConnectionMigrationTarget(value);
+    state.providerConnectionLifecycle.confirmDelete = false;
+    render();
+    return;
+  }
+  if (field === "connectionRemoval.targetModel") {
+    state.providerConnectionLifecycle.targetModel = value;
+    state.providerConnectionLifecycle.confirmDelete = false;
+    return;
+  }
   if (field === "connection.connectionId") {
     updateProviderConnectionEditor({ connectionId: slugify(value) });
   }
@@ -19353,7 +19574,7 @@ function handleChange(target) {
       agentRuntime: preset.runtime,
       provider: preset.provider,
       protocol: preset.protocol,
-      baseUrl: "",
+      baseUrl: preset.baseUrl || "",
       models: [model],
       defaultModel: model,
       credentialEnv: defaults.credentialEnv || "",
@@ -20362,6 +20583,7 @@ document.addEventListener("click", (event) => {
   if (action === "new-provider-connection") {
     state.ui.registrySection = "connections";
     state.registryEditor.connection = emptyProviderConnectionEditor();
+    state.providerConnectionLifecycle = emptyProviderConnectionLifecycle();
     state.ui.providerConnectionModalOpen = true;
     state.error = null;
     render();
@@ -20397,6 +20619,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "close-provider-connection-modal") {
     state.ui.providerConnectionModalOpen = false;
+    state.providerConnectionLifecycle = emptyProviderConnectionLifecycle();
     state.error = null;
     render();
   }
@@ -20428,6 +20651,7 @@ document.addEventListener("click", (event) => {
     if (connection) {
       state.ui.registrySection = "connections";
       state.registryEditor.connection = editorFromProviderConnection(connection);
+      state.providerConnectionLifecycle = emptyProviderConnectionLifecycle();
       state.ui.providerConnectionModalOpen = true;
       state.error = null;
       render();
@@ -20444,6 +20668,17 @@ document.addEventListener("click", (event) => {
   if (action === "save-provider-connection") void saveProviderConnection();
   if (action === "test-provider-connection") void testProviderConnection();
   if (action === "disable-provider-connection") void disableProviderConnection();
+  if (action === "inspect-provider-connection-references") void loadProviderConnectionReferences();
+  if (action === "migrate-provider-connection-references") void migrateProviderConnectionReferences();
+  if (action === "prepare-delete-provider-connection") {
+    state.providerConnectionLifecycle.confirmDelete = true;
+    render();
+  }
+  if (action === "cancel-delete-provider-connection") {
+    state.providerConnectionLifecycle.confirmDelete = false;
+    render();
+  }
+  if (action === "confirm-delete-provider-connection") void deleteProviderConnectionPermanently();
   if (action === "save-skill") void saveSkill();
   if (action === "disable-skill") void disableSkill();
   if (action === "reload-skill-packages") void reloadSkillPackages();
@@ -20909,6 +21144,7 @@ document.addEventListener("keydown", (event) => {
   if (key === "Escape" && state.ui.providerConnectionModalOpen) {
     event.preventDefault();
     state.ui.providerConnectionModalOpen = false;
+    state.providerConnectionLifecycle = emptyProviderConnectionLifecycle();
     state.error = null;
     render();
     return;

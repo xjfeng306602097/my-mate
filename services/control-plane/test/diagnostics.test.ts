@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runDoctor } from "../src/diagnostics/doctor-service.js";
+import { runLiveProviderProbe } from "../src/diagnostics/provider-probe.js";
 import type {
   DoctorCommandRunner,
   DoctorRuntimeStatus,
@@ -269,6 +270,42 @@ test("doctor GLM live probe uses the Anthropic-compatible messages endpoint", as
   assert.equal((requests[0]?.init.headers as Record<string, string>)["x-api-key"], "glm-secret-value");
   assert.match(String(requests[0]?.init.body), /"model":"glm-5.2"/);
   assert.equal(JSON.stringify(report).includes("glm-secret-value"), false);
+});
+
+test("Kimi live probe accepts an official base URL that already includes v1", async () => {
+  const requests: string[] = [];
+  await runLiveProviderProbe({
+    runtime: "kimi",
+    env: {
+      KIMI_API_KEY: "kimi-secret-value",
+      KIMI_BASE_URL: "https://api.moonshot.cn/v1/",
+      MY_MATE_KIMI_MODEL: "kimi-k3",
+    },
+    fetchImpl: (async (input) => {
+      requests.push(String(input));
+      return Response.json({ data: [{ id: "kimi-k3" }] });
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(requests, ["https://api.moonshot.cn/v1/models"]);
+});
+
+test("Kimi live probe supports the Kimi Coding endpoint and validates its model id", async () => {
+  const requests: string[] = [];
+  await runLiveProviderProbe({
+    runtime: "kimi",
+    env: {
+      MOONSHOT_API_KEY: "kimi-coding-secret-value",
+      KIMI_BASE_URL: "https://api.kimi.com/coding/v1",
+      MY_MATE_KIMI_MODEL: "k3",
+    },
+    fetchImpl: (async (input) => {
+      requests.push(String(input));
+      return Response.json({ data: [{ id: "k3" }, { id: "kimi-for-coding" }] });
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(requests, ["https://api.kimi.com/coding/v1/models"]);
 });
 
 test("doctor recognizes the GLM Agent Harness and Anthropic-compatible endpoint", async () => {

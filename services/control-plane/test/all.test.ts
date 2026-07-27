@@ -26,6 +26,7 @@ import "./scorecard.test.ts";
 import "./worker-evidence-v2.test.ts";
 import "./provider-evidence.test.ts";
 import "./provider-secret-store.test.ts";
+import "./provider-connection-lifecycle.test.ts";
 import "./evaluation.test.ts";
 import "./trace-replay.test.ts";
 import "./evaluation-live.test.ts";

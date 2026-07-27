@@ -2021,6 +2021,21 @@ async function startUpstreamServer() {
     res.json({ connection_id: "glm-primary", agent_runtime: "glm", status: "disabled", credential_configured: true });
   });
 
+  app.get("/api/registry/provider-connections/glm-primary/references", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ connection_id: "glm-primary", references: [], blocking_count: 0, migratable_count: 0, historical_count: 0, can_delete: true });
+  });
+
+  app.post("/api/registry/provider-connections/glm-primary/migrate", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: req.body, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ source_connection_id: "glm-primary", target_connection_id: req.body.target_connection_id, target_model: req.body.target_model });
+  });
+
+  app.delete("/api/registry/provider-connections/glm-primary", (req, res) => {
+    requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
+    res.json({ connection_id: "glm-primary", deleted: true, credential_deleted: true });
+  });
+
   app.get("/api/registry/mcp-connector-presets", (req, res) => {
     requests.push({ method: req.method, path: req.path, body: null, gatewayHeader: req.header("x-my-mate-gateway") });
     res.json({ items: [{ preset_id: "github", name: "GitHub", transport: "streamable-http" }] });
@@ -3441,23 +3456,46 @@ test("proxies Provider Connection lifecycle routes", async () => {
       `${server.baseUrl}/api/registry/provider-connections/glm-primary/disable`,
       {},
     );
+    const references = await getJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-primary/references`,
+    );
+    const migrated = await postJson(
+      `${server.baseUrl}/api/registry/provider-connections/glm-primary/migrate`,
+      { target_connection_id: "glm-secondary", target_model: "glm-5.2-air" },
+    );
+    const deletedResponse = await fetch(
+      `${server.baseUrl}/api/registry/provider-connections/glm-primary`,
+      { method: "DELETE" },
+    );
+    const deleted = await deletedResponse.json();
 
     assert.equal(listed.status, 200);
     assert.equal(saved.status, 201);
     assert.equal(loaded.body.connection_id, "glm-primary");
     assert.equal(tested.body.verification.status, "verified");
     assert.equal(disabled.body.status, "disabled");
+    assert.equal(references.body.can_delete, true);
+    assert.equal(migrated.body.target_connection_id, "glm-secondary");
+    assert.equal(deletedResponse.status, 200);
+    assert.equal(deleted.deleted, true);
     assert.deepEqual(
-      upstream.requests.slice(-5).map((request) => `${request.method} ${request.path}`),
+      upstream.requests.slice(-8).map((request) => `${request.method} ${request.path}`),
       [
         "GET /api/registry/provider-connections",
         "POST /api/registry/provider-connections",
         "GET /api/registry/provider-connections/glm-primary",
         "POST /api/registry/provider-connections/glm-primary/test",
         "POST /api/registry/provider-connections/glm-primary/disable",
+        "GET /api/registry/provider-connections/glm-primary/references",
+        "POST /api/registry/provider-connections/glm-primary/migrate",
+        "DELETE /api/registry/provider-connections/glm-primary",
       ],
     );
-    assert.deepEqual(upstream.requests.at(-4)?.body, payload);
+    assert.deepEqual(upstream.requests.at(-7)?.body, payload);
+    assert.deepEqual(upstream.requests.at(-2)?.body, {
+      target_connection_id: "glm-secondary",
+      target_model: "glm-5.2-air",
+    });
   } finally {
     await server.close();
     await upstream.close();

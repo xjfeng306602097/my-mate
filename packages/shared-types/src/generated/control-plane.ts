@@ -2808,7 +2808,38 @@ export type paths = {
         };
         readonly put?: never;
         readonly post?: never;
-        readonly delete?: never;
+        /** Permanently delete a disabled Provider Connection without active references */
+        readonly delete: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly connectionId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Provider Connection and its managed credential were deleted */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["DeleteProviderConnectionResult"];
+                    };
+                };
+                /** @description Connection is active or still has references */
+                readonly 409: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         readonly options?: never;
         readonly head?: never;
         readonly patch?: never;
@@ -2846,6 +2877,95 @@ export type paths = {
                 };
             };
         };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/registry/provider-connections/{connectionId}/migrate": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Atomically migrate active bindings from a disabled Provider Connection */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly connectionId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": components["schemas"]["MigrateProviderConnectionRequest"];
+                };
+            };
+            readonly responses: {
+                /** @description Active Provider Connection references migrated */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["ProviderConnectionMigrationResult"];
+                    };
+                };
+                /** @description Running work blocks migration or the replacement is unavailable */
+                readonly 409: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/registry/provider-connections/{connectionId}/references": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Inspect active, blocking, and historical references before removing a Provider Connection */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly connectionId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Provider Connection reference report */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["ProviderConnectionReferenceReport"];
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -6839,6 +6959,11 @@ export type components = {
                 readonly [key: string]: unknown;
             };
         };
+        readonly DeleteProviderConnectionResult: {
+            readonly connection_id: string;
+            readonly credential_deleted: boolean;
+            readonly deleted: boolean;
+        };
         readonly DeriveTemplateRequest: {
             readonly description?: string;
             readonly metadata?: Record<string, never>;
@@ -8024,6 +8149,10 @@ export type components = {
             /** Format: date-time */
             readonly valid_until?: string | null;
         };
+        readonly MigrateProviderConnectionRequest: {
+            readonly target_connection_id: string;
+            readonly target_model?: string;
+        };
         readonly MissionMaterializerConsistencyReport: {
             readonly checkpoint_sequence: number | null;
             readonly differing_sections: readonly ("missionSpec" | "missionSpecContract" | "missionSnapshot")[];
@@ -8369,6 +8498,37 @@ export type components = {
                 /** Format: date-time */
                 readonly tested_at: string;
             } | null;
+            readonly workspace_id: string;
+        };
+        readonly ProviderConnectionMigrationResult: {
+            readonly migrated_agents: number;
+            readonly migrated_schedules: number;
+            readonly migrated_sessions: number;
+            readonly migrated_workflow_templates: number;
+            readonly remaining: components["schemas"]["ProviderConnectionReferenceReport"];
+            readonly source_connection_id: string;
+            readonly target_connection_id: string;
+            readonly target_model: string;
+        };
+        readonly ProviderConnectionReference: {
+            readonly blocking: boolean;
+            readonly detail: string;
+            /** @enum {string} */
+            readonly kind: "agent" | "session" | "schedule" | "workflow_template" | "agent_run" | "agent_dag" | "workflow_run";
+            readonly label: string;
+            readonly migratable: boolean;
+            readonly reference_id: string;
+            readonly status: string;
+        };
+        readonly ProviderConnectionReferenceReport: {
+            readonly blocking_count: number;
+            readonly can_delete: boolean;
+            readonly connection_id: string;
+            /** @enum {string} */
+            readonly connection_status: "active" | "disabled";
+            readonly historical_count: number;
+            readonly migratable_count: number;
+            readonly references: readonly components["schemas"]["ProviderConnectionReference"][];
             readonly workspace_id: string;
         };
         readonly PublicWorkspaceBinding: {
@@ -9491,6 +9651,7 @@ export type SchemaDashboardObservabilityComparison = components['schemas']['Dash
 export type SchemaDashboardObservabilityQuery = components['schemas']['DashboardObservabilityQuery'];
 export type SchemaDashboardObservabilityRetention = components['schemas']['DashboardObservabilityRetention'];
 export type SchemaDashboardSummaryResponse = components['schemas']['DashboardSummaryResponse'];
+export type SchemaDeleteProviderConnectionResult = components['schemas']['DeleteProviderConnectionResult'];
 export type SchemaDeriveTemplateRequest = components['schemas']['DeriveTemplateRequest'];
 export type SchemaDoctorCheck = components['schemas']['DoctorCheck'];
 export type SchemaDoctorReport = components['schemas']['DoctorReport'];
@@ -9578,6 +9739,7 @@ export type SchemaMemorySourceOrigin = components['schemas']['MemorySourceOrigin
 export type SchemaMemoryStatus = components['schemas']['MemoryStatus'];
 export type SchemaMemorySyncRun = components['schemas']['MemorySyncRun'];
 export type SchemaMemoryWriteFields = components['schemas']['MemoryWriteFields'];
+export type SchemaMigrateProviderConnectionRequest = components['schemas']['MigrateProviderConnectionRequest'];
 export type SchemaMissionMaterializerConsistencyReport = components['schemas']['MissionMaterializerConsistencyReport'];
 export type SchemaMissionMaterializerRebuildResponse = components['schemas']['MissionMaterializerRebuildResponse'];
 export type SchemaMissionMaterializerStatus = components['schemas']['MissionMaterializerStatus'];
@@ -9604,6 +9766,9 @@ export type SchemaPlannerTemplateSelectionRequest = components['schemas']['Plann
 export type SchemaPlannerTemplateSelectionResponse = components['schemas']['PlannerTemplateSelectionResponse'];
 export type SchemaPlannerValidationResult = components['schemas']['PlannerValidationResult'];
 export type SchemaProviderConnection = components['schemas']['ProviderConnection'];
+export type SchemaProviderConnectionMigrationResult = components['schemas']['ProviderConnectionMigrationResult'];
+export type SchemaProviderConnectionReference = components['schemas']['ProviderConnectionReference'];
+export type SchemaProviderConnectionReferenceReport = components['schemas']['ProviderConnectionReferenceReport'];
 export type SchemaPublicWorkspaceBinding = components['schemas']['PublicWorkspaceBinding'];
 export type SchemaPublishTemplateResponse = components['schemas']['PublishTemplateResponse'];
 export type SchemaRegistryProvenance = components['schemas']['RegistryProvenance'];
