@@ -38,6 +38,7 @@ tmp/
 tmp-*
 .tmp-*
 .debug-*.png
+output/
 
 # JavaScript / TypeScript build output
 dist/
@@ -72,6 +73,8 @@ apps/studio/tmp/
 apps/studio/dev.out.log
 apps/studio/dev.err.log
 apps/studio/studio-visual-check.png
+apps/desktop/runtime/
+apps/desktop/release/
 
 # Local runtime persistence
 services/execution-adapter/data/
@@ -130,6 +133,9 @@ services/control-plane/data/memory-conflicts/
 services/control-plane/data/memory-external-sources/
 services/control-plane/data/memory-external-bindings/
 services/control-plane/data/memory-sync-runs/
+services/control-plane/data/skill-packages/
+services/control-plane/data/skill-invocations/
+services/control-plane/data/skill-host/
 services/control-plane/data/mission-materializer-checkpoints/
 services/control-plane/data/mission-materializer-events/
 services/control-plane/data/mission-materializer-projections/
@@ -142,3 +148,36 @@ services/control-plane/data/workspace-bindings/
 services/control-plane/data/workspace-members/
 services/control-plane/data/workspaces/
 services/control-plane/data/agent-profiles/default-agent.json
+services/control-plane/data/_runtime/
+services/control-plane/data/agent-binding-snapshots/
+services/control-plane/data/agent-capability-plans/
+services/control-plane/data/agent-dag-gates/
+services/control-plane/data/agent-dag-leases/
+services/control-plane/data/agent-dags/
+services/control-plane/data/agent-definitions/
+services/control-plane/data/agent-messages/
+services/control-plane/data/agent-results/
+services/control-plane/data/agent-run-events/
+services/control-plane/data/agent-runs/
+services/control-plane/data/agent-tasks/
+services/control-plane/data/agent-teams/
+services/control-plane/data/agent-versions/
+services/control-plane/data/conversation-coding-workspaces/
+services/control-plane/data/conversation-events/
+services/control-plane/data/execution-shape-decisions/
+services/control-plane/data/interview-decisions/
+services/control-plane/data/memory-candidates/
+services/control-plane/data/memory-tier-state/
+services/control-plane/data/mission-deltas/
+services/control-plane/data/mission-interviews/
+services/control-plane/data/mission-spec-revisions/
+services/control-plane/data/model-deployments/
+services/control-plane/data/notifications/
+services/control-plane/data/provider-definitions/
+services/control-plane/data/runtime-workspace-change-sets/
+services/control-plane/data/runtime-workspace-file-projections/
+services/control-plane/data/skill-platform/
+services/control-plane/data/user-schedule-runs/
+# E2E residue in the tracked template seed directory
+services/control-plane/data/templates/*-e2e*.json
+services/control-plane/data/templates/*-1785*.json
