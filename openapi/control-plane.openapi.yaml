@@ -25,6 +25,9 @@ tags:
   - name: Workspaces
   - name: Governance
   - name: Memory
+  - name: SkillHost
+  - name: Schedules
+  - name: Notifications
   - name: InternalOps
 
 components:
@@ -41,7 +44,336 @@ components:
           type: string
         message:
           type: string
-      required: [code, message]
+        retryable:
+          type: boolean
+        severity:
+          type: string
+          enum: [info, warning, error, critical]
+        remediation:
+          type: string
+        domain:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+      required: [code, message, retryable, severity, remediation, domain]
+      additionalProperties: false
+    AgentRole:
+      type: string
+      enum: [orchestrator, supervisor, worker, reviewer, specialist]
+    AutonomyMode:
+      type: string
+      enum: [review_first, assisted, autopilot]
+    RunStatus:
+      type: string
+      enum: [draft, queued, running, waiting_human, paused, blocked, completed, failed, cancelled]
+    NodeStatus:
+      type: string
+      enum: [pending, ready, running, waiting_human, completed, failed, skipped, cancelled]
+    SessionStatus:
+      type: string
+      enum: [draft, planning, ready_to_run, running, waiting_human, completed, failed, cancelled]
+    AgentRunStatus:
+      type: string
+      enum: [queued, running, waiting_human, completed, failed, cancelled]
+    AgentDagStatus:
+      type: string
+      enum: [draft, ready, running, waiting_human, completed, failed, cancelled]
+    AgentTaskStatus:
+      type: string
+      enum: [queued, accepted, running, blocked, completed, skipped, failed, cancelled]
+    AgentBindingSnapshot:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 2 }
+        binding_id: { type: string }
+        binding_mode: { type: string, enum: [pinned, follow_latest] }
+        agent_id: { type: string }
+        agent_version: { type: integer, minimum: 1 }
+        agent_name: { type: string }
+        agent_role: { $ref: "#/components/schemas/AgentRole" }
+        responsibility: { type: string }
+        provider_id: { type: string }
+        provider_connection_id: { type: string }
+        connection_revision: { type: string }
+        model_deployment_id: { type: string }
+        model: { type: string }
+        model_routing_policy: { type: object, additionalProperties: true }
+        system_prompt: { type: string }
+        tool_policy: { type: object, additionalProperties: true }
+        skill_policy: { type: object, additionalProperties: true }
+        capability_policy: { type: object, additionalProperties: true }
+        memory_policy: { type: object, additionalProperties: true }
+        context_policy: { type: object, additionalProperties: true }
+        runtime_policy: { type: object, additionalProperties: true }
+        workspace_policy: { type: object, additionalProperties: true }
+        autonomy_ceiling: { $ref: "#/components/schemas/AutonomyMode" }
+        artifact_policy: { type: object, additionalProperties: true }
+        delivery_policy: { type: object, additionalProperties: true }
+        snapshot_digest: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, binding_id, binding_mode, agent_id, agent_version, agent_name, agent_role, provider_id, provider_connection_id, connection_revision, model_deployment_id, model, system_prompt, tool_policy, skill_policy, memory_policy, context_policy, runtime_policy, workspace_policy, autonomy_ceiling, artifact_policy, delivery_policy, snapshot_digest, created_at]
+      additionalProperties: false
+    AgentDefinition:
+      type: object
+      properties:
+        agent_id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        latest_version: { type: integer, minimum: 1 }
+        published_version: { type: [integer, "null"] }
+        status: { type: string, enum: [active, disabled] }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [agent_id, workspace_id, name, description, latest_version, published_version, status, metadata, created_at, updated_at]
+    AgentVersion:
+      type: object
+      properties:
+        agent_id: { type: string }
+        workspace_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        status: { type: string, enum: [draft, published, retired] }
+        role: { $ref: "#/components/schemas/AgentRole" }
+        system_prompt: { type: string }
+        model_policy: { type: object, additionalProperties: true }
+        tool_policy: { type: object, additionalProperties: true }
+        skill_policy: { type: object, additionalProperties: true }
+        memory_policy: { type: object, additionalProperties: true }
+        context_policy: { type: object, additionalProperties: true }
+        runtime_policy: { type: object, additionalProperties: true }
+        workspace_policy: { type: object, additionalProperties: true }
+        autonomy_ceiling: { type: string, enum: [review_first, assisted, autopilot] }
+      required: [agent_id, workspace_id, version, status, role, system_prompt, model_policy, tool_policy, skill_policy, memory_policy, context_policy, runtime_policy, workspace_policy, autonomy_ceiling]
+      additionalProperties: true
+    AgentRun:
+      type: object
+      properties:
+        agent_run_id: { type: string }
+        workspace_id: { type: string }
+        kind: { type: string, enum: [conversation, workflow_node, schedule, continuation, delegation, review] }
+        status: { $ref: "#/components/schemas/AgentRunStatus" }
+        binding_snapshot: { $ref: "#/components/schemas/AgentBindingSnapshot" }
+        session_id: { type: [string, "null"] }
+        workflow_run_id: { type: [string, "null"] }
+        node_run_id: { type: [string, "null"] }
+        parent_agent_run_id: { type: [string, "null"] }
+        attempt: { type: integer, minimum: 1 }
+      required: [agent_run_id, workspace_id, kind, status, binding_snapshot, session_id, workflow_run_id, node_run_id, parent_agent_run_id, attempt]
+      additionalProperties: true
+    AgentRunEvent:
+      type: object
+      properties:
+        event_id: { type: string }
+        workspace_id: { type: string }
+        dag_id: { type: string }
+        node_id: { type: string }
+        task_id: { type: string }
+        agent_run_id: { type: string }
+        child_session_id: { type: [string, "null"] }
+        sequence: { type: integer, minimum: 1 }
+        type:
+          type: string
+          enum: [task.assigned, agent.started, agent.progress, agent.message.delta, agent.message.completed, tool.started, tool.waiting_approval, tool.completed, tool.failed, checkpoint.saved, artifact.created, handoff.returned, agent.completed, agent.failed, agent.cancelled]
+        status: { type: string, enum: [info, running, waiting, succeeded, failed, cancelled] }
+        summary: { type: string }
+        payload: { type: object, additionalProperties: true }
+        idempotency_key: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+      required: [event_id, workspace_id, dag_id, node_id, task_id, agent_run_id, child_session_id, sequence, type, status, summary, payload, idempotency_key, created_at]
+      additionalProperties: false
+    AgentTeam:
+      type: object
+      properties:
+        team_id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        orchestrator_member_id: { type: string }
+        reviewer_member_ids: { type: array, items: { type: string } }
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              member_id: { type: string }
+              agent_id: { type: string }
+              agent_version: { type: [integer, "null"] }
+              role: { $ref: "#/components/schemas/AgentRole" }
+              capability_tags: { type: array, items: { type: string } }
+              required: { type: boolean }
+            required: [member_id, agent_id, agent_version, role, capability_tags, required]
+        policy: { type: object, additionalProperties: true }
+        status: { type: string, enum: [active, disabled] }
+      required: [team_id, workspace_id, name, description, orchestrator_member_id, reviewer_member_ids, members, policy, status]
+      additionalProperties: true
+    AgentDag:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        dag_id: { type: string }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        team_id: { type: [string, "null"] }
+        title: { type: string }
+        objective: { type: string }
+        status: { $ref: "#/components/schemas/AgentDagStatus" }
+        orchestrator_binding: { $ref: "#/components/schemas/AgentBindingSnapshot" }
+        parent_dag_id: { type: [string, "null"] }
+        delegation_depth: { type: integer, minimum: 0 }
+        nodes: { type: array, items: { type: object, additionalProperties: true } }
+        state_schema: { type: object, additionalProperties: true }
+        state: { type: object, additionalProperties: true }
+        state_revision: { type: integer, minimum: 0 }
+        policy: { type: object, additionalProperties: true }
+        budget_usage: { type: object, additionalProperties: true }
+        revision: { type: integer, minimum: 1 }
+      required: [schema_version, dag_id, workspace_id, session_id, team_id, title, objective, status, orchestrator_binding, parent_dag_id, delegation_depth, nodes, state_schema, state, state_revision, policy, budget_usage, revision]
+      additionalProperties: true
+    AgentTask:
+      type: object
+      properties:
+        task_id: { type: string }
+        workspace_id: { type: string }
+        dag_id: { type: string }
+        node_id: { type: string }
+        parent_task_id: { type: [string, "null"] }
+        depth: { type: integer, minimum: 0 }
+        status: { $ref: "#/components/schemas/AgentTaskStatus" }
+        title: { type: string }
+        objective: { type: string }
+        binding_snapshot: { $ref: "#/components/schemas/AgentBindingSnapshot" }
+        permission_ceiling: { type: object, additionalProperties: true }
+        budget: { type: object, additionalProperties: true }
+        assigned_agent_run_id: { type: [string, "null"] }
+      required: [task_id, workspace_id, dag_id, node_id, parent_task_id, depth, status, title, objective, binding_snapshot, permission_ceiling, budget, assigned_agent_run_id]
+      additionalProperties: true
+    AgentMessage:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        message_id: { type: string }
+        message_type: { type: string, enum: [task.request, task.accepted, task.progress, task.blocked, artifact.published, task.result, task.failed, task.cancel, task.steer, gate.requested, gate.resolved, agent.heartbeat] }
+        workspace_id: { type: string }
+        dag_id: { type: string }
+        task_id: { type: string }
+        from_agent_run_id: { type: [string, "null"] }
+        to_agent_run_id: { type: [string, "null"] }
+        correlation_id: { type: string }
+        causation_id: { type: [string, "null"] }
+        idempotency_key: { type: string }
+        payload: { type: object, additionalProperties: true }
+        artifact_refs: { type: array, items: { type: object, additionalProperties: true } }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, message_id, message_type, workspace_id, dag_id, task_id, from_agent_run_id, to_agent_run_id, correlation_id, causation_id, idempotency_key, payload, artifact_refs, created_at]
+    AgentDagGate:
+      type: object
+      properties:
+        gate_id: { type: string }
+        workspace_id: { type: string }
+        dag_id: { type: string }
+        node_id: { type: string }
+        task_id: { type: string }
+        gate_type: { type: string, enum: [approval, input] }
+        status: { type: string, enum: [pending, approved, rejected, submitted, cancelled] }
+        prompt: { type: string }
+        input_schema: { type: object, additionalProperties: true }
+        response: { type: [object, "null"], additionalProperties: true }
+        auto_resume: { type: boolean }
+        created_at: { type: string, format: date-time }
+        resolved_at: { type: [string, "null"], format: date-time }
+        resolved_by: { type: [string, "null"] }
+      required: [gate_id, workspace_id, dag_id, node_id, task_id, gate_type, status, prompt, input_schema, response, auto_resume, created_at, resolved_at, resolved_by]
+      additionalProperties: false
+    ScheduleRecurrence:
+      oneOf:
+        - type: object
+          properties:
+            kind: { type: string, const: once }
+            run_at: { type: string, format: date-time }
+          required: [kind, run_at]
+        - type: object
+          properties:
+            kind: { type: string, const: interval }
+            interval_minutes: { type: integer, minimum: 1, maximum: 525600 }
+          required: [kind, interval_minutes]
+        - type: object
+          properties:
+            kind: { type: string, const: cron }
+            expression: { type: string }
+          required: [kind, expression]
+    UserSchedule:
+      type: object
+      properties:
+        schedule_id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        prompt: { type: string }
+        task_mode: { type: string, enum: [new_task, resume_task] }
+        session_id: { type: [string, "null"] }
+        task_title: { type: [string, "null"] }
+        autonomy_mode: { $ref: "#/components/schemas/AutonomyMode" }
+        provider_connection_id: { type: [string, "null"] }
+        model: { type: [string, "null"] }
+        timezone: { type: string }
+        recurrence: { $ref: "#/components/schemas/ScheduleRecurrence" }
+        enabled: { type: boolean }
+        next_run_at: { type: [string, "null"], format: date-time }
+        last_run_at: { type: [string, "null"], format: date-time }
+        last_run_status: { type: [string, "null"], enum: [running, completed, waiting_human, failed, null] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [schedule_id, workspace_id, name, prompt, task_mode, session_id, task_title, autonomy_mode, provider_connection_id, model, timezone, recurrence, enabled, next_run_at, last_run_at, last_run_status, created_by, created_at, updated_at]
+    UserScheduleRequest:
+      type: object
+      properties:
+        name: { type: string }
+        prompt: { type: string }
+        task_mode: { type: string, enum: [new_task, resume_task] }
+        session_id: { type: [string, "null"] }
+        task_title: { type: [string, "null"] }
+        autonomy_mode: { type: string, enum: [review_first, assisted, autopilot] }
+        provider_connection_id: { type: [string, "null"] }
+        model: { type: [string, "null"] }
+        timezone: { type: string }
+        recurrence: { $ref: "#/components/schemas/ScheduleRecurrence" }
+        enabled: { type: boolean }
+      required: [name, prompt, timezone, recurrence]
+    UserScheduleRun:
+      type: object
+      properties:
+        run_id: { type: string }
+        schedule_id: { type: string }
+        workspace_id: { type: string }
+        scheduled_for: { type: string, format: date-time }
+        status: { type: string, enum: [running, completed, waiting_human, failed] }
+        session_id: { type: [string, "null"] }
+        assistant_message_id: { type: [string, "null"] }
+        error_code: { type: [string, "null"] }
+        error_message: { type: [string, "null"] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+      required: [run_id, schedule_id, workspace_id, scheduled_for, status, session_id, assistant_message_id, error_code, error_message, started_at, finished_at]
+    Notification:
+      type: object
+      properties:
+        notification_id: { type: string }
+        workspace_id: { type: string }
+        kind: { type: string, enum: [schedule_completed, schedule_failed, approval_required, human_input_required] }
+        title: { type: string }
+        body: { type: string }
+        severity: { type: string, enum: [info, success, warning, error] }
+        schedule_id: { type: [string, "null"] }
+        schedule_run_id: { type: [string, "null"] }
+        session_id: { type: [string, "null"] }
+        resource_type: { type: [string, "null"] }
+        resource_id: { type: [string, "null"] }
+        read_at: { type: [string, "null"], format: date-time }
+        dismissed_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+      required: [notification_id, workspace_id, kind, title, body, severity, schedule_id, schedule_run_id, session_id, resource_type, resource_id, read_at, dismissed_at, created_at]
     SessionGeneratedArtifact:
       type: object
       properties:
@@ -54,8 +386,10 @@ components:
         summary: { type: [string, "null"] }
         created_at: { type: string, format: date-time }
         source_attachment_id: { type: [string, "null"] }
+        artifact_family_id: { type: [string, "null"] }
+        has_previous_version: { type: boolean }
         version: { type: integer, minimum: 1 }
-      required: [artifact_id, session_id, name, storage_uri, mime_type, size_bytes, summary, created_at, source_attachment_id, version]
+      required: [artifact_id, session_id, name, storage_uri, mime_type, size_bytes, summary, created_at, source_attachment_id, artifact_family_id, has_previous_version, version]
     SessionGeneratedArtifactDiffLine:
       type: object
       properties:
@@ -1091,7 +1425,7 @@ components:
       enum: [in_progress, resumable, waiting_human, completed, failed, superseded]
     TaskCheckpointReason:
       type: string
-      enum: [turn_started, manual_resume, automatic_resume, context_compacted, continuation_limit, tool_round_limit, provider_interrupted, client_disconnected, server_restart, waiting_approval, waiting_input, turn_completed, resume_limit, new_user_turn, unrecoverable_error]
+      enum: [turn_started, manual_resume, automatic_resume, context_compacted, continuation_limit, tool_round_limit, completion_contract_incomplete, budget_limit, provider_interrupted, client_disconnected, server_restart, waiting_approval, waiting_input, turn_completed, resume_limit, new_user_turn, unrecoverable_error]
     TaskCheckpointTransition:
       type: object
       properties:
@@ -1109,12 +1443,54 @@ components:
         continuation_limit_reached: { type: boolean }
         context_compacted: { type: boolean }
         compaction_count: { type: integer, minimum: 0 }
+        in_loop_compaction_count: { type: integer, minimum: 0 }
+        context_snapshot_id: { type: [string, "null"] }
+        context_pressure_peak_tokens: { type: integer, minimum: 0 }
+        pruned_tool_result_count: { type: integer, minimum: 0 }
+        repeated_tool_call_limit_reached: { type: boolean }
         tool_rounds: { type: integer, minimum: 0 }
         tool_round_limit_reached: { type: boolean }
         action_ids:
           type: array
           items: { type: string }
-      required: [finish_reason, continuation_rounds, continuation_limit_reached, context_compacted, compaction_count, tool_rounds, tool_round_limit_reached, action_ids]
+        completion_contract:
+          type: object
+          properties:
+            status: { type: string, enum: [satisfied, incomplete, blocked] }
+            reason: { type: string }
+            successful_action_ids:
+              type: array
+              items: { type: string }
+            failed_action_ids:
+              type: array
+              items: { type: string }
+          required: [status, reason, successful_action_ids, failed_action_ids]
+      required: [finish_reason, continuation_rounds, continuation_limit_reached, context_compacted, compaction_count, in_loop_compaction_count, context_snapshot_id, context_pressure_peak_tokens, pruned_tool_result_count, repeated_tool_call_limit_reached, tool_rounds, tool_round_limit_reached, action_ids, completion_contract]
+    LongTaskRuntimeState:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        started_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        elapsed_ms: { type: integer, minimum: 0 }
+        turn_attempts: { type: integer, minimum: 1 }
+        resume_attempts: { type: integer, minimum: 0 }
+        cumulative_input_tokens: { type: integer, minimum: 0 }
+        cumulative_reported_input_tokens: { type: integer, minimum: 0 }
+        cumulative_estimated_input_tokens: { type: integer, minimum: 0 }
+        input_token_accounting: { type: string, enum: [reported, estimated, mixed, unavailable] }
+        cumulative_output_tokens: { type: integer, minimum: 0 }
+        cumulative_total_tokens: { type: integer, minimum: 0 }
+        max_wall_time_ms: { type: integer, minimum: 60000 }
+        max_turn_attempts: { type: integer, minimum: 1 }
+        max_total_tokens: { type: integer, minimum: 16384 }
+        cost_status: { type: string, enum: [unavailable, partial, complete] }
+        cumulative_costs:
+          type: object
+          additionalProperties: { type: string }
+        exhausted: { type: boolean }
+        exhausted_reason: { type: [string, "null"], enum: [wall_time, turn_attempts, total_tokens, null] }
+      required: [schema_version, started_at, updated_at, elapsed_ms, turn_attempts, resume_attempts, cumulative_input_tokens, cumulative_reported_input_tokens, cumulative_estimated_input_tokens, input_token_accounting, cumulative_output_tokens, cumulative_total_tokens, max_wall_time_ms, max_turn_attempts, max_total_tokens, cost_status, cumulative_costs, exhausted, exhausted_reason]
     TaskCheckpoint:
       type: object
       properties:
@@ -1140,6 +1516,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/TaskCheckpointProviderState"
             - type: "null"
+        long_task_runtime: { $ref: "#/components/schemas/LongTaskRuntimeState" }
         last_error_code: { type: [string, "null"] }
         last_error_message: { type: [string, "null"] }
         transitions:
@@ -1148,7 +1525,7 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         completed_at: { type: [string, "null"], format: date-time }
-      required: [schema_version, checkpoint_id, workspace_id, session_id, autonomy_mode, status, reason, version, goal, source_user_message_id, source_assistant_message_id, resume_from_checkpoint_id, resume_attempts, max_resume_attempts, auto_resume_eligible, progress_summary, context_summary, next_action, provider_state, last_error_code, last_error_message, transitions, created_at, updated_at, completed_at]
+      required: [schema_version, checkpoint_id, workspace_id, session_id, autonomy_mode, status, reason, version, goal, source_user_message_id, source_assistant_message_id, resume_from_checkpoint_id, resume_attempts, max_resume_attempts, auto_resume_eligible, progress_summary, context_summary, next_action, provider_state, long_task_runtime, last_error_code, last_error_message, transitions, created_at, updated_at, completed_at]
     TaskCheckpointListResponse:
       type: object
       properties:
@@ -1297,7 +1674,7 @@ components:
       enum: [advisory, enforced]
     GovernanceProtectedAction:
       type: string
-      enum: [agent_profile.upsert, agent_profile.disable, skill.upsert, skill.disable, template.publish, template.archive]
+      enum: [agent.upsert, agent.disable, skill.upsert, skill.disable, template.publish, template.archive]
     GovernanceChangeStatus:
       type: string
       enum: [pending, approved, rejected, applied, conflicted]
@@ -1351,7 +1728,7 @@ components:
           $ref: "#/components/schemas/GovernanceProtectedAction"
         resource_type:
           type: string
-          enum: [agent_profile, skill, template]
+          enum: [agent, skill, template]
         resource_id: { type: string }
         reason: { type: string }
         payload:
@@ -1672,9 +2049,8 @@ components:
             type: string
           description: >
             Validation warnings. Includes required-input/DAG checks plus
-            registry readiness checks for unknown or disabled agent profiles,
-            unknown or disabled skills, profile-disallowed skills, and missing
-            OpenClaw agent bindings.
+            registry readiness checks for unknown or disabled Agents,
+            unknown or disabled Skills, and Agent-denied Skills.
         details:
           type: array
           items:
@@ -1684,10 +2060,9 @@ components:
                 type: string
                 enum:
                   - missing_required_input
-                  - missing_agent_profile
-                  - missing_openclaw_agent
-                  - unknown_agent_profile
-                  - disabled_agent_profile
+                  - missing_agent
+                  - unknown_agent
+                  - disabled_agent
                   - unknown_skill
                   - disabled_skill
                   - disallowed_skill
@@ -1707,7 +2082,7 @@ components:
               node_name:
                 type: string
                 nullable: true
-              agent_profile_id:
+              agent_id:
                 type: string
                 nullable: true
               skill_id:
@@ -1720,7 +2095,7 @@ components:
               - field
               - node_id
               - node_name
-              - agent_profile_id
+              - agent_id
               - skill_id
       required: [passed, warnings, details]
     RunValidationFailure:
@@ -1797,45 +2172,6 @@ components:
           items:
             type: object
       required: [family_id, root_template_id, items]
-    AgentProfile:
-      type: object
-      properties:
-        profile_id:
-          type: string
-        name:
-          type: string
-        runtime_agent_ref:
-          type: string
-        agent_runtime:
-          type: string
-        harness_profile:
-          type: [string, "null"]
-        provider_connection_id:
-          type: [string, "null"]
-        openclaw_agent_id:
-          type: string
-        default_skills:
-          type: array
-          items:
-            type: string
-        allowed_tools:
-          type: array
-          items:
-            type: string
-        disallowed_skills:
-          type: array
-          items:
-            type: string
-        policy_tags:
-          type: array
-          items:
-            type: string
-        status:
-          type: string
-          enum: [active, disabled]
-        metadata:
-          type: object
-      required: [profile_id, name, openclaw_agent_id, default_skills, allowed_tools, status]
     ProviderConnection:
       type: object
       properties:
@@ -1844,11 +2180,11 @@ components:
         name: { type: string }
         agent_runtime:
           type: string
-          enum: [codex, claude-sdk, glm, kimi, openclaw]
+          enum: [codex, claude-sdk, glm, kimi]
         provider: { type: string }
         protocol:
           type: string
-          enum: [codex-appserver, anthropic-messages, openai-compatible, openclaw-bridge]
+          enum: [codex-appserver, anthropic-messages, openai-compatible]
         base_url: { type: [string, "null"] }
         models:
           type: array
@@ -1859,6 +2195,7 @@ components:
         context_compression_enabled: { type: boolean, default: true }
         context_compression_threshold_percent: { type: integer, minimum: 50, maximum: 95, default: 75 }
         max_continuation_rounds: { type: integer, minimum: 0, maximum: 32, default: 8 }
+        max_tool_rounds: { type: integer, minimum: 1, maximum: 128, default: 32 }
         credential_source:
           type: string
           enum: [managed, environment]
@@ -1881,7 +2218,7 @@ components:
         metadata: { type: object }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [connection_id, workspace_id, name, agent_runtime, provider, protocol, base_url, models, default_model, max_input_tokens, max_output_tokens, context_compression_enabled, context_compression_threshold_percent, max_continuation_rounds, credential_source, credential_env, credential_configured, verification, status, metadata, created_at, updated_at]
+      required: [connection_id, workspace_id, name, agent_runtime, provider, protocol, base_url, models, default_model, max_input_tokens, max_output_tokens, context_compression_enabled, context_compression_threshold_percent, max_continuation_rounds, max_tool_rounds, credential_source, credential_env, credential_configured, verification, status, metadata, created_at, updated_at]
     UpsertProviderConnectionRequest:
       type: object
       additionalProperties: false
@@ -1890,11 +2227,11 @@ components:
         name: { type: string }
         agent_runtime:
           type: string
-          enum: [codex, claude-sdk, glm, kimi, openclaw]
+          enum: [codex, claude-sdk, glm, kimi]
         provider: { type: string }
         protocol:
           type: string
-          enum: [codex-appserver, anthropic-messages, openai-compatible, openclaw-bridge]
+          enum: [codex-appserver, anthropic-messages, openai-compatible]
         base_url: { type: [string, "null"] }
         models:
           type: array
@@ -1905,6 +2242,7 @@ components:
         context_compression_enabled: { type: boolean, default: true }
         context_compression_threshold_percent: { type: integer, minimum: 50, maximum: 95, default: 75 }
         max_continuation_rounds: { type: integer, minimum: 0, maximum: 32, default: 8 }
+        max_tool_rounds: { type: integer, minimum: 1, maximum: 128, default: 32 }
         credential_source:
           type: string
           enum: [managed, environment]
@@ -2028,81 +2366,6 @@ components:
           writeOnly: true
           additionalProperties: { type: string }
       required: [name, transport]
-    AgentHostingSummary:
-      type: object
-      properties:
-        ownership:
-          type: object
-          properties:
-            execution_runtime:
-              type: string
-              enum: [openclaw]
-            orchestration_binding:
-              type: string
-              enum: [my_mate]
-          required: [execution_runtime, orchestration_binding]
-        profiles:
-          type: array
-          items:
-            type: object
-            properties:
-              profile_id:
-                type: string
-              name:
-                type: string
-              status:
-                type: string
-                enum: [active, disabled]
-              openclaw_agent_id:
-                type: string
-              default_skills:
-                type: array
-                items:
-                  type: string
-              provider:
-                type: string
-                nullable: true
-              model:
-                type: string
-                nullable: true
-              runtime_mode:
-                type: string
-                nullable: true
-              managed_by:
-                type: string
-                enum: [my_mate_registry]
-              health:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [ready, needs_binding, disabled]
-                  detail:
-                    type: string
-                required: [status, detail]
-            required:
-              - profile_id
-              - name
-              - status
-              - openclaw_agent_id
-              - default_skills
-              - managed_by
-              - health
-      required: [ownership, profiles]
-    UpdateAgentHostingRequest:
-      type: object
-      properties:
-        openclaw_agent_id:
-          type: string
-        provider:
-          type: string
-          nullable: true
-        model:
-          type: string
-          nullable: true
-        runtime_mode:
-          type: string
-          nullable: true
     Skill:
       type: object
       properties:
@@ -2120,6 +2383,105 @@ components:
           type: string
           enum: [active, disabled]
       required: [skill_id, name, category, allowed_tools, status]
+    SkillPackageStatus:
+      type: object
+      properties:
+        skill_id: { type: string }
+        workspace_id: { type: [string, "null"] }
+        name: { type: string }
+        version: { type: string }
+        description: { type: string }
+        category: { type: string }
+        risk_level: { type: string, enum: [T0, T1, T2, T3] }
+        allowed_tools: { type: array, items: { type: string } }
+        required_capabilities: { type: array, items: { type: string } }
+        permission_scopes: { type: array, items: { type: string } }
+        activation_keywords: { type: array, items: { type: string } }
+        negative_keywords: { type: array, items: { type: string } }
+        activation_policy: { type: string, enum: [explicit_only, advisory, auto] }
+        platforms: { type: array, items: { type: string } }
+        resources: { type: array, items: { type: string } }
+        scripts: { type: array, items: { type: object, additionalProperties: true } }
+        input_schema: { type: object, additionalProperties: true }
+        output_contract: { type: object, additionalProperties: true }
+        source: { type: string, enum: [bundled, official_optional, installed, workspace, custom, marketplace] }
+        enabled: { type: boolean }
+        status: { type: string, enum: [ready, disabled, error, incompatible] }
+        compatibility: { type: string, enum: [ready, degraded, blocked] }
+        missing_requirements: { type: array, items: { type: string } }
+        error: { type: [string, "null"] }
+        instructions_digest: { type: string }
+        root_path: { type: string }
+        manifest_path: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        publisher: { type: [string, "null"] }
+        license: { type: [string, "null"] }
+        trust_level: { type: string, enum: [bundled, official, workspace, community, unverified] }
+      required: [skill_id, workspace_id, name, version, description, category, risk_level, allowed_tools, required_capabilities, permission_scopes, activation_keywords, negative_keywords, activation_policy, platforms, resources, scripts, input_schema, output_contract, source, enabled, status, compatibility, missing_requirements, error, instructions_digest, root_path, manifest_path, metadata, publisher, license, trust_level]
+    SkillInvocationRecord:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        invocation_id: { type: string }
+        workspace_id: { type: string }
+        session_id: { type: string }
+        skill_id: { type: string }
+        skill_version: { type: string }
+        instructions_digest: { type: string }
+        action_id: { type: [string, "null"] }
+        activation_source: { type: string, enum: [explicit, intent, model, preloaded] }
+        status: { type: string, enum: [loaded, completed, failed] }
+        allowed_tools: { type: array, items: { type: string } }
+        required_capabilities: { type: array, items: { type: string } }
+        tool_action_ids: { type: array, items: { type: string } }
+        error_code: { type: [string, "null"] }
+        verification_status: { type: string, enum: [pending, passed, failed, not_applicable] }
+        output_contract: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+      required: [schema_version, invocation_id, workspace_id, session_id, skill_id, skill_version, instructions_digest, action_id, activation_source, status, allowed_tools, required_capabilities, tool_action_ids, error_code, verification_status, output_contract, created_at, updated_at, completed_at]
+    SkillWorkspaceProfile:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        workspace_id: { type: string }
+        auto_activation: { type: boolean }
+        enabled_categories: { type: array, items: { type: string } }
+        trusted_sources: { type: array, items: { type: string, enum: [bundled, official, workspace, community, unverified] } }
+        update_policy: { type: string, enum: [manual, notify, automatic_official] }
+        pinned_versions: { type: object, additionalProperties: { type: string } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [schema_version, workspace_id, auto_activation, enabled_categories, trusted_sources, update_policy, pinned_versions, created_at, updated_at]
+    SkillEvaluationRecord:
+      type: object
+      properties:
+        evaluation_id: { type: string }
+        workspace_id: { type: string }
+        skill_id: { type: string }
+        skill_version: { type: string }
+        invocation_id: { type: [string, "null"] }
+        verdict: { type: string, enum: [passed, failed, partial] }
+        output_contract_passed: { type: boolean }
+        tool_policy_passed: { type: boolean }
+        latency_ms: { type: [number, "null"] }
+        tool_rounds: { type: integer }
+        error_code: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+      required: [evaluation_id, workspace_id, skill_id, skill_version, invocation_id, verdict, output_contract_passed, tool_policy_passed, latency_ms, tool_rounds, error_code, created_at]
+    SkillPermissionDelta:
+      type: object
+      properties:
+        skill_id: { type: string }
+        from_version: { type: [string, "null"] }
+        to_version: { type: string }
+        added_tools: { type: array, items: { type: string } }
+        added_capabilities: { type: array, items: { type: string } }
+        added_permission_scopes: { type: array, items: { type: string } }
+        added_scripts: { type: array, items: { type: string } }
+        requires_review: { type: boolean }
+      required: [skill_id, from_version, to_version, added_tools, added_capabilities, added_permission_scopes, added_scripts, requires_review]
     CreateRunRequest:
       type: object
       properties:
@@ -2235,7 +2597,7 @@ components:
           default: quick
         runtime:
           type: string
-          enum: [local, docker-worker, openclaw, codex, claude-sdk, kimi, glm]
+          enum: [local, docker-worker, codex, claude-sdk, kimi, glm]
         model_probe:
           type: boolean
           default: false
@@ -2325,9 +2687,8 @@ components:
         attempt: { type: integer }
         startedAt: { type: [string, "null"], format: date-time }
         finishedAt: { type: [string, "null"], format: date-time }
-        agentProfile: { type: [string, "null"] }
+        agentId: { type: [string, "null"] }
         runtimeAgentRef: { type: [string, "null"] }
-        openclawAgentId: { type: [string, "null"] }
         approvalKind: { type: [string, "null"] }
         humanInputRequired: { type: boolean }
         expectedArtifacts:
@@ -2344,7 +2705,7 @@ components:
           items:
             type: string
             enum: [active_frontier, waiting_human, approval_gate, human_input_gate, blocked, skipped, terminal, ready]
-      required: [nodeRunId, nodeId, name, type, status, progress, attempt, startedAt, finishedAt, agentProfile, runtimeAgentRef, openclawAgentId, approvalKind, humanInputRequired, expectedArtifacts, workPackageKey, workPackageLabel, workPackageOrder, workPackageIdentitySource, markers]
+      required: [nodeRunId, nodeId, name, type, status, progress, attempt, startedAt, finishedAt, agentId, runtimeAgentRef, approvalKind, humanInputRequired, expectedArtifacts, workPackageKey, workPackageLabel, workPackageOrder, workPackageIdentitySource, markers]
     ApprovalRecord:
       type: object
       properties:
@@ -2404,6 +2765,9 @@ components:
         run_id: { type: string }
         node_run_id: { type: string }
         job_id: { type: string }
+        origin: { type: string, enum: [runtime, conversation] }
+        session_id: { type: [string, "null"] }
+        workspace_binding_id: { type: [string, "null"] }
         source_root: { type: string }
         sandbox_root: { type: string }
         status:
@@ -3270,7 +3634,7 @@ components:
           type:
             - string
             - "null"
-        orchestrator_profile_id:
+        orchestrator_agent_id:
           type:
             - string
             - "null"
@@ -3287,7 +3651,7 @@ components:
       required:
         - provider_id
         - model
-        - orchestrator_profile_id
+        - orchestrator_agent_id
         - system_prompt_summary
         - fallback_used
         - fallback_reason
@@ -3300,7 +3664,7 @@ components:
           type:
             - string
             - "null"
-        subagent_profile_id:
+        agent_id:
           type:
             - string
             - "null"
@@ -3333,7 +3697,7 @@ components:
       required:
         - node_id
         - node_name
-        - subagent_profile_id
+        - agent_id
         - provider
         - model
         - allowed_tools
@@ -3350,7 +3714,7 @@ components:
           type: string
         session_id:
           type: string
-        orchestrator_profile_id:
+        orchestrator_agent_id:
           type:
             - string
             - "null"
@@ -3685,11 +4049,11 @@ components:
           type: string
         node_name:
           type: string
-        agent_profile_id:
+        agent_id:
           type: [string, "null"]
-        agent_profile_name:
+        agent_name:
           type: [string, "null"]
-        openclaw_agent_id:
+        runtime_agent_ref:
           type: [string, "null"]
         skill_ids:
           type: array
@@ -3706,9 +4070,9 @@ components:
       required:
         - node_id
         - node_name
-        - agent_profile_id
-        - agent_profile_name
-        - openclaw_agent_id
+        - agent_id
+        - agent_name
+        - runtime_agent_ref
         - skill_ids
         - score
         - reason
@@ -3774,7 +4138,7 @@ components:
           type: [string, "null"]
         model:
           type: [string, "null"]
-        orchestrator_profile_id:
+        orchestrator_agent_id:
           type: [string, "null"]
         system_prompt_summary:
           type: [string, "null"]
@@ -3785,7 +4149,7 @@ components:
       required:
         - provider_id
         - model
-        - orchestrator_profile_id
+        - orchestrator_agent_id
         - system_prompt_summary
         - fallback_used
         - fallback_reason
@@ -3796,7 +4160,7 @@ components:
           type: string
         node_name:
           type: [string, "null"]
-        subagent_profile_id:
+        agent_id:
           type: [string, "null"]
         provider:
           type: [string, "null"]
@@ -3819,7 +4183,7 @@ components:
       required:
         - node_id
         - node_name
-        - subagent_profile_id
+        - agent_id
         - provider
         - model
         - allowed_tools
@@ -3827,16 +4191,153 @@ components:
         - input_context
         - output_contract
         - metadata
+    OrchestrationDecision:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        decision_id: { type: string }
+        mission_spec_id: { type: [string, "null"] }
+        mode: { type: string, enum: [direct, template, dynamic, manual] }
+        requires_dag: { type: boolean }
+        reason: { type: string }
+        selected_template_id: { type: [string, "null"] }
+        required_capabilities: { type: array, items: { type: string } }
+        risk_level: { type: string, enum: [low, medium, high] }
+        approval_required: { type: boolean }
+        policy_version: { type: string }
+        evidence:
+          type: object
+          properties:
+            signals: { type: array, items: { type: string } }
+            scores:
+              type: object
+              properties:
+                direct: { type: number }
+                template: { type: number }
+                dynamic: { type: number }
+                manual: { type: number }
+              required: [direct, template, dynamic, manual]
+              additionalProperties: false
+            matched_template_id: { type: [string, "null"] }
+            rationale: { type: array, items: { type: string } }
+          required: [signals, scores, rationale]
+          additionalProperties: false
+        created_at: { type: string, format: date-time }
+      required: [schema_version, decision_id, mission_spec_id, mode, requires_dag, reason, selected_template_id, required_capabilities, risk_level, approval_required, created_at]
+      additionalProperties: false
+    DagDefinitionAgentSelector:
+      type: object
+      properties:
+        agent_id: { type: [string, "null"] }
+        agent_version: { type: [integer, "null"], minimum: 1 }
+        role:
+          anyOf:
+            - $ref: "#/components/schemas/AgentRole"
+            - type: "null"
+        capability_tags: { type: array, items: { type: string } }
+      required: [agent_id, agent_version, role, capability_tags]
+      additionalProperties: false
+    DagDefinitionNode:
+      type: object
+      properties:
+        node_id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [agent_task, reviewer, human_gate, condition, fanout, combine, end] }
+        objective: { type: string }
+        agent_selector:
+          anyOf:
+            - $ref: "#/components/schemas/DagDefinitionAgentSelector"
+            - type: "null"
+        depends_on: { type: array, items: { type: string } }
+        join_policy: { type: string, enum: [all, any, quorum] }
+        join_quorum: { type: [integer, "null"], minimum: 1 }
+        condition:
+          anyOf:
+            - type: object
+              properties:
+                path: { type: string }
+                operator: { type: string, enum: [exists, truthy, equals, not_equals, contains] }
+                value: {}
+              required: [path, operator]
+              additionalProperties: false
+            - type: "null"
+        state_input: { type: object, additionalProperties: { type: string } }
+        state_output:
+          type: array
+          items:
+            type: object
+            properties:
+              source_path: { type: string }
+              target_path: { type: string }
+              reducer: { type: string, enum: [replace, merge, append] }
+            required: [source_path, target_path, reducer]
+            additionalProperties: false
+        human_gate:
+          anyOf:
+            - type: object
+              properties:
+                gate_type: { type: string, enum: [approval, input] }
+                prompt: { type: string }
+                input_schema: { type: object, additionalProperties: true }
+                auto_resume: { type: boolean }
+              required: [gate_type, prompt, input_schema, auto_resume]
+              additionalProperties: false
+            - type: "null"
+        retry_policy:
+          type: object
+          properties:
+            max_attempts: { type: integer, minimum: 1, maximum: 10 }
+            backoff_seconds: { type: integer, minimum: 0, maximum: 300 }
+          required: [max_attempts, backoff_seconds]
+          additionalProperties: false
+        allowed_tools: { type: array, items: { type: string } }
+        allowed_skills: { type: array, items: { type: string } }
+        input_contract: { type: object, additionalProperties: true }
+        output_contract: { type: object, additionalProperties: true }
+        acceptance_criteria: { type: array, items: { type: string } }
+        verification_steps: { type: array, items: { type: string } }
+        autonomy_mode: { type: string, enum: [review_first, assisted, autopilot] }
+        max_tool_rounds: { type: [integer, "null"], minimum: 1 }
+        max_runtime_seconds: { type: [integer, "null"], minimum: 30 }
+        reviewer_node_id: { type: [string, "null"] }
+        metadata: { type: object, additionalProperties: true }
+      required: [node_id, name, kind, objective, agent_selector, depends_on, join_policy, join_quorum, condition, state_input, state_output, human_gate, retry_policy, allowed_tools, allowed_skills, input_contract, output_contract, autonomy_mode, max_tool_rounds, max_runtime_seconds, reviewer_node_id, metadata]
+      additionalProperties: false
+    DagDefinition:
+      type: object
+      properties:
+        schema_version: { type: integer, const: 1 }
+        definition_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        source:
+          type: object
+          properties:
+            kind: { type: string, enum: [template, model, manual] }
+            template_id: { type: [string, "null"] }
+            message_id: { type: [string, "null"] }
+          required: [kind, template_id, message_id]
+          additionalProperties: false
+        title: { type: string }
+        objective: { type: string }
+        nodes: { type: array, items: { $ref: "#/components/schemas/DagDefinitionNode" } }
+        state_schema: { type: object, additionalProperties: true }
+        initial_state: { type: object, additionalProperties: true }
+        policy: { type: object, additionalProperties: true }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+      required: [schema_version, definition_id, revision, source, title, objective, nodes, state_schema, initial_state, policy, metadata, created_at]
+      additionalProperties: false
     DagProposalRecord:
       type: object
       properties:
+        protocol_version: { type: integer, const: 1 }
         proposal_id:
           type: string
         mission_id:
           type: string
         session_id:
           type: string
-        orchestrator_profile_id:
+        orchestrator_agent_id:
           type: [string, "null"]
         source_message_id:
           type: [string, "null"]
@@ -3863,6 +4364,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DagProposalAssignment"
+        orchestration_decision:
+          anyOf:
+            - $ref: "#/components/schemas/OrchestrationDecision"
+            - type: "null"
+        dag_definition:
+          anyOf:
+            - $ref: "#/components/schemas/DagDefinition"
+            - type: "null"
+        compiled_agent_dag_id: { type: [string, "null"] }
+        compiled_at: { type: [string, "null"], format: date-time }
         warnings:
           type: array
           items:
@@ -3897,10 +4408,11 @@ components:
         metadata:
           type: object
       required:
+        - protocol_version
         - proposal_id
         - mission_id
         - session_id
-        - orchestrator_profile_id
+        - orchestrator_agent_id
         - source_message_id
         - source_revision
         - source_option
@@ -3912,6 +4424,10 @@ components:
         - dag_draft
         - route_compare
         - assignments
+        - orchestration_decision
+        - dag_definition
+        - compiled_agent_dag_id
+        - compiled_at
         - warnings
         - checklist
         - created_at
@@ -3976,6 +4492,13 @@ components:
           type: string
         inputs:
           type: object
+        source_kind:
+          type: string
+          enum: [template, model, manual]
+        orchestration_decision:
+          $ref: "#/components/schemas/OrchestrationDecision"
+        dag_definition:
+          $ref: "#/components/schemas/DagDefinition"
     UpdateDagProposalAssignmentsRequest:
       type: object
       properties:
@@ -3989,6 +4512,9 @@ components:
       properties:
         confirmed_by:
           type: string
+        start:
+          type: boolean
+          description: Start the compiled Agent DAG immediately after confirmation.
     RejectDagProposalRequest:
       type: object
       properties:
@@ -4064,9 +4590,9 @@ components:
           type: integer
         registry_bound_skill_count:
           type: integer
-        missing_agent_profile_count:
+        missing_agent_count:
           type: integer
-        disabled_agent_profile_count:
+        disabled_agent_count:
           type: integer
         missing_skill_count:
           type: integer
@@ -4074,22 +4600,20 @@ components:
           type: integer
         disallowed_skill_count:
           type: integer
-        missing_openclaw_agent_count:
-          type: integer
     RegistryProvenance:
       type: object
       properties:
-        agent_profile_requested:
+        agent_id_requested:
           type: [string, "null"]
-        agent_profile_resolved:
+        agent_id_resolved:
           type: [string, "null"]
-        agent_profile_status:
+        agent_status:
           type: [string, "null"]
           enum: [active, disabled, missing, null]
-        agent_profile_source:
+        agent_source:
           type: string
           enum: [registry, template_binding, fallback, none]
-        openclaw_agent_id_source:
+        runtime_agent_ref_source:
           type: string
           enum: [registry, template_binding, fallback, none]
         skill_bindings:
@@ -4103,7 +4627,7 @@ components:
                 type: array
                 items:
                   type: string
-                  enum: [agent_profile_default, node_allowed]
+                  enum: [agent_default, node_allowed]
               registry_status:
                 type: string
                 enum: [active, disabled, missing]
@@ -4111,7 +4635,7 @@ components:
                 type: boolean
               excluded_reason:
                 type: [string, "null"]
-                enum: [disallowed_by_agent_profile, disabled, missing, null]
+                enum: [disallowed_by_agent, disabled, missing, null]
             required: [skill_id, sources, registry_status, included, excluded_reason]
         tool_bindings:
           type: array
@@ -4124,14 +4648,14 @@ components:
                 type: array
                 items:
                   type: string
-                  enum: [agent_profile_allowed, node_allowed]
+                  enum: [agent_allowed, node_allowed]
             required: [tool_id, sources]
       required:
-        - agent_profile_requested
-        - agent_profile_resolved
-        - agent_profile_status
-        - agent_profile_source
-        - openclaw_agent_id_source
+        - agent_id_requested
+        - agent_id_resolved
+        - agent_status
+        - agent_source
+        - runtime_agent_ref_source
         - skill_bindings
         - tool_bindings
     ExecutionMaintenanceResult:
@@ -4186,7 +4710,9 @@ components:
           type: [string, "null"]
         finished_at:
           type: [string, "null"]
-        openclaw_agent_id:
+        agent_id:
+          type: [string, "null"]
+        runtime_agent_ref:
           type: [string, "null"]
         registry_provenance:
           $ref: "#/components/schemas/RegistryProvenance"
@@ -4202,7 +4728,8 @@ components:
         - attempt
         - started_at
         - finished_at
-        - openclaw_agent_id
+        - agent_id
+        - runtime_agent_ref
         - registry_provenance
         - execution_ref
     MobileRunSummary:
@@ -5032,6 +5559,189 @@ paths:
               schema:
                 $ref: "#/components/schemas/PublishTemplateResponse"
 
+  /api/skill-host/packages:
+    get:
+      tags: [SkillHost]
+      summary: List executable Skill packages for the selected Workspace
+      responses:
+        "200":
+          description: Skill package catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/SkillPackageStatus" } }
+                required: [items]
+  /api/skill-host/packages/{skillId}:
+    get:
+      tags: [SkillHost]
+      summary: Read one Skill package and its exact instructions
+      parameters:
+        - { in: path, name: skillId, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Skill package detail }
+  /api/skill-host/reload:
+    post:
+      tags: [SkillHost]
+      summary: Reload Skill package discovery
+      responses:
+        "200": { description: Reloaded package catalog }
+  /api/skill-host/install:
+    post:
+      tags: [SkillHost]
+      summary: Install a local Skill package into the selected Workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspace_id: { type: string }
+                source_path: { type: string }
+                approve_permission_delta: { type: boolean, default: false }
+              required: [source_path]
+      responses:
+        "201": { description: Installed Skill package }
+  /api/skill-host/packages/{skillId}/enable:
+    post:
+      tags: [SkillHost]
+      summary: Enable a Skill package
+      parameters:
+        - { in: path, name: skillId, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Enabled Skill package }
+  /api/skill-host/packages/{skillId}/disable:
+    post:
+      tags: [SkillHost]
+      summary: Disable a Skill package
+      parameters:
+        - { in: path, name: skillId, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Disabled Skill package }
+  /api/skill-host/invocations:
+    get:
+      tags: [SkillHost]
+      summary: List Skill invocation history
+      responses:
+        "200":
+          description: Skill invocation history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/SkillInvocationRecord" } }
+                required: [items]
+  /api/skill-host/profile:
+    get:
+      tags: [SkillHost]
+      summary: Read the Workspace Skill activation and trust policy
+      responses:
+        "200": { description: Workspace Skill profile, content: { application/json: { schema: { $ref: "#/components/schemas/SkillWorkspaceProfile" } } } }
+    put:
+      tags: [SkillHost]
+      summary: Update the Workspace Skill activation and trust policy
+      responses:
+        "200": { description: Updated Workspace Skill profile }
+  /api/skill-host/lockfile:
+    get:
+      tags: [SkillHost]
+      summary: Read locked Skill versions and digests
+      responses:
+        "200": { description: Skill lockfile }
+  /api/skill-host/lockfile/sync:
+    post:
+      tags: [SkillHost]
+      summary: Synchronize the Workspace Skill lockfile
+      responses:
+        "200": { description: Synchronized Skill lockfile }
+  /api/skill-host/packages/{skillId}/versions:
+    get:
+      tags: [SkillHost]
+      summary: List retained Skill package versions
+      parameters:
+        - { in: path, name: skillId, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Retained Skill versions }
+  /api/skill-host/packages/{skillId}/rollback:
+    post:
+      tags: [SkillHost]
+      summary: Roll back to a retained Skill package version
+      parameters:
+        - { in: path, name: skillId, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Restored Skill package }
+  /api/skill-host/sources:
+    get:
+      tags: [SkillHost]
+      summary: List Skill catalog sources
+      responses:
+        "200": { description: Skill catalog sources }
+    post:
+      tags: [SkillHost]
+      summary: Register a governed Skill catalog source
+      responses:
+        "201": { description: Registered Skill catalog source }
+  /api/skill-host/marketplace/scan:
+    post:
+      tags: [SkillHost]
+      summary: Quarantine-scan a Skill package
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source_path: { type: string }
+                source_id: { type: string }
+              required: [source_path]
+      responses:
+        "200": { description: Skill package scan result }
+  /api/skill-host/marketplace/install:
+    post:
+      tags: [SkillHost]
+      summary: Scan and install a package from a governed Skill source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source_path: { type: string }
+                source_id: { type: string }
+                approve_permission_delta: { type: boolean, default: false }
+              required: [source_path, source_id]
+      responses:
+        "201": { description: Installed Skill package }
+        "409": { description: Permission delta requires explicit review }
+  /api/skill-host/hermes/inspect:
+    post:
+      tags: [SkillHost]
+      summary: Inspect Hermes Skill compatibility without installation
+      responses:
+        "200": { description: Hermes compatibility report }
+  /api/skill-host/evaluations:
+    get:
+      tags: [SkillHost]
+      summary: List Skill quality evaluations
+      responses:
+        "200": { description: Skill quality evaluations }
+    post:
+      tags: [SkillHost]
+      summary: Record a Skill acceptance evaluation
+      responses:
+        "201": { description: Recorded Skill evaluation }
+  /api/skill-host/observability:
+    get:
+      tags: [SkillHost]
+      summary: Read Skill success, latency, compatibility, and Curator recommendations
+      responses:
+        "200": { description: Skill observability summary }
+
   /api/registry/provider-connections:
     get:
       tags: [Agents]
@@ -5248,109 +5958,347 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/McpServer" }
 
-  /api/registry/agent-profiles:
+  /api/agents:
     get:
-      tags: [Templates]
-      summary: List agent profiles
+      tags: [Agents]
+      summary: List versioned Agents, published versions, deployments, and Workflow migration diagnostics
       responses:
         "200":
-          description: Agent profiles
+          description: Agent registry
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/AgentProfile"
-                required: [items]
+                  items: { type: array, items: { $ref: "#/components/schemas/AgentDefinition" } }
+                  versions: { type: array, items: { $ref: "#/components/schemas/AgentVersion" } }
+                  deployments: { type: array, items: { type: object, additionalProperties: true } }
+                  workflow_migration: { type: object, additionalProperties: true }
+                required: [items, versions, deployments, workflow_migration]
     post:
-      tags: [Templates]
-      summary: Upsert agent profile
+      tags: [Agents]
+      summary: Publish a new Agent definition or immutable version
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AgentProfile"
+              type: object
+              properties:
+                agent_id: { type: string }
+                name: { type: string }
+                description: { type: string }
+                version: { type: object, additionalProperties: true }
+              required: [name]
+      responses:
+        "201": { description: Agent version published }
+
+  /api/agents/{agentId}:
+    get:
+      tags: [Agents]
+      summary: Get an Agent definition and selected version
+      parameters:
+        - in: path
+          name: agentId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: version
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Agent definition and version }
+
+  /api/agents/{agentId}/bind:
+    post:
+      tags: [Agents]
+      summary: Resolve an immutable Agent binding snapshot
+      parameters:
+        - in: path
+          name: agentId
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
       responses:
         "201":
-          description: Agent profile upserted
-
-  /api/registry/agent-profiles/{profileId}:
-    get:
-      tags: [Templates]
-      summary: Get agent profile
-      parameters:
-        - in: path
-          name: profileId
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Agent profile
+          description: Agent binding snapshot
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/AgentProfile"
+              schema: { $ref: "#/components/schemas/AgentBindingSnapshot" }
 
-  /api/registry/agent-profiles/{profileId}/disable:
+  /api/agents/{agentId}/disable:
     post:
-      tags: [Templates]
-      summary: Disable agent profile
+      tags: [Agents]
+      summary: Disable an Agent definition
       parameters:
         - in: path
-          name: profileId
+          name: agentId
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       responses:
         "200":
-          description: Disabled
-
-  /api/agents/hosting:
-    get:
-      tags: [Agents]
-      summary: List OpenClaw agent hosting bindings
-      responses:
-        "200":
-          description: Agent hosting summary
+          description: Agent disabled
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/AgentHostingSummary"
+              schema: { $ref: "#/components/schemas/AgentDefinition" }
 
-  /api/agents/{profileId}/hosting:
-    put:
+  /api/agent-runs:
+    get:
       tags: [Agents]
-      summary: Update OpenClaw hosting fields for an agent profile
-      parameters:
-        - in: path
-          name: profileId
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateAgentHostingRequest"
+      summary: List AgentRun lifecycle evidence
       responses:
         "200":
-          description: Updated agent hosting binding
+          description: Agent runs
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  profile:
-                    $ref: "#/components/schemas/AgentProfile"
-                  agent_hosting:
-                    $ref: "#/components/schemas/AgentHostingSummary"
-                required: [profile, agent_hosting]
+                  items: { type: array, items: { $ref: "#/components/schemas/AgentRun" } }
+                required: [items]
+
+  /api/agent-runs/{agentRunId}/events:
+    get:
+      tags: [Agents]
+      summary: List ordered user-facing activity for one AgentRun
+      parameters:
+        - in: path
+          name: agentRunId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: after_sequence
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 250 }
+      responses:
+        "200":
+          description: Ordered AgentRun activity page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AgentRunEvent" } }
+                  after_sequence: { type: integer, minimum: 0 }
+                  next_after_sequence: { type: integer, minimum: 0 }
+                  has_more: { type: boolean }
+                required: [items, after_sequence, next_after_sequence, has_more]
+        "404":
+          description: AgentRun not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/agent-runs/{agentRunId}/events/stream:
+    get:
+      tags: [Agents]
+      summary: Stream ordered AgentRun activity with resumable SSE ids
+      parameters:
+        - in: path
+          name: agentRunId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: after_sequence
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: header
+          name: Last-Event-ID
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: SSE stream. Each agent.event uses the durable sequence as its event id.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404":
+          description: AgentRun not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/agent-teams:
+    get:
+      tags: [Agents]
+      summary: List version-pinned Agent Teams
+      responses:
+        "200":
+          description: Agent Teams
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AgentTeam" } }
+                required: [items]
+    post:
+      tags: [Agents]
+      summary: Create or update an Agent Team
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "201":
+          description: Agent Team
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTeam" }
+
+  /api/agent-dags:
+    get:
+      tags: [Agents]
+      summary: List durable Agent DAGs
+      responses:
+        "200":
+          description: Agent DAGs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AgentDag" } }
+                required: [items]
+    post:
+      tags: [Agents]
+      summary: Create a durable Agent DAG
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "201":
+          description: Agent DAG
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentDag" }
+
+  /api/agent-dags/{dagId}:
+    get:
+      tags: [Agents]
+      summary: Get DAG nodes, Agent Tasks, and Agent Protocol messages
+      parameters:
+        - in: path
+          name: dagId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Agent DAG detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dag: { $ref: "#/components/schemas/AgentDag" }
+                  tasks: { type: array, items: { $ref: "#/components/schemas/AgentTask" } }
+                  messages: { type: array, items: { $ref: "#/components/schemas/AgentMessage" } }
+                  gates: { type: array, items: { $ref: "#/components/schemas/AgentDagGate" } }
+                required: [dag, tasks, messages, gates]
+
+  /api/agent-dags/{dagId}/tasks:
+    post:
+      tags: [Agents]
+      summary: Add a version-pinned Agent Task node
+      parameters:
+        - in: path
+          name: dagId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "201": { description: Agent DAG Task added }
+
+  /api/agent-dags/{dagId}/run:
+    post:
+      tags: [Agents]
+      summary: Run ready Agent DAG nodes within policy budgets
+      parameters:
+        - in: path
+          name: dagId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Agent DAG run result }
+
+  /api/agent-dags/{dagId}/cancel:
+    post:
+      tags: [Agents]
+      summary: Cancel an Agent DAG and cascade to active children
+      parameters:
+        - in: path
+          name: dagId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Agent DAG cancelled }
+
+  /api/agent-dags/{dagId}/retry:
+    post:
+      tags: [Agents]
+      summary: Reset failed or blocked nodes for recovery
+      parameters:
+        - in: path
+          name: dagId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Agent DAG ready for retry }
+
+  /api/agent-dags/{dagId}/gates:
+    get:
+      tags: [Agents]
+      summary: List durable Human Gates for an Agent DAG
+      parameters:
+        - in: path
+          name: dagId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Agent DAG Gates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AgentDagGate" } }
+                required: [items]
+
+  /api/agent-dags/{dagId}/gates/{gateId}/resolve:
+    post:
+      tags: [Agents]
+      summary: Resolve an Agent DAG Human Gate and optionally resume execution
+      parameters:
+        - in: path
+          name: dagId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: gateId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                approved: { type: boolean }
+                response: { type: object, additionalProperties: true }
+              required: [approved]
+      responses:
+        "200": { description: Agent DAG Gate resolved }
 
   /api/registry/skills:
     get:
@@ -5571,7 +6519,9 @@ paths:
                     $ref: "#/components/schemas/DagProposalRecord"
                   message:
                     type: object
-                required: [session, proposal, message]
+                  agent_dag:
+                    $ref: "#/components/schemas/AgentDag"
+                required: [session, proposal, message, agent_dag]
 
   /api/sessions/{sessionId}/dag-proposals/{proposalId}/reject:
     post:
@@ -8070,6 +9020,163 @@ paths:
       responses:
         "200":
           description: Skipped
+
+  /api/schedules:
+    get:
+      tags: [Schedules]
+      summary: List Workspace schedules
+      responses:
+        "200":
+          description: Schedule list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/UserSchedule" }
+                required: [items]
+    post:
+      tags: [Schedules]
+      summary: Create a Workspace schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserScheduleRequest" }
+      responses:
+        "201":
+          description: Created schedule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserSchedule" }
+        "400":
+          description: Invalid schedule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/schedules/{scheduleId}:
+    patch:
+      tags: [Schedules]
+      summary: Update or enable a Workspace schedule
+      parameters:
+        - in: path
+          name: scheduleId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Updated schedule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserSchedule" }
+        "404": { description: Schedule not found }
+    delete:
+      tags: [Schedules]
+      summary: Delete a Workspace schedule while retaining run history
+      parameters:
+        - in: path
+          name: scheduleId
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Schedule deleted }
+        "404": { description: Schedule not found }
+
+  /api/schedules/{scheduleId}/runs:
+    get:
+      tags: [Schedules]
+      summary: List durable schedule execution history
+      parameters:
+        - in: path
+          name: scheduleId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500 }
+      responses:
+        "200":
+          description: Schedule run list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/UserScheduleRun" }
+                required: [items]
+
+  /api/schedules/{scheduleId}/run:
+    post:
+      tags: [Schedules]
+      summary: Run a schedule immediately through the normal Conversation boundary
+      parameters:
+        - in: path
+          name: scheduleId
+          required: true
+          schema: { type: string }
+      responses:
+        "202":
+          description: Completed or paused schedule run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserScheduleRun" }
+        "409": { description: Schedule is already running }
+
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List Workspace in-app notifications
+      parameters:
+        - in: query
+          name: status
+          required: false
+          schema: { type: string, enum: [active, unread, all] }
+      responses:
+        "200":
+          description: Notification list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Notification" }
+                required: [items]
+
+  /api/notifications/{notificationId}/{action}:
+    post:
+      tags: [Notifications]
+      summary: Mark a notification read or dismiss it
+      parameters:
+        - in: path
+          name: notificationId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: action
+          required: true
+          schema: { type: string, enum: [read, dismiss] }
+      responses:
+        "200":
+          description: Updated notification
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Notification" }
+        "404": { description: Notification not found }
 
   /api/approvals:
     get:

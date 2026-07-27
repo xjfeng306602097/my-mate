@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/agent/agent-run.schema.json",
+  "title": "Agent Run",
+  "type": "object",
+  "properties": {
+    "agent_run_id": { "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "kind": { "enum": ["conversation", "workflow_node", "schedule", "continuation", "delegation", "review"] },
+    "status": { "enum": ["queued", "running", "waiting_human", "completed", "failed", "cancelled"] },
+    "binding_snapshot": { "$ref": "agent-binding-snapshot.schema.json" },
+    "session_id": { "type": ["string", "null"] },
+    "workflow_run_id": { "type": ["string", "null"] },
+    "node_run_id": { "type": ["string", "null"] },
+    "parent_agent_run_id": { "type": ["string", "null"] },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "started_at": { "oneOf": [{ "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }, { "type": "null" }] },
+    "finished_at": { "oneOf": [{ "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }, { "type": "null" }] }
+  },
+  "required": ["agent_run_id", "workspace_id", "kind", "status", "binding_snapshot", "session_id", "workflow_run_id", "node_run_id", "parent_agent_run_id", "attempt", "created_at", "started_at", "finished_at"],
+  "additionalProperties": true
+}

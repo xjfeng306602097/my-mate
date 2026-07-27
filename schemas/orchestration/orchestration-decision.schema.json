@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/orchestration/orchestration-decision.schema.json",
+  "title": "Orchestration Decision",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "decision_id": { "type": "string", "minLength": 1 },
+    "mission_spec_id": { "type": ["string", "null"] },
+    "mode": { "enum": ["direct", "template", "dynamic", "manual"] },
+    "requires_dag": { "type": "boolean" },
+    "reason": { "type": "string", "minLength": 1 },
+    "selected_template_id": { "type": ["string", "null"] },
+    "required_capabilities": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "risk_level": { "enum": ["low", "medium", "high"] },
+    "approval_required": { "type": "boolean" },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "signals": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "scores": {
+          "type": "object",
+          "properties": {
+            "direct": { "type": "number" },
+            "template": { "type": "number" },
+            "dynamic": { "type": "number" },
+            "manual": { "type": "number" }
+          },
+          "required": ["direct", "template", "dynamic", "manual"],
+          "additionalProperties": false
+        },
+        "matched_template_id": { "type": ["string", "null"] },
+        "rationale": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["signals", "scores", "rationale"],
+      "additionalProperties": false
+    },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }
+  },
+  "required": ["schema_version", "decision_id", "mission_spec_id", "mode", "requires_dag", "reason", "selected_template_id", "required_capabilities", "risk_level", "approval_required", "created_at"],
+  "additionalProperties": false
+}

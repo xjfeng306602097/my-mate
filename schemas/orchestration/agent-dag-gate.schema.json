@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/orchestration/agent-dag-gate.schema.json",
+  "title": "Agent DAG Human Gate",
+  "type": "object",
+  "properties": {
+    "gate_id": { "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "dag_id": { "type": "string", "minLength": 1 },
+    "node_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "gate_type": { "enum": ["approval", "input"] },
+    "status": { "enum": ["pending", "approved", "rejected", "submitted", "cancelled"] },
+    "prompt": { "type": "string", "minLength": 1 },
+    "input_schema": { "type": "object" },
+    "response": { "type": ["object", "null"] },
+    "auto_resume": { "type": "boolean" },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "resolved_at": { "oneOf": [{ "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }, { "type": "null" }] },
+    "resolved_by": { "type": ["string", "null"] }
+  },
+  "required": ["gate_id", "workspace_id", "dag_id", "node_id", "task_id", "gate_type", "status", "prompt", "input_schema", "response", "auto_resume", "created_at", "resolved_at", "resolved_by"],
+  "additionalProperties": false
+}

@@ -51,8 +51,18 @@
           "type": {
             "$ref": "../common/enums.schema.json#/$defs/nodeType"
           },
-          "agent_profile": {
+          "agent_id": {
             "type": ["string", "null"]
+          },
+          "agent_version": {
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "agent_binding_snapshot": {
+            "oneOf": [
+              { "$ref": "../agent/agent-binding-snapshot.schema.json" },
+              { "type": "null" }
+            ]
           },
           "runtime_agent_ref": {
             "type": ["string", "null"]
@@ -71,7 +81,7 @@
               "agent_runtime": { "type": "string" },
               "provider": { "type": "string" },
               "protocol": {
-                "enum": ["codex-appserver", "anthropic-messages", "openai-compatible", "openclaw-bridge"]
+                "enum": ["codex-appserver", "anthropic-messages", "openai-compatible"]
               },
               "base_url": { "type": ["string", "null"] },
               "model": { "type": ["string", "null"] },
@@ -79,9 +89,6 @@
               "credential_env": { "type": "string" }
             },
             "required": ["connection_id", "agent_runtime", "provider", "protocol", "base_url", "model", "credential_source", "credential_env"]
-          },
-          "openclaw_agent_id": {
-            "type": ["string", "null"]
           },
           "allowed_skills": {
             "type": "array",
@@ -148,7 +155,7 @@
               },
               "target_kind": {
                 "type": ["string", "null"],
-                "enum": ["local", "external-bridge", "docker-worker", "node-worker", null]
+                "enum": ["local", "docker-worker", "node-worker", null]
               },
               "dispatch_id": {
                 "type": ["string", "null"]
@@ -158,12 +165,6 @@
                 "additionalProperties": {
                   "type": ["string", "null"]
                 }
-              },
-              "openclaw_task_id": {
-                "type": ["string", "null"]
-              },
-              "openclaw_session_id": {
-                "type": ["string", "null"]
               }
             },
             "required": [
@@ -172,34 +173,28 @@
               "lease_id",
               "target_kind",
               "dispatch_id",
-              "provider_refs",
-              "openclaw_task_id",
-              "openclaw_session_id"
+              "provider_refs"
             ],
             "additionalProperties": false
           },
           "registry_provenance": {
             "type": "object",
             "properties": {
-              "agent_profile_requested": {
+              "agent_id_requested": {
                 "type": ["string", "null"]
               },
-              "agent_profile_resolved": {
+              "agent_id_resolved": {
                 "type": ["string", "null"]
               },
-              "agent_profile_status": {
+              "agent_status": {
                 "type": ["string", "null"],
                 "enum": ["active", "disabled", "missing", null]
               },
-              "agent_profile_source": {
+              "agent_source": {
                 "type": "string",
                 "enum": ["registry", "template_binding", "fallback", "none"]
               },
               "runtime_agent_ref_source": {
-                "type": "string",
-                "enum": ["registry", "template_binding", "fallback", "none"]
-              },
-              "openclaw_agent_id_source": {
                 "type": "string",
                 "enum": ["registry", "template_binding", "fallback", "none"]
               },
@@ -216,7 +211,7 @@
                       "type": "array",
                       "items": {
                         "type": "string",
-                        "enum": ["agent_profile_default", "node_allowed"]
+                        "enum": ["agent_default", "node_allowed"]
                       },
                       "uniqueItems": true
                     },
@@ -229,7 +224,7 @@
                     },
                     "excluded_reason": {
                       "type": ["string", "null"],
-                      "enum": ["disallowed_by_agent_profile", "disabled", "missing", null]
+                      "enum": ["disallowed_by_agent", "disabled", "missing", null]
                     }
                   },
                   "required": [
@@ -255,7 +250,7 @@
                       "type": "array",
                       "items": {
                         "type": "string",
-                        "enum": ["agent_profile_allowed", "node_allowed"]
+                        "enum": ["agent_allowed", "node_allowed"]
                       },
                       "uniqueItems": true
                     }
@@ -266,11 +261,10 @@
               }
             },
             "required": [
-              "agent_profile_requested",
-              "agent_profile_resolved",
-              "agent_profile_status",
-              "agent_profile_source",
-              "openclaw_agent_id_source",
+              "agent_id_requested",
+              "agent_id_resolved",
+              "agent_status",
+              "agent_source",
               "skill_bindings",
               "tool_bindings"
             ],
@@ -296,11 +290,12 @@
           "node_id",
           "name",
           "type",
-          "agent_profile",
+          "agent_id",
+          "agent_version",
+          "agent_binding_snapshot",
           "runtime_agent_ref",
           "agent_runtime",
           "harness_profile",
-          "openclaw_agent_id",
           "allowed_skills",
           "allowed_tools",
           "approval_kind",

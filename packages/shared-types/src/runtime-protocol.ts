@@ -1,21 +1,17 @@
+import type { RunAction, WorkerTargetKind } from "./domain-lifecycle.js";
+export type { WorkerTargetKind } from "./domain-lifecycle.js";
+
 export const RUNTIME_PROTOCOL_VERSION = "my_mate_runtime_v1" as const;
 
 export type RuntimeProtocolVersion = typeof RUNTIME_PROTOCOL_VERSION;
 
 export type RuntimeAgentRuntime =
   | "local"
-  | "openclaw"
   | "codex"
   | "claude-sdk"
   | "kimi"
   | "glm"
   | (string & {});
-
-export type WorkerTargetKind =
-  | "local"
-  | "external-bridge"
-  | "docker-worker"
-  | "node-worker";
 
 export type RuntimeRiskLevel = "low" | "elevated" | "high";
 
@@ -114,7 +110,7 @@ export interface RuntimeHarnessSpec {
     connection_id: string;
     agent_runtime: string;
     provider: string;
-    protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible" | "openclaw-bridge";
+    protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible";
     base_url: string | null;
     model: string | null;
     credential_source: "managed" | "environment";
@@ -197,8 +193,6 @@ export interface ProviderNeutralExecutionRef {
   target_kind?: WorkerTargetKind | null;
   dispatch_id: string | null;
   provider_refs?: Record<string, string | null>;
-  openclaw_task_id: string | null;
-  openclaw_session_id: string | null;
 }
 
 export interface ExecutionArtifactRecord {
@@ -357,7 +351,7 @@ export type JobAckStatus =
   | "unsupported_runtime"
   | "invalid_job";
 
-export type RuntimeControlAction = "pause" | "resume" | "cancel";
+export type RuntimeControlAction = RunAction;
 
 export interface RuntimeSocketMessageBase {
   protocol: RuntimeProtocolVersion;

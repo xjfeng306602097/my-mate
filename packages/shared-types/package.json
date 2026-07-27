@@ -21,6 +21,10 @@
     "./control-plane": {
       "types": "./dist/control-plane.d.ts",
       "import": "./dist/control-plane.js"
+    },
+    "./domain-lifecycle": {
+      "types": "./dist/domain-lifecycle.d.ts",
+      "import": "./dist/domain-lifecycle.js"
     }
   },
   "files": [
@@ -33,7 +37,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "npm run check:generated && tsc -p tsconfig.json --noEmit",
     "pretest": "npm run build",
-    "test": "node --test test/control-plane.test.mjs"
+    "test": "node --test test/control-plane.test.mjs test/domain-lifecycle.test.mjs"
   },
   "devDependencies": {
     "openapi-typescript": "^7.10.1",

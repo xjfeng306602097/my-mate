@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/conversation/task-checkpoint.schema.json",
+  "title": "Task Checkpoint",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "checkpoint_id": { "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "autonomy_mode": { "enum": ["review_first", "assisted", "autopilot"] },
+    "status": { "enum": ["in_progress", "resumable", "waiting_human", "completed", "failed", "superseded"] },
+    "reason": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "resume_attempts": { "type": "integer", "minimum": 0 },
+    "max_resume_attempts": { "type": "integer", "minimum": 1 },
+    "transitions": { "type": "array" },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "updated_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "completed_at": { "oneOf": [{ "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }, { "type": "null" }] }
+  },
+  "required": ["schema_version", "checkpoint_id", "workspace_id", "session_id", "autonomy_mode", "status", "reason", "version", "resume_attempts", "max_resume_attempts", "transitions", "created_at", "updated_at", "completed_at"],
+  "additionalProperties": true
+}

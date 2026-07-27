@@ -15,8 +15,18 @@
     "type": {
       "$ref": "../common/enums.schema.json#/$defs/nodeType"
     },
-    "agent_profile": {
+    "agent_id": {
       "type": ["string", "null"]
+    },
+    "agent_version": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "agent_binding_snapshot": {
+      "oneOf": [
+        { "$ref": "../agent/agent-binding-snapshot.schema.json" },
+        { "type": "null" }
+      ]
     },
     "allowed_skills": {
       "type": "array",
@@ -73,7 +83,7 @@
     "id",
     "name",
     "type",
-    "agent_profile",
+    "agent_id",
     "allowed_skills",
     "config",
     "retry_policy",

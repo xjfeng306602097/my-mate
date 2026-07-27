@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/orchestration/agent-dag.schema.json",
+  "title": "Agent DAG",
+  "type": "object",
+  "$defs": {
+    "node": {
+      "type": "object",
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "binding_snapshot": { "$ref": "../agent/agent-binding-snapshot.schema.json" },
+        "role": { "enum": ["orchestrator", "supervisor", "worker", "reviewer", "specialist"] },
+        "status": { "enum": ["queued", "accepted", "running", "blocked", "completed", "skipped", "failed", "cancelled"] },
+        "depends_on": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      },
+      "required": ["node_id", "task_id", "binding_snapshot", "role", "status", "depends_on"],
+      "additionalProperties": true
+    }
+  },
+  "properties": {
+    "schema_version": { "const": 1 },
+    "dag_id": { "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["draft", "ready", "running", "waiting_human", "completed", "failed", "cancelled"] },
+    "orchestrator_binding": { "$ref": "../agent/agent-binding-snapshot.schema.json" },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "state_schema": { "type": "object" },
+    "state": { "type": "object" },
+    "state_revision": { "type": "integer", "minimum": 0 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "updated_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }
+  },
+  "required": ["schema_version", "dag_id", "workspace_id", "session_id", "status", "orchestrator_binding", "nodes", "state_schema", "state", "state_revision", "revision", "created_at", "updated_at"],
+  "additionalProperties": true
+}

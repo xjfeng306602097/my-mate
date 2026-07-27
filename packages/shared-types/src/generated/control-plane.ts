@@ -1,59 +1,14 @@
 // This file is generated from openapi/control-plane.openapi.yaml.
 // Run `npm --prefix packages/shared-types run generate:control-plane` to update it.
 export type paths = {
-    readonly "/api/agents/{profileId}/hosting": {
+    readonly "/api/agent-dags": {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
         };
-        readonly get?: never;
-        /** Update OpenClaw hosting fields for an agent profile */
-        readonly put: {
-            readonly parameters: {
-                readonly query?: never;
-                readonly header?: never;
-                readonly path: {
-                    readonly profileId: string;
-                };
-                readonly cookie?: never;
-            };
-            readonly requestBody: {
-                readonly content: {
-                    readonly "application/json": components["schemas"]["UpdateAgentHostingRequest"];
-                };
-            };
-            readonly responses: {
-                /** @description Updated agent hosting binding */
-                readonly 200: {
-                    headers: {
-                        readonly [name: string]: unknown;
-                    };
-                    content: {
-                        readonly "application/json": {
-                            readonly agent_hosting: components["schemas"]["AgentHostingSummary"];
-                            readonly profile: components["schemas"]["AgentProfile"];
-                        };
-                    };
-                };
-            };
-        };
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/api/agents/hosting": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /** List OpenClaw agent hosting bindings */
+        /** List durable Agent DAGs */
         readonly get: {
             readonly parameters: {
                 readonly query?: never;
@@ -63,19 +18,728 @@ export type paths = {
             };
             readonly requestBody?: never;
             readonly responses: {
-                /** @description Agent hosting summary */
+                /** @description Agent DAGs */
                 readonly 200: {
                     headers: {
                         readonly [name: string]: unknown;
                     };
                     content: {
-                        readonly "application/json": components["schemas"]["AgentHostingSummary"];
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["AgentDag"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        /** Create a durable Agent DAG */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Agent DAG */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["AgentDag"];
+                    };
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-dags/{dagId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get DAG nodes, Agent Tasks, and Agent Protocol messages */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly dagId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent DAG detail */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly dag: components["schemas"]["AgentDag"];
+                            readonly gates: readonly components["schemas"]["AgentDagGate"][];
+                            readonly messages: readonly components["schemas"]["AgentMessage"][];
+                            readonly tasks: readonly components["schemas"]["AgentTask"][];
+                        };
                     };
                 };
             };
         };
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-dags/{dagId}/cancel": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Cancel an Agent DAG and cascade to active children */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly dagId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent DAG cancelled */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-dags/{dagId}/gates": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List durable Human Gates for an Agent DAG */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly dagId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent DAG Gates */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["AgentDagGate"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-dags/{dagId}/gates/{gateId}/resolve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Resolve an Agent DAG Human Gate and optionally resume execution */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly dagId: string;
+                    readonly gateId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly approved: boolean;
+                        readonly response?: {
+                            readonly [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Agent DAG Gate resolved */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-dags/{dagId}/retry": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Reset failed or blocked nodes for recovery */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly dagId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent DAG ready for retry */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-dags/{dagId}/run": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Run ready Agent DAG nodes within policy budgets */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly dagId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent DAG run result */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-dags/{dagId}/tasks": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Add a version-pinned Agent Task node */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly dagId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Agent DAG Task added */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-runs": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List AgentRun lifecycle evidence */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent runs */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["AgentRun"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-runs/{agentRunId}/events": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List ordered user-facing activity for one AgentRun */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: {
+                    readonly after_sequence?: number;
+                    readonly limit?: number;
+                };
+                readonly header?: never;
+                readonly path: {
+                    readonly agentRunId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Ordered AgentRun activity page */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly after_sequence: number;
+                            readonly has_more: boolean;
+                            readonly items: readonly components["schemas"]["AgentRunEvent"][];
+                            readonly next_after_sequence: number;
+                        };
+                    };
+                };
+                /** @description AgentRun not found */
+                readonly 404: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-runs/{agentRunId}/events/stream": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Stream ordered AgentRun activity with resumable SSE ids */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: {
+                    readonly after_sequence?: number;
+                };
+                readonly header?: {
+                    readonly "Last-Event-ID"?: number;
+                };
+                readonly path: {
+                    readonly agentRunId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description SSE stream. Each agent.event uses the durable sequence as its event id. */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "text/event-stream": string;
+                    };
+                };
+                /** @description AgentRun not found */
+                readonly 404: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agent-teams": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List version-pinned Agent Teams */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent Teams */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["AgentTeam"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        /** Create or update an Agent Team */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Agent Team */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["AgentTeam"];
+                    };
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agents": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List versioned Agents, published versions, deployments, and Workflow migration diagnostics */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent registry */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly deployments: readonly {
+                                readonly [key: string]: unknown;
+                            }[];
+                            readonly items: readonly components["schemas"]["AgentDefinition"][];
+                            readonly versions: readonly components["schemas"]["AgentVersion"][];
+                            readonly workflow_migration: {
+                                readonly [key: string]: unknown;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        /** Publish a new Agent definition or immutable version */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly agent_id?: string;
+                        readonly description?: string;
+                        readonly name: string;
+                        readonly version?: {
+                            readonly [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Agent version published */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agents/{agentId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get an Agent definition and selected version */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: {
+                    readonly version?: number;
+                };
+                readonly header?: never;
+                readonly path: {
+                    readonly agentId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent definition and version */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agents/{agentId}/bind": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Resolve an immutable Agent binding snapshot */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly agentId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Agent binding snapshot */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["AgentBindingSnapshot"];
+                    };
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/agents/{agentId}/disable": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Disable an Agent definition */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly agentId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Agent disabled */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["AgentDefinition"];
+                    };
+                };
+            };
+        };
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -1494,6 +2158,92 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/notifications": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List Workspace in-app notifications */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: {
+                    readonly status?: "active" | "unread" | "all";
+                };
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Notification list */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["Notification"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/notifications/{notificationId}/{action}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Mark a notification read or dismiss it */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly action: "read" | "dismiss";
+                    readonly notificationId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Updated notification */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["Notification"];
+                    };
+                };
+                /** @description Notification not found */
+                readonly 404: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/planner/candidate-plan": {
         readonly parameters: {
             readonly query?: never;
@@ -1696,140 +2446,6 @@ export type paths = {
         readonly get: operations["listLocalProjects"];
         readonly put?: never;
         readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/api/registry/agent-profiles": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /** List agent profiles */
-        readonly get: {
-            readonly parameters: {
-                readonly query?: never;
-                readonly header?: never;
-                readonly path?: never;
-                readonly cookie?: never;
-            };
-            readonly requestBody?: never;
-            readonly responses: {
-                /** @description Agent profiles */
-                readonly 200: {
-                    headers: {
-                        readonly [name: string]: unknown;
-                    };
-                    content: {
-                        readonly "application/json": {
-                            readonly items: readonly components["schemas"]["AgentProfile"][];
-                        };
-                    };
-                };
-            };
-        };
-        readonly put?: never;
-        /** Upsert agent profile */
-        readonly post: {
-            readonly parameters: {
-                readonly query?: never;
-                readonly header?: never;
-                readonly path?: never;
-                readonly cookie?: never;
-            };
-            readonly requestBody: {
-                readonly content: {
-                    readonly "application/json": components["schemas"]["AgentProfile"];
-                };
-            };
-            readonly responses: {
-                /** @description Agent profile upserted */
-                readonly 201: {
-                    headers: {
-                        readonly [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/api/registry/agent-profiles/{profileId}": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /** Get agent profile */
-        readonly get: {
-            readonly parameters: {
-                readonly query?: never;
-                readonly header?: never;
-                readonly path: {
-                    readonly profileId: string;
-                };
-                readonly cookie?: never;
-            };
-            readonly requestBody?: never;
-            readonly responses: {
-                /** @description Agent profile */
-                readonly 200: {
-                    headers: {
-                        readonly [name: string]: unknown;
-                    };
-                    content: {
-                        readonly "application/json": components["schemas"]["AgentProfile"];
-                    };
-                };
-            };
-        };
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/api/registry/agent-profiles/{profileId}/disable": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        readonly put?: never;
-        /** Disable agent profile */
-        readonly post: {
-            readonly parameters: {
-                readonly query?: never;
-                readonly header?: never;
-                readonly path: {
-                    readonly profileId: string;
-                };
-                readonly cookie?: never;
-            };
-            readonly requestBody?: never;
-            readonly responses: {
-                /** @description Disabled */
-                readonly 200: {
-                    headers: {
-                        readonly [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -3326,6 +3942,242 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/schedules": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List Workspace schedules */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Schedule list */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["UserSchedule"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        /** Create a Workspace schedule */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": components["schemas"]["UserScheduleRequest"];
+                };
+            };
+            readonly responses: {
+                /** @description Created schedule */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["UserSchedule"];
+                    };
+                };
+                /** @description Invalid schedule */
+                readonly 400: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/schedules/{scheduleId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post?: never;
+        /** Delete a Workspace schedule while retaining run history */
+        readonly delete: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly scheduleId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Schedule deleted */
+                readonly 204: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Schedule not found */
+                readonly 404: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly options?: never;
+        readonly head?: never;
+        /** Update or enable a Workspace schedule */
+        readonly patch: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly scheduleId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Updated schedule */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["UserSchedule"];
+                    };
+                };
+                /** @description Schedule not found */
+                readonly 404: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly trace?: never;
+    };
+    readonly "/api/schedules/{scheduleId}/run": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Run a schedule immediately through the normal Conversation boundary */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly scheduleId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Completed or paused schedule run */
+                readonly 202: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["UserScheduleRun"];
+                    };
+                };
+                /** @description Schedule is already running */
+                readonly 409: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/schedules/{scheduleId}/runs": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List durable schedule execution history */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: {
+                    readonly limit?: number;
+                };
+                readonly header?: never;
+                readonly path: {
+                    readonly scheduleId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Schedule run list */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["UserScheduleRun"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/session-recall/search": {
         readonly parameters: {
             readonly query?: never;
@@ -3704,6 +4556,7 @@ export type paths = {
                     };
                     content: {
                         readonly "application/json": {
+                            readonly agent_dag: components["schemas"]["AgentDag"];
                             readonly message: Record<string, never>;
                             readonly proposal: components["schemas"]["DagProposalRecord"];
                             readonly session: Record<string, never>;
@@ -3968,6 +4821,724 @@ export type paths = {
         readonly get: operations["getSessionWorkspaceBinding"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/evaluations": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List Skill quality evaluations */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Skill quality evaluations */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly put?: never;
+        /** Record a Skill acceptance evaluation */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Recorded Skill evaluation */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/hermes/inspect": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Inspect Hermes Skill compatibility without installation */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Hermes compatibility report */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/install": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Install a local Skill package into the selected Workspace */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        /** @default false */
+                        readonly approve_permission_delta?: boolean;
+                        readonly source_path: string;
+                        readonly workspace_id?: string;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Installed Skill package */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/invocations": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List Skill invocation history */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Skill invocation history */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["SkillInvocationRecord"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/lockfile": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Read locked Skill versions and digests */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Skill lockfile */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/lockfile/sync": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Synchronize the Workspace Skill lockfile */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Synchronized Skill lockfile */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/marketplace/install": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Scan and install a package from a governed Skill source */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        /** @default false */
+                        readonly approve_permission_delta?: boolean;
+                        readonly source_id: string;
+                        readonly source_path: string;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Installed Skill package */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Permission delta requires explicit review */
+                readonly 409: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/marketplace/scan": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Quarantine-scan a Skill package */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody: {
+                readonly content: {
+                    readonly "application/json": {
+                        readonly source_id?: string;
+                        readonly source_path: string;
+                    };
+                };
+            };
+            readonly responses: {
+                /** @description Skill package scan result */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/observability": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Read Skill success, latency, compatibility, and Curator recommendations */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Skill observability summary */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/packages": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List executable Skill packages for the selected Workspace */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Skill package catalog */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": {
+                            readonly items: readonly components["schemas"]["SkillPackageStatus"][];
+                        };
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/packages/{skillId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Read one Skill package and its exact instructions */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly skillId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Skill package detail */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/packages/{skillId}/disable": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Disable a Skill package */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly skillId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Disabled Skill package */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/packages/{skillId}/enable": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Enable a Skill package */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly skillId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Enabled Skill package */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/packages/{skillId}/rollback": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Roll back to a retained Skill package version */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly skillId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Restored Skill package */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/packages/{skillId}/versions": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List retained Skill package versions */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    readonly skillId: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Retained Skill versions */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/profile": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Read the Workspace Skill activation and trust policy */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Workspace Skill profile */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["SkillWorkspaceProfile"];
+                    };
+                };
+            };
+        };
+        /** Update the Workspace Skill activation and trust policy */
+        readonly put: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Updated Workspace Skill profile */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/reload": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Reload Skill package discovery */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Reloaded package catalog */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/skill-host/sources": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List Skill catalog sources */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Skill catalog sources */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        readonly put?: never;
+        /** Register a governed Skill catalog source */
+        readonly post: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description Registered Skill catalog source */
+                readonly 201: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -4405,47 +5976,276 @@ export type paths = {
 export type webhooks = Record<string, never>;
 export type components = {
     schemas: {
-        readonly AgentHostingSummary: {
-            readonly ownership: {
-                /** @enum {string} */
-                readonly execution_runtime: "openclaw";
-                /** @enum {string} */
-                readonly orchestration_binding: "my_mate";
+        readonly AgentBindingSnapshot: {
+            readonly agent_id: string;
+            readonly agent_name: string;
+            readonly agent_role: components["schemas"]["AgentRole"];
+            readonly agent_version: number;
+            readonly artifact_policy: {
+                readonly [key: string]: unknown;
             };
-            readonly profiles: readonly {
-                readonly default_skills: readonly string[];
-                readonly health: {
-                    readonly detail: string;
-                    /** @enum {string} */
-                    readonly status: "ready" | "needs_binding" | "disabled";
-                };
-                /** @enum {string} */
-                readonly managed_by: "my_mate_registry";
-                readonly model?: string | null;
-                readonly name: string;
-                readonly openclaw_agent_id: string;
-                readonly profile_id: string;
-                readonly provider?: string | null;
-                readonly runtime_mode?: string | null;
-                /** @enum {string} */
-                readonly status: "active" | "disabled";
-            }[];
+            readonly autonomy_ceiling: components["schemas"]["AutonomyMode"];
+            readonly binding_id: string;
+            /** @enum {string} */
+            readonly binding_mode: "pinned" | "follow_latest";
+            readonly capability_policy?: {
+                readonly [key: string]: unknown;
+            };
+            readonly connection_revision: string;
+            readonly context_policy: {
+                readonly [key: string]: unknown;
+            };
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly delivery_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly memory_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly model: string;
+            readonly model_deployment_id: string;
+            readonly model_routing_policy?: {
+                readonly [key: string]: unknown;
+            };
+            readonly provider_connection_id: string;
+            readonly provider_id: string;
+            readonly responsibility?: string;
+            readonly runtime_policy: {
+                readonly [key: string]: unknown;
+            };
+            /** @constant */
+            readonly schema_version: 2;
+            readonly skill_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly snapshot_digest: string;
+            readonly system_prompt: string;
+            readonly tool_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly workspace_policy: {
+                readonly [key: string]: unknown;
+            };
         };
-        readonly AgentProfile: {
-            readonly agent_runtime?: string;
-            readonly allowed_tools: readonly string[];
-            readonly default_skills: readonly string[];
-            readonly disallowed_skills?: readonly string[];
-            readonly harness_profile?: string | null;
-            readonly metadata?: Record<string, never>;
+        readonly AgentDag: {
+            readonly budget_usage: {
+                readonly [key: string]: unknown;
+            };
+            readonly dag_id: string;
+            readonly delegation_depth: number;
+            readonly nodes: readonly {
+                readonly [key: string]: unknown;
+            }[];
+            readonly objective: string;
+            readonly orchestrator_binding: components["schemas"]["AgentBindingSnapshot"];
+            readonly parent_dag_id: string | null;
+            readonly policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly revision: number;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly session_id: string;
+            readonly state: {
+                readonly [key: string]: unknown;
+            };
+            readonly state_revision: number;
+            readonly state_schema: {
+                readonly [key: string]: unknown;
+            };
+            readonly status: components["schemas"]["AgentDagStatus"];
+            readonly team_id: string | null;
+            readonly title: string;
+            readonly workspace_id: string;
+        } & {
+            readonly [key: string]: unknown;
+        };
+        readonly AgentDagGate: {
+            readonly auto_resume: boolean;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly dag_id: string;
+            readonly gate_id: string;
+            /** @enum {string} */
+            readonly gate_type: "approval" | "input";
+            readonly input_schema: {
+                readonly [key: string]: unknown;
+            };
+            readonly node_id: string;
+            readonly prompt: string;
+            /** Format: date-time */
+            readonly resolved_at: string | null;
+            readonly resolved_by: string | null;
+            readonly response: {
+                readonly [key: string]: unknown;
+            } | null;
+            /** @enum {string} */
+            readonly status: "pending" | "approved" | "rejected" | "submitted" | "cancelled";
+            readonly task_id: string;
+            readonly workspace_id: string;
+        };
+        /** @enum {string} */
+        readonly AgentDagStatus: "draft" | "ready" | "running" | "waiting_human" | "completed" | "failed" | "cancelled";
+        readonly AgentDefinition: {
+            readonly agent_id: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly description: string;
+            readonly latest_version: number;
+            readonly metadata: {
+                readonly [key: string]: unknown;
+            };
             readonly name: string;
-            readonly openclaw_agent_id: string;
-            readonly policy_tags?: readonly string[];
-            readonly profile_id: string;
-            readonly provider_connection_id?: string | null;
-            readonly runtime_agent_ref?: string;
+            readonly published_version: number | null;
             /** @enum {string} */
             readonly status: "active" | "disabled";
+            /** Format: date-time */
+            readonly updated_at: string;
+            readonly workspace_id: string;
+        };
+        readonly AgentMessage: {
+            readonly artifact_refs: readonly {
+                readonly [key: string]: unknown;
+            }[];
+            readonly causation_id: string | null;
+            readonly correlation_id: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly dag_id: string;
+            readonly from_agent_run_id: string | null;
+            readonly idempotency_key: string;
+            readonly message_id: string;
+            /** @enum {string} */
+            readonly message_type: "task.request" | "task.accepted" | "task.progress" | "task.blocked" | "artifact.published" | "task.result" | "task.failed" | "task.cancel" | "task.steer" | "gate.requested" | "gate.resolved" | "agent.heartbeat";
+            readonly payload: {
+                readonly [key: string]: unknown;
+            };
+            /** @constant */
+            readonly schema_version: 1;
+            readonly task_id: string;
+            readonly to_agent_run_id: string | null;
+            readonly workspace_id: string;
+        };
+        /** @enum {string} */
+        readonly AgentRole: "orchestrator" | "supervisor" | "worker" | "reviewer" | "specialist";
+        readonly AgentRun: {
+            readonly agent_run_id: string;
+            readonly attempt: number;
+            readonly binding_snapshot: components["schemas"]["AgentBindingSnapshot"];
+            /** @enum {string} */
+            readonly kind: "conversation" | "workflow_node" | "schedule" | "continuation" | "delegation" | "review";
+            readonly node_run_id: string | null;
+            readonly parent_agent_run_id: string | null;
+            readonly session_id: string | null;
+            readonly status: components["schemas"]["AgentRunStatus"];
+            readonly workflow_run_id: string | null;
+            readonly workspace_id: string;
+        } & {
+            readonly [key: string]: unknown;
+        };
+        readonly AgentRunEvent: {
+            readonly agent_run_id: string;
+            readonly child_session_id: string | null;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly dag_id: string;
+            readonly event_id: string;
+            readonly idempotency_key: string | null;
+            readonly node_id: string;
+            readonly payload: {
+                readonly [key: string]: unknown;
+            };
+            readonly sequence: number;
+            /** @enum {string} */
+            readonly status: "info" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+            readonly summary: string;
+            readonly task_id: string;
+            /** @enum {string} */
+            readonly type: "task.assigned" | "agent.started" | "agent.progress" | "agent.message.delta" | "agent.message.completed" | "tool.started" | "tool.waiting_approval" | "tool.completed" | "tool.failed" | "checkpoint.saved" | "artifact.created" | "handoff.returned" | "agent.completed" | "agent.failed" | "agent.cancelled";
+            readonly workspace_id: string;
+        };
+        /** @enum {string} */
+        readonly AgentRunStatus: "queued" | "running" | "waiting_human" | "completed" | "failed" | "cancelled";
+        readonly AgentTask: {
+            readonly assigned_agent_run_id: string | null;
+            readonly binding_snapshot: components["schemas"]["AgentBindingSnapshot"];
+            readonly budget: {
+                readonly [key: string]: unknown;
+            };
+            readonly dag_id: string;
+            readonly depth: number;
+            readonly node_id: string;
+            readonly objective: string;
+            readonly parent_task_id: string | null;
+            readonly permission_ceiling: {
+                readonly [key: string]: unknown;
+            };
+            readonly status: components["schemas"]["AgentTaskStatus"];
+            readonly task_id: string;
+            readonly title: string;
+            readonly workspace_id: string;
+        } & {
+            readonly [key: string]: unknown;
+        };
+        /** @enum {string} */
+        readonly AgentTaskStatus: "queued" | "accepted" | "running" | "blocked" | "completed" | "skipped" | "failed" | "cancelled";
+        readonly AgentTeam: {
+            readonly description: string;
+            readonly members: readonly {
+                readonly agent_id: string;
+                readonly agent_version: number | null;
+                readonly capability_tags: readonly string[];
+                readonly member_id: string;
+                readonly required: boolean;
+                readonly role: components["schemas"]["AgentRole"];
+            }[];
+            readonly name: string;
+            readonly orchestrator_member_id: string;
+            readonly policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly reviewer_member_ids: readonly string[];
+            /** @enum {string} */
+            readonly status: "active" | "disabled";
+            readonly team_id: string;
+            readonly workspace_id: string;
+        } & {
+            readonly [key: string]: unknown;
+        };
+        readonly AgentVersion: {
+            readonly agent_id: string;
+            /** @enum {string} */
+            readonly autonomy_ceiling: "review_first" | "assisted" | "autopilot";
+            readonly context_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly memory_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly model_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly role: components["schemas"]["AgentRole"];
+            readonly runtime_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly skill_policy: {
+                readonly [key: string]: unknown;
+            };
+            /** @enum {string} */
+            readonly status: "draft" | "published" | "retired";
+            readonly system_prompt: string;
+            readonly tool_policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly version: number;
+            readonly workspace_id: string;
+            readonly workspace_policy: {
+                readonly [key: string]: unknown;
+            };
+        } & {
+            readonly [key: string]: unknown;
         };
         readonly ApprovalRecord: {
             readonly approval_id: string;
@@ -4496,6 +6296,8 @@ export type components = {
             readonly schema_version: 1;
             readonly selected_workspace: components["schemas"]["WorkspaceMembership"];
         };
+        /** @enum {string} */
+        readonly AutonomyMode: "review_first" | "assisted" | "autopilot";
         readonly AutopilotController: {
             /** Format: date-time */
             readonly completed_at: string | null;
@@ -4533,6 +6335,8 @@ export type components = {
         };
         readonly ConfirmDagProposalRequest: {
             readonly confirmed_by?: string;
+            /** @description Start the compiled Agent DAG immediately after confirmation. */
+            readonly start?: boolean;
         };
         readonly ConfirmDagProposalResponse: {
             readonly message: Record<string, never>;
@@ -4626,7 +6430,11 @@ export type components = {
             readonly updated_at: string;
         };
         readonly CreateDagProposalRequest: {
+            readonly dag_definition?: components["schemas"]["DagDefinition"];
             readonly inputs?: Record<string, never>;
+            readonly orchestration_decision?: components["schemas"]["OrchestrationDecision"];
+            /** @enum {string} */
+            readonly source_kind?: "template" | "model" | "manual";
             readonly source_message_id?: string;
             /** @enum {string} */
             readonly source_option?: "primary" | "alternative";
@@ -4715,7 +6523,101 @@ export type components = {
             readonly name: string;
             readonly workspace_id: string;
         };
+        readonly DagDefinition: {
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly definition_id: string;
+            readonly initial_state: {
+                readonly [key: string]: unknown;
+            };
+            readonly metadata: {
+                readonly [key: string]: unknown;
+            };
+            readonly nodes: readonly components["schemas"]["DagDefinitionNode"][];
+            readonly objective: string;
+            readonly policy: {
+                readonly [key: string]: unknown;
+            };
+            readonly revision: number;
+            /** @constant */
+            readonly schema_version: 1;
+            readonly source: {
+                /** @enum {string} */
+                readonly kind: "template" | "model" | "manual";
+                readonly message_id: string | null;
+                readonly template_id: string | null;
+            };
+            readonly state_schema: {
+                readonly [key: string]: unknown;
+            };
+            readonly title: string;
+        };
+        readonly DagDefinitionAgentSelector: {
+            readonly agent_id: string | null;
+            readonly agent_version: number | null;
+            readonly capability_tags: readonly string[];
+            readonly role: components["schemas"]["AgentRole"] | null;
+        };
+        readonly DagDefinitionNode: {
+            readonly acceptance_criteria?: readonly string[];
+            readonly agent_selector: components["schemas"]["DagDefinitionAgentSelector"] | null;
+            readonly allowed_skills: readonly string[];
+            readonly allowed_tools: readonly string[];
+            /** @enum {string} */
+            readonly autonomy_mode: "review_first" | "assisted" | "autopilot";
+            readonly condition: {
+                /** @enum {string} */
+                readonly operator: "exists" | "truthy" | "equals" | "not_equals" | "contains";
+                readonly path: string;
+                readonly value?: unknown;
+            } | null;
+            readonly depends_on: readonly string[];
+            readonly human_gate: {
+                readonly auto_resume: boolean;
+                /** @enum {string} */
+                readonly gate_type: "approval" | "input";
+                readonly input_schema: {
+                    readonly [key: string]: unknown;
+                };
+                readonly prompt: string;
+            } | null;
+            readonly input_contract: {
+                readonly [key: string]: unknown;
+            };
+            /** @enum {string} */
+            readonly join_policy: "all" | "any" | "quorum";
+            readonly join_quorum: number | null;
+            /** @enum {string} */
+            readonly kind: "agent_task" | "reviewer" | "human_gate" | "condition" | "fanout" | "combine" | "end";
+            readonly max_runtime_seconds: number | null;
+            readonly max_tool_rounds: number | null;
+            readonly metadata: {
+                readonly [key: string]: unknown;
+            };
+            readonly name: string;
+            readonly node_id: string;
+            readonly objective: string;
+            readonly output_contract: {
+                readonly [key: string]: unknown;
+            };
+            readonly retry_policy: {
+                readonly backoff_seconds: number;
+                readonly max_attempts: number;
+            };
+            readonly reviewer_node_id: string | null;
+            readonly state_input: {
+                readonly [key: string]: string;
+            };
+            readonly state_output: readonly {
+                /** @enum {string} */
+                readonly reducer: "replace" | "merge" | "append";
+                readonly source_path: string;
+                readonly target_path: string;
+            }[];
+            readonly verification_steps?: readonly string[];
+        };
         readonly DagProposalAssignment: {
+            readonly agent_id: string | null;
             readonly allowed_skills: readonly string[];
             readonly allowed_tools: readonly string[];
             readonly input_context: string | null;
@@ -4725,31 +6627,37 @@ export type components = {
             readonly node_name: string | null;
             readonly output_contract: string | null;
             readonly provider: string | null;
-            readonly subagent_profile_id: string | null;
         };
         readonly DagProposalPlannerContext: {
             readonly fallback_reason: string | null;
             readonly fallback_used: boolean;
             readonly model: string | null;
-            readonly orchestrator_profile_id: string | null;
+            readonly orchestrator_agent_id: string | null;
             readonly provider_id: string | null;
             readonly system_prompt_summary: string | null;
         };
         readonly DagProposalRecord: {
             readonly assignments: readonly components["schemas"]["DagProposalAssignment"][];
             readonly checklist: readonly string[];
+            readonly compiled_agent_dag_id: string | null;
+            /** Format: date-time */
+            readonly compiled_at: string | null;
             /** Format: date-time */
             readonly confirmed_at: string | null;
             readonly confirmed_by: string | null;
             /** Format: date-time */
             readonly created_at: string;
+            readonly dag_definition: components["schemas"]["DagDefinition"] | null;
             readonly dag_draft: Record<string, never>;
             readonly metadata: Record<string, never>;
             readonly mission_id: string;
             readonly mission_spec_contract: Record<string, never> | null;
-            readonly orchestrator_profile_id: string | null;
+            readonly orchestration_decision: components["schemas"]["OrchestrationDecision"] | null;
+            readonly orchestrator_agent_id: string | null;
             readonly planner_context: components["schemas"]["DagProposalPlannerContext"];
             readonly proposal_id: string;
+            /** @constant */
+            readonly protocol_version: 1;
             /** Format: date-time */
             readonly rejected_at: string | null;
             readonly rejected_by: string | null;
@@ -4973,11 +6881,19 @@ export type components = {
             readonly model_probe?: boolean;
             readonly provider_connection_id?: string;
             /** @enum {string} */
-            readonly runtime?: "local" | "docker-worker" | "openclaw" | "codex" | "claude-sdk" | "kimi" | "glm";
+            readonly runtime?: "local" | "docker-worker" | "codex" | "claude-sdk" | "kimi" | "glm";
         };
         readonly Error: {
             readonly code: string;
+            readonly details?: {
+                readonly [key: string]: unknown;
+            };
+            readonly domain: string;
             readonly message: string;
+            readonly remediation: string;
+            readonly retryable: boolean;
+            /** @enum {string} */
+            readonly severity: "info" | "warning" | "error" | "critical";
         };
         readonly EvaluationFinding: components["schemas"]["ScorecardFinding"] & {
             /** @enum {string} */
@@ -5134,7 +7050,7 @@ export type components = {
             readonly required_approvals: number;
             readonly resource_id: string;
             /** @enum {string} */
-            readonly resource_type: "agent_profile" | "skill" | "template";
+            readonly resource_type: "agent" | "skill" | "template";
             readonly result: {
                 readonly [key: string]: unknown;
             } | null;
@@ -5167,7 +7083,7 @@ export type components = {
             readonly workspace_id: string;
         };
         /** @enum {string} */
-        readonly GovernanceProtectedAction: "agent_profile.upsert" | "agent_profile.disable" | "skill.upsert" | "skill.disable" | "template.publish" | "template.archive";
+        readonly GovernanceProtectedAction: "agent.upsert" | "agent.disable" | "skill.upsert" | "skill.disable" | "template.publish" | "template.archive";
         readonly HumanInputRecord: {
             readonly input_request_id: string;
             readonly input_schema: {
@@ -5198,6 +7114,7 @@ export type components = {
             readonly template_id?: string;
         };
         readonly LegacyDagProposalAssignment: {
+            readonly agent_id: string | null;
             readonly allowed_skills: readonly string[];
             readonly allowed_tools: readonly string[];
             readonly input_context: string | null;
@@ -5207,13 +7124,12 @@ export type components = {
             readonly node_name: string | null;
             readonly output_contract: string | null;
             readonly provider: string | null;
-            readonly subagent_profile_id: string | null;
         };
         readonly LegacyDagProposalPlannerContext: {
             readonly fallback_reason: string | null;
             readonly fallback_used: boolean;
             readonly model: string | null;
-            readonly orchestrator_profile_id: string | null;
+            readonly orchestrator_agent_id: string | null;
             readonly provider_id: string | null;
             readonly system_prompt_summary: string | null;
         };
@@ -5224,7 +7140,7 @@ export type components = {
             readonly metadata: Record<string, never>;
             readonly mission_id: string;
             readonly mission_spec_contract?: Record<string, never> | null;
-            readonly orchestrator_profile_id?: string | null;
+            readonly orchestrator_agent_id?: string | null;
             readonly planner_context: components["schemas"]["DagProposalPlannerContext"];
             readonly proposal_id: string;
             readonly route_compare?: Record<string, never> | null;
@@ -5286,6 +7202,35 @@ export type components = {
         };
         readonly LocalProjectListResponse: {
             readonly items: readonly components["schemas"]["LocalProject"][];
+        };
+        readonly LongTaskRuntimeState: {
+            /** @enum {string} */
+            readonly cost_status: "unavailable" | "partial" | "complete";
+            readonly cumulative_costs: {
+                readonly [key: string]: string;
+            };
+            readonly cumulative_estimated_input_tokens: number;
+            readonly cumulative_input_tokens: number;
+            readonly cumulative_output_tokens: number;
+            readonly cumulative_reported_input_tokens: number;
+            readonly cumulative_total_tokens: number;
+            readonly elapsed_ms: number;
+            readonly exhausted: boolean;
+            /** @enum {string|null} */
+            readonly exhausted_reason: "wall_time" | "turn_attempts" | "total_tokens" | null;
+            /** @enum {string} */
+            readonly input_token_accounting: "reported" | "estimated" | "mixed" | "unavailable";
+            readonly max_total_tokens: number;
+            readonly max_turn_attempts: number;
+            readonly max_wall_time_ms: number;
+            readonly resume_attempts: number;
+            /** @constant */
+            readonly schema_version: 1;
+            /** Format: date-time */
+            readonly started_at: string;
+            readonly turn_attempts: number;
+            /** Format: date-time */
+            readonly updated_at: string;
         };
         readonly McpConnectorPreset: {
             readonly description: string;
@@ -6186,15 +8131,16 @@ export type components = {
             readonly updated_at: string;
         };
         readonly MobileTask: {
+            readonly agent_id: string | null;
             readonly attempt: number;
             readonly execution_ref: Record<string, never>;
             readonly finished_at: string | null;
             readonly name: string;
             readonly node_id: string;
             readonly node_run_id: string;
-            readonly openclaw_agent_id: string | null;
             readonly progress: Record<string, never>;
             readonly registry_provenance: components["schemas"]["RegistryProvenance"];
+            readonly runtime_agent_ref: string | null;
             readonly started_at: string | null;
             readonly status: string;
             readonly type: string;
@@ -6230,6 +8176,58 @@ export type components = {
             readonly synthetic?: boolean;
             /** @constant */
             readonly type: "node_handoff";
+        };
+        /** @enum {string} */
+        readonly NodeStatus: "pending" | "ready" | "running" | "waiting_human" | "completed" | "failed" | "skipped" | "cancelled";
+        readonly Notification: {
+            readonly body: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            /** Format: date-time */
+            readonly dismissed_at: string | null;
+            /** @enum {string} */
+            readonly kind: "schedule_completed" | "schedule_failed" | "approval_required" | "human_input_required";
+            readonly notification_id: string;
+            /** Format: date-time */
+            readonly read_at: string | null;
+            readonly resource_id: string | null;
+            readonly resource_type: string | null;
+            readonly schedule_id: string | null;
+            readonly schedule_run_id: string | null;
+            readonly session_id: string | null;
+            /** @enum {string} */
+            readonly severity: "info" | "success" | "warning" | "error";
+            readonly title: string;
+            readonly workspace_id: string;
+        };
+        readonly OrchestrationDecision: {
+            readonly approval_required: boolean;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly decision_id: string;
+            readonly evidence?: {
+                readonly matched_template_id?: string | null;
+                readonly rationale: readonly string[];
+                readonly scores: {
+                    readonly direct: number;
+                    readonly dynamic: number;
+                    readonly manual: number;
+                    readonly template: number;
+                };
+                readonly signals: readonly string[];
+            };
+            readonly mission_spec_id: string | null;
+            /** @enum {string} */
+            readonly mode: "direct" | "template" | "dynamic" | "manual";
+            readonly policy_version?: string;
+            readonly reason: string;
+            readonly required_capabilities: readonly string[];
+            readonly requires_dag: boolean;
+            /** @enum {string} */
+            readonly risk_level: "low" | "medium" | "high";
+            /** @constant */
+            readonly schema_version: 1;
+            readonly selected_template_id: string | null;
         };
         readonly PlannerCandidatePlanRequest: {
             readonly inputs: Record<string, never>;
@@ -6268,23 +8266,22 @@ export type components = {
             readonly validation: components["schemas"]["PlannerValidationResult"];
         };
         readonly PlannerRegistryRecommendation: {
-            readonly agent_profile_id: string | null;
-            readonly agent_profile_name: string | null;
+            readonly agent_id: string | null;
+            readonly agent_name: string | null;
             readonly node_id: string;
             readonly node_name: string;
-            readonly openclaw_agent_id: string | null;
             readonly reason: string;
+            readonly runtime_agent_ref: string | null;
             readonly score: number;
             readonly skill_ids: readonly string[];
             readonly warnings: readonly string[];
         };
         readonly PlannerRegistryValidation: {
-            readonly disabled_agent_profile_count?: number;
+            readonly disabled_agent_count?: number;
             readonly disabled_skill_count?: number;
             readonly disallowed_skill_count?: number;
             readonly executable_node_count?: number;
-            readonly missing_agent_profile_count?: number;
-            readonly missing_openclaw_agent_count?: number;
+            readonly missing_agent_count?: number;
             readonly missing_skill_count?: number;
             readonly registry_bound_node_count?: number;
             readonly registry_bound_skill_count?: number;
@@ -6314,11 +8311,11 @@ export type components = {
         };
         readonly PlannerValidationResult: {
             readonly details: readonly {
-                readonly agent_profile_id: string | null;
+                readonly agent_id: string | null;
                 /** @enum {string} */
                 readonly category: "required_input" | "registry" | "graph" | "other";
                 /** @enum {string} */
-                readonly code: "missing_required_input" | "missing_agent_profile" | "missing_openclaw_agent" | "unknown_agent_profile" | "disabled_agent_profile" | "unknown_skill" | "disabled_skill" | "disallowed_skill" | "no_ready_frontier" | "no_terminal_node";
+                readonly code: "missing_required_input" | "missing_agent" | "unknown_agent" | "disabled_agent" | "unknown_skill" | "disabled_skill" | "disallowed_skill" | "no_ready_frontier" | "no_terminal_node";
                 readonly field: string | null;
                 readonly message: string;
                 readonly node_id: string | null;
@@ -6326,12 +8323,12 @@ export type components = {
                 readonly skill_id: string | null;
             }[];
             readonly passed: boolean;
-            /** @description Validation warnings. Includes required-input/DAG checks plus registry readiness checks for unknown or disabled agent profiles, unknown or disabled skills, profile-disallowed skills, and missing OpenClaw agent bindings. */
+            /** @description Validation warnings. Includes required-input/DAG checks plus registry readiness checks for unknown or disabled Agents, unknown or disabled Skills, and Agent-denied Skills. */
             readonly warnings: readonly string[];
         };
         readonly ProviderConnection: {
             /** @enum {string} */
-            readonly agent_runtime: "codex" | "claude-sdk" | "glm" | "kimi" | "openclaw";
+            readonly agent_runtime: "codex" | "claude-sdk" | "glm" | "kimi";
             readonly base_url: string | null;
             readonly connection_id: string;
             /** @default true */
@@ -6351,11 +8348,13 @@ export type components = {
             readonly max_input_tokens: number;
             /** @default 65536 */
             readonly max_output_tokens: number;
+            /** @default 32 */
+            readonly max_tool_rounds: number;
             readonly metadata: Record<string, never>;
             readonly models: readonly string[];
             readonly name: string;
             /** @enum {string} */
-            readonly protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible" | "openclaw-bridge";
+            readonly protocol: "codex-appserver" | "anthropic-messages" | "openai-compatible";
             readonly provider: string;
             /** @enum {string} */
             readonly status: "active" | "disabled";
@@ -6393,25 +8392,25 @@ export type components = {
             readonly version: number;
         };
         readonly RegistryProvenance: {
-            readonly agent_profile_requested: string | null;
-            readonly agent_profile_resolved: string | null;
+            readonly agent_id_requested: string | null;
+            readonly agent_id_resolved: string | null;
             /** @enum {string} */
-            readonly agent_profile_source: "registry" | "template_binding" | "fallback" | "none";
+            readonly agent_source: "registry" | "template_binding" | "fallback" | "none";
             /** @enum {string|null} */
-            readonly agent_profile_status: "active" | "disabled" | "missing" | null;
+            readonly agent_status: "active" | "disabled" | "missing" | null;
             /** @enum {string} */
-            readonly openclaw_agent_id_source: "registry" | "template_binding" | "fallback" | "none";
+            readonly runtime_agent_ref_source: "registry" | "template_binding" | "fallback" | "none";
             readonly skill_bindings: readonly {
                 /** @enum {string|null} */
-                readonly excluded_reason: "disallowed_by_agent_profile" | "disabled" | "missing" | null;
+                readonly excluded_reason: "disallowed_by_agent" | "disabled" | "missing" | null;
                 readonly included: boolean;
                 /** @enum {string} */
                 readonly registry_status: "active" | "disabled" | "missing";
                 readonly skill_id: string;
-                readonly sources: readonly ("agent_profile_default" | "node_allowed")[];
+                readonly sources: readonly ("agent_default" | "node_allowed")[];
             }[];
             readonly tool_bindings: readonly {
-                readonly sources: readonly ("agent_profile_allowed" | "node_allowed")[];
+                readonly sources: readonly ("agent_allowed" | "node_allowed")[];
                 readonly tool_id: string;
             }[];
         };
@@ -6537,6 +8536,8 @@ export type components = {
                 readonly order: number;
             }[];
         };
+        /** @enum {string} */
+        readonly RunStatus: "draft" | "queued" | "running" | "waiting_human" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
         readonly RunSummary: {
             readonly current_summary: string;
             readonly proposal_id?: string | null;
@@ -6577,7 +8578,7 @@ export type components = {
             readonly worker_id: string | null;
         };
         readonly RuntimeGraphNode: {
-            readonly agentProfile: string | null;
+            readonly agentId: string | null;
             readonly approvalKind: string | null;
             readonly attempt: number;
             readonly expectedArtifacts: readonly string[];
@@ -6588,7 +8589,6 @@ export type components = {
             readonly name: string;
             readonly nodeId: string;
             readonly nodeRunId: string;
-            readonly openclawAgentId: string | null;
             readonly progress: {
                 readonly message: string;
                 readonly percent: number;
@@ -6649,6 +8649,8 @@ export type components = {
             readonly created_at: string;
             readonly job_id: string;
             readonly node_run_id: string;
+            /** @enum {string} */
+            readonly origin?: "runtime" | "conversation";
             readonly resolution_comment: string | null;
             /** Format: date-time */
             readonly resolved_at: string | null;
@@ -6657,9 +8659,11 @@ export type components = {
             readonly sandbox_root: string;
             /** @constant */
             readonly schema_version: 1;
+            readonly session_id?: string | null;
             readonly source_root: string;
             /** @enum {string} */
             readonly status: "pending" | "applied" | "rejected" | "blocked" | "apply_failed";
+            readonly workspace_binding_id?: string | null;
         };
         readonly RuntimeWorkspaceDiffLine: {
             /** @enum {string} */
@@ -6676,6 +8680,20 @@ export type components = {
         };
         readonly RunValidationFailure: components["schemas"]["Error"] & {
             readonly validation: components["schemas"]["PlannerValidationResult"];
+        };
+        readonly ScheduleRecurrence: {
+            /** @constant */
+            readonly kind: "once";
+            /** Format: date-time */
+            readonly run_at: string;
+        } | {
+            readonly interval_minutes: number;
+            /** @constant */
+            readonly kind: "interval";
+        } | {
+            readonly expression: string;
+            /** @constant */
+            readonly kind: "cron";
         };
         readonly ScorecardFinding: {
             readonly check_id: string;
@@ -6739,9 +8757,11 @@ export type components = {
             readonly workspace_id: string;
         };
         readonly SessionGeneratedArtifact: {
+            readonly artifact_family_id: string | null;
             readonly artifact_id: string;
             /** Format: date-time */
             readonly created_at: string;
+            readonly has_previous_version: boolean;
             readonly mime_type: string | null;
             readonly name: string;
             readonly session_id: string;
@@ -6801,6 +8821,8 @@ export type components = {
             readonly query: string;
             readonly workspace_id: string;
         };
+        /** @enum {string} */
+        readonly SessionStatus: "draft" | "planning" | "ready_to_run" | "running" | "waiting_human" | "completed" | "failed" | "cancelled";
         readonly SharedMemoryView: {
             readonly collection: components["schemas"]["MemoryCollection"];
             /** @enum {string} */
@@ -6817,6 +8839,126 @@ export type components = {
             readonly skill_id: string;
             /** @enum {string} */
             readonly status: "active" | "disabled";
+        };
+        readonly SkillEvaluationRecord: {
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly error_code: string | null;
+            readonly evaluation_id: string;
+            readonly invocation_id: string | null;
+            readonly latency_ms: number | null;
+            readonly output_contract_passed: boolean;
+            readonly skill_id: string;
+            readonly skill_version: string;
+            readonly tool_policy_passed: boolean;
+            readonly tool_rounds: number;
+            /** @enum {string} */
+            readonly verdict: "passed" | "failed" | "partial";
+            readonly workspace_id: string;
+        };
+        readonly SkillInvocationRecord: {
+            readonly action_id: string | null;
+            /** @enum {string} */
+            readonly activation_source: "explicit" | "intent" | "model" | "preloaded";
+            readonly allowed_tools: readonly string[];
+            /** Format: date-time */
+            readonly completed_at: string | null;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly error_code: string | null;
+            readonly instructions_digest: string;
+            readonly invocation_id: string;
+            readonly output_contract: {
+                readonly [key: string]: unknown;
+            };
+            readonly required_capabilities: readonly string[];
+            /** @constant */
+            readonly schema_version: 1;
+            readonly session_id: string;
+            readonly skill_id: string;
+            readonly skill_version: string;
+            /** @enum {string} */
+            readonly status: "loaded" | "completed" | "failed";
+            readonly tool_action_ids: readonly string[];
+            /** Format: date-time */
+            readonly updated_at: string;
+            /** @enum {string} */
+            readonly verification_status: "pending" | "passed" | "failed" | "not_applicable";
+            readonly workspace_id: string;
+        };
+        readonly SkillPackageStatus: {
+            readonly activation_keywords: readonly string[];
+            /** @enum {string} */
+            readonly activation_policy: "explicit_only" | "advisory" | "auto";
+            readonly allowed_tools: readonly string[];
+            readonly category: string;
+            /** @enum {string} */
+            readonly compatibility: "ready" | "degraded" | "blocked";
+            readonly description: string;
+            readonly enabled: boolean;
+            readonly error: string | null;
+            readonly input_schema: {
+                readonly [key: string]: unknown;
+            };
+            readonly instructions_digest: string;
+            readonly license: string | null;
+            readonly manifest_path: string;
+            readonly metadata: {
+                readonly [key: string]: unknown;
+            };
+            readonly missing_requirements: readonly string[];
+            readonly name: string;
+            readonly negative_keywords: readonly string[];
+            readonly output_contract: {
+                readonly [key: string]: unknown;
+            };
+            readonly permission_scopes: readonly string[];
+            readonly platforms: readonly string[];
+            readonly publisher: string | null;
+            readonly required_capabilities: readonly string[];
+            readonly resources: readonly string[];
+            /** @enum {string} */
+            readonly risk_level: "T0" | "T1" | "T2" | "T3";
+            readonly root_path: string;
+            readonly scripts: readonly {
+                readonly [key: string]: unknown;
+            }[];
+            readonly skill_id: string;
+            /** @enum {string} */
+            readonly source: "bundled" | "official_optional" | "installed" | "workspace" | "custom" | "marketplace";
+            /** @enum {string} */
+            readonly status: "ready" | "disabled" | "error" | "incompatible";
+            /** @enum {string} */
+            readonly trust_level: "bundled" | "official" | "workspace" | "community" | "unverified";
+            readonly version: string;
+            readonly workspace_id: string | null;
+        };
+        readonly SkillPermissionDelta: {
+            readonly added_capabilities: readonly string[];
+            readonly added_permission_scopes: readonly string[];
+            readonly added_scripts: readonly string[];
+            readonly added_tools: readonly string[];
+            readonly from_version: string | null;
+            readonly requires_review: boolean;
+            readonly skill_id: string;
+            readonly to_version: string;
+        };
+        readonly SkillWorkspaceProfile: {
+            readonly auto_activation: boolean;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly enabled_categories: readonly string[];
+            readonly pinned_versions: {
+                readonly [key: string]: string;
+            };
+            /** @constant */
+            readonly schema_version: 1;
+            readonly trusted_sources: readonly ("bundled" | "official" | "workspace" | "community" | "unverified")[];
+            /** @enum {string} */
+            readonly update_policy: "manual" | "notify" | "automatic_official";
+            /** Format: date-time */
+            readonly updated_at: string;
+            readonly workspace_id: string;
         };
         readonly SupersedeDagProposalRequest: {
             readonly inputs?: Record<string, never>;
@@ -6924,6 +9066,7 @@ export type components = {
             readonly goal: string | null;
             readonly last_error_code: string | null;
             readonly last_error_message: string | null;
+            readonly long_task_runtime: components["schemas"]["LongTaskRuntimeState"];
             readonly max_resume_attempts: number;
             readonly next_action: string | null;
             readonly progress_summary: string | null;
@@ -6949,16 +9092,28 @@ export type components = {
         readonly TaskCheckpointProviderState: {
             readonly action_ids: readonly string[];
             readonly compaction_count: number;
+            readonly completion_contract: {
+                readonly failed_action_ids: readonly string[];
+                readonly reason: string;
+                /** @enum {string} */
+                readonly status: "satisfied" | "incomplete" | "blocked";
+                readonly successful_action_ids: readonly string[];
+            };
             readonly context_compacted: boolean;
+            readonly context_pressure_peak_tokens: number;
+            readonly context_snapshot_id: string | null;
             readonly continuation_limit_reached: boolean;
             readonly continuation_rounds: number;
             /** @enum {string|null} */
             readonly finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | "unknown" | null;
+            readonly in_loop_compaction_count: number;
+            readonly pruned_tool_result_count: number;
+            readonly repeated_tool_call_limit_reached: boolean;
             readonly tool_round_limit_reached: boolean;
             readonly tool_rounds: number;
         };
         /** @enum {string} */
-        readonly TaskCheckpointReason: "turn_started" | "manual_resume" | "automatic_resume" | "context_compacted" | "continuation_limit" | "tool_round_limit" | "provider_interrupted" | "client_disconnected" | "server_restart" | "waiting_approval" | "waiting_input" | "turn_completed" | "resume_limit" | "new_user_turn" | "unrecoverable_error";
+        readonly TaskCheckpointReason: "turn_started" | "manual_resume" | "automatic_resume" | "context_compacted" | "continuation_limit" | "tool_round_limit" | "completion_contract_incomplete" | "budget_limit" | "provider_interrupted" | "client_disconnected" | "server_restart" | "waiting_approval" | "waiting_input" | "turn_completed" | "resume_limit" | "new_user_turn" | "unrecoverable_error";
         /** @enum {string} */
         readonly TaskCheckpointStatus: "in_progress" | "resumable" | "waiting_human" | "completed" | "failed" | "superseded";
         readonly TaskCheckpointTransition: {
@@ -7064,12 +9219,6 @@ export type components = {
             readonly source_user_message_id: string;
             readonly workspace_id: string;
         };
-        readonly UpdateAgentHostingRequest: {
-            readonly model?: string | null;
-            readonly openclaw_agent_id?: string;
-            readonly provider?: string | null;
-            readonly runtime_mode?: string | null;
-        };
         readonly UpdateAutopilotRequest: {
             readonly max_iterations?: number;
             readonly max_runtime_minutes?: number;
@@ -7127,7 +9276,7 @@ export type components = {
         };
         readonly UpsertProviderConnectionRequest: {
             /** @enum {string} */
-            readonly agent_runtime: "codex" | "claude-sdk" | "glm" | "kimi" | "openclaw";
+            readonly agent_runtime: "codex" | "claude-sdk" | "glm" | "kimi";
             readonly api_key?: string;
             readonly base_url?: string | null;
             readonly connection_id?: string;
@@ -7145,11 +9294,13 @@ export type components = {
             readonly max_input_tokens?: number;
             /** @default 65536 */
             readonly max_output_tokens?: number;
+            /** @default 32 */
+            readonly max_tool_rounds?: number;
             readonly metadata?: Record<string, never>;
             readonly models?: readonly string[];
             readonly name: string;
             /** @enum {string} */
-            readonly protocol?: "codex-appserver" | "anthropic-messages" | "openai-compatible" | "openclaw-bridge";
+            readonly protocol?: "codex-appserver" | "anthropic-messages" | "openai-compatible";
             readonly provider?: string;
             /** @enum {string} */
             readonly status?: "active" | "disabled";
@@ -7167,6 +9318,65 @@ export type components = {
             readonly reasoning_tokens: number | null;
             readonly total_tokens: number | null;
             readonly turn_count: number | null;
+        };
+        readonly UserSchedule: {
+            readonly autonomy_mode: components["schemas"]["AutonomyMode"];
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly created_by: string;
+            readonly enabled: boolean;
+            /** Format: date-time */
+            readonly last_run_at: string | null;
+            /** @enum {string|null} */
+            readonly last_run_status: "running" | "completed" | "waiting_human" | "failed" | null;
+            readonly model: string | null;
+            readonly name: string;
+            /** Format: date-time */
+            readonly next_run_at: string | null;
+            readonly prompt: string;
+            readonly provider_connection_id: string | null;
+            readonly recurrence: components["schemas"]["ScheduleRecurrence"];
+            readonly schedule_id: string;
+            readonly session_id: string | null;
+            /** @enum {string} */
+            readonly task_mode: "new_task" | "resume_task";
+            readonly task_title: string | null;
+            readonly timezone: string;
+            /** Format: date-time */
+            readonly updated_at: string;
+            readonly workspace_id: string;
+        };
+        readonly UserScheduleRequest: {
+            /** @enum {string} */
+            readonly autonomy_mode?: "review_first" | "assisted" | "autopilot";
+            readonly enabled?: boolean;
+            readonly model?: string | null;
+            readonly name: string;
+            readonly prompt: string;
+            readonly provider_connection_id?: string | null;
+            readonly recurrence: components["schemas"]["ScheduleRecurrence"];
+            readonly session_id?: string | null;
+            /** @enum {string} */
+            readonly task_mode?: "new_task" | "resume_task";
+            readonly task_title?: string | null;
+            readonly timezone: string;
+        };
+        readonly UserScheduleRun: {
+            readonly assistant_message_id: string | null;
+            readonly error_code: string | null;
+            readonly error_message: string | null;
+            /** Format: date-time */
+            readonly finished_at: string | null;
+            readonly run_id: string;
+            readonly schedule_id: string;
+            /** Format: date-time */
+            readonly scheduled_for: string;
+            readonly session_id: string | null;
+            /** Format: date-time */
+            readonly started_at: string;
+            /** @enum {string} */
+            readonly status: "running" | "completed" | "waiting_human" | "failed";
+            readonly workspace_id: string;
         };
         readonly WorkerEvidenceSource: {
             readonly model: string | null;
@@ -7224,12 +9434,25 @@ export type components = {
     headers: never;
     pathItems: never;
 };
-export type SchemaAgentHostingSummary = components['schemas']['AgentHostingSummary'];
-export type SchemaAgentProfile = components['schemas']['AgentProfile'];
+export type SchemaAgentBindingSnapshot = components['schemas']['AgentBindingSnapshot'];
+export type SchemaAgentDag = components['schemas']['AgentDag'];
+export type SchemaAgentDagGate = components['schemas']['AgentDagGate'];
+export type SchemaAgentDagStatus = components['schemas']['AgentDagStatus'];
+export type SchemaAgentDefinition = components['schemas']['AgentDefinition'];
+export type SchemaAgentMessage = components['schemas']['AgentMessage'];
+export type SchemaAgentRole = components['schemas']['AgentRole'];
+export type SchemaAgentRun = components['schemas']['AgentRun'];
+export type SchemaAgentRunEvent = components['schemas']['AgentRunEvent'];
+export type SchemaAgentRunStatus = components['schemas']['AgentRunStatus'];
+export type SchemaAgentTask = components['schemas']['AgentTask'];
+export type SchemaAgentTaskStatus = components['schemas']['AgentTaskStatus'];
+export type SchemaAgentTeam = components['schemas']['AgentTeam'];
+export type SchemaAgentVersion = components['schemas']['AgentVersion'];
 export type SchemaApprovalRecord = components['schemas']['ApprovalRecord'];
 export type SchemaArtifact = components['schemas']['Artifact'];
 export type SchemaAuthenticatedPrincipal = components['schemas']['AuthenticatedPrincipal'];
 export type SchemaAuthMeResponse = components['schemas']['AuthMeResponse'];
+export type SchemaAutonomyMode = components['schemas']['AutonomyMode'];
 export type SchemaAutopilotController = components['schemas']['AutopilotController'];
 export type SchemaCommentRequest = components['schemas']['CommentRequest'];
 export type SchemaConfirmDagProposalRequest = components['schemas']['ConfirmDagProposalRequest'];
@@ -7251,6 +9474,9 @@ export type SchemaCreateRunResponse = components['schemas']['CreateRunResponse']
 export type SchemaCreateScorecardRequest = components['schemas']['CreateScorecardRequest'];
 export type SchemaCreateTemplateRequest = components['schemas']['CreateTemplateRequest'];
 export type SchemaCreateWorkspaceRequest = components['schemas']['CreateWorkspaceRequest'];
+export type SchemaDagDefinition = components['schemas']['DagDefinition'];
+export type SchemaDagDefinitionAgentSelector = components['schemas']['DagDefinitionAgentSelector'];
+export type SchemaDagDefinitionNode = components['schemas']['DagDefinitionNode'];
 export type SchemaDagProposalAssignment = components['schemas']['DagProposalAssignment'];
 export type SchemaDagProposalPlannerContext = components['schemas']['DagProposalPlannerContext'];
 export type SchemaDagProposalRecord = components['schemas']['DagProposalRecord'];
@@ -7298,6 +9524,7 @@ export type SchemaLegacyUpdateDagProposalAssignmentsRequest = components['schema
 export type SchemaListDagProposalsResponse = components['schemas']['ListDagProposalsResponse'];
 export type SchemaLocalProject = components['schemas']['LocalProject'];
 export type SchemaLocalProjectListResponse = components['schemas']['LocalProjectListResponse'];
+export type SchemaLongTaskRuntimeState = components['schemas']['LongTaskRuntimeState'];
 export type SchemaMcpConnectorPreset = components['schemas']['McpConnectorPreset'];
 export type SchemaMcpConnectorPresetSecret = components['schemas']['McpConnectorPresetSecret'];
 export type SchemaMcpDiscoveredTool = components['schemas']['McpDiscoveredTool'];
@@ -7363,6 +9590,9 @@ export type SchemaMobileRunFollowUp = components['schemas']['MobileRunFollowUp']
 export type SchemaMobileRunSummary = components['schemas']['MobileRunSummary'];
 export type SchemaMobileTask = components['schemas']['MobileTask'];
 export type SchemaNodeHandoffRecord = components['schemas']['NodeHandoffRecord'];
+export type SchemaNodeStatus = components['schemas']['NodeStatus'];
+export type SchemaNotification = components['schemas']['Notification'];
+export type SchemaOrchestrationDecision = components['schemas']['OrchestrationDecision'];
 export type SchemaPlannerCandidatePlanRequest = components['schemas']['PlannerCandidatePlanRequest'];
 export type SchemaPlannerCandidatePlanResponse = components['schemas']['PlannerCandidatePlanResponse'];
 export type SchemaPlannerDagDraftRequest = components['schemas']['PlannerDagDraftRequest'];
@@ -7387,6 +9617,7 @@ export type SchemaResumeTaskCheckpointRequest = components['schemas']['ResumeTas
 export type SchemaResumeTaskCheckpointResponse = components['schemas']['ResumeTaskCheckpointResponse'];
 export type SchemaRunDetail = components['schemas']['RunDetail'];
 export type SchemaRunRoute = components['schemas']['RunRoute'];
+export type SchemaRunStatus = components['schemas']['RunStatus'];
 export type SchemaRunSummary = components['schemas']['RunSummary'];
 export type SchemaRuntimeCompensationRecord = components['schemas']['RuntimeCompensationRecord'];
 export type SchemaRuntimeGraphNode = components['schemas']['RuntimeGraphNode'];
@@ -7397,6 +9628,7 @@ export type SchemaRuntimeWorkspaceChangeSet = components['schemas']['RuntimeWork
 export type SchemaRuntimeWorkspaceDiffLine = components['schemas']['RuntimeWorkspaceDiffLine'];
 export type SchemaRuntimeWorkspaceTextDiff = components['schemas']['RuntimeWorkspaceTextDiff'];
 export type SchemaRunValidationFailure = components['schemas']['RunValidationFailure'];
+export type SchemaScheduleRecurrence = components['schemas']['ScheduleRecurrence'];
 export type SchemaScorecardFinding = components['schemas']['ScorecardFinding'];
 export type SchemaScorecardResult = components['schemas']['ScorecardResult'];
 export type SchemaSecurityAuditEvent = components['schemas']['SecurityAuditEvent'];
@@ -7407,8 +9639,14 @@ export type SchemaSessionRecallContextMessage = components['schemas']['SessionRe
 export type SchemaSessionRecallHit = components['schemas']['SessionRecallHit'];
 export type SchemaSessionRecallRequest = components['schemas']['SessionRecallRequest'];
 export type SchemaSessionRecallResult = components['schemas']['SessionRecallResult'];
+export type SchemaSessionStatus = components['schemas']['SessionStatus'];
 export type SchemaSharedMemoryView = components['schemas']['SharedMemoryView'];
 export type SchemaSkill = components['schemas']['Skill'];
+export type SchemaSkillEvaluationRecord = components['schemas']['SkillEvaluationRecord'];
+export type SchemaSkillInvocationRecord = components['schemas']['SkillInvocationRecord'];
+export type SchemaSkillPackageStatus = components['schemas']['SkillPackageStatus'];
+export type SchemaSkillPermissionDelta = components['schemas']['SkillPermissionDelta'];
+export type SchemaSkillWorkspaceProfile = components['schemas']['SkillWorkspaceProfile'];
 export type SchemaSupersedeDagProposalRequest = components['schemas']['SupersedeDagProposalRequest'];
 export type SchemaSupersedeDagProposalResponse = components['schemas']['SupersedeDagProposalResponse'];
 export type SchemaSuperviseEvidenceDelta = components['schemas']['SuperviseEvidenceDelta'];
@@ -7429,7 +9667,6 @@ export type SchemaTraceProjection = components['schemas']['TraceProjection'];
 export type SchemaTraceSpan = components['schemas']['TraceSpan'];
 export type SchemaTurnMemoryContextEntry = components['schemas']['TurnMemoryContextEntry'];
 export type SchemaTurnMemoryContextSnapshot = components['schemas']['TurnMemoryContextSnapshot'];
-export type SchemaUpdateAgentHostingRequest = components['schemas']['UpdateAgentHostingRequest'];
 export type SchemaUpdateAutopilotRequest = components['schemas']['UpdateAutopilotRequest'];
 export type SchemaUpdateDagProposalAssignmentsRequest = components['schemas']['UpdateDagProposalAssignmentsRequest'];
 export type SchemaUpdateGovernancePolicyRequest = components['schemas']['UpdateGovernancePolicyRequest'];
@@ -7438,6 +9675,9 @@ export type SchemaUpdateWorkspaceMemberRequest = components['schemas']['UpdateWo
 export type SchemaUpsertMcpServerRequest = components['schemas']['UpsertMcpServerRequest'];
 export type SchemaUpsertProviderConnectionRequest = components['schemas']['UpsertProviderConnectionRequest'];
 export type SchemaUsageSummary = components['schemas']['UsageSummary'];
+export type SchemaUserSchedule = components['schemas']['UserSchedule'];
+export type SchemaUserScheduleRequest = components['schemas']['UserScheduleRequest'];
+export type SchemaUserScheduleRun = components['schemas']['UserScheduleRun'];
 export type SchemaWorkerEvidenceSource = components['schemas']['WorkerEvidenceSource'];
 export type SchemaWorkerEvidenceTrace = components['schemas']['WorkerEvidenceTrace'];
 export type SchemaWorkspaceBindingResponse = components['schemas']['WorkspaceBindingResponse'];

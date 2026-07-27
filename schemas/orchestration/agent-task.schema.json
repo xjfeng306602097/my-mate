@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://my-mate.local/schemas/orchestration/agent-task.schema.json",
+  "title": "Agent Task",
+  "type": "object",
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "dag_id": { "type": "string", "minLength": 1 },
+    "dag_run_id": { "type": ["string", "null"] },
+    "node_id": { "type": "string", "minLength": 1 },
+    "parent_task_id": { "type": ["string", "null"] },
+    "depth": { "type": "integer", "minimum": 0 },
+    "status": { "enum": ["queued", "accepted", "running", "blocked", "completed", "skipped", "failed", "cancelled"] },
+    "title": { "type": "string" },
+    "objective": { "type": "string" },
+    "binding_snapshot": { "$ref": "../agent/agent-binding-snapshot.schema.json" },
+    "permission_ceiling": { "type": "object" },
+    "budget": { "type": "object" },
+    "assigned_agent_run_id": { "type": ["string", "null"] },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "created_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" },
+    "updated_at": { "$ref": "../common/timestamps.schema.json#/$defs/dateTime" }
+  },
+  "required": ["task_id", "workspace_id", "dag_id", "node_id", "depth", "status", "title", "objective", "binding_snapshot", "permission_ceiling", "budget", "assigned_agent_run_id", "idempotency_key", "created_at", "updated_at"],
+  "additionalProperties": true
+}
