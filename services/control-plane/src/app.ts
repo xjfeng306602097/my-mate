@@ -366,6 +366,7 @@ import type { TraceSpanKind } from "./evaluation/types.js";
 import {
   archiveSession,
   createSession,
+  deleteSession,
   getSession,
   hideSession,
   listSessions,
@@ -15677,6 +15678,52 @@ export function createApp(options?: {
   app.post("/api/sessions/:sessionId/unhide", (req: Request, res: Response) =>
     updateSessionVisibility(req, res, "unhide"),
   );
+
+  app.delete("/api/sessions/:sessionId", (req: Request, res: Response) => {
+    const sessionId = getSingleParam(req.params.sessionId);
+    if (!sessionId) {
+      return res.status(400).json({
+        code: "invalid_request",
+        message: "sessionId is required.",
+      });
+    }
+    const session = getSession(sessionId);
+    if (!session) {
+      return res.status(404).json({
+        code: "not_found",
+        message: "Session not found.",
+      });
+    }
+    if (!session.archived) {
+      return res.status(409).json({
+        code: "session_not_archived",
+        message: "Archive the task before deleting it permanently.",
+      });
+    }
+    const activeRunId = (session.active_run_ids ?? []).find((runId) => {
+      const run = getRun(runId);
+      return run ? !["completed", "failed", "cancelled"].includes(run.status) : false;
+    });
+    if (activeRunId) {
+      return res.status(409).json({
+        code: "session_has_active_run",
+        message: "Wait for the active Run to reach a terminal state before deleting this task.",
+        run_id: activeRunId,
+      });
+    }
+    const result = deleteSession(sessionId);
+    if (!result) {
+      return res.status(404).json({
+        code: "not_found",
+        message: "Session not found.",
+      });
+    }
+    return res.json({
+      deleted: true,
+      session_id: result.session_id,
+      deleted_records: result.deleted_records,
+    });
+  });
 
   app.get("/api/missions/:sessionId", (req: Request, res: Response) => {
     const sessionId = getSingleParam(req.params.sessionId);

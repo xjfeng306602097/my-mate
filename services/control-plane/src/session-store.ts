@@ -1,5 +1,10 @@
 import path from "node:path";
-import { SESSIONS_DIR } from "./config.js";
+import {
+  SESSION_ATTACHMENTS_DIR,
+  SESSION_INTERVENTIONS_DIR,
+  SESSION_MESSAGES_DIR,
+  SESSIONS_DIR,
+} from "./config.js";
 import { getJsonStorageBackend } from "./storage-backend.js";
 import { getActivePrincipalId, getActiveWorkspaceId } from "./request-security.js";
 import { ensureCoreMemorySnapshot } from "./memory-snapshot-store.js";
@@ -311,4 +316,38 @@ export function unhideSession(sessionId: string, actorId = "user"): SessionRecor
     session_visibility: session.archived ? "archived" : "active",
   };
   return saveSession(session);
+}
+
+export interface DeleteSessionResult {
+  session_id: string;
+  deleted_records: number;
+}
+
+/**
+ * Permanently removes a Session and its per-session conversation records
+ * (messages, attachments, and interventions). Callers must enforce the
+ * archive-first gate and confirm no active Run references the Session;
+ * Run history, evidence, and audit records are intentionally retained.
+ */
+export function deleteSession(sessionId: string): DeleteSessionResult | null {
+  const session = getSession(sessionId);
+  if (!session) {
+    return null;
+  }
+  const storage = getJsonStorageBackend();
+  let deleted = 0;
+  const relatedDirs = [
+    SESSION_MESSAGES_DIR,
+    SESSION_ATTACHMENTS_DIR,
+    SESSION_INTERVENTIONS_DIR,
+  ].map((dir) => path.join(dir, sessionId));
+  for (const dir of relatedDirs) {
+    for (const filePath of storage.listJsonFiles(dir)) {
+      storage.removeJson(filePath);
+      deleted += 1;
+    }
+  }
+  storage.removeJson(sessionPath(sessionId));
+  deleted += 1;
+  return { session_id: sessionId, deleted_records: deleted };
 }

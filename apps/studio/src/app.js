@@ -9554,6 +9554,37 @@ async function updateSelectedSessionVisibility(action) {
   }
 }
 
+async function deleteSelectedSession() {
+  if (!state.selectedSessionId) {
+    state.error = "Select an archived mission or session before deleting.";
+    render();
+    return;
+  }
+  const sessionId = state.selectedSessionId;
+  const confirmed = typeof window.confirm === "function"
+    ? window.confirm("Delete this archived task permanently? This cannot be undone.")
+    : true;
+  if (!confirmed) {
+    return;
+  }
+  state.sessionVisibilitySaving = true;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+    state.notice = `Deleted ${sessionId}`;
+    state.selectedSessionId = null;
+    await Promise.all([loadMissions(false), loadSessions(false)]);
+  } catch (error) {
+    state.error = error.message || "Failed to delete session.";
+  } finally {
+    state.sessionVisibilitySaving = false;
+    render();
+  }
+}
 async function createWorkspaceAttachment() {
   if (!state.selectedSessionId) {
     state.error = "Select a mission or session before attaching context.";
@@ -12791,6 +12822,11 @@ function renderSessionInventoryControls(kind) {
         <button class="mini-button" data-action="${selectedArchived ? "unarchive-session" : "archive-session"}" ${!canUpdateVisibility || state.sessionVisibilitySaving ? "disabled" : ""}>
           ${state.sessionVisibilitySaving ? "Working..." : selectedArchived ? "Restore" : "Archive"}
         </button>
+        ${selectedArchived ? `
+        <button class="mini-button danger-action" data-action="delete-session" ${!canUpdateVisibility || state.sessionVisibilitySaving ? "disabled" : ""}>
+          ${state.sessionVisibilitySaving ? "Working..." : "Delete"}
+        </button>
+        ` : ""}
       </div>
     </div>
   `;
@@ -20178,6 +20214,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "archive-session") void updateSelectedSessionVisibility("archive");
   if (action === "unarchive-session") void updateSelectedSessionVisibility("unarchive");
+  if (action === "delete-session") void deleteSelectedSession();
   if (action === "attach-context-file") void createWorkspaceAttachment();
   if (action === "choose-desktop-workspace") void chooseDesktopWorkspace();
   if (action === "create-desktop-project") void createDesktopProject();

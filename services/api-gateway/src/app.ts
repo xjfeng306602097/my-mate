@@ -104,6 +104,7 @@ const PROXY_RULES: RouteRule[] = [
   { method: "PUT", pattern: /^\/api\/sessions\/[^/]+\/autopilot$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/autopilot\/(?:tick|pause|resume)$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/(?:archive|unarchive|hide|unhide)$/ },
+  { method: "DELETE", pattern: /^\/api\/sessions\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/sessions\/[^/]+\/attachments$/ },
   { method: "POST", pattern: /^\/api\/sessions\/[^/]+\/attachments$/ },
   { method: "DELETE", pattern: /^\/api\/sessions\/[^/]+\/attachments\/[^/]+$/ },
