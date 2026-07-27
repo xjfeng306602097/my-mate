@@ -1,3 +1,5 @@
+import { mergeWorkspaceChangeSetHistory } from "./workboard-files-model.js";
+
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "provisioning", "dispatching"]);
 const TERMINAL_SUCCESS_STATUSES = new Set(["completed", "succeeded", "success"]);
 const TERMINAL_FAILURE_STATUSES = new Set(["failed", "cancelled", "timed_out", "timeout"]);
@@ -24,7 +26,13 @@ function resultCount(detail) {
   const outputs = Array.isArray(detail?.mission_snapshot?.outputs) ? detail.mission_snapshot.outputs : [];
   const returnedOutputs = outputs.filter((item) => item?.status === "returned" || item?.status === "completed").length;
   const artifacts = Array.isArray(detail?.artifacts) ? detail.artifacts.length : 0;
-  return Math.max(returnedOutputs, artifacts);
+  const agentDagArtifacts = Array.isArray(detail?.agent_dag_artifacts) ? detail.agent_dag_artifacts.length : 0;
+  const workspaceChanges = mergeWorkspaceChangeSetHistory(
+    detail?.workspace_change_sets,
+    detail?.workspace_change_set,
+    detail?.workspace_files,
+  ).length;
+  return Math.max(returnedOutputs, artifacts) + agentDagArtifacts + workspaceChanges;
 }
 
 function routeIsStale(detail) {
@@ -78,7 +86,8 @@ export function deriveTaskGuidance(detail, options = {}) {
 
   const approvals = Array.isArray(detail?.pending_approvals) ? detail.pending_approvals : [];
   const humanInputs = Array.isArray(detail?.pending_human_inputs) ? detail.pending_human_inputs : [];
-  const decisionCount = approvals.length + humanInputs.length;
+  const pendingWorkspaceChangeSet = detail?.workspace_change_set?.status === "pending";
+  const decisionCount = approvals.length + humanInputs.length + (pendingWorkspaceChangeSet ? 1 : 0);
   const runStatus = normalizedStatus(
     detail?.latest_run?.status ||
       detail?.workspace_state?.run_status ||

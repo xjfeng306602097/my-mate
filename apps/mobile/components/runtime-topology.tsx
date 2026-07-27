@@ -218,7 +218,7 @@ export function RuntimeTopology(props: RuntimeTopologyProps) {
                           <Text numberOfLines={2} style={styles.nodeTitle}>{item.node.name}</Text>
                           <Ionicons name="chevron-forward" size={16} color="#64748b" />
                         </View>
-                        <Text numberOfLines={1} style={styles.nodeMeta}>{item.node.type}{item.node.agentProfile ? ` / ${item.node.agentProfile}` : ""}</Text>
+                        <Text numberOfLines={1} style={styles.nodeMeta}>{item.node.type}{item.node.agentId ? ` / ${item.node.agentId}` : ""}</Text>
                         {item.node.progress.message ? <Text numberOfLines={2} style={styles.nodeDetail}>{item.node.progress.message}</Text> : null}
                         <View style={styles.nodeSignals}>
                           <Badge label={label(item.node.status)} tone={tone(item.node.status)} />
@@ -325,7 +325,7 @@ export function RuntimeTopology(props: RuntimeTopologyProps) {
               <EvidenceSection title="Summary">
                 <View style={styles.summaryGrid}>
                   <EvidenceRow title="Status" detail={label(evidence.node.status)} meta={`${evidence.node.workPackageLabel} / ${evidence.node.type}`} />
-                  <EvidenceRow title="Runtime identity" detail={evidence.node.runtimeAgentRef || evidence.node.agentProfile || "not recorded"} meta={`Node ${shortId(evidence.node.nodeRunId)}`} />
+                  <EvidenceRow title="Runtime identity" detail={evidence.node.runtimeAgentRef || evidence.node.agentId || "not recorded"} meta={`Node ${shortId(evidence.node.nodeRunId)}`} />
                 </View>
               </EvidenceSection>
 

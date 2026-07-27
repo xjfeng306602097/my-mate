@@ -9,8 +9,7 @@
     "check:runtime-graph": "node scripts/runtime-graph-visual-check.mjs --layout-only",
     "visual:chrome": "node scripts/visual-check.mjs",
     "visual:conversation": "node scripts/conversation-ui-regression.mjs",
-    "visual:runtime-graph": "node scripts/runtime-graph-visual-check.mjs",
-    "visual:openclaw": "node scripts/openclaw-visual-acceptance.mjs"
+    "visual:runtime-graph": "node scripts/runtime-graph-visual-check.mjs"
   },
   "dependencies": {
     "@highlightjs/cdn-assets": "^11.11.1",

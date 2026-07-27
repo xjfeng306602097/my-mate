@@ -1,10 +1,14 @@
-const { app, BrowserWindow, dialog, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Notification, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomBytes, randomUUID } = require("node:crypto");
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { promisify } = require("node:util");
 const { ServiceSupervisor } = require("../src/service-supervisor.cjs");
+const { RuntimeProvisioner } = require("../src/runtime-provisioner.cjs");
+const { DesktopNotificationHost } = require("../src/notification-host.cjs");
+const { WorkspacePreviewHost } = require("../src/workspace-preview.cjs");
+const { autoUpdater } = require("electron-updater");
 const { BrowserCapabilityHost } = require("../src/browser-capability.cjs");
 const {
   applicationExecutableLabel,
@@ -14,20 +18,129 @@ const {
   canonicalDirectory,
   listWorkspaceDirectory,
   readWorkspaceText,
+  resolveWithinRoot,
 } = require("../src/workspace-capability.cjs");
 
 const STUDIO_URL = process.env.MY_MATE_DESKTOP_STUDIO_URL || "http://127.0.0.1:6374/";
 const STUDIO_ORIGIN = new URL(STUDIO_URL).origin;
-const repoRoot = path.resolve(__dirname, "..", "..", "..");
+const repoRoot = app.isPackaged
+  ? path.join(process.resourcesPath, "runtime")
+  : path.resolve(__dirname, "..", "..", "..");
 let desktopInstanceId = process.env.MY_MATE_DESKTOP_INSTANCE_ID || "";
 let desktopBridgeToken = process.env.MY_MATE_DESKTOP_BRIDGE_TOKEN || "";
 let supervisor = null;
+let runtimeProvisioner = null;
 let mainWindow = null;
 let browserCapabilityHost = null;
+let notificationHost = null;
+const workspacePreviewHost = new WorkspacePreviewHost();
 let workspaceGrant = null;
 let workspaceProjects = [];
 let quitting = false;
+const pendingStudioDialogs = new Map();
 const execFileAsync = promisify(execFile);
+
+function appendStartupLog(stage, error = null) {
+  try {
+    const logRoot = path.join(app.getPath("userData"), "logs");
+    fs.mkdirSync(logRoot, { recursive: true });
+    const detail = error instanceof Error ? `${error.stack || error.message}` : error ? String(error) : "";
+    fs.appendFileSync(
+      path.join(logRoot, "desktop-startup.log"),
+      `${new Date().toISOString()} ${stage}${detail ? `\n${detail}` : ""}\n`,
+      "utf8",
+    );
+  } catch {
+    // Startup diagnostics must never prevent the application from opening.
+  }
+}
+
+process.on("uncaughtException", (error) => appendStartupLog("uncaughtException", error));
+process.on("unhandledRejection", (error) => appendStartupLog("unhandledRejection", error));
+
+function configureAutoUpdates() {
+  if (!app.isPackaged || process.env.MY_MATE_DISABLE_AUTO_UPDATE === "true") return;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on("update-available", async (info) => {
+    const confirmation = await showStudioMessageBox(mainWindow, {
+      type: "info",
+      title: "My Mate update available",
+      message: `Version ${info.version} is available.`,
+      detail: "Download the signed update now? You can keep working while it downloads.",
+      buttons: ["Download update", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (confirmation.response === 0) void autoUpdater.downloadUpdate();
+  });
+  autoUpdater.on("update-downloaded", async (info) => {
+    const confirmation = await showStudioMessageBox(mainWindow, {
+      type: "info",
+      title: "Update ready",
+      message: `My Mate ${info.version} is ready to install.`,
+      detail: "Restart My Mate to apply the signed update.",
+      buttons: ["Restart and install", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (confirmation.response === 0) autoUpdater.quitAndInstall(false, true);
+  });
+  autoUpdater.on("error", () => {});
+  setTimeout(() => void autoUpdater.checkForUpdates().catch(() => {}), 5_000).unref?.();
+}
+
+function settlePendingStudioDialogs(response = null) {
+  for (const [requestId, pending] of pendingStudioDialogs) {
+    clearTimeout(pending.timer);
+    pending.resolve({ response: response ?? pending.cancelId, checkboxChecked: false });
+    pendingStudioDialogs.delete(requestId);
+  }
+}
+
+async function showStudioMessageBox(parentOrOptions, maybeOptions) {
+  const parent = maybeOptions ? parentOrOptions : mainWindow;
+  const options = maybeOptions || parentOrOptions || {};
+  const target = parent && !parent.isDestroyed?.() ? parent : mainWindow;
+  if (
+    !target ||
+    target.isDestroyed() ||
+    target.webContents.isLoadingMainFrame() ||
+    new URL(target.webContents.getURL() || STUDIO_URL).origin !== STUDIO_ORIGIN
+  ) {
+    return maybeOptions
+      ? await dialog.showMessageBox(parentOrOptions, maybeOptions)
+      : await dialog.showMessageBox(options);
+  }
+  const buttons = Array.isArray(options.buttons) && options.buttons.length
+    ? options.buttons.map((button) => String(button).slice(0, 80))
+    : ["OK"];
+  const cancelId = Number.isInteger(options.cancelId)
+    ? Math.max(0, Math.min(buttons.length - 1, options.cancelId))
+    : buttons.length - 1;
+  const requestId = `desktop-dialog-${randomUUID()}`;
+  const request = {
+    requestId,
+    type: ["none", "info", "error", "question", "warning"].includes(options.type) ? options.type : "question",
+    title: String(options.title || "Confirm action").slice(0, 160),
+    message: String(options.message || "Review this action before continuing.").slice(0, 500),
+    detail: String(options.detail || "").slice(0, 8_000),
+    buttons,
+    defaultId: Number.isInteger(options.defaultId)
+      ? Math.max(0, Math.min(buttons.length - 1, options.defaultId))
+      : 0,
+    cancelId,
+  };
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!pendingStudioDialogs.has(requestId)) return;
+      pendingStudioDialogs.delete(requestId);
+      resolve({ response: cancelId, checkboxChecked: false });
+    }, 10 * 60 * 1000);
+    pendingStudioDialogs.set(requestId, { resolve, timer, cancelId, request });
+    target.webContents.send("my-mate:dialog:request", request);
+  });
+}
 
 function workspaceStatePath() {
   return path.join(app.getPath("userData"), "workspace-grant.json");
@@ -39,6 +152,20 @@ function workspaceProjectsStatePath() {
 
 function desktopIdentityPath() {
   return path.join(app.getPath("userData"), "desktop-identity.json");
+}
+
+function desktopNotificationStatePath() {
+  return path.join(app.getPath("userData"), "desktop-notifications.json");
+}
+
+function openNotificationInbox(item) {
+  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createMainWindow();
+  mainWindow.show();
+  mainWindow.focus();
+  const target = new URL(STUDIO_URL);
+  target.searchParams.set("nav", "inbox");
+  if (typeof item?.session_id === "string" && item.session_id) target.searchParams.set("session", item.session_id);
+  void mainWindow.loadURL(target.toString());
 }
 
 async function restoreDesktopIdentity() {
@@ -299,13 +426,14 @@ async function approveDesktopCapability(request) {
   const actionId = typeof request?.actionId === "string" ? request.actionId.trim() : "";
   const capabilityId = typeof request?.capabilityId === "string" ? request.capabilityId.trim() : "";
   const riskLevel = request?.riskLevel === "T3" ? "T3" : "T2";
-  if (!sessionId || !actionId || !capabilityId || request?.executor !== "mcp") {
-    throw new Error("A valid MCP capability approval request is required.");
+  const executor = request?.executor === "worker" ? "worker" : request?.executor === "mcp" ? "mcp" : "";
+  if (!sessionId || !actionId || !capabilityId || !executor) {
+    throw new Error("A valid capability approval request is required.");
   }
   const argumentsPreview = JSON.stringify(redactedCapabilityArguments(request?.arguments || {}), null, 2).slice(0, 1800);
-  const confirmation = await dialog.showMessageBox(mainWindow, {
+  const confirmation = await showStudioMessageBox(mainWindow, {
     type: riskLevel === "T3" ? "error" : "warning",
-    title: riskLevel === "T3" ? "Approve destructive MCP action" : "Approve MCP action",
+    title: riskLevel === "T3" ? `Approve destructive ${executor} action` : `Approve ${executor} action`,
     message: `Allow My Mate to run ${capabilityId}?`,
     detail: `Risk: ${riskLevel}\n\nArguments:\n${argumentsPreview || "{}"}\n\nThis approval applies only to this one Conversation Action.`,
     buttons: [riskLevel === "T3" ? "Approve destructive action" : "Approve action", "Cancel"],
@@ -323,7 +451,7 @@ async function approveDesktopCapability(request) {
     : {
         status: "failed",
         capability_id: capabilityId,
-        code: "mcp_action_denied",
+        code: `${executor}_action_denied`,
         result: { message: `The user denied ${capabilityId}.` },
       };
   await reportDesktopConversationAction(sessionId, actionId, report);
@@ -354,7 +482,7 @@ async function configureMcpServer(request) {
   const detail = operation === "upsert"
     ? `Executable: ${command}\nArguments: ${args.join(" ") || "(none)"}\nSecrets: ${secretNames.join(", ") || "(none)"}\n\nThe process will run with your user account and only its discovered tools will be exposed to My Mate.`
     : `Server: ${target}\n\nThis will ${operation === "enable" ? "enable and start" : "start and test"} the configured local MCP process.`;
-  const confirmation = await dialog.showMessageBox(mainWindow, {
+  const confirmation = await showStudioMessageBox(mainWindow, {
     type: "warning",
     title: "Allow local MCP process",
     message: `${operation === "upsert" ? "Save and start" : operation === "enable" ? "Enable" : "Test"} ${target}?`,
@@ -431,7 +559,7 @@ async function openDesktopApplication(request) {
       };
     } else {
       const selected = selection.item;
-      const confirmation = await dialog.showMessageBox(mainWindow, {
+      const confirmation = await showStudioMessageBox(mainWindow, {
         type: "question",
         title: "Open Desktop application",
         message: `Allow My Mate to open ${selected.Name}?`,
@@ -472,8 +600,119 @@ async function openDesktopApplication(request) {
   return result;
 }
 
-async function registerWorkspaceProject(project) {
-  if (!project || project.archived || project.registeredProjectId) return project;
+function launchDetached(command, args = []) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    let settled = false;
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    child.once("spawn", () => {
+      if (settled) return;
+      settled = true;
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+async function launchWorkspaceEditor(command, targetPath) {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "Start-Process -FilePath $env:MY_MATE_EDITOR_COMMAND -ArgumentList @($env:MY_MATE_EDITOR_TARGET)",
+  ].join("; ");
+  await execFileAsync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+      maxBuffer: 64 * 1024,
+      env: {
+        ...process.env,
+        MY_MATE_EDITOR_COMMAND: command,
+        MY_MATE_EDITOR_TARGET: targetPath,
+      },
+    },
+  );
+}
+
+async function openWorkspaceExternal(event, request) {
+  const grant = requireWorkspace(event, request);
+  const target = ["editor", "explorer", "terminal", "open-with"].includes(request?.target) ? request.target : "explorer";
+  const editorId = ["vscode", "idea", "notepad", "default"].includes(request?.editorId) ? request.editorId : "default";
+  const relativePath = typeof request?.relativePath === "string" ? request.relativePath : "";
+  const targetPath = await resolveWithinRoot(grant.rootPath, relativePath, { purpose: "Open Workspace path" });
+  const directoryPath = fs.statSync(targetPath).isDirectory() ? targetPath : path.dirname(targetPath);
+
+  if (process.platform !== "win32") {
+    const error = new Error("Opening local Workspace applications is currently supported on Windows Desktop only.");
+    error.code = "workspace_external_unsupported_platform";
+    throw error;
+  }
+
+  if (target === "explorer") {
+    await launchDetached("explorer.exe", [targetPath]);
+    return { ok: true, target, path: targetPath };
+  }
+  if (target === "terminal") {
+    try {
+      await launchDetached("wt.exe", ["-d", directoryPath]);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const escaped = directoryPath.replace(/'/g, "''");
+      await launchDetached("powershell.exe", ["-NoLogo", "-NoExit", "-Command", `Set-Location -LiteralPath '${escaped}'`]);
+    }
+    return { ok: true, target, path: directoryPath };
+  }
+  if (target === "open-with") {
+    if (!fs.statSync(targetPath).isFile()) {
+      const error = new Error("Windows application selection requires a file.");
+      error.code = "workspace_open_with_requires_file";
+      throw error;
+    }
+    await launchDetached("rundll32.exe", ["shell32.dll,OpenAs_RunDLL", targetPath]);
+    return { ok: true, target, path: targetPath };
+  }
+
+  if (editorId === "default") {
+    const shellError = await shell.openPath(targetPath);
+    if (shellError) {
+      const error = new Error(shellError);
+      error.code = "workspace_editor_open_failed";
+      throw error;
+    }
+    return { ok: true, target, editorId, path: targetPath };
+  }
+  const commands = editorId === "vscode"
+    ? ["code"]
+    : editorId === "idea"
+      ? ["idea64.exe", "idea"]
+      : ["notepad.exe"];
+  let lastError = null;
+  for (const command of commands) {
+    try {
+      await launchWorkspaceEditor(command, targetPath);
+      return { ok: true, target, editorId, path: targetPath };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  const error = new Error(`${editorId} is not installed or is not available on PATH.`);
+  error.code = "workspace_editor_not_found";
+  error.cause = lastError;
+  throw error;
+}
+
+async function registerWorkspaceProject(project, options = {}) {
+  if (!project || project.archived || (project.registeredProjectId && options.refresh !== true)) return project;
   const response = await desktopControlPlaneRequest("/api/internal/desktop/projects", {
     method: "POST",
     body: JSON.stringify({
@@ -492,7 +731,22 @@ async function registerWorkspaceProject(project) {
   return project;
 }
 
-async function bindSessionToWorkspaceProject(project, sessionId) {
+async function reconcileWorkspaceProjects() {
+  let changed = false;
+  for (const project of workspaceProjects) {
+    if (project.archived) continue;
+    const previousProjectId = project.registeredProjectId;
+    try {
+      await registerWorkspaceProject(project, { refresh: true });
+      changed = changed || project.registeredProjectId !== previousProjectId;
+    } catch {}
+  }
+  if (changed) await persistWorkspaceGrant();
+}
+
+async function bindSessionToWorkspaceProject(project, sessionId, options = {}) {
+  const access = options.access === "sandbox-write" ? "sandbox-write" : "snapshot-read";
+  const scope = options.scope === "run" || options.scope === "persistent" ? options.scope : "session";
   const requestBinding = (includeProjectId) => desktopControlPlaneRequest(
     "/api/internal/desktop/workspace-bindings",
     {
@@ -508,8 +762,8 @@ async function bindSessionToWorkspaceProject(project, sessionId) {
         ...(includeProjectId && project.registeredProjectId
           ? { project_id: project.registeredProjectId }
           : {}),
-        access: "snapshot-read",
-        scope: "session",
+        access,
+        scope,
       }),
     },
   );
@@ -530,6 +784,17 @@ async function bindSessionToWorkspaceProject(project, sessionId) {
 }
 
 function registerIpcHandlers() {
+  ipcMain.handle("my-mate:dialog:respond", (event, response) => {
+    assertTrustedSender(event);
+    const requestId = typeof response?.requestId === "string" ? response.requestId : "";
+    const pending = pendingStudioDialogs.get(requestId);
+    if (!pending) return { accepted: false };
+    const selected = Number.isInteger(response?.response) ? response.response : pending.cancelId;
+    clearTimeout(pending.timer);
+    pendingStudioDialogs.delete(requestId);
+    pending.resolve({ response: selected, checkboxChecked: false });
+    return { accepted: true };
+  });
   ipcMain.handle("my-mate:host:info", (event) => {
     assertTrustedSender(event);
     return { platform: process.platform, desktop: true, version: app.getVersion(), workspaceMode: "read-only" };
@@ -537,6 +802,32 @@ function registerIpcHandlers() {
   ipcMain.handle("my-mate:services:status", (event) => {
     assertTrustedSender(event);
     return supervisor?.snapshot() || [];
+  });
+  ipcMain.handle("my-mate:services:restart", async (event) => {
+    assertTrustedSender(event);
+    return await supervisor?.restartAll() || [];
+  });
+  ipcMain.handle("my-mate:services:logs", (event, request) => {
+    assertTrustedSender(event);
+    return supervisor?.readLogs(String(request?.id || ""), Number(request?.lines || 200)) || { lines: [] };
+  });
+  ipcMain.handle("my-mate:runtime:status", async (event) => {
+    assertTrustedSender(event);
+    return await runtimeProvisioner?.inspect() || null;
+  });
+  ipcMain.handle("my-mate:runtime:provision", async (event) => {
+    assertTrustedSender(event);
+    const confirmation = await showStudioMessageBox(mainWindow, {
+      type: "question",
+      title: "Prepare sandbox workers",
+      message: "Import or build the pinned Runtime and Artifact Worker images?",
+      detail: "This can download Docker base images and may take several minutes. Existing images are reused.",
+      buttons: ["Prepare workers", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (confirmation.response !== 0) return await runtimeProvisioner?.inspect() || null;
+    return await runtimeProvisioner?.provision() || null;
   });
   ipcMain.handle("my-mate:application:open", async (event, request) => {
     assertTrustedSender(event);
@@ -655,7 +946,7 @@ function registerIpcHandlers() {
     const projectId = typeof request?.projectId === "string" ? request.projectId : "";
     const project = workspaceProjects.find((item) => item.projectId === projectId);
     if (!project) throw new Error("Local Project not found.");
-    const confirmation = await dialog.showMessageBox(mainWindow, {
+    const confirmation = await showStudioMessageBox(mainWindow, {
       type: "warning",
       title: "Archive local project",
       message: `Archive ${project.name || path.basename(project.rootPath)} from My Mate?`,
@@ -696,7 +987,7 @@ function registerIpcHandlers() {
     const scope = request?.scope === "run" || request?.scope === "persistent" ? request.scope : "session";
     if (!sessionId) throw new Error("A Session is required before authorizing a local workspace.");
     if (access === "sandbox-write") {
-      const confirmation = await dialog.showMessageBox(mainWindow, {
+      const confirmation = await showStudioMessageBox(mainWindow, {
         type: "warning",
         title: "Allow isolated workspace changes",
         message: `Allow this task to modify an isolated Docker copy of ${path.basename(grant.rootPath)}?`,
@@ -712,26 +1003,7 @@ function registerIpcHandlers() {
         throw error;
       }
     }
-    const response = await desktopControlPlaneRequest("/api/internal/desktop/workspace-bindings", {
-      method: "POST",
-      body: JSON.stringify({
-        session_id: sessionId,
-        desktop_instance_id: desktopInstanceId,
-        capability_id: grant.capabilityId,
-        root_path: grant.rootPath,
-        display_name: grant.name || path.basename(grant.rootPath),
-        description: grant.description || null,
-        output_relative_path: grant.outputRelativePath || "outputs",
-        ...(grant.registeredProjectId ? { project_id: grant.registeredProjectId } : {}),
-        access,
-        scope,
-      }),
-    });
-    if (response?.project?.project_id) {
-      grant.registeredProjectId = response.project.project_id;
-      await persistWorkspaceGrant();
-    }
-    return response;
+    return await bindSessionToWorkspaceProject(grant, sessionId, { access, scope });
   });
   ipcMain.handle("my-mate:workspace:revoke", async (event, request) => {
     requireWorkspace(event, request);
@@ -746,7 +1018,7 @@ function registerIpcHandlers() {
     const grant = requireWorkspace(event, request);
     const changeSetId = typeof request?.changeSetId === "string" ? request.changeSetId.trim() : "";
     if (!changeSetId) throw new Error("Workspace Change Set id is required.");
-    const confirmation = await dialog.showMessageBox(mainWindow, {
+    const confirmation = await showStudioMessageBox(mainWindow, {
       type: "warning",
       title: "Apply reviewed workspace changes",
       message: `Write the reviewed changes to ${path.basename(grant.rootPath)}?`,
@@ -772,6 +1044,19 @@ function registerIpcHandlers() {
         }),
       },
     );
+  });
+  ipcMain.handle("my-mate:workspace:open-external", async (event, request) => {
+    assertTrustedSender(event);
+    return await openWorkspaceExternal(event, request || {});
+  });
+  ipcMain.handle("my-mate:workspace:preview", async (event, request) => {
+    const grant = requireWorkspace(event, request);
+    const preview = await workspacePreviewHost.start({
+      workspaceRoot: grant.rootPath,
+      relativePath: request?.relativePath || "",
+    });
+    await shell.openExternal(preview.url);
+    return { url: preview.url, reused: preview.reused };
   });
 }
 
@@ -806,30 +1091,51 @@ function createMainWindow() {
   window.webContents.on("will-navigate", (event, url) => {
     if (new URL(url).origin !== STUDIO_ORIGIN) event.preventDefault();
   });
+  window.webContents.on("did-finish-load", () => {
+    for (const pending of pendingStudioDialogs.values()) {
+      window.webContents.send("my-mate:dialog:request", pending.request);
+    }
+  });
   window.once("ready-to-show", () => window.show());
-  window.on("closed", () => { mainWindow = null; });
+  window.on("closed", () => {
+    settlePendingStudioDialogs();
+    mainWindow = null;
+  });
   void window.loadURL(STUDIO_URL);
   return window;
 }
 
 app.whenReady().then(async () => {
+  appendStartupLog("app-ready");
   await restoreDesktopIdentity();
+  appendStartupLog("identity-ready");
   browserCapabilityHost = new BrowserCapabilityHost({
     app,
     BrowserWindow,
     session,
-    dialog,
+    dialog: { showMessageBox: (...args) => showStudioMessageBox(...args) },
     getParentWindow: () => mainWindow,
   });
-  supervisor = new ServiceSupervisor({ repoRoot, desktopBridgeToken, desktopInstanceId });
+  supervisor = new ServiceSupervisor({
+    repoRoot,
+    desktopBridgeToken,
+    desktopInstanceId,
+    packaged: app.isPackaged,
+    runtimeDataDir: app.isPackaged ? path.join(app.getPath("userData"), "runtime") : "",
+    logRoot: path.join(app.getPath("userData"), "logs"),
+  });
+  runtimeProvisioner = new RuntimeProvisioner({ runtimeRoot: repoRoot });
   supervisor.on("status", (status) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("my-mate:services:status", status);
   });
   configureSessionSecurity();
   registerIpcHandlers();
   await restoreWorkspaceGrant();
+  appendStartupLog("desktop-host-ready");
   try {
     await supervisor.startAll();
+    await reconcileWorkspaceProjects();
+    appendStartupLog("services-ready");
   } catch (error) {
     await dialog.showMessageBox({
       type: "error",
@@ -841,14 +1147,39 @@ app.whenReady().then(async () => {
     return;
   }
   mainWindow = createMainWindow();
+  appendStartupLog("window-created");
+  notificationHost = new DesktopNotificationHost({
+    Notification,
+    statePath: desktopNotificationStatePath(),
+    request: () => desktopControlPlaneRequest("/api/notifications?status=unread", {
+      headers: { "x-my-mate-workspace-id": "default" },
+    }),
+    onClick: openNotificationInbox,
+  });
+  await notificationHost.start();
+  configureAutoUpdates();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();
   });
+}).catch(async (error) => {
+  appendStartupLog("startup-failed", error);
+  try {
+    await dialog.showMessageBox({
+      type: "error",
+      title: "My Mate could not start",
+      message: error instanceof Error ? error.message : String(error),
+      detail: "The startup failure was recorded in desktop-startup.log.",
+    });
+  } finally {
+    app.quit();
+  }
 });
 
 app.on("before-quit", () => {
   quitting = true;
   void browserCapabilityHost?.closeAll({ terminateUserBrowsers: true });
+  void workspacePreviewHost.closeAll();
+  notificationHost?.stop();
   supervisor?.stopAll();
 });
 

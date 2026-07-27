@@ -1,4 +1,5 @@
 import { buildDagLayout } from "./dag-layout.js";
+import { lifecycleStatusTone } from "./lifecycle-status-model.js";
 
 const RUNTIME_NODE_WIDTH = 224;
 const RUNTIME_NODE_HEIGHT = 112;
@@ -106,10 +107,7 @@ function edgeConditionLabel(condition) {
 }
 
 function nodeStatusTone(status) {
-  if (status === "completed" || status === "skipped") return "success";
-  if (status === "failed" || status === "cancelled") return "danger";
-  if (status === "running" || status === "waiting_human" || status === "ready") return "warn";
-  return "neutral";
+  return lifecycleStatusTone("node", status);
 }
 
 function edgeTone(status, skipped) {
@@ -151,7 +149,7 @@ function buildNodeModel(node, index, context) {
   const attempt = Math.max(Number(node.attempt || 0), ...jobs.map((job) => Number(job.attempt || 0)), 0);
   const maxAttempts = maxAttemptsFromJobs(jobs, attempt || 1);
   const duration = durationMs(node.startedAt, node.finishedAt, context.nowMs);
-  const role = node.agentProfile || node.runtimeAgentRef || node.type || "task";
+  const role = node.agentId || node.runtimeAgentRef || node.type || "task";
   const prompts = evidence.filter((item) => item.kind === "prompt");
   const skipped = node.status === "skipped" || array(node.markers).includes("skipped");
   return {
@@ -272,7 +270,7 @@ export function buildRuntimeGraphModel(input = {}) {
   return {
     runId: graph.runId || projection.run_id || "",
     runStatus: graph.runStatus || "unknown",
-    runTone: nodeStatusTone(graph.runStatus),
+    runTone: lifecycleStatusTone("run", graph.runStatus),
     route: {
       id: route.route_id || "",
       label: route.template_name || `${graph.templateId || "Route"} v${graph.templateVersion || 1}`,

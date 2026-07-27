@@ -46,11 +46,9 @@ export type PlannerValidationCategory = "required_input" | "registry" | "graph" 
 
 export type PlannerValidationCode =
   | "missing_required_input"
-  | "missing_agent_profile"
-  | "missing_runtime_agent_ref"
-  | "missing_openclaw_agent"
-  | "unknown_agent_profile"
-  | "disabled_agent_profile"
+  | "missing_agent"
+  | "unknown_agent"
+  | "disabled_agent"
   | "unknown_skill"
   | "disabled_skill"
   | "disallowed_skill"
@@ -83,12 +81,9 @@ export interface MobileTask {
   attempt: number;
   started_at: string | null;
   finished_at: string | null;
+  agent_id: string | null;
   runtime_agent_ref?: string | null;
-  openclaw_agent_id: string | null;
-  execution_ref: {
-    openclaw_task_id: string | null;
-    openclaw_session_id: string | null;
-  };
+  execution_ref: Record<string, unknown>;
 }
 
 export interface RunRecord {
@@ -260,18 +255,16 @@ export interface CandidatePlanNode {
   node_id: string;
   name: string;
   type: string;
-  agent_profile: string | null;
+  agent_id: string | null;
   runtime_agent_ref?: string | null;
-  openclaw_agent_id: string | null;
   allowed_skills: string[];
   allowed_tools: string[];
   registry_provenance?: {
-    agent_profile_requested: string | null;
-    agent_profile_resolved: string | null;
-    agent_profile_status: string | null;
-    agent_profile_source: string;
+    agent_id_requested: string | null;
+    agent_id_resolved: string | null;
+    agent_status: string | null;
+    agent_source: string;
     runtime_agent_ref_source?: string;
-    openclaw_agent_id_source: string;
     skill_bindings: Array<{
       skill_id: string;
       sources: string[];
@@ -315,7 +308,7 @@ export interface PlannerValidationResult {
     field: string | null;
     node_id: string | null;
     node_name: string | null;
-    agent_profile_id: string | null;
+    agent_id: string | null;
     skill_id: string | null;
   }>;
 }
@@ -409,9 +402,8 @@ export interface RuntimeGraphNode {
   attempt: number;
   startedAt: string | null;
   finishedAt: string | null;
-  agentProfile: string | null;
+  agentId: string | null;
   runtimeAgentRef?: string | null;
-  openclawAgentId: string | null;
   approvalKind: string | null;
   humanInputRequired: boolean;
   expectedArtifacts: string[];
@@ -526,7 +518,7 @@ export interface RuntimeJobRecord {
   status: RuntimeJobStatus;
   worker_id: string | null;
   lease_id: string | null;
-  target_kind: "local" | "external-bridge" | "docker-worker" | "node-worker";
+  target_kind: "local" | "docker-worker" | "node-worker";
   agent_runtime: string;
   runtime_agent_ref: string | null;
   created_at: string;
@@ -537,8 +529,7 @@ export interface RuntimeJobRecord {
   compatibility: {
     adapter_kind: string | null;
     dispatch_id: string | null;
-    openclaw_task_id: string | null;
-    openclaw_session_id: string | null;
+    provider_refs: Record<string, string | null>;
   };
   job: Record<string, unknown>;
 }
@@ -562,7 +553,7 @@ export interface RuntimeWorkerLeaseRecord {
   lease_id: string;
   worker_id: string;
   job_id: string;
-  target_kind: "local" | "external-bridge" | "docker-worker" | "node-worker";
+  target_kind: "local" | "docker-worker" | "node-worker";
   run_id: string;
   node_run_id: string;
   container_id: string | null;
@@ -1342,17 +1333,15 @@ export interface SessionDagDraftResponse {
     nodes: Array<Record<string, unknown>>;
     edges: Array<Record<string, unknown>>;
     workspace_scope?: string;
-    agent_profile_bindings?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   };
   template_recommendation: PlannerTemplateSelectionResponse | null;
   registry_recommendations: Array<{
     node_id: string;
     node_name: string;
-    agent_profile_id: string | null;
-    agent_profile_name: string | null;
+    agent_id: string | null;
+    agent_name: string | null;
     runtime_agent_ref?: string | null;
-    openclaw_agent_id: string | null;
     skill_ids: string[];
     allowed_tools: string[];
     score: number;

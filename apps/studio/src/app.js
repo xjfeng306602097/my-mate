@@ -32,6 +32,54 @@ import {
   workspaceChangeTone,
 } from "./workspace-change-diff-model.js";
 import { groupWorkspaceTasks, reassignSessionProjectMetadata } from "./workspace-task-tree-model.js";
+import {
+  buildWorkboardPage,
+  filterWorkboardFileDeliverables,
+  mergeWorkspaceChangeSetHistory,
+} from "./workboard-files-model.js";
+import {
+  cloneWorkspaceSnapshot,
+  isSameWorkspaceRun,
+  isSameWorkspaceSession,
+  shouldAcceptWorkspaceSnapshot,
+} from "./workspace-snapshot-model.js";
+import {
+  currentPublishedWorkflowTemplates,
+  groupWorkflowFamilies,
+  visibleWorkflowTemplates,
+  workflowDisplayStatus,
+  workflowFamilyForTemplate,
+} from "./workflow-version-model.js";
+import {
+  agentConnectionOptions,
+  isUsableAgentConnection,
+  modelOptionsForConnection,
+  preferredAgentBinding,
+  validateAgentModelBinding,
+} from "./agent-model-binding-model.js";
+import {
+  agentFieldLabel,
+  buildSubAgentConversationPresentation,
+  visibleAgentResultEntries,
+} from "./agent-conversation-presenter.js";
+import {
+  agentDelegationStatusFromEvent,
+  isAgentDelegationRunning,
+} from "./agent-run-status-model.js";
+import { agentDagPollingDecision, mergeAgentDagSummary } from "./agent-dag-polling-model.js";
+import { genericStatusTone } from "./lifecycle-status-model.js";
+import {
+  authoringConnectionPath,
+  authoringNodesInRectangle,
+  authoringSelectionIncludesNode,
+} from "./authoring-graph-interaction-model.js";
+import {
+  proposalNodeKindLabel,
+  proposalNodeNeedsAgent,
+  proposalStatusLabel,
+  proposalStepContractSummary,
+  proposalStepObjective,
+} from "./proposal-presentation-model.js";
 
 const NODE_TYPES = [
   "agent_task",
@@ -46,12 +94,14 @@ const NODE_TYPES = [
   "end",
 ];
 
-const CONVERSATION_UPLOAD_MAX_BYTES = 512 * 1024;
+const CONVERSATION_TEXT_UPLOAD_MAX_BYTES = 512 * 1024;
+const CONVERSATION_BINARY_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
 const CONVERSATION_TEXT_EXTENSIONS = new Set([
   ".c", ".cc", ".conf", ".cpp", ".cs", ".css", ".csv", ".go", ".graphql", ".h", ".hpp",
   ".html", ".ini", ".java", ".js", ".json", ".jsx", ".log", ".md", ".mjs", ".php", ".properties",
   ".py", ".rb", ".rs", ".sh", ".sql", ".svg", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
 ]);
+const CONVERSATION_BINARY_EXTENSIONS = new Set([".pdf", ".docx", ".pptx", ".xlsx"]);
 const CONVERSATION_SENSITIVE_FILE_PATTERN = /(^|[.])(env|key|pem|p12|pfx|crt|cer|der|keystore)$/i;
 
 marked.setOptions({ gfm: true, breaks: true });
@@ -96,12 +146,12 @@ const DEFAULT_PROVIDER_MAX_INPUT_TOKENS = 524288;
 const DEFAULT_PROVIDER_MAX_OUTPUT_TOKENS = 65536;
 const DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT = 75;
 const DEFAULT_MAX_CONTINUATION_ROUNDS = 8;
+const DEFAULT_MAX_TOOL_ROUNDS = 32;
 const PROVIDER_CREDENTIAL_ENVS = {
   codex: ["OPENAI_API_KEY", "CODEX_API_KEY"],
   "claude-sdk": ["ANTHROPIC_API_KEY"],
   glm: ["GLM_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY"],
   kimi: ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
-  openclaw: ["MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY", "MY_MATE_OPENCLAW_BRIDGE_API_KEY"],
 };
 const PROVIDER_DEFAULTS = {
   codex: {
@@ -132,27 +182,18 @@ const PROVIDER_DEFAULTS = {
     modelPlaceholder: "moonshot model id",
     endpointPlaceholder: "Default Moonshot endpoint",
   },
-  openclaw: {
-    label: "OpenClaw",
-    provider: "openclaw",
-    credentialEnv: "MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY",
-    modelPlaceholder: "OpenClaw agent id",
-    endpointPlaceholder: "OpenClaw bridge URL",
-  },
 };
 const AGENT_RUNTIMES = Object.keys(PROVIDER_CREDENTIAL_ENVS);
 const PROVIDER_PROTOCOLS = {
   "codex-appserver": "Codex App Server",
   "anthropic-messages": "Anthropic Messages",
   "openai-compatible": "OpenAI compatible",
-  "openclaw-bridge": "OpenClaw bridge",
 };
 const PROVIDER_PRESETS = {
   openai: { label: "OpenAI", runtime: "codex", protocol: "codex-appserver", provider: "openai", model: "gpt-5.3-codex" },
   anthropic: { label: "Anthropic", runtime: "claude-sdk", protocol: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5" },
   glm: { label: "GLM", runtime: "glm", protocol: "anthropic-messages", provider: "anthropic-compatible", model: "glm-5.2" },
   kimi: { label: "Kimi", runtime: "kimi", protocol: "openai-compatible", provider: "moonshot", model: "kimi-k2.5" },
-  openclaw: { label: "OpenClaw", runtime: "openclaw", protocol: "openclaw-bridge", provider: "openclaw", model: "" },
   custom: { label: "Custom", runtime: "codex", protocol: "openai-compatible", provider: "custom", model: "" },
 };
 
@@ -175,8 +216,6 @@ const CREDENTIAL_ENV_LABELS = {
   ZHIPU_API_KEY: "Zhipu API key",
   KIMI_API_KEY: "Kimi API key",
   MOONSHOT_API_KEY: "Moonshot API key",
-  MY_MATE_OPENCLAW_WORKER_BRIDGE_API_KEY: "OpenClaw Worker key",
-  MY_MATE_OPENCLAW_BRIDGE_API_KEY: "OpenClaw bridge key",
 };
 
 function credentialEnvLabel(name) {
@@ -188,6 +227,7 @@ const STUDIO_API_KEY_STORAGE = "my-mate.studio.api-key";
 const STUDIO_WORKSPACE_STORAGE = "my-mate.studio.workspace-id";
 const STUDIO_SETUP_DISMISSED_STORAGE = "my-mate.studio.setup-dismissed";
 const STUDIO_AUTONOMY_STORAGE = "my-mate.studio.autonomy-mode";
+const STUDIO_AGENT_DRAFT_STORAGE = "my-mate.studio.agent-draft";
 const SESSION_WORKSPACE_CACHE_TTL_MS = 120_000;
 const desktopHost = globalThis.myMateDesktop || null;
 const studioPerformance = {
@@ -237,20 +277,6 @@ function markTaskSwitchHydrated(sessionId) {
 function emptyHumanInputDrafts() {
   return {};
 }
-
-function emptyOrchestratorEditor() {
-  return {
-    selectedProfileId: "",
-    name: "Studio Orchestrator",
-    provider: "",
-    model: "",
-    systemPrompt:
-      "You are the mission orchestrator. Clarify the user's intent, define the MissionSpec, propose a DAG, assign subagents, and supervise execution until the requested deliverables are complete.",
-    defaultToolsText: "",
-    defaultSubagentsText: "",
-  };
-}
-
 function emptyGovernanceState() {
   return {
     policy: null,
@@ -258,7 +284,7 @@ function emptyGovernanceState() {
     loading: false,
     saving: false,
     draft: {
-      action: "agent_profile.upsert",
+      action: "agent.upsert",
       resourceId: "",
       reason: "",
       payloadText: "{}",
@@ -266,16 +292,129 @@ function emptyGovernanceState() {
   };
 }
 
+function emptyAgentDefinitionDraft() {
+  return {
+    name: "",
+    agentId: "",
+    description: "",
+    responsibility: "Own the delegated outcome and return evidence that it meets the acceptance criteria.",
+    role: "worker",
+    systemPrompt: "You are a reliable task agent. Complete the assigned objective, use only the capabilities available to you, and return verified results.",
+    connectionId: "",
+    model: "",
+    routingPreference: "balanced",
+    fallbackModels: "",
+    allowModelEscalation: true,
+    capabilityTags: "",
+    allowDelegation: false,
+    inputContractText: "{}",
+    outputContractText: "{}",
+    acceptanceCriteriaText: "Return a complete result with verifiable evidence.",
+    verificationStepsText: "",
+    allowedTools: "workspace_read_text, workspace_search",
+    deniedTools: "",
+    maxToolRounds: 32,
+    lockedSkills: [],
+    deniedSkills: "",
+    dynamicSkillActivation: true,
+    memoryEnabled: true,
+    automaticRecall: true,
+    memoryWriteMode: "review",
+    compressionEnabled: true,
+    compressionThreshold: 80,
+    continuationRounds: 16,
+    sandbox: "auto",
+    timeoutSeconds: 1800,
+    autonomyMode: "assisted",
+    workspaceRead: true,
+    workspaceWrite: false,
+  };
+}
+
+function agentDefinitionDraftFromRecords(definition, version) {
+  const draft = emptyAgentDefinitionDraft();
+  if (!definition) return draft;
+  return {
+    ...draft,
+    name: definition.name || "",
+    agentId: definition.agent_id || "",
+    description: definition.description || "",
+    responsibility: version?.responsibility || draft.responsibility,
+    role: version?.role || draft.role,
+    systemPrompt: version?.system_prompt || draft.systemPrompt,
+    connectionId: version?.model_policy?.provider_connection_id || "",
+    model: version?.model_policy?.model || "",
+    routingPreference: version?.model_policy?.routing_preference || draft.routingPreference,
+    fallbackModels: (version?.model_policy?.fallback_models || []).join(", "),
+    allowModelEscalation: version?.model_policy?.allow_model_escalation !== false,
+    capabilityTags: (version?.capability_policy?.capability_tags || []).join(", "),
+    allowDelegation: version?.capability_policy?.allow_delegation === true,
+    inputContractText: JSON.stringify(version?.capability_policy?.input_contract || {}, null, 2),
+    outputContractText: JSON.stringify(version?.capability_policy?.output_contract || {}, null, 2),
+    acceptanceCriteriaText: (version?.capability_policy?.acceptance_criteria || []).join("\n"),
+    verificationStepsText: (version?.capability_policy?.verification_steps || []).join("\n"),
+    allowedTools: (version?.tool_policy?.allowed_tools || []).join(", "),
+    deniedTools: (version?.tool_policy?.denied_tools || []).join(", "),
+    maxToolRounds: version?.tool_policy?.max_tool_rounds ?? draft.maxToolRounds,
+    lockedSkills: (version?.skill_policy?.locked_skills || []).map((item) => item.skill_id),
+    deniedSkills: (version?.skill_policy?.denied_skills || []).join(", "),
+    dynamicSkillActivation: version?.skill_policy?.dynamic_activation !== false,
+    memoryEnabled: version?.memory_policy?.enabled !== false,
+    automaticRecall: version?.memory_policy?.automatic_recall !== false,
+    memoryWriteMode: version?.memory_policy?.write_mode || draft.memoryWriteMode,
+    compressionEnabled: version?.context_policy?.compression_enabled !== false,
+    compressionThreshold: version?.context_policy?.compression_threshold_percent ?? draft.compressionThreshold,
+    continuationRounds: version?.context_policy?.max_continuation_rounds ?? draft.continuationRounds,
+    sandbox: version?.runtime_policy?.sandbox || draft.sandbox,
+    timeoutSeconds: version?.runtime_policy?.timeout_seconds ?? draft.timeoutSeconds,
+    autonomyMode: version?.autonomy_ceiling || draft.autonomyMode,
+    workspaceRead: version?.workspace_policy?.read !== false,
+    workspaceWrite: version?.workspace_policy?.write === true,
+  };
+}
+
+function emptyAgentOrchestrationState() {
+  return {
+    activeTab: "agents",
+    teams: [],
+    dags: [],
+    selectedDagId: "",
+    detail: null,
+    loading: false,
+    saving: false,
+    error: null,
+    registryError: null,
+    agentCreateOpen: false,
+    editingAgentId: "",
+    agentDraftDirty: false,
+    agentDraftSavedAt: "",
+    agentDraftRestored: false,
+    agentValidationVisible: false,
+    teamCreateOpen: false,
+    createOpen: false,
+    addTaskOpen: false,
+    agentDraft: emptyAgentDefinitionDraft(),
+    teamDraft: { name: "", orchestratorAgentId: "default-agent", workerAgentId: "", reviewerAgentId: "", maxConcurrency: 3, maxDepth: 1 },
+    dagDraft: { title: "", objective: "", sessionId: "", orchestratorAgentId: "default-agent", teamId: "" },
+    taskDraft: { name: "", objective: "", agentId: "", role: "worker", kind: "agent_task", dependsOn: "", joinPolicy: "all", conditionPath: "", conditionOperator: "truthy", conditionValue: "" },
+  };
+}
+
 const state = {
   templates: [],
   missions: [],
   sessions: [],
-  orchestratorProfiles: [],
-  agentProfiles: [],
+  agentDefinitions: [],
+  agentVersions: [],
+  agentDeployments: [],
+  agentReadiness: [],
+  agentCapabilities: [],
+  agentOrchestration: emptyAgentOrchestrationState(),
   providerConnections: [],
   mcpConnectorPresets: [],
   mcpServers: [],
   skills: [],
+  skillHost: { packages: [], invocations: [], selectedId: "", detail: null, sourcePath: "", loading: false, profile: null, lockfile: null, observability: null, sources: [], scan: null },
   activeView: "plan",
   activeNav: "orchestrator",
   lineage: null,
@@ -283,8 +422,13 @@ const state = {
   selectedSessionId: null,
   workspaceLoadingSessionId: "",
   loading: false,
+  controlPlane: {
+    status: "unknown",
+    lastSuccessAt: "",
+    lastError: "",
+    checking: false,
+  },
   registryLoading: false,
-  orchestratorProfilesLoading: false,
   missionsLoading: false,
   sessionsLoading: false,
   sessionVisibilitySaving: false,
@@ -371,11 +515,37 @@ const state = {
     alerts: [],
     memoryCandidates: [],
     workspaceChanges: [],
+    notifications: [],
     selectedWorkspaceChangeId: "",
     selectedWorkspaceFile: "",
     confirmWorkspaceChangeAction: "",
     loading: false,
     error: null,
+  },
+  schedules: {
+    items: [],
+    runs: {},
+    loading: false,
+    saving: false,
+    editorOpen: false,
+    editingId: "",
+    historyId: "",
+    deleteConfirmId: "",
+    error: null,
+    draft: {
+      name: "",
+      prompt: "",
+      taskMode: "new_task",
+      sessionId: "",
+      taskTitle: "",
+      autonomyMode: "assisted",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      recurrenceKind: "cron",
+      onceAt: "",
+      intervalMinutes: 60,
+      cronExpression: "0 9 * * *",
+      enabled: true,
+    },
   },
   security: {
     identity: null,
@@ -391,6 +561,8 @@ const state = {
     loading: false,
     hostInfo: null,
     services: [],
+    runtimeStatus: null,
+    runtimeBusy: false,
     workspace: null,
     projects: [],
     listing: null,
@@ -427,6 +599,14 @@ const state = {
     detail: null,
     compare: null,
   },
+  workspaceDiffPreview: {
+    open: false,
+    loading: false,
+    error: null,
+    changeSetId: "",
+    relativePath: "",
+    detail: null,
+  },
   streamStatus: "idle",
   streamError: null,
   streamSource: null,
@@ -444,7 +624,6 @@ const state = {
     key: null,
   },
   registryEditor: {
-    profile: emptyAgentProfileEditor(),
     connection: emptyProviderConnectionEditor(),
     mcpServer: emptyMcpServerEditor(),
     skill: emptySkillEditor(),
@@ -461,18 +640,25 @@ const state = {
     error: null,
     editorTouched: false,
   },
-  orchestrator: emptyOrchestratorEditor(),
   ui: {
-    orchestratorSetupExpanded: false,
     navigationTab: "task",
+    workflowGeneratorOpen: false,
+    workflowHistoryOpen: false,
     workspaceFeedFilter: "all",
     workspaceFeedExpanded: false,
     taskConversationVisible: true,
     taskConversationExpanded: false,
+    conversationActionExpanded: {},
+    conversationActionDetailsExpanded: {},
+    agentDelegationNodeId: "",
+    agentDelegationTab: "activity",
     taskRuntimeExpanded: false,
     taskPlanExpanded: false,
     workspaceCreatorOpen: false,
     workspaceCreatorStartTask: false,
+    workspaceExternalMenu: null,
+    workboardQuery: "",
+    workboardPage: 1,
     taskMoveSessionId: "",
     taskMoveProjectId: "",
     taskSidebarQuery: "",
@@ -482,6 +668,11 @@ const state = {
     runtimeGraphZoom: 1,
     runtimeGraphTab: "timeline",
     runtimeGraphListFallback: false,
+    authoringGraphZoom: 1,
+    authoringGraphPan: { x: 0, y: 0 },
+    authoringGraphPanning: false,
+    authoringNodeMenuOpen: false,
+    authoringCanvasExpanded: false,
     authoringGraphSelection: {
       type: "none",
       index: null,
@@ -493,6 +684,7 @@ const state = {
     registrySection: "connections",
     providerConnectionModalOpen: false,
     mcpServerModalOpen: false,
+    dialog: null,
   },
   attachmentEditor: {
     name: "",
@@ -510,6 +702,7 @@ const state = {
     conversationProviderConnectionId: "",
     conversationModel: "",
     templateId: "",
+    templateLocked: false,
     inputsText: prettyJson({}),
     maxAgentNodes: "1",
     recommendation: null,
@@ -538,27 +731,142 @@ let authoringGraphHistory = createGraphHistory({ nodes: [], edges: [], metadataT
 let authoringGraphSavedSnapshot = { nodes: [], edges: [], metadataText: "{}" };
 let authoringGraphConnection = null;
 let authoringNodeDrag = null;
+let authoringCanvasPan = null;
+let authoringGraphMarquee = null;
 let restoreWorkspaceFocusFromLocation = false;
 let workspaceLoadSeq = 0;
+let templateLoadSeq = 0;
 let workspaceLoadController = null;
 let missionSearchTimer = null;
 let sessionSearchTimer = null;
 let taskSidebarSearchTimer = null;
+let workboardSearchTimer = null;
 let runtimeSupervisionTimer = null;
 let runtimeSupervisionRunId = "";
 let runtimeSupervisionCursor = "";
+let agentDagDetailPollTimer = null;
+let agentDagDetailPollId = "";
+let agentDagDetailPollAttempts = 0;
+let agentDagDetailRequestSequence = 0;
 let sessionStreamErrorTimer = null;
+let agentEventStreamSource = null;
+let agentEventStreamRunId = "";
+let agentEventStreamStatus = "idle";
+let agentEventStreamError = "";
 let pendingRuntimeNodeFocus = false;
 let conversationSocket = null;
 let conversationSocketSessionId = "";
 let conversationSocketOpenPromise = null;
+let conversationSocketReconnectTimer = null;
+let conversationSocketReconnectAttempt = 0;
+const conversationEventSequences = new Map();
+const intentionallyClosedConversationSockets = new WeakSet();
 const conversationSocketRequests = new Map();
 const autopilotAdvanceAttempts = new Set();
 const pendingTaskMoveStreamSessions = new Set();
+const studioDialogQueue = [];
+
+function conversationEventSequenceKey(sessionId) {
+  return `my-mate:conversation-sequence:${sessionId}`;
+}
+
+function getConversationEventSequence(sessionId) {
+  if (!sessionId) return 0;
+  const inMemory = Number(conversationEventSequences.get(sessionId) || 0);
+  if (inMemory > 0) return inMemory;
+  try {
+    const persisted = Number(window.sessionStorage.getItem(conversationEventSequenceKey(sessionId)) || 0);
+    if (Number.isInteger(persisted) && persisted > 0) {
+      conversationEventSequences.set(sessionId, persisted);
+      return persisted;
+    }
+  } catch {
+    // Storage is optional in embedded or privacy-restricted browser contexts.
+  }
+  return 0;
+}
+
+function setConversationEventSequence(sessionId, sequence) {
+  if (!sessionId || !Number.isInteger(sequence) || sequence <= 0) return;
+  const next = Math.max(sequence, getConversationEventSequence(sessionId));
+  conversationEventSequences.set(sessionId, next);
+  try { window.sessionStorage.setItem(conversationEventSequenceKey(sessionId), String(next)); } catch { /* optional */ }
+}
+
+function activateNextStudioDialog() {
+  if (state.ui.dialog || !studioDialogQueue.length) return;
+  state.ui.dialog = studioDialogQueue.shift();
+  render();
+}
+
+function enqueueStudioDialog(entry) {
+  studioDialogQueue.push(entry);
+  activateNextStudioDialog();
+}
+
+function showStudioDialog(options) {
+  return new Promise((resolve) => {
+    const buttons = Array.isArray(options.buttons) && options.buttons.length ? options.buttons : ["Continue", "Cancel"];
+    enqueueStudioDialog({
+      source: "studio",
+      requestId: `studio-dialog-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: options.type || "question",
+      title: options.title || "Confirm action",
+      message: options.message || "Review this action before continuing.",
+      detail: options.detail || "",
+      buttons,
+      defaultId: Number.isInteger(options.defaultId) ? options.defaultId : 0,
+      cancelId: Number.isInteger(options.cancelId) ? options.cancelId : buttons.length - 1,
+      input: options.input || null,
+      inputValue: options.input?.value || "",
+      resolve,
+    });
+  });
+}
+
+async function finishStudioDialog(response) {
+  const current = state.ui.dialog;
+  if (!current) return;
+  const value = current.inputValue || "";
+  state.ui.dialog = null;
+  render();
+  if (current.source === "desktop") {
+    try {
+      await desktopHost?.dialog?.respond?.({ requestId: current.requestId, response });
+    } catch (error) {
+      state.error = error.message || "Desktop confirmation could not be returned.";
+    }
+  } else {
+    current.resolve?.({ response, value });
+  }
+  activateNextStudioDialog();
+}
+
+async function studioPrompt(options) {
+  const result = await showStudioDialog({
+    ...options,
+    buttons: [options.submitLabel || "Submit", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    input: { label: options.inputLabel || "Note", value: options.value || "", multiline: true },
+  });
+  return result.response === 0 ? result.value : null;
+}
+
+async function studioConfirm(options) {
+  const result = await showStudioDialog({
+    ...options,
+    buttons: [options.confirmLabel || "Confirm", "Cancel"],
+    defaultId: options.destructive ? 1 : 0,
+    cancelId: 1,
+  });
+  return result.response === 0;
+}
 const sessionWorkspaceCache = new Map();
 
 const DESKTOP_NAV_ITEMS = new Set([
   "orchestrator",
+  "scheduled",
   "inbox",
   "library",
   "missions",
@@ -571,41 +879,18 @@ const DESKTOP_NAV_ITEMS = new Set([
   "settings",
   "operations",
 ]);
-const TASK_NAV_IDS = new Set(["orchestrator", "inbox", "library", "settings"]);
-const ADVANCED_NAV_IDS = new Set([
-  "missions",
-  "sessions",
+const TASK_NAV_IDS = new Set(["orchestrator", "missions", "sessions", "scheduled", "inbox"]);
+const BUILD_NAV_IDS = new Set(["agents", "library", "templates"]);
+const OPERATE_NAV_IDS = new Set([
   "dashboard",
   "memory",
-  "agents",
-  "templates",
-  "registry",
-  "operations",
 ]);
+const SYSTEM_NAV_IDS = new Set(["settings", "registry", "operations"]);
+// Kept as an alias for older routing helpers and persisted locations.
+const ADMIN_NAV_IDS = SYSTEM_NAV_IDS;
+const ADVANCED_NAV_IDS = new Set([...BUILD_NAV_IDS, ...OPERATE_NAV_IDS, ...SYSTEM_NAV_IDS]);
 const WORKSPACE_SELECTION_TYPES = new Set(["checkpoint", "output-history"]);
 const WORKSPACE_FEED_FILTERS = new Set(["all", "evidence", "context", "outputs", "patches"]);
-
-function emptyAgentProfileEditor() {
-  return {
-    mode: "new",
-    profileId: "",
-    status: "active",
-    name: "",
-    description: "",
-    agentRuntime: "codex",
-    harnessProfile: "agent-harness-v1",
-    providerConnectionId: "",
-    openclawAgentId: "",
-    openclawProvider: "",
-    openclawModel: "",
-    openclawRuntimeMode: "",
-    defaultSkillsText: "",
-    allowedToolsText: "",
-    disallowedSkillsText: "",
-    policyTagsText: "",
-    metadataText: prettyJson(DEFAULT_REGISTRY_METADATA),
-  };
-}
 
 function emptyProviderConnectionEditor() {
   return {
@@ -625,6 +910,7 @@ function emptyProviderConnectionEditor() {
     contextCompressionEnabled: true,
     contextCompressionThresholdPercent: DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT,
     maxContinuationRounds: DEFAULT_MAX_CONTINUATION_ROUNDS,
+    maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
     credentialSource: "managed",
     credentialEnv: "OPENAI_API_KEY",
     apiKey: "",
@@ -676,32 +962,6 @@ function emptySkillEditor() {
   };
 }
 
-function editorFromAgentProfile(profile) {
-  const metadata = profile.metadata || DEFAULT_REGISTRY_METADATA;
-  const openclaw = metadata.openclaw && typeof metadata.openclaw === "object" && !Array.isArray(metadata.openclaw)
-    ? metadata.openclaw
-    : {};
-  return {
-    mode: "edit",
-    profileId: profile.profile_id,
-    status: profile.status || "active",
-    name: profile.name || profile.profile_id,
-    description: profile.description || "",
-    agentRuntime: profile.agent_runtime || "openclaw",
-    harnessProfile: profile.harness_profile || "",
-    providerConnectionId: profile.provider_connection_id || "",
-    openclawAgentId: profile.runtime_agent_ref || profile.openclaw_agent_id || "",
-    openclawProvider: openclaw.provider || metadata.openclaw_provider || "",
-    openclawModel: openclaw.model || metadata.openclaw_model || "",
-    openclawRuntimeMode: openclaw.runtime_mode || metadata.openclaw_runtime_mode || "",
-    defaultSkillsText: (profile.default_skills || []).join(", "),
-    allowedToolsText: (profile.allowed_tools || []).join(", "),
-    disallowedSkillsText: (profile.disallowed_skills || []).join(", "),
-    policyTagsText: (profile.policy_tags || []).join(", "),
-    metadataText: prettyJson(metadata),
-  };
-}
-
 function editorFromProviderConnection(connection) {
   const preset = Object.entries(PROVIDER_PRESETS).find(([, item]) =>
     item.runtime === connection.agent_runtime && item.provider === connection.provider
@@ -725,6 +985,9 @@ function editorFromProviderConnection(connection) {
     maxContinuationRounds: Number.isInteger(connection.max_continuation_rounds)
       ? connection.max_continuation_rounds
       : DEFAULT_MAX_CONTINUATION_ROUNDS,
+    maxToolRounds: Number.isInteger(connection.max_tool_rounds)
+      ? connection.max_tool_rounds
+      : DEFAULT_MAX_TOOL_ROUNDS,
     credentialSource: connection.credential_source || "environment",
     credentialEnv: connection.credential_env || "",
     apiKey: "",
@@ -789,7 +1052,7 @@ function editorFromMcpConnectorPreset(preset) {
 }
 
 function runtimeAgentRefOf(value) {
-  return value?.runtime_agent_ref || value?.openclaw_agent_id || "";
+  return value?.runtime_agent_ref || "";
 }
 
 function editorFromSkill(skill) {
@@ -813,8 +1076,8 @@ function emptyNode(index) {
     id: `node_${index}`,
     name: `Node ${index}`,
     type: "agent_task",
-    agent_profile: "backend",
-    allowed_skills: ["coding-agent"],
+    agent_id: null,
+    allowed_skills: [],
     config: {},
     retry_policy: {
       max_attempts: 1,
@@ -827,6 +1090,21 @@ function emptyNode(index) {
   };
 }
 
+function workflowNodeTypeLabel(type) {
+  return {
+    agent_task: "Agent step",
+    approval: "Ask for approval",
+    human_input: "Ask user",
+    notify: "Send notification",
+    condition: "Condition",
+    fanout: "Loop / parallel group",
+    reducer: "Combine results",
+    tool_task: "Tool step",
+    planner: "Planning step",
+    end: "Finish",
+  }[type] || type;
+}
+
 function emptyEditor() {
   return {
     templateId: null,
@@ -837,7 +1115,6 @@ function emptyEditor() {
     workspaceScope: "default",
     inputSchemaText: prettyJson(DEFAULT_INPUT_SCHEMA),
     policyText: prettyJson(DEFAULT_POLICY),
-    bindingsText: prettyJson({ backend: "backend" }),
     metadataText: prettyJson({ domain: "demo" }),
     nodes: [
       {
@@ -846,7 +1123,7 @@ function emptyEditor() {
         name: "Backend Task",
         timeout_seconds: 900,
         config: {
-          allowed_tools: ["read", "write", "shell"],
+          allowed_tools: [],
           output_contract: {
             expected_artifacts: ["agent-report"],
           },
@@ -857,7 +1134,7 @@ function emptyEditor() {
         id: "node_end",
         name: "End",
         type: "end",
-        agent_profile: null,
+        agent_id: null,
         allowed_skills: [],
         retry_policy: {
           max_attempts: 0,
@@ -888,9 +1165,8 @@ function editorFromTemplate(template) {
     workspaceScope: template.workspace_scope,
     inputSchemaText: prettyJson(template.input_schema),
     policyText: prettyJson(template.policy),
-    bindingsText: prettyJson(template.agent_profile_bindings),
     metadataText: prettyJson(template.metadata),
-    nodes: template.nodes,
+    nodes: template.nodes.map((node) => ({ ...node, agent_id: node.agent_id || null })),
     edges: template.edges,
     updatedAt: template.updated_at,
   };
@@ -901,7 +1177,7 @@ function nodeFromCompiledNode(compiledNode) {
     id: compiledNode.node_id,
     name: compiledNode.name,
     type: compiledNode.type,
-    agent_profile: compiledNode.agent_profile,
+    agent_id: compiledNode.agent_id || compiledNode.agent_binding_snapshot?.agent_id || null,
     allowed_skills: compiledNode.allowed_skills || [],
     config: {
       ...(compiledNode.input_payload?.node_config || {}),
@@ -931,7 +1207,6 @@ function editorFromCandidatePlan(candidatePlan, sourceTemplate) {
     workspaceScope: plan.workspace_id || sourceTemplate?.workspace_scope || "default",
     inputSchemaText: prettyJson(sourceTemplate?.input_schema || DEFAULT_INPUT_SCHEMA),
     policyText: prettyJson(plan.policy_snapshot || sourceTemplate?.policy || DEFAULT_POLICY),
-    bindingsText: prettyJson(sourceTemplate?.agent_profile_bindings || {}),
     metadataText: prettyJson({
       ...sourceMetadata,
       planner_source_template_id: plan.template_id,
@@ -956,7 +1231,6 @@ function editorFromDagDraft(dagDraft) {
     workspaceScope: draft.workspace_scope || "default",
     inputSchemaText: prettyJson(draft.input_schema || DEFAULT_INPUT_SCHEMA),
     policyText: prettyJson(draft.policy || DEFAULT_POLICY),
-    bindingsText: prettyJson(draft.agent_profile_bindings || {}),
     metadataText: prettyJson({
       ...(draft.metadata || {}),
       planner_context: dagDraft.planner_context || {},
@@ -993,11 +1267,12 @@ function getProposalNodeDraft(node, index) {
     key,
     id: key,
     name: node.name || node.node_name || key,
-    type: node.type || "agent_task",
-    agentProfile:
-      override.agentProfile !== undefined
-        ? override.agentProfile
-        : node.agent_profile || node.agentProfile || "",
+    type: node.kind || node.type || "agent_task",
+    objectiveText: proposalStepObjective(node, config),
+    agentId:
+      override.agentId !== undefined
+        ? override.agentId
+        : node.agent_selector?.agent_id || node.agent_id || node.agent_profile || "",
     skillsText:
       override.skillsText !== undefined
         ? override.skillsText
@@ -1017,7 +1292,8 @@ function getProposalNodeDraft(node, index) {
     contextText:
       override.contextText !== undefined
         ? override.contextText
-        : config.input_context || config.prompt || config.instructions || "",
+        : config.input_context || config.prompt || config.instructions ||
+          (node.input_contract && Object.keys(node.input_contract).length ? prettyJson(node.input_contract) : ""),
     outputContractText: outputContract,
   };
 }
@@ -1033,7 +1309,7 @@ function parseProposalOverrideNode(draft) {
   return {
     ok: true,
     value: {
-      agent_profile: draft.agentProfile.trim() || null,
+      agent_id: draft.agentId.trim() || null,
       allowed_skills: parseCsv(draft.skillsText),
       config_patch: {
         allowed_tools: parseCsv(draft.toolsText),
@@ -1085,7 +1361,7 @@ function applyProposalOverridesToEditor(editor) {
     }
     return {
       ...node,
-      agent_profile: parsed.value.agent_profile,
+      agent_id: parsed.value.agent_id,
       allowed_skills: parsed.value.allowed_skills,
       config: nextConfig,
     };
@@ -1156,6 +1432,8 @@ function getProposalDraftSource() {
 }
 
 function getProposalSourceNodes() {
+  const canonicalNodes = state.planner.activeProposal?.dag_definition?.nodes;
+  if (Array.isArray(canonicalNodes) && canonicalNodes.length) return canonicalNodes;
   const dagDraft = getProposalDraftSource();
   const dagNodes = Array.isArray(dagDraft?.draft_template?.nodes)
     ? dagDraft.draft_template.nodes
@@ -1169,7 +1447,7 @@ function proposalOverridesFromAssignments(proposal) {
   for (const assignment of proposal?.assignments || []) {
     if (!assignment?.node_id) continue;
     overrides[assignment.node_id] = {
-      agentProfile: assignment.subagent_profile_id || "",
+      agentId: assignment.agent_id || "",
       skillsText: (assignment.allowed_skills || []).join(", "),
       toolsText: (assignment.allowed_tools || []).join(", "),
       provider: assignment.provider || "",
@@ -1219,7 +1497,7 @@ function syncProposalOverrideField(target) {
   if (!key) return;
   const current = state.planner.proposalOverrides[key] || {};
   const next = { ...current };
-  if (field === "proposal.agent_profile") next.agentProfile = value;
+  if (field === "proposal.agent_id") next.agentId = value;
   if (field === "proposal.allowed_skills") next.skillsText = value;
   if (field === "proposal.allowed_tools") next.toolsText = value;
   if (field === "proposal.provider") next.provider = value;
@@ -1417,30 +1695,7 @@ function filterConversationInputAttachments(attachments) {
 }
 
 function statusTone(status) {
-  if (
-    status === "published" ||
-    status === "completed" ||
-    status === "ready" ||
-    status === "running" ||
-    status === "active" ||
-    status === "done" ||
-    status === "returned" ||
-    status === "satisfied" ||
-    status === "confirmed"
-  ) {
-    return "success";
-  }
-  if (status === "failed" || status === "cancelled" || status === "blocked") return "danger";
-  if (
-    status === "draft" ||
-    status === "new" ||
-    status === "waiting_human" ||
-    status === "paused" ||
-    status === "prepared" ||
-    status === "in_progress" ||
-    status === "review_ready"
-  ) return "warn";
-  return "neutral";
+  return genericStatusTone(status);
 }
 
 function getRuntimeExecutionLabel(runtime) {
@@ -1673,7 +1928,7 @@ function buildRouteCompareGraphSide(side) {
       id,
       label: getRouteCompareNodeName(node, id),
       type: String(node?.type || "agent_task"),
-      agent: String(node?.agent_profile || ""),
+      agent: String(node?.agent_id || node?.agent_binding_snapshot?.agent_id || ""),
       column: positioned?.column || 0,
       row: positioned?.row || 0,
       x: positioned?.x || 20,
@@ -2788,6 +3043,9 @@ function prepareWorkspaceSessionChange(nextSessionId) {
   closeConversationSocket();
   state.conversationStream = null;
   state.artifactPreview.open = false;
+  state.workspaceDiffPreview.open = false;
+  state.ui.workboardQuery = "";
+  state.ui.workboardPage = 1;
 }
 
 function getSessionWorkspaceCacheKey(sessionId, runId = "") {
@@ -2802,13 +3060,13 @@ function getCachedSessionWorkspace(sessionId, runId = "") {
     sessionWorkspaceCache.delete(key);
     return null;
   }
-  return cached.detail;
+  return cloneWorkspaceSnapshot(cached.detail);
 }
 
 function cacheSessionWorkspace(sessionId, runId, detail) {
-  if (!sessionId || !detail) return;
+  if (!sessionId || !detail || getWorkspaceSessionId(detail) !== sessionId) return;
   sessionWorkspaceCache.set(getSessionWorkspaceCacheKey(sessionId, runId), {
-    detail,
+    detail: cloneWorkspaceSnapshot(detail),
     expiresAt: Date.now() + SESSION_WORKSPACE_CACHE_TTL_MS,
   });
 }
@@ -4144,7 +4402,7 @@ function renderDesktopWorkspaceBrowser() {
                 entries.length
                   ? entries
                       .map(
-                        (entry) => `<div class="desktop-local-entry">
+                        (entry) => `<div class="desktop-local-entry" data-entry-kind="${escapeHtml(entry.kind)}" data-entry-path="${escapeHtml(entry.relativePath)}">
                           <div class="desktop-local-entry-name">
                             <span class="desktop-entry-icon" aria-hidden="true">${entry.kind === "directory" ? "&#9656;" : "&#183;"}</span>
                             <div><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.kind === "directory" ? "Folder" : formatFileSize(entry.sizeBytes) || "File")}</small></div>
@@ -4163,6 +4421,20 @@ function renderDesktopWorkspaceBrowser() {
       }
     </div>
   `;
+}
+
+function renderWorkspaceExternalMenu() {
+  const menu = state.ui.workspaceExternalMenu;
+  if (!menu) return "";
+  const shared = `data-path="${escapeHtml(menu.relativePath || "")}" data-project-id="${escapeHtml(menu.projectId || "")}"`;
+  return `<div class="workspace-external-menu" style="left:${Math.max(8, Number(menu.x) || 8)}px;top:${Math.max(8, Number(menu.y) || 8)}px" role="menu">
+    <div class="workspace-external-menu-title">${escapeHtml(menu.name || "Folder")}</div>
+    <button type="button" data-action="open-workspace-external" data-target="explorer" ${shared}>Open in Explorer</button>
+    <button type="button" data-action="open-workspace-external" data-target="terminal" ${shared}>Open Terminal here</button>
+    <div class="workspace-external-menu-divider"></div>
+    <button type="button" data-action="open-workspace-external" data-target="editor" data-editor-id="vscode" ${shared}>Open in VS Code</button>
+    <button type="button" data-action="open-workspace-external" data-target="editor" data-editor-id="idea" ${shared}>Open in IntelliJ IDEA</button>
+  </div>`;
 }
 
 function renderAttachmentContextPanel(attachments, detail = state.workspaceDetail) {
@@ -4433,6 +4705,7 @@ function getExecutionDeliverables(detail) {
       artifactId: artifactContent.artifact_id || output.latestGeneratedArtifactId || "",
       mimeType: artifactContent.mime_type || "",
       artifactCount: Array.isArray(output.artifacts) ? output.artifacts.length : 0,
+      hasPreviousVersion: artifactContent.has_previous_version === true,
       source: "mission-output",
     });
   }
@@ -4460,6 +4733,7 @@ function getExecutionDeliverables(detail) {
       artifactId: artifact.artifact_id || "",
       mimeType: artifact.mime_type || "",
       artifactCount: 1,
+      hasPreviousVersion: artifact.has_previous_version === true || Number(artifact.version || 1) > 1,
       source: "artifact",
     });
   }
@@ -4481,6 +4755,7 @@ function getExecutionDeliverables(detail) {
       artifactId: content.artifact_id || "",
       mimeType: content.mime_type || "",
       artifactCount: 1,
+      hasPreviousVersion: content.has_previous_version === true || Number(content.version || 1) > 1,
       source: "artifact-message",
     });
   }
@@ -4981,7 +5256,7 @@ function renderRuntimeGraphPanel(graph) {
                       <strong>${escapeHtml(node.name || node.nodeId || "Node")}</strong>
                       <span class="badge ${statusTone(node.status)}">${escapeHtml(node.status || "pending")}</span>
                     </div>
-                    <small>${escapeHtml(node.workPackageLabel || "Execution")} / ${escapeHtml(node.type || "task")}${node.agentProfile ? ` / ${escapeHtml(node.agentProfile)}` : ""}</small>
+                    <small>${escapeHtml(node.workPackageLabel || "Execution")} / ${escapeHtml(node.type || "task")}${node.agentId ? ` / ${escapeHtml(node.agentId)}` : ""}</small>
                     ${node.progress?.message ? `<p>${escapeHtml(node.progress.message)}</p>` : ""}
                     ${
                       Array.isArray(node.markers) && node.markers.length
@@ -5136,7 +5411,7 @@ function renderLegacyRuntimeInspectorPanel(graph, projection) {
         <div class="runtime-inspector-detail">
           <div class="runtime-pane-heading"><strong>${escapeHtml(activeNode?.name || "Node detail")}</strong><span>${escapeHtml(activeNode?.nodeRunId || "No selection")}</span></div>
           <div class="runtime-execution-identity">
-            <div><span>Harness</span><strong>${escapeHtml(activeJob?.agent_runtime || activeNode?.agentProfile || "not assigned")}</strong></div>
+            <div><span>Harness</span><strong>${escapeHtml(activeJob?.agent_runtime || activeNode?.agentId || "not assigned")}</strong></div>
             <div><span>Worker</span><strong>${escapeHtml(activeWorker?.worker_id || activeJob?.worker_id || "not connected")}</strong></div>
             <div><span>Lease</span><strong>${escapeHtml(activeLease?.status || "none")}</strong></div>
             <div><span>Target</span><strong>${escapeHtml(activeJob?.target_kind || "local")}</strong></div>
@@ -5208,23 +5483,49 @@ async function request(path, options = {}) {
     ...(state.security.apiKey ? { authorization: `Bearer ${state.security.apiKey}` } : {}),
     ...(state.security.workspaceId ? { "x-my-mate-workspace-id": state.security.workspaceId } : {}),
   };
-  const response = await fetch(path, {
-    headers: {
-      "content-type": "application/json",
-      ...authHeaders,
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
-  const text = await response.text();
-  const body = text.trim() ? JSON.parse(text) : null;
-  if (!response.ok) {
-    const error = new Error(body && body.message ? body.message : `Request failed: ${response.status}`);
-    error.code = body?.code || "request_failed";
-    error.status = response.status;
+  try {
+    const response = await fetch(path, {
+      headers: {
+        "content-type": "application/json",
+        ...authHeaders,
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+    const text = await response.text();
+    const body = text.trim() ? JSON.parse(text) : null;
+    if (!response.ok) {
+      const error = new Error(body && body.message ? body.message : `Request failed: ${response.status}`);
+      error.code = body?.code || "request_failed";
+      error.status = response.status;
+      error.body = body;
+      throw error;
+    }
+    state.controlPlane.status = "connected";
+    state.controlPlane.lastSuccessAt = new Date().toISOString();
+    state.controlPlane.lastError = "";
+    return body;
+  } catch (error) {
+    const networkFailure = !error.status && (error.name === "TypeError" || /fetch|network|failed to fetch|load failed/i.test(error.message || ""));
+    const gatewayUnavailable = /gateway route is not exposed|control plane is unavailable/i.test(error.message || "");
+    if (networkFailure || gatewayUnavailable) {
+      state.controlPlane.status = "disconnected";
+      state.controlPlane.lastError = error.message || "Control Plane is unavailable.";
+    }
     throw error;
   }
-  return body;
+}
+
+function isConnectivityError(message = "") {
+  return /fetch failed|failed to fetch|network error|load failed|control plane|gateway route/i.test(String(message));
+}
+
+function controlPlaneBanner() {
+  if (state.controlPlane.status !== "disconnected") return "";
+  const lastSync = state.controlPlane.lastSuccessAt
+    ? `Last synced ${formatWorkspaceTimestamp(state.controlPlane.lastSuccessAt)}`
+    : "No successful sync in this session";
+  return `<section class="control-plane-status" role="status" aria-live="polite"><div class="control-plane-status-copy"><strong>Control Plane not connected</strong><span>Tasks, runtime status, and model verification may be stale. ${escapeHtml(lastSync)}.</span></div><div class="control-plane-status-actions"><button class="secondary compact-button" data-action="retry-control-plane" ${state.controlPlane.checking ? "disabled" : ""}>${state.controlPlane.checking ? "Retrying..." : "Retry"}</button><button class="secondary compact-button" data-action="open-studio-setup">Check connection</button><button class="icon-button" data-action="dismiss-control-plane-status" title="Dismiss connection status" aria-label="Dismiss connection status">&times;</button></div></section>`;
 }
 
 function hasSecurityPermission(permission) {
@@ -5255,11 +5556,14 @@ function resetWorkspaceScopedState() {
   state.templates = [];
   state.missions = [];
   state.sessions = [];
-  state.orchestratorProfiles = [];
-  state.agentProfiles = [];
+  state.agentDefinitions = [];
+  state.agentDeployments = [];
+  state.agentReadiness = [];
+  state.agentOrchestration = emptyAgentOrchestrationState();
   state.providerConnections = [];
   state.mcpServers = [];
   state.skills = [];
+  state.skillHost = { packages: [], invocations: [], selectedId: "", detail: null, sourcePath: "", loading: false, profile: null, lockfile: null, observability: null, sources: [], scan: null };
   state.governance = emptyGovernanceState();
   state.lineage = null;
   state.selectedId = null;
@@ -5315,7 +5619,6 @@ function resetWorkspaceScopedState() {
   };
   state.preview = { type: "workspace", key: null };
   state.registryEditor = {
-    profile: emptyAgentProfileEditor(),
     connection: emptyProviderConnectionEditor(),
     mcpServer: emptyMcpServerEditor(),
     skill: emptySkillEditor(),
@@ -5325,7 +5628,6 @@ function resetWorkspaceScopedState() {
   state.setup.hostReport = null;
   state.setup.dockerReport = null;
   state.setup.error = null;
-  state.orchestrator = emptyOrchestratorEditor();
   state.editor = emptyEditor();
   state.planner.templateId = "";
   state.planner.recommendation = null;
@@ -5598,6 +5900,7 @@ function hydrateStudioLocationState() {
 
   if (nav && DESKTOP_NAV_ITEMS.has(nav)) {
     state.activeNav = nav;
+    if (nav === "templates") state.activeView = "template";
   }
   if (sessionId) {
     state.selectedSessionId = sessionId;
@@ -5747,6 +6050,7 @@ function startRuntimeSupervision(runId) {
 
 function closeSessionStream() {
   stopRuntimeSupervision();
+  closeAgentEventStream();
   if (sessionStreamErrorTimer) {
     window.clearTimeout(sessionStreamErrorTimer);
     sessionStreamErrorTimer = null;
@@ -5759,18 +6063,55 @@ function closeSessionStream() {
   state.streamError = null;
 }
 
+function closeAgentEventStream() {
+  if (agentEventStreamSource) agentEventStreamSource.close();
+  agentEventStreamSource = null;
+  agentEventStreamRunId = "";
+  agentEventStreamStatus = "idle";
+  agentEventStreamError = "";
+}
+
 function closeConversationSocket(reason = "Conversation changed.") {
   const socket = conversationSocket;
+  if (conversationSocketReconnectTimer) {
+    window.clearTimeout(conversationSocketReconnectTimer);
+    conversationSocketReconnectTimer = null;
+  }
   conversationSocket = null;
   conversationSocketSessionId = "";
   conversationSocketOpenPromise = null;
+  conversationSocketReconnectAttempt = 0;
   state.conversationSocketStatus = "idle";
   state.conversationSocketError = null;
   for (const pending of conversationSocketRequests.values()) {
     pending.reject(new Error(reason));
   }
   conversationSocketRequests.clear();
-  if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, reason);
+  if (socket && socket.readyState < WebSocket.CLOSING) {
+    intentionallyClosedConversationSockets.add(socket);
+    socket.close(1000, reason);
+  }
+}
+
+function conversationSocketAuth() {
+  return {
+    token: state.security.apiKey || "",
+    workspace_id: state.security.workspaceId || "",
+  };
+}
+
+function scheduleConversationSocketReconnect(sessionId) {
+  if (!sessionId || conversationSocketReconnectTimer || conversationSocketSessionId !== sessionId) return;
+  const delay = Math.min(10_000, 300 * (2 ** Math.min(conversationSocketReconnectAttempt, 6)));
+  conversationSocketReconnectAttempt += 1;
+  state.conversationSocketStatus = "reconnecting";
+  state.conversationSocketError = "Connection interrupted. The task is still running; reconnecting...";
+  conversationSocketReconnectTimer = window.setTimeout(() => {
+    conversationSocketReconnectTimer = null;
+    void openConversationSocket(sessionId, { reconnect: true }).catch(() => {
+      scheduleConversationSocketReconnect(sessionId);
+    });
+  }, delay);
 }
 
 function updateConversationStreamDom() {
@@ -5791,10 +6132,70 @@ function updateConversationStreamDom() {
       </div>
     `).join("");
   }
-  const feed = document.querySelector(".task-conversation-rail .orchestrator-chat-feed");
-  if (feed) {
-    const distanceFromBottom = Math.max(0, feed.scrollHeight - feed.clientHeight - feed.scrollTop);
-    if (distanceFromBottom <= 72 || stream.text.length < 80) feed.scrollTop = feed.scrollHeight;
+  const conversationScroll = document.querySelector(".task-conversation-rail .task-conversation-scroll");
+  if (conversationScroll) {
+    const distanceFromBottom = Math.max(0, conversationScroll.scrollHeight - conversationScroll.clientHeight - conversationScroll.scrollTop);
+    if (distanceFromBottom <= 72 || stream.text.length < 80) conversationScroll.scrollTop = conversationScroll.scrollHeight;
+  }
+}
+
+async function handleConversationDesktopAction(payload) {
+  try {
+    if (payload.action_type === "workspace.authorize") {
+      if (!desktopHost?.workspace?.authorize || !state.desktop.workspace?.capabilityId) {
+        throw new Error("Workspace authorization requires an updated My Mate Desktop and an active Project.");
+      }
+      const response = await desktopHost.workspace.authorize({
+        capabilityId: state.desktop.workspace.capabilityId,
+        sessionId: payload.session_id || "",
+        access: payload.workspace_access === "sandbox-write" ? "sandbox-write" : "snapshot-read",
+        scope: payload.workspace_scope || "session",
+      });
+      if (state.workspaceDetail?.session?.session_id === payload.session_id) {
+        state.workspaceDetail.workspace_binding = response?.binding || state.workspaceDetail.workspace_binding;
+        state.workspaceDetail.task_workspace = response?.task_workspace || state.workspaceDetail.task_workspace;
+      }
+    } else if (payload.action_type === "capability.execute") {
+      if (!desktopHost?.capability?.execute) throw new Error("This capability requires an updated My Mate Desktop.");
+      await desktopHost.capability.execute({
+        sessionId: payload.session_id || "",
+        actionId: payload.action_id || "",
+        capabilityId: payload.capability_id || "",
+        executor: payload.executor || "",
+        riskLevel: payload.risk_level || "T1",
+        arguments: payload.arguments || {},
+      });
+    } else if (payload.action_type === "capability.approve") {
+      if (!desktopHost?.capability?.approve) throw new Error("This capability action requires an updated My Mate Desktop.");
+      await desktopHost.capability.approve({
+        sessionId: payload.session_id || "",
+        actionId: payload.action_id || "",
+        capabilityId: payload.capability_id || "",
+        executor: payload.executor || "mcp",
+        riskLevel: payload.risk_level || "T2",
+        arguments: payload.arguments || {},
+      });
+    } else {
+      if (!desktopHost?.application?.open) throw new Error("This action requires My Mate Desktop.");
+      await desktopHost.application.open({
+        sessionId: payload.session_id || "",
+        actionId: payload.action_id || "",
+        applicationName: payload.application_name || "",
+      });
+    }
+  } catch (error) {
+    state.conversationSocketError = error.message || "Desktop capability action failed.";
+  } finally {
+    try {
+      const socket = await openConversationSocket(payload.session_id || conversationSocketSessionId);
+      socket.send(JSON.stringify({
+        type: "conversation.desktop_result",
+        capability_request_id: payload.capability_request_id || "",
+        action_id: payload.action_id || "",
+      }));
+    } catch {
+      scheduleConversationSocketReconnect(payload.session_id || conversationSocketSessionId);
+    }
   }
 }
 
@@ -5806,10 +6207,41 @@ async function handleConversationSocketEvent(event) {
     state.conversationSocketError = "Conversation stream returned invalid data.";
     return;
   }
-  if (payload.type === "conversation.connected") return;
+  const eventSequence = Number(payload.sequence || 0);
+  if (Number.isInteger(eventSequence) && eventSequence > 0) {
+    const currentSequence = getConversationEventSequence(payload.session_id || conversationSocketSessionId);
+    if (eventSequence <= currentSequence) return;
+    setConversationEventSequence(payload.session_id || conversationSocketSessionId, eventSequence);
+  }
+  if (payload.type === "conversation.connected" || payload.type === "conversation.idle") return;
   const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
+  if (payload.type === "conversation.active") {
+    if (payload.session_id !== conversationSocketSessionId) return;
+    state.conversationStream = {
+      requestId,
+      text: typeof payload.partial_text === "string" ? payload.partial_text : "",
+      toolProgress: Array.isArray(payload.tool_progress)
+        ? payload.tool_progress.map((progress) => ({
+            actionId: progress.action_id || "",
+            toolName: progress.tool_name || "",
+            status: progress.status || "running",
+            summary: progress.summary || "Running tool",
+          }))
+        : [],
+      providerConnectionId: payload.provider_connection_id || "",
+      model: payload.model || "",
+    };
+    state.conversationSocketStatus = "streaming";
+    state.conversationSocketError = null;
+    renderTaskWorkspaceSurface();
+    return;
+  }
+  if (payload.type === "conversation.desktop_action") {
+    await handleConversationDesktopAction(payload);
+    return;
+  }
   const pending = conversationSocketRequests.get(requestId);
-  if (!pending) return;
+  if (!pending && payload.type !== "conversation.completed" && payload.type !== "conversation.error") return;
   if (payload.type === "conversation.started") {
     pending.started = true;
     state.conversationSocketStatus = "streaming";
@@ -5842,71 +6274,32 @@ async function handleConversationSocketEvent(event) {
     }
     return;
   }
-  if (payload.type === "conversation.desktop_action") {
-    try {
-      if (payload.action_type === "capability.execute") {
-        if (!desktopHost?.capability?.execute) {
-          throw new Error("This capability requires an updated My Mate Desktop.");
-        }
-        await desktopHost.capability.execute({
-          sessionId: payload.session_id || "",
-          actionId: payload.action_id || "",
-          capabilityId: payload.capability_id || "",
-          executor: payload.executor || "",
-          riskLevel: payload.risk_level || "T1",
-          arguments: payload.arguments || {},
-        });
-      } else if (payload.action_type === "capability.approve") {
-        if (!desktopHost?.capability?.approve) {
-          throw new Error("This MCP action requires an updated My Mate Desktop.");
-        }
-        await desktopHost.capability.approve({
-          sessionId: payload.session_id || "",
-          actionId: payload.action_id || "",
-          capabilityId: payload.capability_id || "",
-          executor: payload.executor || "mcp",
-          riskLevel: payload.risk_level || "T2",
-          arguments: payload.arguments || {},
-        });
-      } else {
-        if (!desktopHost?.application?.open) {
-          throw new Error("This action requires My Mate Desktop.");
-        }
-        await desktopHost.application.open({
-          sessionId: payload.session_id || "",
-          actionId: payload.action_id || "",
-          applicationName: payload.application_name || "",
-        });
-      }
-    } catch (error) {
-      state.conversationSocketError = error.message || "Desktop capability action failed.";
-    } finally {
-      if (conversationSocket?.readyState === WebSocket.OPEN) {
-        conversationSocket.send(JSON.stringify({
-          type: "conversation.desktop_result",
-          capability_request_id: payload.capability_request_id || "",
-          action_id: payload.action_id || "",
-        }));
-      }
-    }
-    return;
-  }
   if (payload.type === "conversation.completed") {
     conversationSocketRequests.delete(requestId);
     state.conversationSocketStatus = "open";
-    pending.resolve(payload);
+    state.conversationSocketError = null;
+    if (pending) pending.resolve(payload);
+    else if (payload.session_id === getWorkspaceSessionId(state.workspaceDetail)) {
+      state.conversationStream = null;
+      void loadSessionWorkspace(payload.session_id, true);
+    }
     return;
   }
   if (payload.type === "conversation.error") {
     conversationSocketRequests.delete(requestId);
     const error = new Error(payload.message || "Conversation stream failed.");
     error.code = payload.code || "conversation_failed";
-    error.started = pending.started;
-    pending.reject(error);
+    error.started = pending?.started === true;
+    if (pending) pending.reject(error);
+    else if (payload.session_id === getWorkspaceSessionId(state.workspaceDetail)) {
+      state.conversationSocketError = error.message;
+      state.conversationStream = null;
+      renderTaskWorkspaceSurface();
+    }
   }
 }
 
-function openConversationSocket(sessionId) {
+function openConversationSocket(sessionId, options = {}) {
   if (
     conversationSocket &&
     conversationSocketSessionId === sessionId &&
@@ -5923,7 +6316,11 @@ function openConversationSocket(sessionId) {
     return conversationSocketOpenPromise;
   }
 
-  closeConversationSocket("Conversation session changed.");
+  if (conversationSocket && conversationSocketSessionId !== sessionId) {
+    closeConversationSocket("Conversation session changed.");
+  }
+  if (!sessionId) return Promise.reject(new Error("Conversation session is required."));
+  conversationSocketSessionId = sessionId;
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const url = `${protocol}//${window.location.host}/api/sessions/${encodeURIComponent(sessionId)}/conversation`;
   const socket = new WebSocket(url);
@@ -5938,8 +6335,15 @@ function openConversationSocket(sessionId) {
     }, 8_000);
     socket.addEventListener("open", () => {
       window.clearTimeout(timeout);
+      conversationSocketReconnectAttempt = 0;
       state.conversationSocketStatus = "open";
+      state.conversationSocketError = null;
       conversationSocketOpenPromise = null;
+      socket.send(JSON.stringify({
+        type: "conversation.attach",
+        auth: conversationSocketAuth(),
+        after_sequence: getConversationEventSequence(sessionId),
+      }));
       resolve(socket);
     }, { once: true });
     socket.addEventListener("error", () => {
@@ -5951,13 +6355,9 @@ function openConversationSocket(sessionId) {
   socket.addEventListener("close", () => {
     if (conversationSocket !== socket) return;
     conversationSocket = null;
-    conversationSocketSessionId = "";
     conversationSocketOpenPromise = null;
-    state.conversationSocketStatus = "idle";
-    for (const pending of conversationSocketRequests.values()) {
-      pending.reject(new Error("Conversation stream disconnected."));
-    }
-    conversationSocketRequests.clear();
+    if (intentionallyClosedConversationSockets.has(socket)) return;
+    scheduleConversationSocketReconnect(sessionId);
   });
   return conversationSocketOpenPromise;
 }
@@ -5970,10 +6370,7 @@ async function sendConversationSocketTurn(sessionId, input) {
     socket.send(JSON.stringify({
       type: "conversation.send",
       ...input,
-      auth: {
-        token: state.security.apiKey || "",
-        workspace_id: state.security.workspaceId || "",
-      },
+      auth: conversationSocketAuth(),
     }));
   });
 }
@@ -5999,6 +6396,21 @@ function getWorkspaceRenderSignature(detail) {
     runtime_evaluations: detail.runtime_evaluations || [],
     runtime_replay: detail.runtime_replay || null,
     artifacts: detail.artifacts || [],
+    agent_dag: detail.agent_dag
+      ? { dag_id: detail.agent_dag.dag_id || null, status: detail.agent_dag.status || null, state_revision: detail.agent_dag.state_revision || 0 }
+      : null,
+    agent_dag_artifacts: detail.agent_dag_artifacts || [],
+    agent_delegations: detail.agent_delegations || [],
+    conversation_actions: detail.conversation_actions || [],
+    workspace_files: detail.workspace_files || [],
+    workspace_change_set: detail.workspace_change_set
+      ? {
+          change_set_id: detail.workspace_change_set.change_set_id || null,
+          status: detail.workspace_change_set.status || null,
+          resolved_at: detail.workspace_change_set.resolved_at || null,
+          change_count: detail.workspace_change_set.changes?.length || 0,
+        }
+      : null,
     pending_approvals: detail.pending_approvals || [],
     pending_human_inputs: detail.pending_human_inputs || [],
     interventions: detail.interventions || [],
@@ -6019,9 +6431,31 @@ function getWorkspaceRenderSignature(detail) {
   });
 }
 
+function mergeAgentDelegationEvents(nextDelegations, currentDelegations) {
+  const currentByRun = new Map((currentDelegations || []).map((item) => [item.agent_run_id, item]));
+  return (nextDelegations || []).map((item) => {
+    const current = currentByRun.get(item.agent_run_id) || null;
+    const merged = [...(current?.events || []), ...(item.events || [])];
+    const events = [...new Map(merged.map((event) => [event.event_id, event])).values()]
+      .sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0))
+      .slice(-500);
+    return {
+      ...item,
+      events,
+      latest_event_sequence: Math.max(
+        Number(item.latest_event_sequence || 0),
+        Number(current?.latest_event_sequence || 0),
+        Number(events.at(-1)?.sequence || 0),
+      ),
+    };
+  });
+}
+
 function applyWorkspaceSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return false;
+  if (!shouldAcceptWorkspaceSnapshot(state.workspaceDetail, snapshot)) return false;
   const previousSignature = getWorkspaceRenderSignature(state.workspaceDetail);
+  const preserveSessionState = isSameWorkspaceSession(state.workspaceDetail, snapshot);
+  const preserveRunState = isSameWorkspaceRun(state.workspaceDetail, snapshot);
   const latestRunId = getWorkspaceLatestRunId(snapshot);
   const currentGraph = state.workspaceDetail?.runtime_graph || null;
   const currentRuntimeProjection = state.workspaceDetail?.runtime_projection || null;
@@ -6040,29 +6474,50 @@ function applyWorkspaceSnapshot(snapshot) {
     mission_snapshot: snapshot.mission_snapshot || null,
     mission_spec: snapshot.mission_spec || null,
     mission_view: snapshot.mission_view || snapshot.mission?.mission_view || null,
+    workspace_contract_version: snapshot.workspace_contract_version || null,
+    mission: snapshot.mission || null,
     attachments: filterConversationInputAttachments(
-      snapshot.attachments || state.workspaceDetail?.attachments || [],
+      snapshot.attachments ?? (preserveSessionState ? state.workspaceDetail?.attachments || [] : []),
     ),
-    route_compare: snapshot.route_compare || state.workspaceDetail?.route_compare || null,
+    route_compare: snapshot.route_compare ?? (preserveSessionState ? state.workspaceDetail?.route_compare || null : null),
     runtime_graph:
       snapshotGraph ||
-      (currentGraph && currentGraph.runId === latestRunId ? currentGraph : null),
+      (preserveRunState && currentGraph && currentGraph.runId === latestRunId ? currentGraph : null),
     runtime_projection:
       snapshot.runtime_projection ||
-      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeProjection : null),
+      (preserveRunState && currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeProjection : null),
     runtime_trace:
       snapshot.runtime_trace ||
-      (currentRuntimeTrace?.run_id === latestRunId ? currentRuntimeTrace : null),
+      (preserveRunState && currentRuntimeTrace?.run_id === latestRunId ? currentRuntimeTrace : null),
     runtime_scorecards:
       snapshot.runtime_scorecards ||
-      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeScorecards : []),
+      (preserveRunState && currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeScorecards : []),
     runtime_evaluations:
       snapshot.runtime_evaluations ||
-      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeEvaluations : []),
+      (preserveRunState && currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeEvaluations : []),
     runtime_replay:
       snapshot.runtime_replay ||
-      (currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeReplay : null),
-    artifacts: snapshot.artifacts || state.workspaceDetail?.artifacts || [],
+      (preserveRunState && currentRuntimeProjection?.run_id === latestRunId ? currentRuntimeReplay : null),
+    artifacts: snapshot.artifacts ?? (preserveRunState ? state.workspaceDetail?.artifacts || [] : []),
+    agent_dag: snapshot.agent_dag === undefined && preserveSessionState ? state.workspaceDetail?.agent_dag || null : snapshot.agent_dag || null,
+    agent_dag_artifacts: snapshot.agent_dag_artifacts ?? (preserveSessionState ? state.workspaceDetail?.agent_dag_artifacts || [] : []),
+    agent_delegations: mergeAgentDelegationEvents(
+      snapshot.agent_delegations ?? (preserveSessionState ? state.workspaceDetail?.agent_delegations || [] : []),
+      preserveSessionState ? state.workspaceDetail?.agent_delegations || [] : [],
+    ),
+    conversation_actions: snapshot.conversation_actions ?? (preserveSessionState ? state.workspaceDetail?.conversation_actions || [] : []),
+    workspace_change_set:
+      snapshot.workspace_change_set === undefined && preserveSessionState
+        ? state.workspaceDetail?.workspace_change_set || null
+        : snapshot.workspace_change_set,
+    workspace_change_sets:
+      snapshot.workspace_change_sets === undefined && preserveSessionState
+        ? state.workspaceDetail?.workspace_change_sets || []
+        : snapshot.workspace_change_sets || [],
+    workspace_files:
+      snapshot.workspace_files === undefined && preserveSessionState
+        ? state.workspaceDetail?.workspace_files || []
+        : snapshot.workspace_files || [],
     pending_approvals: snapshot.pending_approvals || [],
     pending_human_inputs: snapshot.pending_human_inputs || [],
     interventions: snapshot.interventions || [],
@@ -6070,7 +6525,8 @@ function applyWorkspaceSnapshot(snapshot) {
     supervision_alerts: snapshot.supervision_alerts || [],
     autopilot: snapshot.autopilot || null,
     ui_plan: snapshot.ui_plan || null,
-    workspace_binding: snapshot.workspace_binding || state.workspaceDetail?.workspace_binding || null,
+    workspace_binding: snapshot.workspace_binding ?? (preserveSessionState ? state.workspaceDetail?.workspace_binding || null : null),
+    task_workspace: snapshot.task_workspace ?? (preserveSessionState ? state.workspaceDetail?.task_workspace || null : null),
   };
   reconcileWorkspaceSelection(state.workspaceDetail);
   return previousSignature !== getWorkspaceRenderSignature(state.workspaceDetail);
@@ -6404,6 +6860,22 @@ function openSessionStream(sessionId, options = {}) {
       if (payload?.data && (payload.type === "snapshot" || payload.type === "workspace.updated")) {
         const workspaceChanged = applyWorkspaceSnapshot(payload.data);
         if (!workspaceChanged) return;
+        const sessionStatus = state.workspaceDetail?.session?.status || "";
+        const latestRunStatus = state.workspaceDetail?.latest_run?.status || "";
+        const hasReturnedArtifacts = (state.workspaceDetail?.artifacts || []).length > 0 ||
+          (state.workspaceDetail?.attachments || []).length > 0;
+        const reachedTerminalState = ["completed", "failed", "cancelled"].includes(sessionStatus) ||
+          ["completed", "failed", "cancelled"].includes(latestRunStatus) ||
+          (sessionStatus === "draft" && hasReturnedArtifacts);
+        if (reachedTerminalState) {
+          if (sessionStreamErrorTimer) {
+            window.clearTimeout(sessionStreamErrorTimer);
+            sessionStreamErrorTimer = null;
+          }
+          state.streamStatus = "closed";
+          state.streamError = null;
+          source.close();
+        }
         if (pendingTaskMoveStreamSessions.has(sessionId)) return;
         void loadRuntimeGraphForWorkspace(false).finally(() => {
           if (isCurrentStream()) renderTaskWorkspaceSurface();
@@ -6425,6 +6897,18 @@ function openSessionStream(sessionId, options = {}) {
   });
   source.addEventListener("error", () => {
     if (!isCurrentStream()) return;
+    const sessionStatus = state.workspaceDetail?.session?.status || "";
+    const latestRunStatus = state.workspaceDetail?.latest_run?.status || "";
+    const hasReturnedArtifacts = (state.workspaceDetail?.artifacts || []).length > 0 ||
+      (state.workspaceDetail?.attachments || []).length > 0;
+    if (["completed", "failed", "cancelled"].includes(sessionStatus) ||
+      ["completed", "failed", "cancelled"].includes(latestRunStatus) ||
+      (sessionStatus === "draft" && hasReturnedArtifacts)) {
+      state.streamStatus = "closed";
+      state.streamError = null;
+      source.close();
+      return;
+    }
     state.streamStatus = "error";
     if (sessionStreamErrorTimer) window.clearTimeout(sessionStreamErrorTimer);
     sessionStreamErrorTimer = window.setTimeout(() => {
@@ -6454,32 +6938,11 @@ function parseCsv(text) {
     .map((item) => item.trim())
     .filter(Boolean);
 }
-
-function buildPlannerInvocationPayload() {
-  const payload = {};
-  if (state.orchestrator.selectedProfileId) {
-    payload.orchestrator_profile_id = state.orchestrator.selectedProfileId;
-    return payload;
-  }
-  if (state.orchestrator.provider.trim()) {
-    payload.planner_provider_id = state.orchestrator.provider.trim();
-  }
-  if (state.orchestrator.model.trim()) {
-    payload.planner_model = state.orchestrator.model.trim();
-  }
-  if (state.orchestrator.systemPrompt.trim()) {
-    payload.orchestrator_system_prompt = state.orchestrator.systemPrompt.trim();
-  }
-  return payload;
-}
-
 function buildDraftPayload(editor = state.editor) {
   const inputSchema = parseJsonObject(editor.inputSchemaText);
   if (!inputSchema.ok) return { ok: false, message: `Input schema: ${inputSchema.message}` };
   const policy = parseJsonObject(editor.policyText);
   if (!policy.ok) return { ok: false, message: `Policy: ${policy.message}` };
-  const bindings = parseJsonObject(editor.bindingsText);
-  if (!bindings.ok) return { ok: false, message: `Agent bindings: ${bindings.message}` };
   const metadata = parseJsonObject(editor.metadataText);
   if (!metadata.ok) return { ok: false, message: `Metadata: ${metadata.message}` };
   if (!editor.name.trim()) return { ok: false, message: "Template name is required." };
@@ -6493,46 +6956,9 @@ function buildDraftPayload(editor = state.editor) {
       workspace_scope: editor.workspaceScope.trim() || "default",
       input_schema: inputSchema.value,
       policy: policy.value,
-      agent_profile_bindings: bindings.value,
-      nodes: editor.nodes,
+      nodes: editor.nodes.map((node) => ({ ...node })),
       edges: editor.edges,
       metadata: metadata.value,
-    },
-  };
-}
-
-function buildAgentProfilePayload(editor = state.registryEditor.profile) {
-  const metadata = parseJsonObject(editor.metadataText);
-  if (!metadata.ok) return { ok: false, message: `Agent metadata: ${metadata.message}` };
-  if (!editor.name.trim()) return { ok: false, message: "Agent name is required." };
-
-  return {
-    ok: true,
-    payload: {
-      profile_id: editor.profileId.trim() || slugify(editor.name),
-      name: editor.name.trim(),
-      description: editor.description.trim(),
-      agent_runtime: editor.agentRuntime,
-      harness_profile: editor.harnessProfile.trim() || null,
-      provider_connection_id: editor.providerConnectionId || null,
-      runtime_agent_ref: editor.openclawAgentId.trim(),
-      openclaw_agent_id: editor.openclawAgentId.trim(),
-      default_skills: parseCsv(editor.defaultSkillsText),
-      allowed_tools: parseCsv(editor.allowedToolsText),
-      disallowed_skills: parseCsv(editor.disallowedSkillsText),
-      policy_tags: parseCsv(editor.policyTagsText),
-      status: editor.status === "disabled" ? "disabled" : "active",
-      metadata: {
-        ...metadata.value,
-        openclaw: {
-          ...(metadata.value.openclaw && typeof metadata.value.openclaw === "object" && !Array.isArray(metadata.value.openclaw)
-            ? metadata.value.openclaw
-            : {}),
-          provider: editor.openclawProvider.trim() || null,
-          model: editor.openclawModel.trim() || null,
-          runtime_mode: editor.openclawRuntimeMode.trim() || null,
-        },
-      },
     },
   };
 }
@@ -6565,6 +6991,9 @@ function buildProviderConnectionPayload(editor = state.registryEditor.connection
   if (!Number.isInteger(editor.maxContinuationRounds) || editor.maxContinuationRounds < 0 || editor.maxContinuationRounds > 32) {
     return { ok: false, message: "Continuation rounds must be an integer between 0 and 32." };
   }
+  if (!Number.isInteger(editor.maxToolRounds) || editor.maxToolRounds < 1 || editor.maxToolRounds > 128) {
+    return { ok: false, message: "Tool rounds must be an integer between 1 and 128." };
+  }
   if ((editor.agentRuntime === "glm" || editor.preset === "custom") && !editor.baseUrl.trim()) {
     return { ok: false, message: "This provider requires an endpoint." };
   }
@@ -6588,6 +7017,7 @@ function buildProviderConnectionPayload(editor = state.registryEditor.connection
       context_compression_enabled: editor.contextCompressionEnabled,
       context_compression_threshold_percent: editor.contextCompressionThresholdPercent,
       max_continuation_rounds: editor.maxContinuationRounds,
+      max_tool_rounds: editor.maxToolRounds,
       credential_source: editor.credentialSource,
       credential_env: editor.credentialEnv,
       ...(editor.apiKey.trim() ? { api_key: editor.apiKey.trim() } : {}),
@@ -6714,10 +7144,12 @@ async function loadTemplates(nextSelectedId = state.selectedId) {
   try {
     const response = await request("/api/templates");
     state.templates = response.items || [];
+    const visibleTemplates = visibleWorkflowTemplates(state.templates);
+    const requestedFamily = workflowFamilyForTemplate(state.templates, nextSelectedId);
     const nextSelected =
-      nextSelectedId ||
-      state.templates.find((item) => item.status === "draft")?.template_id ||
-      state.templates[0]?.template_id ||
+      requestedFamily?.displayTemplate?.template_id ||
+      visibleTemplates.find((item) => item.status === "draft")?.template_id ||
+      visibleTemplates[0]?.template_id ||
       null;
     if (nextSelected) {
       await selectTemplate(nextSelected, false);
@@ -6734,8 +7166,8 @@ async function loadTemplates(nextSelectedId = state.selectedId) {
 }
 
 function getSetupConnection(preferredId = state.registryEditor.connection.connectionId) {
-  const defaultConnectionId = state.agentProfiles.find((profile) => profile.profile_id === "default-agent")
-    ?.provider_connection_id || "";
+  const defaultConnectionId = state.agentVersions.find((version) => version.agent_id === "default-agent")
+    ?.model_policy?.provider_connection_id || "";
   return selectSetupConnection(state.providerConnections, preferredId || defaultConnectionId);
 }
 
@@ -6751,7 +7183,7 @@ function syncSetupConnectionFromRegistry(force = false) {
   if (connection) state.registryEditor.connection = editorFromProviderConnection(connection);
 }
 
-function openStudioSetup(tab = "model", shouldRender = true) {
+function openStudioSetup(tab = "model", shouldRender = true, refreshRegistry = true) {
   const connection = getSetupConnection();
   if (connection) {
     state.registryEditor.connection = editorFromProviderConnection(connection);
@@ -6763,45 +7195,473 @@ function openStudioSetup(tab = "model", shouldRender = true) {
   state.setup.error = null;
   state.setup.editorTouched = false;
   if (shouldRender) render();
+  if (refreshRegistry && !state.registryLoading) {
+    void loadRegistry(false).finally(() => {
+      if (state.setup.open) render();
+    });
+  }
 }
 
 function maybeOpenStudioSetup() {
   if (state.setup.initialized) return;
   state.setup.initialized = true;
   if (!getSetupConnection() && !state.setup.dismissed) {
-    openStudioSetup("model", false);
+    openStudioSetup("model", false, false);
   }
 }
 
 async function loadRegistry(shouldRender = true) {
   state.registryLoading = true;
+  state.agentOrchestration.registryError = null;
+  if (state.activeNav !== "agents") state.error = null;
   if (shouldRender) render();
   try {
-    const [connections, profiles, skills, mcpPresets, mcpServers] = await Promise.all([
+    const [connections, skills, mcpPresets, mcpServers, skillPackages, skillInvocations, skillProfile, skillLockfile, skillObservability, skillSources, agents, agentTeams, agentDags] = await Promise.all([
       request("/api/registry/provider-connections"),
-      request("/api/registry/agent-profiles"),
       request("/api/registry/skills"),
       request("/api/registry/mcp-connector-presets"),
       request("/api/registry/mcp-servers"),
+      request("/api/skill-host/packages"),
+      request("/api/skill-host/invocations"),
+      request("/api/skill-host/profile"),
+      request("/api/skill-host/lockfile"),
+      request("/api/skill-host/observability"),
+      request("/api/skill-host/sources"),
+      request("/api/agents").catch(() => ({ items: [], versions: [], deployments: [] })),
+      request("/api/agent-teams").catch(() => ({ items: [] })),
+      request("/api/agent-dags").catch(() => ({ items: [] })),
     ]);
     state.providerConnections = connections.items || [];
-    state.agentProfiles = profiles.items || [];
+    state.agentDefinitions = agents.items || [];
+    state.agentVersions = agents.versions || [];
+    state.agentDeployments = agents.deployments || [];
+    state.agentReadiness = agents.readiness || [];
+    state.agentCapabilities = agents.capabilities || [];
+    state.agentOrchestration.teams = agentTeams.items || [];
+    state.agentOrchestration.dags = agentDags.items || [];
     state.skills = skills.items || [];
     state.mcpConnectorPresets = mcpPresets.items || [];
     state.mcpServers = mcpServers.items || [];
+    state.skillHost.packages = skillPackages.items || [];
+    state.skillHost.invocations = skillInvocations.items || [];
+    state.skillHost.profile = skillProfile;
+    state.skillHost.lockfile = skillLockfile;
+    state.skillHost.observability = skillObservability;
+    state.skillHost.sources = skillSources.items || [];
     syncSetupConnectionFromRegistry();
-    const persistedAutonomy = state.agentProfiles.find((profile) => profile.profile_id === "default-agent")
-      ?.metadata?.product_autonomy_mode;
+    const persistedAutonomy = state.agentVersions.find((version) => version.agent_id === "default-agent")
+      ?.autonomy_ceiling;
     if (AUTONOMY_MODES.includes(persistedAutonomy)) {
       state.product.autonomyMode = persistedAutonomy;
       globalThis.localStorage?.setItem(STUDIO_AUTONOMY_STORAGE, persistedAutonomy);
     }
     maybeOpenStudioSetup();
   } catch (error) {
-    state.error = error.message || "Failed to load registry.";
+    const message = error.message || "Failed to load registry.";
+    state.agentOrchestration.registryError = message;
+    if (state.activeNav !== "agents") state.error = message;
   } finally {
     state.registryLoading = false;
     if (shouldRender) render();
+  }
+}
+
+const AGENT_DAG_DETAIL_POLL_MAX_ATTEMPTS = 300;
+
+function stopAgentDagDetailPolling() {
+  if (agentDagDetailPollTimer) {
+    window.clearTimeout(agentDagDetailPollTimer);
+    agentDagDetailPollTimer = null;
+  }
+  agentDagDetailPollId = "";
+  agentDagDetailPollAttempts = 0;
+}
+
+function scheduleAgentDagDetailPolling(dagId, options = {}) {
+  const selectedDagId = state.agentOrchestration.selectedDagId;
+  const detail = state.agentOrchestration.detail;
+  const decision = agentDagPollingDecision(detail);
+  if (
+    state.activeNav !== "agents" ||
+    !dagId ||
+    selectedDagId !== dagId ||
+    detail?.dag?.dag_id !== dagId ||
+    !decision.shouldPoll
+  ) {
+    stopAgentDagDetailPolling();
+    return;
+  }
+  if (agentDagDetailPollId !== dagId || options.reset === true) {
+    if (agentDagDetailPollTimer) window.clearTimeout(agentDagDetailPollTimer);
+    agentDagDetailPollTimer = null;
+    agentDagDetailPollId = dagId;
+    agentDagDetailPollAttempts = 0;
+  }
+  if (agentDagDetailPollTimer || agentDagDetailPollAttempts >= AGENT_DAG_DETAIL_POLL_MAX_ATTEMPTS) return;
+  agentDagDetailPollTimer = window.setTimeout(() => {
+    agentDagDetailPollTimer = null;
+    void pollAgentDagDetail(dagId);
+  }, decision.delayMs);
+}
+
+async function pollAgentDagDetail(dagId) {
+  if (
+    state.activeNav !== "agents" ||
+    state.agentOrchestration.selectedDagId !== dagId ||
+    agentDagDetailPollId !== dagId
+  ) return;
+  agentDagDetailPollAttempts += 1;
+  await loadAgentDagDetail(dagId, false, { background: true });
+  if (state.activeNav === "agents" && state.agentOrchestration.selectedDagId === dagId) render();
+  scheduleAgentDagDetailPolling(dagId);
+}
+
+async function loadAgentDagDetail(dagId, shouldRender = true, options = {}) {
+  const normalizedDagId = dagId || "";
+  const selectionChanged = state.agentOrchestration.selectedDagId !== normalizedDagId;
+  if (selectionChanged) stopAgentDagDetailPolling();
+  state.agentOrchestration.selectedDagId = normalizedDagId;
+  state.agentOrchestration.error = null;
+  if (!normalizedDagId) { state.agentOrchestration.detail = null; if (shouldRender) render(); return; }
+  const requestSequence = ++agentDagDetailRequestSequence;
+  if (!options.background) state.agentOrchestration.loading = true;
+  if (shouldRender) render();
+  try {
+    const detail = await request(`/api/agent-dags/${encodeURIComponent(normalizedDagId)}`);
+    if (
+      requestSequence !== agentDagDetailRequestSequence ||
+      state.agentOrchestration.selectedDagId !== normalizedDagId
+    ) return;
+    state.agentOrchestration.detail = detail;
+    state.agentOrchestration.dags = mergeAgentDagSummary(
+      state.agentOrchestration.dags,
+      detail?.dag,
+    );
+  } catch (error) {
+    if (requestSequence === agentDagDetailRequestSequence && !options.background) {
+      state.agentOrchestration.error = error.message || "Agent DAG could not be loaded.";
+    }
+  } finally {
+    if (requestSequence === agentDagDetailRequestSequence && !options.background) {
+      state.agentOrchestration.loading = false;
+    }
+    if (shouldRender) render();
+    if (requestSequence === agentDagDetailRequestSequence) {
+      scheduleAgentDagDetailPolling(normalizedDagId, { reset: selectionChanged });
+    }
+  }
+}
+
+async function refreshAgentOrchestration(selectDagId = state.agentOrchestration.selectedDagId) {
+  const [teams, dags] = await Promise.all([
+    request("/api/agent-teams").catch(() => ({ items: [] })),
+    request("/api/agent-dags").catch(() => ({ items: [] })),
+  ]);
+  state.agentOrchestration.teams = teams.items || [];
+  state.agentOrchestration.dags = dags.items || [];
+  if (selectDagId) await loadAgentDagDetail(selectDagId, false);
+  render();
+}
+
+function openAgentDagActivity(dagId) {
+  if (!dagId) return false;
+  state.agentOrchestration.activeTab = "runs";
+  state.agentOrchestration.selectedDagId = dagId;
+  switchDesktopNav("agents");
+  void refreshAgentOrchestration(dagId);
+  return true;
+}
+
+async function createAgentFromEditor() {
+  const draft = state.agentOrchestration.agentDraft;
+  const inputContract = parseJsonObject(draft.inputContractText);
+  const outputContract = parseJsonObject(draft.outputContractText);
+  if (!inputContract.ok || !outputContract.ok) {
+    state.agentOrchestration.error = !inputContract.ok
+      ? `Input contract: ${inputContract.message}`
+      : `Output contract: ${outputContract.message}`;
+    render();
+    return;
+  }
+  const selectedConnection = state.providerConnections.find((connection) => connection.connection_id === draft.connectionId)
+    || state.providerConnections.find((connection) => connection.status === "active")
+    || null;
+  const editingAgentId = state.agentOrchestration.editingAgentId;
+  const governedAgentId = editingAgentId || draft.agentId || slugify(draft.name);
+  if (isGovernedAction("agent.upsert")) {
+    stageGovernanceProposal(
+      "agent.upsert",
+      governedAgentId,
+      {
+        agent_id: governedAgentId,
+        name: draft.name,
+        description: draft.description,
+        version: {
+          role: draft.role,
+          responsibility: draft.responsibility,
+          system_prompt: draft.systemPrompt,
+          model_policy: { provider_connection_id: draft.connectionId || null, model: draft.model || null, deployment_id: null, allow_runtime_override: false, routing_preference: draft.routingPreference, fallback_models: parseCsv(draft.fallbackModels), allow_model_escalation: draft.allowModelEscalation },
+          capability_policy: { capability_tags: parseCsv(draft.capabilityTags), allow_delegation: draft.allowDelegation, input_contract: inputContract.value, output_contract: outputContract.value, acceptance_criteria: draft.acceptanceCriteriaText.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean), verification_steps: draft.verificationStepsText.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean) },
+          tool_policy: { allowed_tools: parseCsv(draft.allowedTools), denied_tools: parseCsv(draft.deniedTools), max_tool_rounds: Number(draft.maxToolRounds) },
+          skill_policy: { locked_skills: draft.lockedSkills.map((skillId) => ({ skill_id: skillId, version: null })), denied_skills: parseCsv(draft.deniedSkills), dynamic_activation: draft.dynamicSkillActivation },
+          memory_policy: { enabled: draft.memoryEnabled, automatic_recall: draft.automaticRecall, write_mode: draft.memoryWriteMode },
+          context_policy: { compression_enabled: draft.compressionEnabled, compression_threshold_percent: Number(draft.compressionThreshold), max_continuation_rounds: Number(draft.continuationRounds) },
+          runtime_policy: { runtime: "native", sandbox: draft.sandbox, timeout_seconds: Number(draft.timeoutSeconds) },
+          workspace_policy: { read: draft.workspaceRead, write: draft.workspaceWrite, allowed_project_ids: [] },
+          autonomy_ceiling: draft.autonomyMode,
+        },
+      },
+      `${editingAgentId ? "Publish a new version of" : "Create"} Agent ${governedAgentId}`,
+    );
+    return;
+  }
+  state.agentOrchestration.saving = true;
+  state.agentOrchestration.error = null;
+  render();
+  try {
+    await request("/api/agents", { method: "POST", body: JSON.stringify({
+      agent_id: editingAgentId || draft.agentId || undefined,
+      name: draft.name,
+      description: draft.description,
+      version: {
+        role: draft.role,
+        responsibility: draft.responsibility,
+        system_prompt: draft.systemPrompt,
+        model_policy: { provider_connection_id: draft.connectionId || null, model: draft.model || null, deployment_id: null, allow_runtime_override: false, routing_preference: draft.routingPreference, fallback_models: parseCsv(draft.fallbackModels), allow_model_escalation: draft.allowModelEscalation },
+        capability_policy: { capability_tags: parseCsv(draft.capabilityTags), allow_delegation: draft.allowDelegation, input_contract: inputContract.value, output_contract: outputContract.value, acceptance_criteria: draft.acceptanceCriteriaText.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean), verification_steps: draft.verificationStepsText.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean) },
+        tool_policy: { allowed_tools: parseCsv(draft.allowedTools), denied_tools: parseCsv(draft.deniedTools), max_tool_rounds: Number(draft.maxToolRounds) },
+        skill_policy: { locked_skills: draft.lockedSkills.map((skillId) => ({ skill_id: skillId, version: null })), denied_skills: parseCsv(draft.deniedSkills), dynamic_activation: draft.dynamicSkillActivation },
+        memory_policy: { enabled: draft.memoryEnabled, automatic_recall: draft.automaticRecall, write_mode: draft.memoryWriteMode },
+        context_policy: { compression_enabled: draft.compressionEnabled, compression_threshold_percent: Number(draft.compressionThreshold), max_continuation_rounds: Number(draft.continuationRounds) },
+        runtime_policy: { runtime: "native", sandbox: draft.sandbox, timeout_seconds: Number(draft.timeoutSeconds) },
+        workspace_policy: { read: draft.workspaceRead, write: draft.workspaceWrite, allowed_project_ids: [] },
+        autonomy_ceiling: draft.autonomyMode,
+      },
+    }) });
+    state.agentOrchestration.agentCreateOpen = false;
+    state.agentOrchestration.editingAgentId = "";
+    state.agentOrchestration.agentDraft = emptyAgentDefinitionDraft();
+    removeLocalAgentDraft(editingAgentId);
+    state.agentOrchestration.agentDraftDirty = false;
+    state.agentOrchestration.agentDraftSavedAt = "";
+    state.agentOrchestration.agentDraftRestored = false;
+    state.agentOrchestration.agentValidationVisible = false;
+    await loadRegistry(false);
+    const publishedAgentId = editingAgentId || draft.agentId || slugify(draft.name);
+    const readiness = state.agentReadiness.find((item) => item.agent_id === publishedAgentId) || null;
+    state.notice = readiness?.state === "blocked"
+      ? `${draft.name} was published. Complete model setup before execution.`
+      : editingAgentId ? `${draft.name} was published as a new Agent version.` : `${draft.name} is ready to use.`;
+  } catch (error) {
+    state.agentOrchestration.error = error.message || "Agent could not be created.";
+  } finally {
+    state.agentOrchestration.saving = false;
+    render();
+  }
+}
+
+async function disableAgentFromEditor() {
+  const agentId = state.agentOrchestration.editingAgentId;
+  if (!agentId) return;
+  if (isGovernedAction("agent.disable")) {
+    stageGovernanceProposal("agent.disable", agentId, {}, `Disable Agent ${agentId}`);
+    return;
+  }
+  state.agentOrchestration.saving = true;
+  state.agentOrchestration.error = null;
+  render();
+  try {
+    await request(`/api/agents/${encodeURIComponent(agentId)}/disable`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.agentOrchestration.agentCreateOpen = false;
+    state.agentOrchestration.editingAgentId = "";
+    state.agentOrchestration.agentDraft = emptyAgentDefinitionDraft();
+    removeLocalAgentDraft(agentId);
+    state.agentOrchestration.agentDraftDirty = false;
+    state.agentOrchestration.agentDraftSavedAt = "";
+    state.agentOrchestration.agentDraftRestored = false;
+    state.agentOrchestration.agentValidationVisible = false;
+    await loadRegistry(false);
+    state.notice = `Agent ${agentId} is disabled.`;
+  } catch (error) {
+    state.agentOrchestration.error = error.message || "Agent could not be disabled.";
+  } finally {
+    state.agentOrchestration.saving = false;
+    render();
+  }
+}
+
+function openAgentDefinitionEditor(agentId = "") {
+  const definition = state.agentDefinitions.find((item) => item.agent_id === agentId) || null;
+  const version = definition
+    ? state.agentVersions.find((item) => item.agent_id === definition.agent_id && item.version === (definition.published_version || definition.latest_version)) || null
+    : null;
+  state.agentOrchestration.activeTab = "agents";
+  state.agentOrchestration.agentCreateOpen = true;
+  state.agentOrchestration.editingAgentId = definition?.agent_id || "";
+  const baseDraft = agentDefinitionDraftFromRecords(definition, version);
+  const localDraft = readLocalAgentDraft(agentId);
+  state.agentOrchestration.agentDraft = localDraft?.draft
+    ? { ...baseDraft, ...localDraft.draft }
+    : baseDraft;
+  if (!definition && !localDraft?.draft) {
+    const binding = preferredAgentBinding(state.providerConnections);
+    state.agentOrchestration.agentDraft.connectionId = binding.connectionId;
+    state.agentOrchestration.agentDraft.model = binding.model;
+  }
+  state.agentOrchestration.agentDraftDirty = false;
+  state.agentOrchestration.agentDraftSavedAt = localDraft?.saved_at || "";
+  state.agentOrchestration.agentDraftRestored = Boolean(localDraft?.draft);
+  state.agentOrchestration.agentValidationVisible = false;
+  state.agentOrchestration.error = null;
+  render();
+  window.setTimeout(() => document.querySelector('.agent-editor input[data-field="agentDefinition.name"]')?.focus(), 0);
+}
+
+function closeAgentDefinitionEditor() {
+  state.agentOrchestration.agentCreateOpen = false;
+  state.agentOrchestration.editingAgentId = "";
+  state.agentOrchestration.agentDraft = emptyAgentDefinitionDraft();
+  state.agentOrchestration.agentDraftDirty = false;
+  state.agentOrchestration.agentDraftSavedAt = "";
+  state.agentOrchestration.agentDraftRestored = false;
+  state.agentOrchestration.agentValidationVisible = false;
+  render();
+}
+
+function openAgentDagDesigner(templateId = "", revisionContext = "") {
+  const template = state.templates.find((item) => item.template_id === templateId) || null;
+  const templateContext = template
+    ? ` Use the workflow template "${template.name || template.template_id}" as a starting point, but adapt it to my actual goal.`
+    : "";
+  state.planner.intent = `Help me design a multi-agent workflow for this task.${templateContext}${revisionContext} First clarify the outcome and constraints, then recommend the Agents and Skills needed, propose an editable DAG, and wait for my confirmation before creating or running it.`;
+  state.planner.templateId = template?.template_id || "";
+  state.planner.templateLocked = !!template;
+  state.activeNav = "orchestrator";
+  state.ui.taskConversationVisible = true;
+  buildStudioLocationState();
+  render();
+  window.setTimeout(() => {
+    const input = document.querySelector('textarea[data-field="planner.intent"]');
+    input?.focus();
+    input?.setSelectionRange?.(input.value.length, input.value.length);
+  }, 0);
+}
+
+async function createAgentTeamFromEditor() {
+  const draft = state.agentOrchestration.teamDraft;
+  const versionFor = (agentId) => state.agentVersions.find((version) => version.agent_id === agentId);
+  const members = [
+    { member_id: "main", agent_id: draft.orchestratorAgentId, agent_version: versionFor(draft.orchestratorAgentId)?.version || null, role: "orchestrator", capability_tags: ["planning", "delegation"], required: true },
+    { member_id: "worker", agent_id: draft.workerAgentId, agent_version: versionFor(draft.workerAgentId)?.version || null, role: versionFor(draft.workerAgentId)?.role || "worker", capability_tags: ["execution"], required: true },
+  ];
+  if (draft.reviewerAgentId) members.push({ member_id: "reviewer", agent_id: draft.reviewerAgentId, agent_version: versionFor(draft.reviewerAgentId)?.version || null, role: "reviewer", capability_tags: ["quality"], required: true });
+  state.agentOrchestration.saving = true;
+  state.agentOrchestration.error = null;
+  render();
+  try {
+    await request("/api/agent-teams", { method: "POST", body: JSON.stringify({ name: draft.name, orchestrator_member_id: "main", reviewer_member_ids: draft.reviewerAgentId ? ["reviewer"] : [], members, policy: { max_concurrency: Number(draft.maxConcurrency), max_delegation_depth: Number(draft.maxDepth), require_reviewer: !!draft.reviewerAgentId } }) });
+    state.agentOrchestration.teamCreateOpen = false;
+    state.agentOrchestration.teamDraft = { name: "", orchestratorAgentId: "default-agent", workerAgentId: "", reviewerAgentId: "", maxConcurrency: 3, maxDepth: 1 };
+    await refreshAgentOrchestration();
+  } catch (error) {
+    state.agentOrchestration.error = error.message || "Agent Team could not be created.";
+  } finally {
+    state.agentOrchestration.saving = false;
+    render();
+  }
+}
+
+function prepareRecommendedExecutionPolicy() {
+  const readiness = new Map(state.agentReadiness.map((item) => [item.agent_id, item]));
+  const versionFor = (agentId) => state.agentVersions.find((version) => version.agent_id === agentId) || null;
+  const readyAgents = state.agentDefinitions.filter((agent) => agent.status === "active" && readiness.get(agent.agent_id)?.state !== "blocked");
+  const orchestrator = readyAgents.find((agent) => versionFor(agent.agent_id)?.role === "orchestrator") || null;
+  const worker = readyAgents.find((agent) => ["worker", "specialist"].includes(versionFor(agent.agent_id)?.role)) || null;
+  const reviewer = readyAgents.find((agent) => versionFor(agent.agent_id)?.role === "reviewer") || null;
+  if (!orchestrator || !worker) {
+    state.agentOrchestration.error = "Create or repair one ready Main Agent and one ready Worker before adding the recommended execution policy.";
+    render();
+    return;
+  }
+  state.agentOrchestration.teamDraft = {
+    name: "Default execution policy",
+    orchestratorAgentId: orchestrator.agent_id,
+    workerAgentId: worker.agent_id,
+    reviewerAgentId: reviewer?.agent_id || "",
+    maxConcurrency: 3,
+    maxDepth: 2,
+  };
+  state.agentOrchestration.teamCreateOpen = true;
+  state.agentOrchestration.error = null;
+  render();
+}
+
+function reviseAgentDagProposalFromRuns() {
+  const dagId = state.agentOrchestration.selectedDagId;
+  if (!dagId) return;
+  const dag = state.agentOrchestration.dags.find((item) => item.dag_id === dagId);
+  const context = ` Revise the confirmed Proposal behind the existing DAG run "${dag?.title || dagId}" (${dagId}); do not mutate the runtime graph. Create a new Proposal revision for my review.`;
+  openAgentDagDesigner("", context);
+}
+
+async function resolveAgentDagGateFromStudio(dagId, gateId, approved) {
+  const field = document.querySelector(`[data-agent-gate-response="${CSS.escape(gateId)}"]`);
+  const raw = field?.value?.trim() || "";
+  let response = raw ? { value: raw } : {};
+  if (raw) {
+    try { response = JSON.parse(raw); } catch { /* Preserve plain user input. */ }
+  }
+  state.agentOrchestration.saving = true;
+  state.agentOrchestration.error = null;
+  render();
+  try {
+    if (approved) {
+      const detail = state.agentOrchestration.detail?.dag?.dag_id === dagId
+        ? state.agentOrchestration.detail
+        : await request(`/api/agent-dags/${encodeURIComponent(dagId)}`);
+      const requiresWorkspaceWrite = (Array.isArray(detail?.tasks) ? detail.tasks : []).some((task) =>
+        task?.permission_ceiling?.workspace_write === true ||
+        (Array.isArray(task?.permission_ceiling?.allowed_tools) && task.permission_ceiling.allowed_tools.some((tool) =>
+          tool === "workspace_apply_operations" || tool === "workspace_run_command")),
+      );
+      if (requiresWorkspaceWrite) {
+        const sessionId = detail?.dag?.session_id || "";
+        const binding = await ensureDesktopWorkspaceBinding(sessionId, "sandbox-write");
+        if (!binding) {
+          throw new Error("Select the Task's Desktop Workspace before approving this write-capable DAG.");
+        }
+      }
+    }
+    await request(`/api/agent-dags/${encodeURIComponent(dagId)}/gates/${encodeURIComponent(gateId)}/resolve`, { method: "POST", body: JSON.stringify({ approved, response }) });
+    await refreshAgentOrchestration(dagId);
+  } catch (error) {
+    state.agentOrchestration.error = error.message || "Agent DAG Gate could not be resolved.";
+  } finally {
+    state.agentOrchestration.saving = false;
+    render();
+  }
+}
+
+async function applyAgentDagAction(dagId, action) {
+  state.agentOrchestration.saving = true;
+  state.agentOrchestration.error = null;
+  render();
+  try {
+    if (action === "retry") {
+      await request(`/api/agent-dags/${encodeURIComponent(dagId)}/retry`, { method: "POST", body: JSON.stringify({ reason: "Retry requested from Studio." }) });
+      await request(`/api/agent-dags/${encodeURIComponent(dagId)}/run`, { method: "POST", body: "{}" });
+    } else {
+      await request(`/api/agent-dags/${encodeURIComponent(dagId)}/${action}`, { method: "POST", body: JSON.stringify(action === "cancel" ? { reason: "Cancelled from Studio." } : {}) });
+    }
+    await refreshAgentOrchestration(dagId);
+  } catch (error) {
+    state.agentOrchestration.error = error.message || `Agent DAG ${action} failed.`;
+  } finally {
+    state.agentOrchestration.saving = false;
+    render();
   }
 }
 
@@ -6819,8 +7679,9 @@ function syncAutonomyControlState() {
 
 async function saveProductAutonomyMode(mode) {
   const nextMode = normalizeAutonomyMode(mode);
-  const profile = state.agentProfiles.find((item) => item.profile_id === "default-agent") || null;
-  const persistedMode = profile?.metadata?.product_autonomy_mode;
+  const definition = state.agentDefinitions.find((item) => item.agent_id === "default-agent") || null;
+  const version = state.agentVersions.find((item) => item.agent_id === "default-agent") || null;
+  const persistedMode = version?.autonomy_ceiling;
   if (!state.product.autonomySaving && nextMode === state.product.autonomyMode && persistedMode === nextMode) {
     return;
   }
@@ -6832,42 +7693,22 @@ async function saveProductAutonomyMode(mode) {
   syncAutonomyControlState();
   let requiresRender = false;
   try {
-    if (!profile) {
+    if (!definition) {
       state.notice = `Saved ${autonomyModeCopy(nextMode).label} for this Studio. Model setup will bind it to the default agent.`;
       requiresRender = true;
       return;
     }
-    if (isGovernedAction("agent_profile.upsert")) {
-      state.notice = `Saved ${autonomyModeCopy(nextMode).label} for this Studio. Workspace policy requires a governed Registry change before other clients inherit it.`;
-      requiresRender = true;
-      return;
-    }
-    const saved = await request("/api/registry/agent-profiles", {
+    const saved = await request("/api/agents", {
       method: "POST",
       body: JSON.stringify({
-        profile_id: profile.profile_id,
-        name: profile.name,
-        description: profile.description || "Default task execution profile",
-        runtime_agent_ref: profile.runtime_agent_ref || "",
-        agent_runtime: profile.agent_runtime || "codex",
-        harness_profile: profile.harness_profile || "agent-harness-v1",
-        provider_connection_id: profile.provider_connection_id || null,
-        openclaw_agent_id: profile.openclaw_agent_id || "",
-        default_skills: profile.default_skills || [],
-        allowed_tools: profile.allowed_tools || [],
-        disallowed_skills: profile.disallowed_skills || [],
-        policy_tags: profile.policy_tags || [],
-        status: profile.status || "active",
-        metadata: {
-          ...(profile.metadata || {}),
-          product_autonomy_mode: nextMode,
-        },
+        agent_id: definition.agent_id,
+        name: definition.name,
+        description: definition.description || "Default task execution Agent",
+        version: { autonomy_ceiling: nextMode },
       }),
     });
-    state.agentProfiles = [
-      ...state.agentProfiles.filter((item) => item.profile_id !== saved.profile_id),
-      saved,
-    ];
+    state.agentDefinitions = state.agentDefinitions.map((item) => item.agent_id === saved.definition.agent_id ? saved.definition : item);
+    state.agentVersions = state.agentVersions.map((item) => item.agent_id === saved.version.agent_id ? saved.version : item);
   } catch (error) {
     state.error = `${error.message || "Failed to save workspace autonomy."} The local Studio preference remains ${autonomyModeCopy(nextMode).label}.`;
     requiresRender = true;
@@ -6892,42 +7733,6 @@ async function loadGovernance(shouldRender = true) {
     if (shouldRender) render();
   }
 }
-
-function applyOrchestratorProfile(profile) {
-  if (!profile) return;
-  state.orchestrator.selectedProfileId = profile.orchestrator_id || "";
-  state.orchestrator.name = profile.name || "Studio Orchestrator";
-  state.orchestrator.provider = profile.provider || "";
-  state.orchestrator.model = profile.model || "";
-  state.orchestrator.systemPrompt = profile.system_prompt || state.orchestrator.systemPrompt;
-  state.orchestrator.defaultToolsText = (profile.default_tools || []).join(", ");
-  state.orchestrator.defaultSubagentsText = (profile.default_subagent_profile_ids || []).join(", ");
-}
-
-async function loadOrchestratorProfiles(shouldRender = true) {
-  state.orchestratorProfilesLoading = true;
-  if (shouldRender) render();
-  try {
-    const response = await request("/api/orchestrator-profiles");
-    state.orchestratorProfiles = response.items || [];
-    const selected =
-      state.orchestratorProfiles.find(
-        (profile) => profile.orchestrator_id === state.orchestrator.selectedProfileId,
-      ) ||
-      state.orchestratorProfiles[0] ||
-      null;
-    if (selected) {
-      applyOrchestratorProfile(selected);
-    }
-  } catch (error) {
-    state.orchestratorProfiles = [];
-    state.error = error.message || "Failed to load orchestrator profiles.";
-  } finally {
-    state.orchestratorProfilesLoading = false;
-    if (shouldRender) render();
-  }
-}
-
 async function loadMissions(shouldRender = true) {
   state.missionsLoading = true;
   if (shouldRender) render();
@@ -6953,18 +7758,20 @@ async function loadInbox(shouldRender = true) {
   state.inbox.error = null;
   if (shouldRender) render();
   try {
-    const [approvals, humanInputs, alerts, workspaceChanges, memoryCandidates] = await Promise.all([
+    const [approvals, humanInputs, alerts, workspaceChanges, memoryCandidates, notifications] = await Promise.all([
       request("/api/approvals"),
       request("/api/human-inputs"),
       request("/api/supervision/alerts?status=open"),
       request("/api/runtime/workspace-change-sets"),
       request("/api/memory-candidates?status=pending"),
+      request("/api/notifications?status=active"),
     ]);
     state.inbox.approvals = approvals.items || [];
     state.inbox.humanInputs = humanInputs.items || [];
     state.inbox.alerts = alerts.items || [];
     state.inbox.workspaceChanges = workspaceChanges.items || [];
     state.inbox.memoryCandidates = memoryCandidates.items || [];
+    state.inbox.notifications = notifications.items || [];
     const selectedChangeSet = selectWorkspaceChangeSet(
       state.inbox.workspaceChanges,
       state.inbox.selectedWorkspaceChangeId,
@@ -6980,6 +7787,184 @@ async function loadInbox(shouldRender = true) {
     state.inbox.loading = false;
     if (shouldRender) render();
   }
+}
+
+function emptyScheduleDraft() {
+  const target = getSelectedConversationTarget();
+  return {
+    name: "",
+    prompt: "",
+    taskMode: "new_task",
+    sessionId: "",
+    taskTitle: "",
+    autonomyMode: state.product.autonomyMode || "assisted",
+    providerConnectionId: target?.connection.connection_id || "",
+    model: target?.model || "",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    recurrenceKind: "cron",
+    onceAt: "",
+    intervalMinutes: 60,
+    cronExpression: "0 9 * * *",
+    enabled: true,
+  };
+}
+
+async function loadSchedules(shouldRender = true) {
+  state.schedules.loading = true;
+  state.schedules.error = null;
+  if (shouldRender) render();
+  try {
+    const response = await request("/api/schedules");
+    state.schedules.items = response.items || [];
+  } catch (error) {
+    state.schedules.error = error.message || "Schedules could not be loaded.";
+  } finally {
+    state.schedules.loading = false;
+    if (shouldRender) render();
+  }
+}
+
+function scheduleDraftFromRecord(schedule) {
+  const recurrence = schedule.recurrence || {};
+  return {
+    name: schedule.name || "",
+    prompt: schedule.prompt || "",
+    taskMode: schedule.task_mode || "new_task",
+    sessionId: schedule.session_id || "",
+    taskTitle: schedule.task_title || "",
+    autonomyMode: schedule.autonomy_mode || "assisted",
+    providerConnectionId: schedule.provider_connection_id || "",
+    model: schedule.model || "",
+    timezone: schedule.timezone || "UTC",
+    recurrenceKind: recurrence.kind || "cron",
+    onceAt: recurrence.kind === "once" && recurrence.run_at ? new Date(recurrence.run_at).toISOString().slice(0, 16) : "",
+    intervalMinutes: recurrence.interval_minutes || 60,
+    cronExpression: recurrence.expression || "0 9 * * *",
+    enabled: schedule.enabled !== false,
+  };
+}
+
+function scheduleRequestBody() {
+  const draft = state.schedules.draft;
+  const recurrence = draft.recurrenceKind === "once"
+    ? { kind: "once", run_at: new Date(draft.onceAt).toISOString() }
+    : draft.recurrenceKind === "interval"
+      ? { kind: "interval", interval_minutes: Number(draft.intervalMinutes) }
+      : { kind: "cron", expression: draft.cronExpression.trim() };
+  return {
+    name: draft.name.trim(),
+    prompt: draft.prompt.trim(),
+    task_mode: draft.taskMode,
+    session_id: draft.taskMode === "resume_task" ? draft.sessionId : null,
+    task_title: draft.taskTitle.trim() || null,
+    autonomy_mode: draft.autonomyMode,
+    provider_connection_id: draft.providerConnectionId || null,
+    model: draft.model || null,
+    timezone: draft.timezone.trim(),
+    recurrence,
+    enabled: draft.enabled,
+  };
+}
+
+async function saveSchedule() {
+  state.schedules.saving = true;
+  state.schedules.error = null;
+  render();
+  try {
+    const editingId = state.schedules.editingId;
+    await request(editingId ? `/api/schedules/${encodeURIComponent(editingId)}` : "/api/schedules", {
+      method: editingId ? "PATCH" : "POST",
+      body: JSON.stringify(scheduleRequestBody()),
+    });
+    state.schedules.editorOpen = false;
+    state.schedules.editingId = "";
+    state.schedules.draft = emptyScheduleDraft();
+    state.notice = editingId ? "Schedule updated." : "Schedule created.";
+    await loadSchedules(false);
+  } catch (error) {
+    state.schedules.error = error.message || "Schedule could not be saved.";
+  } finally {
+    state.schedules.saving = false;
+    render();
+  }
+}
+
+async function updateScheduleEnabled(scheduleId, enabled) {
+  state.schedules.saving = true;
+  render();
+  try {
+    await request(`/api/schedules/${encodeURIComponent(scheduleId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    });
+    await loadSchedules(false);
+  } catch (error) {
+    state.schedules.error = error.message || "Schedule could not be updated.";
+  } finally {
+    state.schedules.saving = false;
+    render();
+  }
+}
+
+async function runScheduleNow(scheduleId) {
+  state.schedules.saving = true;
+  state.schedules.error = null;
+  render();
+  try {
+    const result = await request(`/api/schedules/${encodeURIComponent(scheduleId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.notice = result.status === "failed" ? null : "Scheduled Task run completed.";
+    if (result.status === "failed") state.schedules.error = result.error_message || "Scheduled Task run failed.";
+    await Promise.all([loadSchedules(false), loadInbox(false)]);
+  } catch (error) {
+    state.schedules.error = error.message || "Schedule could not run.";
+  } finally {
+    state.schedules.saving = false;
+    render();
+  }
+}
+
+async function loadScheduleRuns(scheduleId) {
+  state.schedules.historyId = state.schedules.historyId === scheduleId ? "" : scheduleId;
+  if (!state.schedules.historyId) return render();
+  try {
+    const response = await request(`/api/schedules/${encodeURIComponent(scheduleId)}/runs?limit=20`);
+    state.schedules.runs[scheduleId] = response.items || [];
+  } catch (error) {
+    state.schedules.error = error.message || "Schedule history could not be loaded.";
+  }
+  render();
+}
+
+async function deleteSchedule(scheduleId) {
+  state.schedules.saving = true;
+  render();
+  try {
+    await request(`/api/schedules/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+    state.schedules.deleteConfirmId = "";
+    await loadSchedules(false);
+    state.notice = "Schedule deleted. Existing run history remains auditable.";
+  } catch (error) {
+    state.schedules.error = error.message || "Schedule could not be deleted.";
+  } finally {
+    state.schedules.saving = false;
+    render();
+  }
+}
+
+async function updateNotification(notificationId, action) {
+  try {
+    await request(`/api/notifications/${encodeURIComponent(notificationId)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadInbox(false);
+  } catch (error) {
+    state.inbox.error = error.message || "Notification could not be updated.";
+  }
+  render();
 }
 
 function selectWorkspaceChangeSetForReview(changeSetId) {
@@ -6999,6 +7984,14 @@ function selectWorkspaceChangeFileForReview(relativePath) {
   state.inbox.selectedWorkspaceFile = selectWorkspaceFile(selected, relativePath)?.relative_path || "";
   state.inbox.confirmWorkspaceChangeAction = "";
   render();
+}
+
+function openWorkspaceChangeFileReview(changeSetId, relativePath) {
+  state.workspaceDiffPreview.open = false;
+  state.inbox.selectedWorkspaceChangeId = changeSetId || "";
+  state.inbox.selectedWorkspaceFile = relativePath || "";
+  state.inbox.confirmWorkspaceChangeAction = "";
+  switchDesktopNav("inbox");
 }
 
 async function resolveWorkspaceChangeSet(mode) {
@@ -7024,11 +8017,15 @@ async function resolveWorkspaceChangeSet(mode) {
       );
     }
     state.inbox.confirmWorkspaceChangeAction = "";
-    state.inbox.selectedWorkspaceChangeId = "";
-    state.inbox.selectedWorkspaceFile = "";
-    await loadInbox(false);
+    // Keep an applied Change Set selected so its verified diff remains inspectable.
+    state.inbox.selectedWorkspaceChangeId = mode === "apply" ? selected.change_set_id : "";
+    state.inbox.selectedWorkspaceFile = mode === "apply" ? (selected.changes?.[0]?.relative_path || "") : "";
+    await Promise.all([
+      loadInbox(false),
+      state.selectedSessionId ? loadSessionWorkspace(state.selectedSessionId, false) : Promise.resolve(),
+    ]);
     state.notice = mode === "apply"
-      ? "Reviewed workspace changes were applied to the source folder."
+      ? "Reviewed workspace changes were applied. The verified Diff remains available for preview."
       : "Workspace changes were rejected. The source folder was not modified.";
   } catch (error) {
     state.error = error.message || `Failed to ${mode} workspace changes.`;
@@ -7089,11 +8086,12 @@ async function loadSessions(shouldRender = true) {
   state.sessionsLoading = true;
   if (shouldRender) render();
   try {
-    const response = await request(
-      `/api/sessions${buildSessionInventoryQuery({
+    const inventoryQuery = buildSessionInventoryQuery({
         query: state.sessionQuery,
         visibility: state.sessionVisibility,
-      })}`,
+      });
+    const response = await request(
+      `/api/sessions${inventoryQuery}${inventoryQuery ? "&" : "?"}projection=compact`,
     );
     state.sessions = response.items || [];
     buildStudioLocationState();
@@ -7110,12 +8108,6 @@ async function loadRuntimeSummary(shouldRender = true) {
   if (shouldRender) render();
   try {
     state.runtimeSummary = await request("/api/runtime/summary");
-    if (!state.orchestrator.provider) {
-      state.orchestrator.provider = state.runtimeSummary?.planner?.provider_id || "";
-    }
-    if (!state.orchestrator.model) {
-      state.orchestrator.model = state.runtimeSummary?.planner?.llm_model || "";
-    }
   } catch (error) {
     state.error = error.message || "Failed to load runtime summary.";
   } finally {
@@ -7831,6 +8823,7 @@ async function loadSessionDagProposals(
       : null;
     if (workspaceSeq !== null && workspaceSeq !== workspaceLoadSeq) return null;
     applyDurableProposalToPlanner(proposal);
+    state.planner.error = null;
     return proposal;
   } catch (error) {
     if (error?.name === "AbortError") return null;
@@ -7940,14 +8933,23 @@ async function loadSessionWorkspace(sessionId, shouldRender = true, options = {}
   }
 
   try {
-    const sessionQuery = selectedRunId ? `?run_id=${encodeURIComponent(selectedRunId)}` : "";
-    const detail = await request(`/api/sessions/${encodeURIComponent(sessionId)}${sessionQuery}`, { signal });
+    const sessionQuery = new URLSearchParams({ include: "summary" });
+    if (selectedRunId) sessionQuery.set("run_id", selectedRunId);
+    const conversationPromise = request(
+      `/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=500`,
+      { signal },
+    ).catch(() => null);
+    const detail = await request(
+      `/api/sessions/${encodeURIComponent(sessionId)}?${sessionQuery.toString()}`,
+      { signal },
+    );
     if (signal.aborted || loadSeq !== workspaceLoadSeq) return;
     if (state.error === "Mission not found." || state.error === "Session not found.") state.error = null;
 
     if (getWorkspaceSessionId(state.workspaceDetail) !== sessionId) state.workspaceDetail = null;
     applyWorkspaceSnapshot({
       ...detail,
+      messages: cachedDetail?.messages || detail.messages || [],
       route_compare: cachedDetail?.route_compare || null,
       runtime_graph: detail.runtime_projection?.graph || null,
       runtime_projection: detail.runtime_projection || null,
@@ -7984,13 +8986,27 @@ async function loadSessionWorkspace(sessionId, shouldRender = true, options = {}
       markTaskSwitchMainVisible(sessionId);
     }
 
-    await hydrateSessionWorkspaceSecondary({
+    const secondaryHydration = hydrateSessionWorkspaceSecondary({
       sessionId,
       activeRunId,
       loadSeq,
       signal,
       shouldRender,
     });
+    const conversation = await conversationPromise;
+    if (
+      !signal.aborted &&
+      loadSeq === workspaceLoadSeq &&
+      conversation?.items &&
+      state.workspaceDetail &&
+      getWorkspaceSessionId(state.workspaceDetail) === sessionId
+    ) {
+      state.workspaceDetail.messages = conversation.items;
+      cacheSessionWorkspace(sessionId, selectedRunId, state.workspaceDetail);
+      if (activeRunId) cacheSessionWorkspace(sessionId, activeRunId, state.workspaceDetail);
+      if (shouldRender) renderTaskWorkspaceSurface();
+    }
+    await secondaryHydration;
   } catch (error) {
     if (signal.aborted || error?.name === "AbortError" || loadSeq !== workspaceLoadSeq) return;
     state.workspaceLoadingSessionId = "";
@@ -8021,7 +9037,6 @@ async function loadWorkspaceData(nextSelectedId = state.selectedId) {
   const initialSessionId = state.selectedSessionId;
   const baseLoads = [
     loadTemplates(nextSelectedId),
-    loadOrchestratorProfiles(false),
     loadRegistry(false),
     loadGovernance(false),
     loadRuntimeSummary(false),
@@ -8097,8 +9112,16 @@ async function resolveApproval(approvalId, decision) {
   await performWorkspaceAction(`approval-${decision}`, approvalId, async () => {
     const comment =
       decision === "reject"
-        ? window.prompt("Rejection note", "Rejected from execution cockpit.") || ""
+        ? await studioPrompt({
+            type: "warning",
+            title: "Reject approval",
+            message: "Add a note explaining why this approval is being rejected.",
+            inputLabel: "Rejection note",
+            value: "Rejected from execution cockpit.",
+            submitLabel: "Reject",
+          })
         : "";
+    if (decision === "reject" && comment === null) return;
     const response = await request(`/api/approvals/${encodeURIComponent(approvalId)}/${decision}`, {
       method: "POST",
       body: JSON.stringify({ comment }),
@@ -8115,14 +9138,20 @@ async function resolvePatch(patchId, decision) {
     const body =
       decision === "reject"
         ? {
-            reason:
-              window.prompt("Patch rejection reason", "Rejected from execution cockpit.") ||
-              "Rejected from execution cockpit.",
+            reason: await studioPrompt({
+              type: "warning",
+              title: "Reject patch",
+              message: "Explain why this runtime patch should not be applied.",
+              inputLabel: "Rejection reason",
+              value: "Rejected from execution cockpit.",
+              submitLabel: "Reject",
+            }),
             requested_by: "studio-operator",
           }
         : {
             requested_by: "studio-operator",
           };
+    if (decision === "reject" && body.reason === null) return;
     const response = await request(
       `/api/sessions/${encodeURIComponent(sessionId)}/patches/${encodeURIComponent(patchId)}/${decision}`,
       {
@@ -8220,34 +9249,39 @@ async function submitRuntimeIntervention() {
 
 async function loadLineage(templateId) {
   if (!templateId) {
-    state.lineage = null;
-    return;
+    return null;
   }
   try {
-    state.lineage = await request(`/api/templates/${encodeURIComponent(templateId)}/lineage`);
+    return await request(`/api/templates/${encodeURIComponent(templateId)}/lineage`);
   } catch (_error) {
-    state.lineage = null;
+    return null;
   }
 }
 
 async function selectTemplate(templateId, shouldRender = true) {
+  const loadSeq = ++templateLoadSeq;
   if (shouldRender) {
     state.loading = true;
     render();
   }
   try {
     state.error = null;
+    const template = await request(`/api/templates/${encodeURIComponent(templateId)}`);
+    const lineage = await loadLineage(templateId);
+    if (loadSeq !== templateLoadSeq) return;
     state.selectedId = templateId;
     resetAuthoringGraphSelection();
-    const template = await request(`/api/templates/${encodeURIComponent(templateId)}`);
     state.editor = editorFromTemplate(template);
     resetAuthoringEditorState();
-    await loadLineage(templateId);
+    state.lineage = lineage;
   } catch (error) {
+    if (loadSeq !== templateLoadSeq) return;
     state.error = error.message || "Failed to load template.";
   } finally {
-    state.loading = false;
-    if (shouldRender) render();
+    if (loadSeq === templateLoadSeq) {
+      state.loading = false;
+      if (shouldRender) render();
+    }
   }
 }
 
@@ -8377,17 +9411,33 @@ async function createSelectedTemplateVersion() {
     render();
     return;
   }
+  const family = workflowFamilyForTemplate(state.templates, state.editor.templateId);
+  if (family?.draft) {
+    state.activeView = "dag";
+    state.notice = family.hasUnpublishedChanges
+      ? "Opened the existing unpublished changes. The published workflow remains active until you publish."
+      : "Opened the workflow draft.";
+    await selectTemplate(family.draft.template_id);
+    return;
+  }
+  const published = family?.published || state.templates.find((item) => item.template_id === state.editor.templateId);
+  if (!published || published.status !== "published") {
+    state.error = "Only a published workflow can start a protected edit draft.";
+    render();
+    return;
+  }
   state.versioning = true;
   state.error = null;
   state.notice = null;
   render();
   try {
-    const version = await request(`/api/templates/${encodeURIComponent(state.editor.templateId)}/new-version`, {
+    const version = await request(`/api/templates/${encodeURIComponent(published.template_id)}/new-version`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ name: published.name }),
     });
-    state.notice = `Created version draft ${version.template_id}`;
+    state.activeView = "dag";
     await loadWorkspaceData(version.template_id);
+    state.notice = "Editing unpublished changes. Running tasks remain pinned to the published workflow.";
   } catch (error) {
     state.error = error.message || "Failed to create template version.";
   } finally {
@@ -8536,35 +9586,55 @@ function assertConversationFileSupported(file) {
   if (CONVERSATION_SENSITIVE_FILE_PATTERN.test(name)) {
     throw new Error(`${name} is blocked because credential and certificate files cannot be attached.`);
   }
-  if (!CONVERSATION_TEXT_EXTENSIONS.has(extension) && !String(file?.type || "").startsWith("text/")) {
-    throw new Error(`${name} is not a supported text file. Upload Markdown, text, JSON, CSV, YAML, source code, or logs.`);
+  const isText = CONVERSATION_TEXT_EXTENSIONS.has(extension) || String(file?.type || "").startsWith("text/");
+  const isBinary = CONVERSATION_BINARY_EXTENSIONS.has(extension);
+  if (!isText && !isBinary) {
+    throw new Error(`${name} is not supported. Upload a text/source file, PDF, DOCX, PPTX, or XLSX.`);
   }
-  if (Number(file?.size || 0) > CONVERSATION_UPLOAD_MAX_BYTES) {
-    throw new Error(`${name} exceeds the 512 KB conversation attachment limit.`);
+  const maxBytes = isBinary ? CONVERSATION_BINARY_UPLOAD_MAX_BYTES : CONVERSATION_TEXT_UPLOAD_MAX_BYTES;
+  if (Number(file?.size || 0) > maxBytes) {
+    throw new Error(`${name} exceeds the ${isBinary ? "8 MB binary" : "512 KB text"} conversation attachment limit.`);
   }
+  return { isText, isBinary };
+}
+
+async function readConversationFileBase64(file) {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.slice(result.indexOf(",") + 1) : result);
+    }, { once: true });
+    reader.addEventListener("error", () => reject(reader.error || new Error("Failed to read binary attachment.")), { once: true });
+    reader.readAsDataURL(file);
+  });
 }
 
 async function buildAttachmentPayloadFromFile(file) {
-  assertConversationFileSupported(file);
+  const fileKind = assertConversationFileSupported(file);
   const name = file?.name || "Local file";
   const size = typeof file?.size === "number" && Number.isFinite(file.size) ? Math.max(0, Math.floor(file.size)) : null;
-  const content = await file.text();
-  if (content.includes("\0")) {
-    throw new Error(`${name} appears to be binary and cannot be added as text context.`);
-  }
+  const content = fileKind.isText ? await file.text() : null;
+  if (content?.includes("\0")) throw new Error(`${name} appears to be binary and cannot be added as text context.`);
+  const binaryBase64 = fileKind.isBinary ? await readConversationFileBase64(file) : null;
   return {
     name,
     storage_uri: buildBrowserFileStorageUri(file),
     mime_type: file?.type || undefined,
     size_bytes: size,
-    summary: "Uploaded text content available to the conversation model.",
+    summary: fileKind.isBinary
+      ? "Uploaded binary content available to the governed Artifact Worker."
+      : "Uploaded text content available to the conversation model.",
     kind: "context",
     created_by: "studio",
     metadata: {
       source: "studio_conversation_upload",
       browser_path_available: false,
       relative_path: name,
-      uploaded_text_content: content,
+      ...(fileKind.isText
+        ? { uploaded_text_content: content }
+        : { uploaded_binary_content_base64: binaryBase64 }),
+      encoding: fileKind.isBinary ? "base64" : "utf-8",
       last_modified:
         typeof file?.lastModified === "number" && Number.isFinite(file.lastModified)
           ? new Date(file.lastModified).toISOString()
@@ -8654,28 +9724,102 @@ function reconcileDesktopWorkspace(workspace, projectsResponse) {
 
 async function initializeDesktopHost() {
   if (!desktopHost) return;
+  desktopHost.dialog?.onRequest?.((request) => {
+    if (!request?.requestId || !Array.isArray(request.buttons)) return;
+    enqueueStudioDialog({
+      source: "desktop",
+      requestId: request.requestId,
+      type: request.type || "question",
+      title: request.title || "Confirm Desktop action",
+      message: request.message || "Review this action before continuing.",
+      detail: request.detail || "",
+      buttons: request.buttons,
+      defaultId: Number.isInteger(request.defaultId) ? request.defaultId : 0,
+      cancelId: Number.isInteger(request.cancelId) ? request.cancelId : request.buttons.length - 1,
+      input: null,
+      inputValue: "",
+    });
+  });
   state.desktop.loading = true;
   state.desktop.error = null;
   render();
   try {
-    const [hostInfo, services, workspace, projects] = await Promise.all([
+    const [hostInfo, services, workspace, projects, runtimeStatus] = await Promise.all([
       desktopHost.getHostInfo(),
       desktopHost.getServiceStatus(),
       desktopHost.workspace.get(),
       desktopHost.workspace.projects?.() || Promise.resolve({ items: [] }),
+      desktopHost.runtime?.status?.() || Promise.resolve(null),
     ]);
     state.desktop.hostInfo = hostInfo;
     state.desktop.services = services;
     state.desktop.projects = projects?.items || [];
+    state.desktop.runtimeStatus = runtimeStatus;
     state.desktop.workspace = reconcileDesktopWorkspace(workspace, projects);
     if (workspace) await loadDesktopWorkspaceDirectory("");
     desktopHost.onServiceStatus?.((nextServices) => {
       state.desktop.services = Array.isArray(nextServices) ? nextServices : [];
+      if (state.activeNav === "settings") render();
     });
   } catch (error) {
     state.desktop.error = error.message || "Desktop host is unavailable.";
   } finally {
     state.desktop.loading = false;
+    render();
+  }
+}
+
+async function refreshDesktopRuntimeStatus() {
+  if (!desktopHost?.runtime?.status) return;
+  state.desktop.runtimeBusy = true;
+  state.desktop.error = null;
+  render();
+  try {
+    const [services, runtimeStatus] = await Promise.all([
+      desktopHost.getServiceStatus(),
+      desktopHost.runtime.status(),
+    ]);
+    state.desktop.services = services || [];
+    state.desktop.runtimeStatus = runtimeStatus;
+  } catch (error) {
+    state.desktop.error = error.message || "Desktop runtime diagnostics failed.";
+  } finally {
+    state.desktop.runtimeBusy = false;
+    render();
+  }
+}
+
+async function restartDesktopServices() {
+  if (!desktopHost?.restartServices) return;
+  state.desktop.runtimeBusy = true;
+  state.desktop.error = null;
+  render();
+  try {
+    state.desktop.services = await desktopHost.restartServices();
+    state.notice = "Desktop services restarted and passed health checks.";
+  } catch (error) {
+    state.desktop.error = error.message || "Desktop services could not restart.";
+  } finally {
+    state.desktop.runtimeBusy = false;
+    render();
+  }
+}
+
+async function provisionDesktopWorkers() {
+  if (!desktopHost?.runtime?.provision) return;
+  state.desktop.runtimeBusy = true;
+  state.desktop.error = null;
+  render();
+  try {
+    state.desktop.runtimeStatus = await desktopHost.runtime.provision();
+    const missing = state.desktop.runtimeStatus?.images?.filter((image) => image.status !== "ready") || [];
+    state.notice = missing.length
+      ? `${missing.length} sandbox Worker image${missing.length === 1 ? " remains" : "s remain"} unavailable.`
+      : "Sandbox Worker images are ready.";
+  } catch (error) {
+    state.desktop.error = error.message || "Sandbox workers could not be prepared.";
+  } finally {
+    state.desktop.runtimeBusy = false;
     render();
   }
 }
@@ -8756,6 +9900,8 @@ function resetToNewTaskSurface() {
   state.selectedSessionId = null;
   state.workspaceDetail = null;
   state.planner.intent = "";
+  state.planner.templateId = "";
+  state.planner.templateLocked = false;
   state.planner.error = null;
   buildStudioLocationState();
 }
@@ -9072,6 +10218,64 @@ async function loadDesktopWorkspaceDirectory(relativePath = "") {
   }
 }
 
+async function openDesktopWorkspaceExternal(target, relativePath = "", editorId = "default", projectId = "") {
+  if (!desktopHost?.workspace?.openExternal) return;
+  state.ui.workspaceExternalMenu = null;
+  state.desktop.error = null;
+  render();
+  try {
+    if (projectId && state.desktop.workspace?.projectId !== projectId) {
+      await selectDesktopProject(projectId);
+    }
+    const workspace = state.desktop.workspace;
+    if (!workspace || projectId && workspace.projectId !== projectId) {
+      throw new Error("The selected Workspace is unavailable on this Desktop.");
+    }
+    await desktopHost.workspace.openExternal({
+      capabilityId: workspace.capabilityId,
+      target,
+      relativePath,
+      editorId,
+    });
+    state.notice = target === "terminal"
+      ? "Terminal opened at the selected Workspace folder."
+      : target === "explorer"
+        ? "Workspace folder opened in File Explorer."
+        : target === "open-with"
+          ? "Windows application picker opened for the selected file."
+          : `Opened the Workspace in ${editorId === "idea" ? "IntelliJ IDEA" : "VS Code"}.`;
+  } catch (error) {
+    state.desktop.error = error.message || "Could not open the Workspace externally.";
+  } finally {
+    render();
+  }
+}
+
+async function previewDesktopWorkspaceSite(relativePath, projectId = "") {
+  if (!desktopHost?.workspace?.preview) return;
+  state.ui.workspaceExternalMenu = null;
+  state.desktop.error = null;
+  render();
+  try {
+    if (projectId && state.desktop.workspace?.projectId !== projectId) {
+      await selectDesktopProject(projectId);
+    }
+    const workspace = state.desktop.workspace;
+    if (!workspace || projectId && workspace.projectId !== projectId) {
+      throw new Error("The Workspace containing this site is unavailable on this Desktop.");
+    }
+    await desktopHost.workspace.preview({
+      capabilityId: workspace.capabilityId,
+      relativePath,
+    });
+    state.notice = `Opened a restricted localhost preview for ${relativePath}.`;
+  } catch (error) {
+    state.desktop.error = error.message || "Could not open the Workspace preview.";
+  } finally {
+    render();
+  }
+}
+
 async function attachDesktopWorkspaceFile(relativePath) {
   const workspace = state.desktop.workspace;
   if (!desktopHost || !workspace || !state.selectedSessionId) return;
@@ -9202,6 +10406,7 @@ async function sendOrchestratorMessage() {
   }
   const requestId = globalThis.crypto?.randomUUID?.() || `conversation-${Date.now().toString(36)}`;
   let sessionId = state.selectedSessionId;
+  const selectedTemplateId = sessionId || !state.planner.templateLocked ? "" : state.planner.templateId.trim();
   let resumeLatestUser = false;
   let workspaceBound = false;
   state.planning = true;
@@ -9229,9 +10434,6 @@ async function sendOrchestratorMessage() {
         defer_conversation_reply: true,
         autonomy_mode: state.product.autonomyMode,
       };
-      if (state.orchestrator.selectedProfileId) {
-        payload.orchestrator_profile_id = state.orchestrator.selectedProfileId;
-      }
       const created = await request("/api/sessions", {
         method: "POST",
         body: JSON.stringify(payload),
@@ -9250,6 +10452,23 @@ async function sendOrchestratorMessage() {
           loadSessions(false),
           loadSessionWorkspace(sessionId, false),
         ]);
+        if (selectedTemplateId) {
+          const parsedInputs = parseJsonObject(state.planner.inputsText);
+          const proposalInputs = parsedInputs.ok ? parsedInputs.value : {};
+          const proposalResponse = await request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/dag-proposals`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                template_id: selectedTemplateId,
+                inputs: { ...proposalInputs, goal: content },
+              }),
+            },
+          );
+          applyDurableProposalToPlanner(proposalResponse.proposal || null);
+          state.notice = `Workflow ${selectedTemplateId} is ready for review.`;
+          state.planner.templateLocked = false;
+        }
         render();
       }
     }
@@ -9318,6 +10537,10 @@ async function resumeTaskCheckpoint() {
 }
 
 async function sendTaskGuidanceDirective(action) {
+  if (action === "start-task-work") {
+    await resumeLatestTaskInstruction();
+    return;
+  }
   const content = taskGuidanceDirective(action);
   const sessionId = state.selectedSessionId || getWorkspaceSessionId(state.workspaceDetail);
   if (!content || !sessionId) return;
@@ -9350,6 +10573,106 @@ async function sendTaskGuidanceDirective(action) {
     state.error = error.message || "My Mate could not advance the task.";
   } finally {
     state.planning = false;
+    render();
+  }
+}
+
+async function resolvePendingTaskAgentDagGate(sessionId) {
+  if (!sessionId) return false;
+  const listing = await request(`/api/agent-dags?session_id=${encodeURIComponent(sessionId)}`);
+  const dags = Array.isArray(listing?.items) ? listing.items : [];
+  const dag = dags
+    .filter((item) => item?.status === "waiting_human")
+    .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")))[0];
+  if (!dag?.dag_id) return false;
+
+  const detail = await request(`/api/agent-dags/${encodeURIComponent(dag.dag_id)}`);
+  const gate = (Array.isArray(detail?.gates) ? detail.gates : []).find((item) => item?.status === "pending");
+  if (!gate?.gate_id) return false;
+
+  const requiresWorkspaceWrite = (Array.isArray(detail?.tasks) ? detail.tasks : []).some((task) =>
+    task?.permission_ceiling?.workspace_write === true ||
+    (Array.isArray(task?.permission_ceiling?.allowed_tools) && task.permission_ceiling.allowed_tools.some((tool) =>
+      tool === "workspace_apply_operations" || tool === "workspace_run_command")),
+  );
+  if (requiresWorkspaceWrite) {
+    const binding = await ensureDesktopWorkspaceBinding(sessionId, "sandbox-write");
+    if (!binding) {
+      throw new Error("Select the Task's Desktop Workspace before starting this write-capable DAG.");
+    }
+  }
+
+  if (gate.gate_type === "input") {
+    state.error = "这个 DAG 节点需要额外输入，请到 Agent Activity 的 Human gate 中提交后再继续。";
+    return true;
+  }
+
+  await request(
+    `/api/agent-dags/${encodeURIComponent(dag.dag_id)}/gates/${encodeURIComponent(gate.gate_id)}/resolve`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        approved: true,
+        response: { source: "task_start_work", session_id: sessionId },
+      }),
+    },
+  );
+  state.notice = "已确认当前 DAG 节点，任务继续执行。";
+  return true;
+}
+
+async function resumeLatestTaskInstruction() {
+  const sessionId = state.selectedSessionId || getWorkspaceSessionId(state.workspaceDetail);
+  if (!sessionId) return;
+  state.planning = true;
+  state.planner.error = null;
+  state.error = null;
+  state.notice = null;
+  render();
+  try {
+    if (await resolvePendingTaskAgentDagGate(sessionId)) {
+      await Promise.all([
+        loadSessionWorkspace(sessionId, false),
+        loadMissions(false),
+        loadSessions(false),
+        loadInbox(false),
+      ]);
+      return;
+    }
+    const target = getTaskConversationTarget(state.workspaceDetail) || getSelectedConversationTarget(getConversationTargets());
+    if (!target) {
+      state.error = "Choose or verify a conversation model in Settings first.";
+      return;
+    }
+    const requestId = globalThis.crypto?.randomUUID?.() || `conversation-${Date.now().toString(36)}`;
+    state.conversationStream = {
+      requestId,
+      sessionId,
+      userText: "",
+      text: "",
+      providerConnectionId: target.connection.connection_id,
+      model: target.model,
+      toolProgress: [],
+    };
+    render();
+    await sendConversationSocketTurn(sessionId, {
+      request_id: requestId,
+      resume_latest_user: true,
+      provider_connection_id: target.connection.connection_id,
+      model: target.model,
+    });
+    await Promise.all([
+      loadSessionWorkspace(sessionId, false),
+      loadMissions(false),
+      loadSessions(false),
+      loadInbox(false),
+    ]);
+  } catch (error) {
+    if (error?.started) await loadSessionWorkspace(sessionId, false);
+    state.error = error.message || "My Mate could not start the latest task instruction.";
+  } finally {
+    state.planning = false;
+    state.conversationStream = null;
     render();
   }
 }
@@ -9473,9 +10796,17 @@ function getActiveSessionInventoryItems() {
 }
 
 function switchDesktopNav(nav) {
+  if (nav !== "agents") stopAgentDagDetailPolling();
   state.activeNav = nav;
+  if (nav === "templates") {
+    // The Workflow editor opens on an editable surface. Planning remains available as an explicit tab.
+    state.ui.workflowGeneratorOpen = false;
+    state.activeView = "template";
+  }
   if (TASK_NAV_IDS.has(nav)) state.ui.navigationTab = "task";
-  if (ADVANCED_NAV_IDS.has(nav)) state.ui.navigationTab = "advanced";
+  if (BUILD_NAV_IDS.has(nav)) state.ui.navigationTab = "build";
+  if (OPERATE_NAV_IDS.has(nav)) state.ui.navigationTab = "operate";
+  if (SYSTEM_NAV_IDS.has(nav)) state.ui.navigationTab = "system";
   state.error = null;
   if (nav === "dashboard" && !state.dashboardSummary && !state.dashboardLoading) {
     void loadDashboardSummary(false).then(() => render());
@@ -9483,22 +10814,62 @@ function switchDesktopNav(nav) {
   if (nav === "inbox" && !state.inbox.loading) {
     void loadInbox(false).then(() => render());
   }
+  if (nav === "scheduled" && !state.schedules.loading) {
+    void loadSchedules(false).then(() => render());
+  }
   if (nav === "memory" && !state.memory.retrievalStatus && !state.memoryLoading) {
     void loadMemoryStatus(false).then(() => render());
+  }
+  if (nav === "agents" && !state.registryLoading) {
+    void Promise.all([loadRegistry(false), refreshAgentOrchestration()]).then(() => render());
+  }
+  if (nav === "templates" && !state.loading && !state.templates.length) {
+    void loadTemplates(state.selectedId).then(() => render());
   }
   buildStudioLocationState();
   render();
 }
 
 function switchDesktopNavigationTab(tab) {
-  const nextTab = tab === "advanced" ? "advanced" : "task";
-  const currentTab = ADVANCED_NAV_IDS.has(state.activeNav) ? "advanced" : "task";
+  const nextTab = ["task", "build", "operate", "system"].includes(tab) ? tab : "task";
+  const currentTab = BUILD_NAV_IDS.has(state.activeNav)
+    ? "build"
+    : OPERATE_NAV_IDS.has(state.activeNav)
+      ? "operate"
+      : SYSTEM_NAV_IDS.has(state.activeNav)
+        ? "system"
+        : "task";
   state.ui.navigationTab = nextTab;
   if (nextTab === currentTab) {
     render();
     return;
   }
-  switchDesktopNav(nextTab === "advanced" ? "missions" : "orchestrator");
+  switchDesktopNav({ task: "orchestrator", build: "agents", operate: "dashboard", system: "settings" }[nextTab]);
+}
+
+async function retryControlPlane() {
+  if (state.controlPlane.checking) return;
+  state.controlPlane.checking = true;
+  state.controlPlane.lastError = "";
+  render();
+  try {
+    await Promise.all([
+      loadRegistry(false),
+      loadMissions(false),
+      loadSessions(false),
+    ]);
+    if (state.controlPlane.status === "connected") {
+      state.notice = "Control Plane connection restored.";
+    } else {
+      state.controlPlane.status = "disconnected";
+    }
+  } catch (error) {
+    state.controlPlane.status = "disconnected";
+    state.controlPlane.lastError = error.message || "Control Plane is still unavailable.";
+  } finally {
+    state.controlPlane.checking = false;
+    render();
+  }
 }
 
 function queueCommandPaletteFocus(mode = "end") {
@@ -9523,11 +10894,18 @@ function closeCommandPalette() {
 
 async function openSessionFromCommand(nav, sessionId, options = {}) {
   if (!sessionId) return;
+  const delegationDrawerWasOpen = Boolean(
+    state.ui.agentDelegationNodeId || document.querySelector("[data-agent-delegation-drawer]"),
+  );
+  state.ui.agentDelegationNodeId = "";
   prepareWorkspaceSessionChange(sessionId);
   state.activeNav = nav;
   state.selectedSessionId = sessionId;
   pendingSessionInventoryScroll = true;
   await loadSessionWorkspace(sessionId, true, options);
+  // Task switching normally uses the fast partial renderer. A global drawer must
+  // be removed by a full render so it cannot intercept the destination Task.
+  if (delegationDrawerWasOpen) render();
 }
 
 async function openWorkspaceFocusPanel(kind) {
@@ -9653,7 +11031,7 @@ function buildCommandPaletteItems() {
       group: "Navigate",
       title: "Go to Subagents",
       subtitle: "Hosted subagent bindings and runtime intent",
-      keywords: ["agent", "subagent", "profile", "openclaw"],
+      keywords: ["agent", "subagent", "workflow", "delegation"],
       run: async () => {
         state.activeNav = "agents";
         await loadRuntimeSummary(false);
@@ -9886,7 +11264,7 @@ function applyPendingWorkspaceFeedEntryHighlight() {
   window.setTimeout(() => {
     const target = document.querySelector(`[data-workspace-feed-entry-key="${key}"]`);
     if (!target) return;
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
     target.classList.add("workspace-focus-highlight");
     window.setTimeout(() => target.classList.remove("workspace-focus-highlight"), 1200);
   }, 0);
@@ -9900,10 +11278,30 @@ function applyPendingAuthoringGraphFocus() {
   window.setTimeout(() => {
     const target = document.querySelector(`[${attribute}="${focus.index}"]`);
     if (!target) return;
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
     target.classList.add("workspace-focus-highlight");
     window.setTimeout(() => target.classList.remove("workspace-focus-highlight"), 1200);
   }, 0);
+}
+
+function keepAuthoringGraphSelectionVisible() {
+  if (state.activeNav !== "templates" || state.activeView !== "dag") return;
+  const selection = state.ui.authoringGraphSelection;
+  if (selection?.type !== "node" && selection?.type !== "edge") return;
+  const attribute = selection.type === "edge" ? "data-authoring-edge-index" : "data-authoring-node-index";
+  const target = document.querySelector(`[${attribute}="${selection.index}"]`);
+  const canvas = target?.closest(".authoring-graph-canvas");
+  const inspector = document.querySelector(".workflow-canvas-inspector:not(.is-empty)");
+  if (!target || !canvas || !inspector) return;
+  const targetRect = target.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+  const inspectorRect = inspector.getBoundingClientRect();
+  const visibleLeft = canvasRect.left + 24;
+  const visibleRight = Math.min(canvasRect.right - 24, inspectorRect.left - 32);
+  if (targetRect.right > visibleRight) {
+    canvas.scrollLeft += targetRect.right - visibleRight;
+  } else if (targetRect.left < visibleLeft) {
+    canvas.scrollLeft = Math.max(0, canvas.scrollLeft - (visibleLeft - targetRect.left));
+  }
 }
 
 function applyPendingSessionInventoryScroll() {
@@ -9941,53 +11339,19 @@ function afterRender() {
   applyPendingWorkspaceFocus();
   applyPendingWorkspaceFeedEntryHighlight();
   applyPendingAuthoringGraphFocus();
+  keepAuthoringGraphSelectionVisible();
   applyPendingSessionInventoryScroll();
   applyPendingRuntimeNodeFocus();
+  if (state.ui.dialog) {
+    window.requestAnimationFrame(() => {
+      const input = document.querySelector("[data-dialog-input]");
+      const target = input || document.querySelector("[data-dialog-autofocus]");
+      target?.focus?.({ preventScroll: true });
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    });
+  }
   void hydrateArtifactMermaidDiagrams();
 }
-
-async function saveOrchestratorProfile() {
-  const name = state.orchestrator.name.trim();
-  if (!name) {
-    state.error = "Orchestrator profile name is required.";
-    state.notice = null;
-    render();
-    return;
-  }
-
-  state.orchestratorProfilesLoading = true;
-  state.error = null;
-  state.notice = null;
-  render();
-  try {
-    const saved = await request("/api/orchestrator-profiles", {
-      method: "POST",
-      body: JSON.stringify({
-        orchestrator_id: state.orchestrator.selectedProfileId || undefined,
-        name,
-        provider: state.orchestrator.provider.trim(),
-        model: state.orchestrator.model.trim(),
-        system_prompt: state.orchestrator.systemPrompt.trim(),
-        default_tools: parseCsv(state.orchestrator.defaultToolsText),
-        default_subagent_profile_ids: parseCsv(state.orchestrator.defaultSubagentsText),
-        planning_policy: {},
-        handoff_policy: {},
-        metadata: {
-          source: "studio-v2",
-        },
-      }),
-    });
-    applyOrchestratorProfile(saved);
-    state.notice = `Saved orchestrator profile ${saved.orchestrator_id}`;
-    await loadOrchestratorProfiles(false);
-  } catch (error) {
-    state.error = error.message || "Failed to save orchestrator profile.";
-  } finally {
-    state.orchestratorProfilesLoading = false;
-    render();
-  }
-}
-
 async function saveGovernancePolicy() {
   const policy = state.governance.policy;
   if (!policy) return;
@@ -10078,45 +11442,6 @@ async function decideStudioGovernanceChange(changeId, decision) {
   }
 }
 
-async function saveAgentProfile() {
-  const draft = buildAgentProfilePayload();
-  if (!draft.ok) {
-    state.error = draft.message;
-    state.notice = null;
-    render();
-    return;
-  }
-  const governedProfileId = draft.payload.profile_id || slugify(draft.payload.name);
-  if (isGovernedAction("agent_profile.upsert")) {
-    stageGovernanceProposal(
-      "agent_profile.upsert",
-      governedProfileId,
-      draft.payload,
-      `Create or update agent profile ${governedProfileId}`,
-    );
-    return;
-  }
-
-  state.registrySaving = true;
-  state.error = null;
-  state.notice = null;
-  render();
-  try {
-    const saved = await request("/api/registry/agent-profiles", {
-      method: "POST",
-      body: JSON.stringify(draft.payload),
-    });
-    state.notice = `Saved agent profile ${saved.profile_id}`;
-    state.registryEditor.profile = editorFromAgentProfile(saved);
-    await Promise.all([loadRegistry(false), loadRuntimeSummary(false)]);
-  } catch (error) {
-    state.error = error.message || "Failed to save agent profile.";
-  } finally {
-    state.registrySaving = false;
-    render();
-  }
-}
-
 async function saveProviderConnection() {
   const draft = buildProviderConnectionPayload();
   if (!draft.ok) {
@@ -10138,13 +11463,6 @@ async function saveProviderConnection() {
     state.notice = `Saved Provider Connection ${saved.connection_id}`;
     state.registryEditor.connection = editorFromProviderConnection(saved);
     await loadRegistry(false);
-    if (state.registryEditor.profile.mode === "new" && !state.registryEditor.profile.providerConnectionId) {
-      updateAgentProfileEditor({
-        agentRuntime: saved.agent_runtime,
-        providerConnectionId: saved.connection_id,
-        openclawProvider: saved.provider,
-      });
-    }
     state.ui.providerConnectionModalOpen = false;
   } catch (error) {
     state.error = error.message || "Failed to save Provider Connection.";
@@ -10326,27 +11644,17 @@ async function saveSetupModel() {
       method: "POST",
       body: JSON.stringify(draft.payload),
     });
-    const currentDefault = state.agentProfiles.find((profile) => profile.profile_id === "default-agent");
-    await request("/api/registry/agent-profiles", {
+    const currentDefault = state.agentDefinitions.find((agent) => agent.agent_id === "default-agent");
+    await request("/api/agents", {
       method: "POST",
       body: JSON.stringify({
-        profile_id: "default-agent",
+        agent_id: "default-agent",
         name: currentDefault?.name || "Default Agent",
-        description: currentDefault?.description || "Default task execution profile",
-        agent_runtime: saved.agent_runtime,
-        harness_profile: currentDefault?.harness_profile || "agent-harness-v1",
-        provider_connection_id: saved.connection_id,
-        runtime_agent_ref: currentDefault?.agent_runtime === saved.agent_runtime ? currentDefault?.runtime_agent_ref || "" : "",
-        openclaw_agent_id: currentDefault?.agent_runtime === saved.agent_runtime ? currentDefault?.openclaw_agent_id || "" : "",
-        default_skills: currentDefault?.default_skills || [],
-        allowed_tools: currentDefault?.allowed_tools || [],
-        disallowed_skills: currentDefault?.disallowed_skills || [],
-        policy_tags: currentDefault?.policy_tags || [],
-        status: "active",
-        metadata: {
-          ...(currentDefault?.metadata || {}),
-          setup_managed: true,
-          product_autonomy_mode: state.product.autonomyMode,
+        description: currentDefault?.description || "Default task execution Agent",
+        version: {
+          model_policy: { provider_connection_id: saved.connection_id },
+          autonomy_ceiling: state.product.autonomyMode,
+          metadata: { setup_managed: true },
         },
       }),
     });
@@ -10418,46 +11726,6 @@ async function disableProviderConnection() {
     state.ui.providerConnectionModalOpen = false;
   } catch (error) {
     state.error = error.message || "Failed to disable Provider Connection.";
-  } finally {
-    state.registryDisabling = false;
-    render();
-  }
-}
-
-async function disableAgentProfile() {
-  const profileId = state.registryEditor.profile.profileId.trim();
-  if (!profileId) {
-    state.error = "Select a saved agent profile before disabling.";
-    render();
-    return;
-  }
-  if (isGovernedAction("agent_profile.disable")) {
-    stageGovernanceProposal(
-      "agent_profile.disable",
-      profileId,
-      {},
-      `Disable agent profile ${profileId}`,
-    );
-    return;
-  }
-
-  state.registryDisabling = true;
-  state.error = null;
-  state.notice = null;
-  render();
-  try {
-    const disabled = await request(
-      `/api/registry/agent-profiles/${encodeURIComponent(profileId)}/disable`,
-      {
-        method: "POST",
-        body: JSON.stringify({}),
-      },
-    );
-    state.notice = `Disabled agent profile ${disabled.profile_id}`;
-    state.registryEditor.profile = editorFromAgentProfile(disabled);
-    await Promise.all([loadRegistry(false), loadRuntimeSummary(false)]);
-  } catch (error) {
-    state.error = error.message || "Failed to disable agent profile.";
   } finally {
     state.registryDisabling = false;
     render();
@@ -10566,7 +11834,6 @@ async function planFromIntent() {
       method: "POST",
       body: JSON.stringify({
         intent: state.planner.intent.trim(),
-        ...buildPlannerInvocationPayload(),
       }),
     });
     state.planner.recommendation = recommendation;
@@ -10609,7 +11876,6 @@ async function refreshCandidatePlan(shouldRender = true) {
         intent: state.planner.intent.trim(),
         template_id: state.planner.templateId.trim(),
         inputs: parsedInputs.value,
-        ...buildPlannerInvocationPayload(),
       }),
     });
     state.planner.candidatePlan = candidatePlan;
@@ -10651,14 +11917,20 @@ async function generateDagDraft(shouldRender = true) {
   state.notice = null;
   if (shouldRender) render();
   try {
+    const plannerInputs = {
+      ...parsedInputs.value,
+      goal:
+        typeof parsedInputs.value.goal === "string" && parsedInputs.value.goal.trim()
+          ? parsedInputs.value.goal
+          : state.planner.intent.trim(),
+    };
     const dagDraft = await request("/api/planner/dag-draft", {
       method: "POST",
       body: JSON.stringify({
         intent: state.planner.intent.trim(),
         template_id: state.planner.templateId.trim() || undefined,
-        inputs: parsedInputs.value,
+        inputs: plannerInputs,
         max_agent_nodes: maxAgentNodes,
-        ...buildPlannerInvocationPayload(),
       }),
     });
     state.planner.dagDraft = dagDraft;
@@ -10702,9 +11974,11 @@ function buildDurableProposalAssignments() {
     return {
       node_id: draft.id,
       node_name: draft.name || null,
-      subagent_profile_id: draft.agentProfile.trim() || null,
-      provider: draft.provider.trim() || null,
-      model: draft.model.trim() || null,
+      agent_id: draft.agentId.trim() || null,
+      // Provider and model are pinned by the published Agent version. Proposal
+      // assignment selects a role owner, not a second independent model route.
+      provider: null,
+      model: null,
       allowed_tools: parseCsv(draft.toolsText),
       allowed_skills: parseCsv(draft.skillsText),
       input_context: draft.contextText.trim() || null,
@@ -10797,9 +12071,9 @@ async function saveDurableProposalAssignments() {
   }
 }
 
-async function confirmDurableProposal() {
+async function confirmDurableProposal(proposalIdOverride = "") {
   const sessionId = getActiveProposalSessionId();
-  const proposalId = getActiveProposalId();
+  const proposalId = proposalIdOverride || getActiveProposalId();
   if (!sessionId || !proposalId) {
     state.planner.error = "Load a durable DAG proposal before confirming it.";
     render();
@@ -10824,13 +12098,21 @@ async function confirmDurableProposal() {
       `/api/sessions/${encodeURIComponent(sessionId)}/dag-proposals/${encodeURIComponent(proposalId)}/confirm`,
       {
         method: "POST",
-        body: JSON.stringify({ confirmed_by: "studio-operator" }),
+        body: JSON.stringify({ confirmed_by: "studio-operator", start: true }),
       },
     );
     state.planner.confirmedProposalId = response.session?.confirmed_proposal_id || proposalId;
     applyDurableProposalToPlanner(response.proposal || null);
-    state.notice = `Confirmed proposal ${proposalId}.`;
-    await Promise.all([loadMissions(false), loadSessions(false), loadSessionWorkspace(sessionId, false)]);
+    const compiledDagId = response.agent_dag?.dag_id || response.proposal?.compiled_agent_dag_id || "";
+    state.notice = compiledDagId
+      ? `Confirmed proposal ${proposalId}. Agent DAG ${compiledDagId} is starting.`
+      : `Confirmed proposal ${proposalId}.`;
+    await Promise.all([
+      loadMissions(false),
+      loadSessions(false),
+      loadSessionWorkspace(sessionId, false),
+      refreshAgentOrchestration(compiledDagId),
+    ]);
   } catch (error) {
     state.planner.error = error.message || "Failed to confirm DAG proposal.";
   } finally {
@@ -10861,10 +12143,16 @@ async function launchConfirmedProposalRun() {
         validation_mode: "warn",
       }),
     });
-    state.notice = response.run_id
-      ? `Launched run ${response.run_id} from proposal ${proposalId}.`
-      : `Launched run from proposal ${proposalId}.`;
-    await Promise.all([loadMissions(false), loadSessions(false), loadSessionWorkspace(sessionId, false)]);
+    const agentDagId = response.agent_dag_id || response.agent_dag?.dag_id || "";
+    state.notice = agentDagId
+      ? `${response.already_running ? "Agent DAG is already running" : "Started Agent DAG"} ${agentDagId}.`
+      : `Started execution from proposal ${proposalId}.`;
+    await Promise.all([
+      loadMissions(false),
+      loadSessions(false),
+      loadSessionWorkspace(sessionId, false),
+      agentDagId ? refreshAgentOrchestration(agentDagId) : Promise.resolve(),
+    ]);
   } catch (error) {
     state.planner.error = error.message || "Failed to launch proposal run.";
   } finally {
@@ -10881,11 +12169,11 @@ async function applyCandidatePlanToDraft() {
   }
 
   if (
-    !confirmPlannerAdoption({
+    !(await confirmPlannerAdoption({
       strategy: "candidate_run_preview",
       warningCount: state.planner.candidatePlan.validation?.warnings?.length || 0,
       targetLabel: "Copy preview into an editable draft.",
-    })
+    }))
   ) {
     return;
   }
@@ -10905,6 +12193,9 @@ async function applyCandidatePlanToDraft() {
     state.editor = applyProposalOverridesToEditor(
       editorFromCandidatePlan(state.planner.candidatePlan, sourceTemplate),
     );
+    state.ui.workflowGeneratorOpen = false;
+    state.activeView = "dag";
+    state.ui.authoringGraphSelection = state.editor.nodes.length ? { type: "node", index: 0 } : { type: "none", index: null };
     state.notice = "Planner preview copied into an unsaved draft.";
   } catch (error) {
     state.error = error.message || "Failed to copy planner preview.";
@@ -10922,11 +12213,11 @@ async function applyDagDraftToEditor() {
   }
 
   if (
-    !confirmPlannerAdoption({
+    !(await confirmPlannerAdoption({
       strategy: state.planner.dagDraft.planner_context?.draft_strategy || "dag_draft",
       warningCount: state.planner.dagDraft.validation?.warnings?.length || 0,
       targetLabel: "Copy DAG draft into the editor for human review.",
-    })
+    }))
   ) {
     return;
   }
@@ -10939,6 +12230,9 @@ async function applyDagDraftToEditor() {
     state.selectedId = null;
     resetAuthoringGraphSelection();
     state.editor = applyProposalOverridesToEditor(editorFromDagDraft(state.planner.dagDraft));
+    state.ui.workflowGeneratorOpen = false;
+    state.activeView = "dag";
+    state.ui.authoringGraphSelection = state.editor.nodes.length ? { type: "node", index: 0 } : { type: "none", index: null };
     state.notice = "Planner DAG draft copied into the editor for confirmation.";
   } catch (error) {
     state.error = error.message || "Failed to copy DAG draft.";
@@ -10956,11 +12250,11 @@ async function saveDagDraftAsTemplate() {
   }
 
   if (
-    !confirmPlannerAdoption({
+    !(await confirmPlannerAdoption({
       strategy: state.planner.dagDraft.planner_context?.draft_strategy || "dag_draft",
       warningCount: state.planner.dagDraft.validation?.warnings?.length || 0,
       targetLabel: "Save this planner DAG draft as a template draft.",
-    })
+    }))
   ) {
     return;
   }
@@ -10980,6 +12274,8 @@ async function saveDagDraftAsTemplate() {
     const saved = await createDraftTemplate(draftEditor, `${preferredId}-${suffix}`);
     state.notice = `Saved planner DAG draft ${saved.template_id}`;
     await loadTemplates(saved.template_id);
+    state.ui.workflowGeneratorOpen = false;
+    state.activeView = "template";
   } catch (error) {
     state.error = error.message || "Failed to save DAG draft.";
   } finally {
@@ -10996,11 +12292,11 @@ async function saveCandidatePlanAsDraft() {
   }
 
   if (
-    !confirmPlannerAdoption({
+    !(await confirmPlannerAdoption({
       strategy: "candidate_run_preview",
       warningCount: state.planner.candidatePlan.validation?.warnings?.length || 0,
       targetLabel: "Save this planner preview as a template draft.",
-    })
+    }))
   ) {
     return;
   }
@@ -11108,18 +12404,56 @@ function setAuthoringNodePosition(nodeId, position) {
   });
 }
 
+function setAuthoringGraphZoom(requestedZoom) {
+  const next = requestedZoom === "reset"
+    ? 1
+    : Math.max(0.5, Math.min(1.75, Math.round((Number(requestedZoom) || 1) * 20) / 20));
+  if (next === state.ui.authoringGraphZoom) return;
+  state.ui.authoringGraphZoom = next;
+  render();
+}
+
+function setAuthoringGraphPan(pan) {
+  state.ui.authoringGraphPan = {
+    x: Math.round(Number(pan?.x) || 0),
+    y: Math.round(Number(pan?.y) || 0),
+  };
+}
+
+function resetAuthoringGraphView() {
+  state.ui.authoringGraphZoom = 1;
+  state.ui.authoringGraphPan = { x: 0, y: 0 };
+  render();
+}
+
+function fitAuthoringGraphView() {
+  const canvas = document.querySelector(".authoring-graph-canvas");
+  const model = buildAuthoringGraphModel();
+  if (!canvas || !model.nodes.length) {
+    resetAuthoringGraphView();
+    return;
+  }
+  const availableWidth = Math.max(320, canvas.clientWidth - 56);
+  const availableHeight = Math.max(240, canvas.clientHeight - 56);
+  const contentWidth = Math.max(320, model.width);
+  const contentHeight = Math.max(240, model.height);
+  state.ui.authoringGraphZoom = Math.max(
+    0.5,
+    Math.min(1.25, Math.floor(Math.min(availableWidth / contentWidth, availableHeight / contentHeight) * 20) / 20),
+  );
+  state.ui.authoringGraphPan = { x: 20, y: 20 };
+  render();
+}
+
 resetAuthoringEditorState();
 
 function handleAuthoringPortOut(index) {
   const node = state.editor.nodes[index];
   if (!node) return;
-  const selection = state.ui.authoringGraphSelection;
-  if (selection?.type === "edge" && state.editor.edges[selection.index]) {
-    updateEdge(selection.index, { from: node.id, from_port: "success" });
-    return;
-  }
   authoringGraphConnection = { sourceIndex: index, sourcePort: "success" };
-  selectAuthoringGraphItem("node", index);
+  state.ui.authoringGraphSelection = null;
+  pendingAuthoringGraphFocus = null;
+  render();
 }
 
 function handleAuthoringPortIn(index) {
@@ -11138,7 +12472,8 @@ function handleAuthoringPortIn(index) {
         label: null,
       }];
       recordAuthoringMutation();
-      state.ui.authoringGraphSelection = { type: "edge", index: state.editor.edges.length - 1 };
+      state.ui.authoringGraphSelection = { type: "node", index };
+      pendingAuthoringGraphFocus = { type: "node", index };
     }
     authoringGraphConnection = null;
     render();
@@ -11152,11 +12487,8 @@ function handleAuthoringPortIn(index) {
 function deleteAuthoringSelection() {
   const selection = state.ui.authoringGraphSelection;
   if (selection?.type === "node") removeNode(selection.index);
+  if (selection?.type === "nodes") removeNodes(selection.indexes || []);
   if (selection?.type === "edge") removeEdge(selection.index);
-}
-
-function updateAgentProfileEditor(patch) {
-  state.registryEditor.profile = { ...state.registryEditor.profile, ...patch };
 }
 
 function updateProviderConnectionEditor(patch) {
@@ -11175,17 +12507,57 @@ function updateNode(index, patch) {
   render();
 }
 
-function removeNode(index) {
-  const node = state.editor.nodes[index];
-  state.editor.nodes = state.editor.nodes.filter((_, nodeIndex) => nodeIndex !== index);
-  state.editor.edges = state.editor.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id);
+function removeNodes(indexes) {
+  const normalized = [...new Set(indexes.map(Number).filter((index) => Number.isInteger(index) && state.editor.nodes[index]))];
+  if (!normalized.length) return;
+  const removedIds = new Set(normalized.map((index) => state.editor.nodes[index].id));
+  state.editor.nodes = state.editor.nodes.filter((_, nodeIndex) => !normalized.includes(nodeIndex));
+  state.editor.edges = state.editor.edges.filter((edge) => !removedIds.has(edge.from) && !removedIds.has(edge.to));
+  const parsed = parseJsonObject(state.editor.metadataText || "{}");
+  if (parsed.ok && parsed.value.authoring_layout?.positions) {
+    const positions = { ...parsed.value.authoring_layout.positions };
+    for (const nodeId of removedIds) delete positions[nodeId];
+    state.editor.metadataText = prettyJson({
+      ...parsed.value,
+      authoring_layout: { ...parsed.value.authoring_layout, positions },
+    });
+  }
   state.ui.authoringGraphSelection = { type: "none", index: null };
   recordAuthoringMutation();
   render();
 }
 
-function addNode() {
-  state.editor.nodes = [...state.editor.nodes, emptyNode(state.editor.nodes.length + 1)];
+function removeNode(index) {
+  removeNodes([index]);
+}
+
+function addNode(type = "agent_task", position = null) {
+  const nextIndex = state.editor.nodes.length;
+  const node = { ...emptyNode(nextIndex + 1), type };
+  if (type === "condition") {
+    node.name = "Condition";
+    node.agent_id = null;
+    node.allowed_skills = [];
+    node.config = { condition: { path: "result.ok", operator: "truthy" } };
+  } else if (type === "fanout") {
+    node.name = "Loop";
+    node.agent_id = null;
+    node.allowed_skills = [];
+    node.config = { loop: { items_path: "items", item_key: "item", max_iterations: 10, concurrency: 1 } };
+  } else if (type === "approval") {
+    node.name = "Approval";
+    node.agent_id = null;
+    node.allowed_skills = [];
+    node.approval_kind = "human_review";
+  } else if (type === "reducer" || type === "end") {
+    node.agent_id = null;
+    node.allowed_skills = [];
+  }
+  state.editor.nodes = [...state.editor.nodes, node];
+  if (position) setAuthoringNodePosition(node.id, position);
+  state.ui.authoringGraphSelection = { type: "node", index: nextIndex };
+  pendingAuthoringGraphFocus = { type: "node", index: nextIndex };
+  state.ui.authoringNodeMenuOpen = false;
   recordAuthoringMutation();
   render();
 }
@@ -11240,17 +12612,22 @@ function resetAuthoringGraphSelection() {
 }
 
 function renderTemplateList() {
-  return state.templates
+  return groupWorkflowFamilies(state.templates)
     .map(
-      (template) => `
-        <button class="template-item ${template.template_id === state.selectedId ? "selected" : ""}" data-action="select-template" data-id="${escapeHtml(template.template_id)}">
-          <span class="status-dot ${statusTone(template.status)}"></span>
+      (family) => {
+        const template = family.displayTemplate;
+        const selected = family.items.some((item) => item.template_id === state.selectedId);
+        const label = workflowDisplayStatus(family);
+        return `
+        <button class="template-item ${selected ? "selected" : ""}" data-action="select-template" data-id="${escapeHtml(template.template_id)}">
+          <span class="status-dot ${statusTone(family.draft ? "draft" : template.status)}"></span>
           <span>
             <strong>${escapeHtml(template.name)}</strong>
-            <small>${escapeHtml(template.template_id)}</small>
+            <small>${escapeHtml(label)}</small>
           </span>
         </button>
-      `,
+      `;
+      },
     )
     .join("");
 }
@@ -11342,28 +12719,42 @@ function renderSessionList() {
 }
 
 function renderDesktopNav() {
-  const primaryItems = [
-    { id: "orchestrator", label: "Tasks" },
-    { id: "inbox", label: "Inbox", count: getInboxOpenCount() },
-    { id: "library", label: "Library" },
-    { id: "settings", label: "Settings" },
-  ];
-  const advancedItems = [
-    { id: "missions", label: "Mission workspace" },
+  const taskItems = [
+    { id: "orchestrator", label: "Mission Workspace" },
+    { id: "missions", label: "Missions" },
     { id: "sessions", label: "Sessions" },
+    { id: "scheduled", label: "Scheduled", count: state.schedules.items.filter((schedule) => schedule.enabled).length },
+    { id: "inbox", label: "Inbox", count: getInboxOpenCount() },
+  ];
+  const buildItems = [
+    { id: "agents", label: "Agents", count: state.agentOrchestration.dags.filter((dag) => dag.status === "running" || dag.status === "waiting_human").length },
+    { id: "library", label: "Workflow library" },
+    { id: "templates", label: "Workflow editor" },
+  ];
+  const operateItems = [
     { id: "dashboard", label: "Runtime dashboard" },
     { id: "memory", label: "Memory" },
-    { id: "agents", label: "Subagents" },
-    { id: "templates", label: "Workflow editor" },
-    { id: "registry", label: "Registry" },
+  ];
+  const systemItems = [
+    { id: "settings", label: "Settings" },
+    { id: "registry", label: "Provider & Skills" },
     { id: "operations", label: "System details" },
   ];
-  const activeTab = ADVANCED_NAV_IDS.has(state.activeNav)
-    ? "advanced"
-    : TASK_NAV_IDS.has(state.activeNav)
-      ? "task"
-      : state.ui.navigationTab;
-  const visibleItems = activeTab === "advanced" ? advancedItems : primaryItems;
+  const activeTab = BUILD_NAV_IDS.has(state.activeNav)
+    ? "build"
+    : OPERATE_NAV_IDS.has(state.activeNav)
+      ? "operate"
+      : SYSTEM_NAV_IDS.has(state.activeNav)
+        ? "system"
+        : TASK_NAV_IDS.has(state.activeNav)
+          ? "task"
+          : state.ui.navigationTab === "admin" ? "system" : state.ui.navigationTab;
+  const visibleItems = {
+    task: taskItems,
+    build: buildItems,
+    operate: operateItems,
+    system: systemItems,
+  }[activeTab] || taskItems;
   const renderItems = (items) => items.map((item) => `
     <button class="desktop-nav-item ${state.activeNav === item.id ? "selected" : ""}" data-action="switch-nav" data-nav="${item.id}">
       <strong>${item.label}</strong>
@@ -11372,35 +12763,17 @@ function renderDesktopNav() {
   `).join("");
   return `
     <nav class="desktop-nav" aria-label="Main navigation">
-      <div class="desktop-nav-tabs" role="tablist" aria-label="Task Workspace navigation">
-        <button class="desktop-nav-tab ${activeTab === "task" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "task"}" data-action="switch-navigation-tab" data-tab="task">Task</button>
-        <button class="desktop-nav-tab ${activeTab === "advanced" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "advanced"}" data-action="switch-navigation-tab" data-tab="advanced">Advanced</button>
+      <div class="desktop-nav-tabs" role="tablist" aria-label="Studio navigation">
+        <button id="nav-tab-task" class="desktop-nav-tab ${activeTab === "task" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "task"}" aria-controls="nav-panel-task" data-action="switch-navigation-tab" data-tab="task">Tasks</button>
+        <button id="nav-tab-build" class="desktop-nav-tab ${activeTab === "build" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "build"}" aria-controls="nav-panel-build" data-action="switch-navigation-tab" data-tab="build">Build</button>
+        <button id="nav-tab-operate" class="desktop-nav-tab ${activeTab === "operate" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "operate"}" aria-controls="nav-panel-operate" data-action="switch-navigation-tab" data-tab="operate">Operate</button>
+        <button id="nav-tab-system" class="desktop-nav-tab ${activeTab === "system" ? "selected" : ""}" type="button" role="tab" aria-selected="${activeTab === "system"}" aria-controls="nav-panel-system" data-action="switch-navigation-tab" data-tab="system">System</button>
       </div>
-      <div class="desktop-nav-bookmark-panel ${activeTab}" role="tabpanel" aria-label="${activeTab === "advanced" ? "Advanced" : "Task"} navigation">
+      <div id="nav-panel-${activeTab}" class="desktop-nav-bookmark-panel ${activeTab}" role="tabpanel" aria-labelledby="nav-tab-${activeTab}" aria-label="${activeTab[0].toUpperCase()}${activeTab.slice(1)} navigation">
         ${renderItems(visibleItems)}
       </div>
     </nav>
   `;
-}
-
-function renderAgentHostingSidebarList() {
-  const hostedProfiles = state.runtimeSummary?.agent_hosting?.profiles || [];
-  if (!hostedProfiles.length) {
-    return '<p class="sidebar-muted">No hosted agents yet.</p>';
-  }
-  return hostedProfiles
-    .map(
-      (profile) => `
-        <button class="template-item ${profile.profile_id === state.registryEditor.profile.profileId ? "selected" : ""}" data-action="edit-agent-profile-from-hosting" data-id="${escapeHtml(profile.profile_id)}">
-          <span class="status-dot ${profile.health?.status === "ready" ? "success" : profile.health?.status === "disabled" ? "neutral" : "warn"}"></span>
-          <span>
-            <strong>${escapeHtml(profile.profile_id)}</strong>
-            <small>${escapeHtml(profile.model || runtimeAgentRefOf(profile) || profile.health?.status || "unbound")}</small>
-          </span>
-        </button>
-      `,
-    )
-    .join("");
 }
 
 function dashboardToneBadgeClass(tone) {
@@ -12288,7 +13661,7 @@ function renderDesktopRail() {
 }
 
 function renderRegistryPanel() {
-  const activeProfiles = state.agentProfiles.filter((profile) => profile.status === "active");
+  const activeAgents = state.agentDefinitions.filter((agent) => agent.status === "active");
   const activeSkills = state.skills.filter((skill) => skill.status === "active");
 
   return `
@@ -12298,19 +13671,19 @@ function renderRegistryPanel() {
         <button class="mini-button" data-action="refresh-registry">${state.registryLoading ? "..." : "Ref"}</button>
       </div>
       ${
-        activeProfiles.length
-          ? activeProfiles
+        activeAgents.length
+          ? activeAgents
               .slice(0, 6)
               .map(
-                (profile) => `
+                (agent) => `
                   <div class="registry-item">
-                    <strong>${escapeHtml(profile.profile_id)}</strong>
-                    <small>${escapeHtml(runtimeAgentRefOf(profile) || profile.provider_connection_id || "unbound")} / ${escapeHtml((profile.default_skills || []).join(", ") || "no-skills")}</small>
+                    <strong>${escapeHtml(agent.name || agent.agent_id)}</strong>
+                    <small>${escapeHtml(`${agent.agent_id}@${agent.published_version || agent.latest_version}`)}</small>
                   </div>
                 `,
               )
               .join("")
-          : '<p class="sidebar-muted">No active profiles.</p>'
+          : '<p class="sidebar-muted">No active Agents.</p>'
       }
       <div class="sidebar-panel-header slim"><strong>Skills</strong><span>${activeSkills.length}</span></div>
       <div class="skill-chip-list">
@@ -12334,7 +13707,7 @@ function renderLineagePanel(readOnly) {
   return `
     <section class="panel lineage-panel">
       <div class="panel-header">
-        <div><h3>Template Lineage</h3><p>${escapeHtml(state.lineage.family_id)} / ${state.lineage.items.length} item(s)</p></div>
+        <div><h3>Version history</h3><p>Previous releases stay available for audit and running tasks.</p></div>
       </div>
       <div class="lineage-list">
         ${state.lineage.items
@@ -12351,111 +13724,10 @@ function renderLineagePanel(readOnly) {
       </div>
       <div class="lineage-actions">
         <button class="secondary" data-action="derive-template" ${state.deriving || !state.editor.templateId || state.editor.status === "archived" ? "disabled" : ""}>${state.deriving ? "Deriving..." : "Derive variant"}</button>
-        <button class="secondary" data-action="new-template-version" ${state.versioning || state.editor.status !== "published" ? "disabled" : ""}>${state.versioning ? "Creating..." : "New version"}</button>
+        <button class="secondary" data-action="edit-workflow" ${state.versioning || state.editor.status !== "published" ? "disabled" : ""}>${state.versioning ? "Opening..." : "Edit workflow"}</button>
         <button class="secondary danger-action" data-action="archive-template" ${state.archiving || !state.editor.templateId || state.editor.status === "archived" || readOnly && state.editor.status !== "published" ? "disabled" : ""}>${state.archiving ? "Archiving..." : "Archive"}</button>
       </div>
     </section>
-  `;
-}
-
-function renderAgentProfileManager() {
-  const editor = state.registryEditor.profile;
-  const selectedId = editor.profileId;
-  const compatibleConnections = state.providerConnections.filter(
-    (connection) => connection.status === "active" || connection.connection_id === editor.providerConnectionId,
-  );
-  const selectedConnection = state.providerConnections.find(
-    (connection) => connection.connection_id === editor.providerConnectionId,
-  );
-  const modelLabel = editor.agentRuntime === "openclaw" ? "Agent ID" : "Model override";
-  const modelPlaceholder = selectedConnection?.default_model || PROVIDER_DEFAULTS[editor.agentRuntime]?.modelPlaceholder || "Optional";
-  return `
-    <div class="registry-manager-column">
-      <div class="registry-manager-header">
-        <div>
-          <h4>Agent Profiles</h4>
-          <p>${state.agentProfiles.length} profile(s)</p>
-        </div>
-        <button class="mini-button" data-action="new-agent-profile">New</button>
-      </div>
-      <div class="registry-record-list">
-        ${
-          state.agentProfiles.length
-            ? state.agentProfiles
-                .map(
-                  (profile) => `
-                    <button class="registry-record ${profile.profile_id === selectedId ? "selected" : ""}" data-action="edit-agent-profile" data-id="${escapeHtml(profile.profile_id)}">
-                      <span>
-                        <strong>${escapeHtml(profile.profile_id)}</strong>
-                        <small>${escapeHtml(providerRuntimeLabel(profile.agent_runtime || "openclaw"))} / ${escapeHtml(profile.provider_connection_id || "no connection")}</small>
-                      </span>
-                      <span class="badge ${profile.status === "active" ? "success" : "neutral"}">${escapeHtml(profile.status)}</span>
-                    </button>
-                  `,
-                )
-                .join("")
-            : '<p class="muted">No agent profiles yet.</p>'
-        }
-      </div>
-      <div class="registry-form">
-        <div class="registry-form-title">
-          <strong>${editor.mode === "edit" ? "Edit profile" : "New profile"}</strong>
-          <span>${escapeHtml(providerRuntimeLabel(editor.agentRuntime))}</span>
-        </div>
-        <div class="form-grid compact registry-primary-fields">
-          <label class="span-2">Profile name<input value="${escapeHtml(editor.name)}" data-field="agent.name" placeholder="Research agent" /></label>
-          <label class="span-2">Provider Connection
-            <select data-field="agent.providerConnectionId">
-              <option value="">No connection</option>
-              ${compatibleConnections.map((connection) => `<option value="${escapeHtml(connection.connection_id)}" ${editor.providerConnectionId === connection.connection_id ? "selected" : ""} ${connection.status !== "active" ? "disabled" : ""}>${escapeHtml(connection.name)}${connection.default_model ? ` / ${escapeHtml(connection.default_model)}` : ""}${connection.status !== "active" ? " (disabled)" : ""}</option>`).join("")}
-            </select>
-          </label>
-          <label class="span-2">${modelLabel}
-            ${editor.agentRuntime !== "openclaw" && selectedConnection?.models?.length
-              ? `<select data-field="agent.openclawAgentId">
-                  <option value="">Connection default / ${escapeHtml(selectedConnection.default_model || "runtime default")}</option>
-                  ${selectedConnection.models.map((model) => `<option value="${escapeHtml(model)}" ${editor.openclawAgentId === model ? "selected" : ""}>${escapeHtml(model)}</option>`).join("")}
-                </select>`
-              : `<input value="${escapeHtml(editor.openclawAgentId)}" data-field="agent.openclawAgentId" placeholder="${escapeHtml(modelPlaceholder)}" />`
-            }
-          </label>
-          <label class="span-2">Description<textarea rows="2" data-field="agent.description">${escapeHtml(editor.description)}</textarea></label>
-          <label>Default skills<input value="${escapeHtml(editor.defaultSkillsText)}" list="skill-options" data-field="agent.defaultSkillsText" /></label>
-          <label>Allowed tools<input value="${escapeHtml(editor.allowedToolsText)}" data-field="agent.allowedToolsText" /></label>
-        </div>
-        ${selectedConnection ? `
-          <div class="registry-binding-summary">
-            <span><small>Connection</small><strong>${escapeHtml(selectedConnection.name)}</strong></span>
-            <span><small>Model</small><strong>${escapeHtml(editor.openclawAgentId || selectedConnection.default_model || "runtime default")}</strong></span>
-            <span><small>Credential</small><strong class="${selectedConnection.credential_configured ? "success-text" : "warn-text"}">${selectedConnection.credential_configured ? "available" : "not detected"}</strong></span>
-          </div>
-        ` : ""}
-        <details class="registry-advanced">
-          <summary>Advanced settings</summary>
-          <div class="form-grid compact">
-            <label>ID<input value="${escapeHtml(editor.profileId)}" data-field="agent.profileId" placeholder="generated from name" ${editor.mode === "edit" ? "disabled" : ""} /></label>
-            <label>Status
-              <select data-field="agent.status">
-                <option value="active" ${editor.status === "active" ? "selected" : ""}>active</option>
-                <option value="disabled" ${editor.status === "disabled" ? "selected" : ""}>disabled</option>
-              </select>
-            </label>
-            <label>Agent Runtime<select data-field="agent.agentRuntime">${renderProviderRuntimeOptions(editor.agentRuntime)}</select></label>
-            <label>Harness profile<input value="${escapeHtml(editor.harnessProfile)}" data-field="agent.harnessProfile" placeholder="agent-harness-v1" /></label>
-            <label>Disallowed skills<input value="${escapeHtml(editor.disallowedSkillsText)}" list="skill-options" data-field="agent.disallowedSkillsText" /></label>
-            <label>Policy tags<input value="${escapeHtml(editor.policyTagsText)}" data-field="agent.policyTagsText" /></label>
-            <label>Legacy provider<input value="${escapeHtml(editor.openclawProvider)}" data-field="agent.openclawProvider" /></label>
-            <label>Legacy model<input value="${escapeHtml(editor.openclawModel)}" data-field="agent.openclawModel" /></label>
-            <label>Legacy runtime mode<input value="${escapeHtml(editor.openclawRuntimeMode)}" data-field="agent.openclawRuntimeMode" /></label>
-            <label class="span-2">Metadata JSON<textarea class="code" rows="4" data-field="agent.metadataText">${escapeHtml(editor.metadataText)}</textarea></label>
-          </div>
-        </details>
-        <div class="registry-actions">
-          <button class="primary" data-action="save-agent-profile" ${state.registrySaving ? "disabled" : ""}>${state.registrySaving ? "Saving..." : "Save profile"}</button>
-          <button class="secondary danger-action" data-action="disable-agent-profile" ${state.registryDisabling || editor.mode !== "edit" || editor.status === "disabled" ? "disabled" : ""}>${state.registryDisabling ? "Disabling..." : "Disable"}</button>
-        </div>
-      </div>
-    </div>
   `;
 }
 
@@ -12683,7 +13955,7 @@ function renderProviderConnectionModal() {
           <details class="registry-advanced provider-modal-advanced">
             <summary>Advanced settings</summary>
             <div class="form-grid compact">
-              <label>Agent Runtime<select data-field="connection.agentRuntime">${renderProviderRuntimeOptions(editor.agentRuntime)}</select></label>
+              <label>Provider family<select data-field="connection.agentRuntime">${renderProviderRuntimeOptions(editor.agentRuntime)}</select></label>
               <label>Credential storage
                 <select data-field="connection.credentialSource">
                   <option value="managed" ${editor.credentialSource === "managed" ? "selected" : ""}>Managed encrypted key</option>
@@ -12708,6 +13980,7 @@ function renderProviderConnectionModal() {
               <label class="provider-toggle-field"><span>Automatic context compression</span><input type="checkbox" data-field="connection.contextCompressionEnabled" ${editor.contextCompressionEnabled ? "checked" : ""} /></label>
               <label>Compression threshold (%)<input type="number" min="50" max="95" step="1" value="${escapeHtml(String(editor.contextCompressionThresholdPercent))}" data-field="connection.contextCompressionThresholdPercent" /></label>
               <label>Maximum continuation rounds<input type="number" min="0" max="32" step="1" value="${escapeHtml(String(editor.maxContinuationRounds))}" data-field="connection.maxContinuationRounds" /></label>
+              <label>Maximum tool rounds<input type="number" min="1" max="128" step="1" value="${escapeHtml(String(editor.maxToolRounds))}" data-field="connection.maxToolRounds" /></label>
               <label class="span-2">Metadata JSON<textarea class="code" rows="3" data-field="connection.metadataText">${escapeHtml(editor.metadataText)}</textarea></label>
             </div>
           </details>
@@ -12889,14 +14162,176 @@ function renderStudioSetupModal() {
   `;
 }
 
+async function reloadSkillPackages() {
+  state.skillHost.loading = true;
+  state.error = null;
+  render();
+  try {
+    const result = await request("/api/skill-host/reload", { method: "POST", body: "{}" });
+    state.skillHost.packages = result.items || [];
+    state.notice = `Reloaded ${state.skillHost.packages.length} Skill package(s).`;
+  } catch (error) {
+    state.error = error.message || "Failed to reload Skill packages.";
+  } finally {
+    state.skillHost.loading = false;
+    render();
+  }
+}
+
+async function saveSkillHostProfile(patch) {
+  state.skillHost.loading = true;
+  state.error = null;
+  render();
+  try {
+    state.skillHost.profile = await request("/api/skill-host/profile", { method: "PUT", body: JSON.stringify(patch) });
+    state.notice = "Saved Workspace Skill policy.";
+  } catch (error) {
+    state.error = error.message || "Failed to save Skill policy.";
+  } finally {
+    state.skillHost.loading = false;
+    render();
+  }
+}
+
+async function scanStudioSkillPackage() {
+  const sourcePath = state.skillHost.sourcePath.trim();
+  if (!sourcePath) return;
+  state.skillHost.loading = true;
+  state.error = null;
+  render();
+  try {
+    state.skillHost.scan = await request("/api/skill-host/marketplace/scan", { method: "POST", body: JSON.stringify({ source_path: sourcePath }) });
+    state.notice = state.skillHost.scan.installable ? "Package passed quarantine scanning." : "Package was blocked by quarantine scanning.";
+  } catch (error) {
+    state.error = error.message || "Failed to scan Skill package.";
+  } finally {
+    state.skillHost.loading = false;
+    render();
+  }
+}
+
+async function installSkillPackage() {
+  const sourcePath = state.skillHost.sourcePath.trim();
+  if (!sourcePath) {
+    state.error = "Choose a local Skill package directory first.";
+    render();
+    return;
+  }
+  state.skillHost.loading = true;
+  state.error = null;
+  render();
+  try {
+    const approvePermissionDelta = state.skillHost.scan?.permission_delta?.requires_review === true;
+    const result = await request("/api/skill-host/install", {
+      method: "POST",
+      body: JSON.stringify({ source_path: sourcePath, approve_permission_delta: approvePermissionDelta }),
+    });
+    state.skillHost.selectedId = result.item.skill_id;
+    state.skillHost.sourcePath = "";
+    await loadRegistry(false);
+    state.notice = `Installed ${result.item.name} v${result.item.version}.`;
+  } catch (error) {
+    if (error.code === "skill_permission_delta_review_required" && error.body?.permission_delta) {
+      state.skillHost.scan = {
+        ...(error.body.scan || {}),
+        permission_delta: error.body.permission_delta,
+      };
+      state.notice = "Review the added permissions, then approve the upgrade explicitly.";
+      return;
+    }
+    state.error = error.message || "Failed to install Skill package.";
+  } finally {
+    state.skillHost.loading = false;
+    render();
+  }
+}
+
+async function toggleSkillPackage(skillId, enabled) {
+  state.skillHost.loading = true;
+  state.error = null;
+  render();
+  try {
+    await request(`/api/skill-host/packages/${encodeURIComponent(skillId)}/${enabled ? "enable" : "disable"}`, { method: "POST", body: "{}" });
+    await loadRegistry(false);
+    state.notice = `${enabled ? "Enabled" : "Disabled"} ${skillId}.`;
+  } catch (error) {
+    state.error = error.message || "Failed to update Skill package.";
+  } finally {
+    state.skillHost.loading = false;
+    render();
+  }
+}
+
+async function selectSkillPackage(skillId) {
+  state.skillHost.selectedId = skillId;
+  state.skillHost.detail = null;
+  render();
+  try {
+    state.skillHost.detail = await request(`/api/skill-host/packages/${encodeURIComponent(skillId)}`);
+  } catch (error) {
+    state.error = error.message || "Failed to load Skill instructions.";
+  }
+  render();
+}
+
 function renderSkillManager() {
   const editor = state.registryEditor.skill;
   const selectedId = editor.skillId;
+  const selectedPackage = state.skillHost.packages.find((item) => item.skill_id === state.skillHost.selectedId) || null;
+  const packageDetail = state.skillHost.detail?.status?.skill_id === selectedPackage?.skill_id ? state.skillHost.detail : null;
   return `
     <div class="registry-manager-column">
+      <section class="skill-host-manager">
+        <div class="registry-manager-header">
+          <div><h4>Executable Skill Host</h4><p>${state.skillHost.packages.length} package(s) / ${state.skillHost.invocations.length} invocation(s)</p></div>
+          <button class="mini-button" data-action="reload-skill-packages" ${state.skillHost.loading ? "disabled" : ""}>Reload</button>
+        </div>
+        <div class="skill-policy-bar">
+          <label><input type="checkbox" data-action="toggle-skill-auto-activation" ${state.skillHost.profile?.auto_activation !== false ? "checked" : ""} ${state.skillHost.loading ? "disabled" : ""} /> Auto-activate matching Core Skills</label>
+          <span>${escapeHtml(state.skillHost.profile?.update_policy || "notify")} updates</span>
+          <span>${state.skillHost.lockfile?.entries?.length || 0} locked</span>
+          <span>${state.skillHost.observability?.evaluation_count || 0} evaluations</span>
+        </div>
+        <div class="skill-host-install">
+          <label>Local package directory<input value="${escapeHtml(state.skillHost.sourcePath)}" data-field="skillHost.sourcePath" placeholder="C:\\path\\to\\skill-package" /></label>
+          <button class="secondary" data-action="scan-skill-package" ${state.skillHost.loading ? "disabled" : ""}>Scan</button>
+          <button class="secondary" data-action="install-skill-package" ${state.skillHost.loading ? "disabled" : ""}>${state.skillHost.scan?.permission_delta?.requires_review ? "Approve upgrade" : "Install"}</button>
+        </div>
+        ${state.skillHost.scan ? `<div class="skill-scan-result ${state.skillHost.scan.installable ? "ready" : "blocked"}"><strong>${state.skillHost.scan.installable ? "Scan passed" : "Scan blocked"}</strong><span>${state.skillHost.scan.file_count} files / ${state.skillHost.scan.total_bytes} bytes / ${state.skillHost.scan.signature}</span>${(state.skillHost.scan.blockers || []).map((item) => `<small>${escapeHtml(`${item.code}: ${item.message}`)}</small>`).join("")}${state.skillHost.scan.permission_delta?.requires_review ? `<small class="danger-text">Upgrade adds: ${escapeHtml([
+          ...(state.skillHost.scan.permission_delta.added_tools || []).map((item) => `tool ${item}`),
+          ...(state.skillHost.scan.permission_delta.added_capabilities || []).map((item) => `capability ${item}`),
+          ...(state.skillHost.scan.permission_delta.added_permission_scopes || []).map((item) => `scope ${item}`),
+          ...(state.skillHost.scan.permission_delta.added_scripts || []).map((item) => `script ${item}`),
+        ].join(", "))}</small>` : ""}</div>` : ""}
+        <div class="skill-host-grid">
+          <div class="registry-record-list skill-package-list">
+            ${state.skillHost.packages.length ? state.skillHost.packages.map((item) => `
+              <article class="skill-package-row ${item.skill_id === state.skillHost.selectedId ? "selected" : ""}">
+                <button data-action="select-skill-package" data-id="${escapeHtml(item.skill_id)}">
+                  <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(`${item.skill_id} v${item.version} / ${item.source} / ${item.status}`)}</small></span>
+                </button>
+                <button class="mini-button" data-action="toggle-skill-package" data-id="${escapeHtml(item.skill_id)}" data-enabled="${item.enabled ? "false" : "true"}" ${state.skillHost.loading || item.status === "error" ? "disabled" : ""}>${item.enabled ? "Disable" : "Enable"}</button>
+              </article>
+            `).join("") : '<p class="muted">No executable Skill packages discovered.</p>'}
+          </div>
+          <div class="skill-package-detail">
+            ${selectedPackage ? `
+              <div class="registry-form-title"><strong>${escapeHtml(selectedPackage.name)}</strong><span>${escapeHtml(selectedPackage.description)}</span></div>
+              <p class="skill-tool-list">Tools: ${escapeHtml((selectedPackage.allowed_tools || []).join(", ") || "none")}</p>
+              <p class="skill-tool-list">Activation: ${escapeHtml(selectedPackage.activation_policy || "advisory")} / Trust: ${escapeHtml(selectedPackage.trust_level || "unverified")}</p>
+              ${selectedPackage.error ? `<p class="danger-text">${escapeHtml(selectedPackage.error)}</p>` : ""}
+              <pre>${escapeHtml(packageDetail?.instructions || "Select the package to load its exact SKILL.md instructions.")}</pre>
+            ` : '<p class="muted">Select a package to inspect its instructions and declared tools.</p>'}
+          </div>
+        </div>
+        <div class="skill-invocation-list">
+          <strong>Recent invocations</strong>
+          ${(state.skillHost.invocations || []).slice(0, 8).map((item) => `<span><code>${escapeHtml(item.skill_id)}</code><small>${escapeHtml(item.status)} / ${escapeHtml(item.activation_source || "model")} / ${escapeHtml(item.verification_status || "pending")} / ${escapeHtml(item.session_id)}</small></span>`).join("") || '<p class="muted">No Skill invocations yet.</p>'}
+        </div>
+      </section>
       <div class="registry-manager-header">
         <div>
-          <h4>Skills</h4>
+          <h4>Legacy Skill Registry</h4>
           <p>${state.skills.length} skill(s)</p>
         </div>
         <button class="mini-button" data-action="new-skill">New</button>
@@ -13001,7 +14436,7 @@ function renderGovernancePanel(embedded = false) {
           <div class="form-grid compact">
             <label>Action
               <select data-field="governance.draft.action">
-                ${["agent_profile.upsert", "agent_profile.disable", "skill.upsert", "skill.disable", "template.publish", "template.archive"]
+                ${["agent.upsert", "agent.disable", "skill.upsert", "skill.disable", "template.publish", "template.archive"]
                   .map((action) => `<option value="${action}" ${draft.action === action ? "selected" : ""}>${action}</option>`)
                   .join("")}
               </select>
@@ -13056,19 +14491,16 @@ function renderGovernancePanel(embedded = false) {
 }
 
 function renderRegistryManagerPanel() {
-  const section = ["connections", "mcp", "agents", "skills", "governance"].includes(state.ui.registrySection)
+  const section = ["connections", "mcp", "skills", "governance"].includes(state.ui.registrySection)
     ? state.ui.registrySection
     : "connections";
   const tabs = [
     ["connections", "Connections", state.providerConnections.length],
     ["mcp", "MCP", state.mcpServers.length],
-    ["agents", "Agent Profiles", state.agentProfiles.length],
     ["skills", "Skills", state.skills.length],
     ["governance", "Governance", state.governance.changes.length],
   ];
-  const sectionContent = section === "agents"
-    ? renderAgentProfileManager()
-    : section === "mcp"
+  const sectionContent = section === "mcp"
       ? renderMcpServerManager()
     : section === "skills"
       ? renderSkillManager()
@@ -13121,7 +14553,7 @@ function renderRegistryRecommendation(recommendation, index) {
   return `
     <div class="mini-node">
       <strong>${index + 1}. ${escapeHtml(recommendation.node_name)}</strong>
-      <small>Agent: ${escapeHtml(recommendation.agent_profile_id || "needs assignment")}</small>
+      <small>Agent: ${escapeHtml(recommendation.agent_id || "needs assignment")}</small>
       <small>Runtime: ${escapeHtml(runtimeAgentRefOf(recommendation) || "unbound")}</small>
       <small>Skills: ${escapeHtml((recommendation.skill_ids || []).join(", ") || "none")}</small>
       <small>Score ${Number(recommendation.score || 0).toFixed(2)} / ${escapeHtml(recommendation.reason || "No reason")}</small>
@@ -13337,14 +14769,20 @@ function plannerValidationBadge(validation) {
   return { label: "warnings", tone: "warn" };
 }
 
-function confirmPlannerAdoption(options) {
+async function confirmPlannerAdoption(options) {
   const summary = [];
   if (options.strategy) {
     summary.push(`Strategy: ${options.strategy}`);
   }
   summary.push(`Warnings: ${options.warningCount}`);
   summary.push(options.targetLabel);
-  return window.confirm(`Adopt planner output?\n\n${summary.join("\n")}`);
+  return await studioConfirm({
+    type: "warning",
+    title: "Adopt planner output",
+    message: options.targetLabel,
+    detail: summary.join("\n"),
+    confirmLabel: "Adopt output",
+  });
 }
 
 function renderPlannerPanel() {
@@ -13362,41 +14800,39 @@ function renderPlannerPanel() {
     <section class="panel planner-panel">
       <div class="panel-header">
         <div>
-          <h3>Plan from intent</h3>
-          <p>Fill the task intent first. Generate a DAG draft, then copy or save it for human review.</p>
+          <h3>Generate workflow</h3>
+          <p>Describe the business outcome. My Mate will propose steps and bindings for you to review before saving.</p>
         </div>
       </div>
       <div class="workflow-steps">
         <div class="workflow-step active"><strong>1</strong><span>Describe task</span></div>
-        <div class="workflow-step ${dagDraft || candidatePlan ? "active" : ""}"><strong>2</strong><span>Generate draft</span></div>
-        <div class="workflow-step ${state.editor.status === "new" || state.editor.status === "draft" ? "active" : ""}"><strong>3</strong><span>Confirm template</span></div>
+        <div class="workflow-step ${dagDraft || candidatePlan ? "active" : ""}"><strong>2</strong><span>Review proposal</span></div>
+        <div class="workflow-step ${state.editor.status === "new" || state.editor.status === "draft" ? "active" : ""}"><strong>3</strong><span>Open editor</span></div>
       </div>
       <div class="planner-grid">
         <label>Intent<textarea rows="4" data-field="planner.intent" placeholder="Describe the business task">${escapeHtml(state.planner.intent)}</textarea></label>
         <div class="planner-input-stack">
           <label>Inputs JSON<textarea class="code" rows="4" data-field="planner.inputsText">${escapeHtml(state.planner.inputsText)}</textarea></label>
-          <label>Max agent nodes<input type="number" min="1" max="6" data-field="planner.maxAgentNodes" value="${escapeHtml(state.planner.maxAgentNodes)}" /></label>
+          <label>Max agent nodes<input type="number" min="1" max="12" data-field="planner.maxAgentNodes" value="${escapeHtml(state.planner.maxAgentNodes)}" /></label>
         </div>
       </div>
       <div class="planner-action-groups">
         <div class="planner-action-group">
           <strong>Generate</strong>
           <div class="planner-actions">
-            <button class="primary" data-action="generate-dag-draft" ${state.planning ? "disabled" : ""}>${state.planning ? "Generating..." : "Generate DAG draft"}</button>
-            <button class="secondary" data-action="plan-intent" ${state.planning ? "disabled" : ""}>${state.planning ? "Planning..." : "Recommend template"}</button>
-            <button class="secondary" data-action="refresh-plan-preview" ${state.planning || !state.planner.templateId ? "disabled" : ""}>${state.planning ? "Planning..." : "Refresh run preview"}</button>
+            <button class="primary" data-action="generate-dag-draft" ${state.planning ? "disabled" : ""}>${state.planning ? "Generating..." : "Generate steps"}</button>
+            <button class="secondary" data-action="plan-intent" ${state.planning ? "disabled" : ""}>${state.planning ? "Planning..." : "Recommend a workflow"}</button>
           </div>
         </div>
         <div class="planner-action-group">
           <strong>Confirm</strong>
           <div class="planner-actions">
-            <button class="primary" data-action="apply-dag-draft" ${state.applyingDagDraft || !dagDraft ? "disabled" : ""}>${state.applyingDagDraft ? "Copying..." : "Copy DAG draft"}</button>
-            <button class="secondary" data-action="save-dag-draft" ${state.savingDagDraft || !dagDraft ? "disabled" : ""}>${state.savingDagDraft ? "Saving..." : "Save DAG draft"}</button>
-            <button class="secondary" data-action="apply-plan-draft" ${state.applyingPlan || !candidatePlan ? "disabled" : ""}>${state.applyingPlan ? "Copying..." : "Copy run preview"}</button>
+            <button class="primary" data-action="apply-dag-draft" ${state.applyingDagDraft || !dagDraft ? "disabled" : ""}>${state.applyingDagDraft ? "Applying..." : "Open in editor"}</button>
+            <button class="secondary" data-action="save-dag-draft" ${state.savingDagDraft || !dagDraft ? "disabled" : ""}>${state.savingDagDraft ? "Saving..." : "Save as workflow"}</button>
           </div>
         </div>
       </div>
-      <p class="planner-hint">Planner DAG drafts are not published automatically; copy or save them, then review and publish manually.</p>
+      <p class="planner-hint">Generated workflows are never published automatically. Open the editor to review steps, bindings, and human controls first.</p>
       ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
       ${
         recommendation || dagDraft
@@ -13429,10 +14865,10 @@ function renderPlannerPanel() {
                              (node, index) => `
                                <div class="mini-node">
                                  <strong>${index + 1}. ${escapeHtml(node.name)}</strong>
-                                 <small>${escapeHtml(node.type)} / ${escapeHtml(node.status)} / ${escapeHtml(node.agent_profile || "no-agent")}</small>
+                                 <small>${escapeHtml(node.type)} / ${escapeHtml(node.status)} / ${escapeHtml(node.agent_id || node.agent_binding_snapshot?.agent_id || "no-agent")}</small>
                                  <small>Runtime: ${escapeHtml(runtimeAgentRefOf(node) || "unbound")}</small>
                                  <small>Skills: ${escapeHtml((node.allowed_skills || []).join(", ") || "none")}</small>
-                                 <small>Source: ${escapeHtml(node.registry_provenance?.agent_profile_source || "unknown")} / Runtime ${escapeHtml(node.registry_provenance?.runtime_agent_ref_source || node.registry_provenance?.openclaw_agent_id_source || "unknown")}</small>
+                                 <small>Source: ${escapeHtml(node.registry_provenance?.agent_source || "unknown")} / Runtime ${escapeHtml(node.registry_provenance?.runtime_agent_ref_source || "unknown")}</small>
                                </div>
                              `,
                            )
@@ -13443,7 +14879,7 @@ function renderPlannerPanel() {
               </div>
               <div class="plan-summary">
                  <div class="summary-row">
-                   <strong>${escapeHtml(dagDraft?.draft_template?.name || "DAG draft")}</strong>
+                   <strong>${escapeHtml(dagDraft?.draft_template?.name || "Workflow proposal")}</strong>
                    ${
                      dagDraft
                        ? `<span class="badge ${dagBadge.tone}">${escapeHtml(dagDraft.planner_context.draft_strategy)} / ${dagBadge.label}</span>`
@@ -13457,7 +14893,7 @@ function renderPlannerPanel() {
                        <div class="mini-node-list">
                           ${dagRecommendations.map(renderRegistryRecommendation).join("")}
                         </div>`
-                    : '<p class="muted">No DAG draft yet.</p>'
+                    : '<p class="muted">No workflow proposal yet.</p>'
                 }
               </div>
             </div>`
@@ -13465,6 +14901,10 @@ function renderPlannerPanel() {
       }
     </section>
   `;
+}
+
+function renderWorkflowGenerator() {
+  return `<section class="workflow-generator-mode"><header class="workflow-mode-header"><div><span class="task-start-kicker">Create workflow</span><h3>Generate from intent</h3><p>Use conversation and planning to propose a workflow. Manual editing starts only after you adopt the proposal.</p></div><button class="secondary" data-action="close-workflow-generator">Back to editor</button></header>${renderPlannerPanel()}</section>`;
 }
 
 // Form-backed graph canvas model: the node and edge forms remain the source of truth.
@@ -13530,7 +14970,7 @@ function buildAuthoringGraphModel(editor = state.editor) {
       label: node?.name || node?.id || `Node ${index + 1}`,
       type: node?.type || "agent_task",
       tone: node?.type === "end" ? "success" : node?.approval_kind ? "warn" : "neutral",
-      agent: node?.agent_profile || "",
+      agent: node?.agent_id || "",
       skillCount: skills.length,
       skillsPreview: skills.slice(0, 2).join(", "),
       approvalKind: node?.approval_kind || "",
@@ -13577,27 +15017,26 @@ function buildAuthoringGraphModel(editor = state.editor) {
 }
 
 function renderAuthoringGraphNode(node, selection) {
-  const selected = selection?.type === "node" && selection.index === node.index;
+  const selected = authoringSelectionIncludesNode(selection, node.index);
+  const connectionSource = authoringGraphConnection?.sourceIndex === node.index;
   const markers = [
-    node.approvalKind ? `approval: ${node.approvalKind}` : null,
-    node.outputCount ? `${node.outputCount} output${node.outputCount === 1 ? "" : "s"}` : null,
-    node.parallelism > 1 ? `parallel ${node.parallelism}` : null,
-    node.timeout ? `${node.timeout}s` : null,
+    node.approvalKind ? "Needs approval" : null,
+    node.outputCount ? `${node.outputCount} deliverable${node.outputCount === 1 ? "" : "s"}` : null,
+    node.parallelism > 1 ? `Parallel x${node.parallelism}` : null,
   ].filter(Boolean);
   return `
-    <div class="authoring-graph-node tone-${node.tone} ${selected ? "selected" : ""}" style="left: ${node.x}px; top: ${node.y}px;" data-action="select-authoring-node" data-index="${node.index}" data-node-id="${escapeHtml(node.id)}" tabindex="0">
-      <button class="authoring-port authoring-port-in" data-action="authoring-port-in" data-index="${node.index}" title="Connect incoming edge" aria-label="Connect incoming edge"></button>
-      <span class="authoring-graph-node-head">
+    <div class="authoring-graph-node tone-${node.tone} ${selected ? "selected" : ""} ${connectionSource ? "connection-source" : ""}" role="button" tabindex="0" style="left: ${node.x}px; top: ${node.y}px;" data-action="select-authoring-node" data-index="${node.index}" data-authoring-node-index="${node.index}" data-node-id="${escapeHtml(node.id)}" aria-label="Edit ${escapeHtml(node.label)}">
+      <span class="authoring-port authoring-port-in" role="button" tabindex="0" data-action="authoring-port-in" data-index="${node.index}" title="Connect previous step" aria-label="Connect previous step"></span>
+      <span class="authoring-graph-node-head" data-action="select-authoring-node" data-index="${node.index}">
         <span class="authoring-graph-node-index">${node.index + 1}</span>
         <span class="authoring-graph-node-title">
           <strong>${escapeHtml(node.label)}</strong>
-          <small>${escapeHtml(node.id)}</small>
+          <small>${escapeHtml(workflowNodeTypeLabel(node.type))}</small>
         </span>
       </span>
       <span class="authoring-graph-node-meta">
-        <span>${escapeHtml(node.type)}</span>
-        <span>${escapeHtml(node.agent || "no-agent")}</span>
-        <span>${escapeHtml(node.skillsPreview || `${node.skillCount} skills`)}</span>
+        <span>${escapeHtml(node.agent || "Unassigned")}</span>
+        <span>${escapeHtml(node.skillCount ? `${node.skillCount} skill${node.skillCount === 1 ? "" : "s"}` : "No skills")}</span>
       </span>
       ${
         markers.length
@@ -13606,7 +15045,8 @@ function renderAuthoringGraphNode(node, selection) {
               .join("")}</span>`
           : ""
       }
-      <button class="authoring-port authoring-port-out" data-action="authoring-port-out" data-index="${node.index}" title="Connect outgoing edge" aria-label="Connect outgoing edge"></button>
+      <span class="authoring-node-edit-control" role="button" tabindex="0" data-action="select-authoring-node" data-index="${node.index}" aria-label="Edit ${escapeHtml(node.label)}">Edit</span>
+      <span class="authoring-port authoring-port-out" role="button" tabindex="0" data-action="authoring-port-out" data-index="${node.index}" title="Connect next step" aria-label="Connect next step"></span>
     </div>
   `;
 }
@@ -13616,7 +15056,7 @@ function renderAuthoringGraphEdgePath(edge, selection) {
   const selected = selection?.type === "edge" && selection.index === edge.index;
   const bend = Math.max(edge.fromX + 36, edge.toX - 36);
   const path = `M ${edge.fromX} ${edge.fromY} C ${bend} ${edge.fromY}, ${bend} ${edge.toY}, ${edge.toX} ${edge.toY}`;
-  return `<path class="authoring-graph-line ${selected ? "selected" : ""}" data-action="select-authoring-edge" data-index="${edge.index}" d="${path}"></path>`;
+  return `<path class="authoring-graph-line ${selected ? "selected" : ""}" role="button" tabindex="0" aria-label="Edit branch from ${escapeHtml(edge.fromLabel)} to ${escapeHtml(edge.toLabel)}" data-action="select-authoring-edge" data-index="${edge.index}" data-authoring-edge-index="${edge.index}" d="${path}"></path>`;
 }
 
 function renderAuthoringGraphEdge(edge, selection) {
@@ -13630,9 +15070,26 @@ function renderAuthoringGraphEdge(edge, selection) {
   `;
 }
 
-function renderAuthoringGraphCanvas(readOnly) {
+function renderAuthoringGraphConnectionPreview(model) {
+  if (!authoringGraphConnection) return "";
+  const source = model.nodes[authoringGraphConnection.sourceIndex];
+  if (!source) return "";
+  const fromX = source.x + 188;
+  const fromY = source.y + 49;
+  const toX = Number.isFinite(authoringGraphConnection.x) ? authoringGraphConnection.x : fromX + 72;
+  const toY = Number.isFinite(authoringGraphConnection.y) ? authoringGraphConnection.y : fromY;
+  const path = authoringConnectionPath({ fromX, fromY, toX, toY });
+  return `<path class="authoring-graph-line authoring-graph-line-preview" data-authoring-connection-preview="true" d="${path}"></path>`;
+}
+
+function renderAuthoringGraphCanvas(readOnly, inspectorContent = "") {
   const model = buildAuthoringGraphModel();
   const selection = state.ui.authoringGraphSelection;
+  const zoom = Math.max(0.5, Math.min(1.75, Number(state.ui.authoringGraphZoom) || 1));
+  const surfaceWidth = Math.max(720, model.width);
+  const surfaceHeight = Math.max(520, model.height);
+  const inspectorScrollReserve = selection?.type === "node" || selection?.type === "edge" ? 400 : 0;
+  const pan = state.ui.authoringGraphPan || { x: 0, y: 0 };
   const validation = validateGraphTopology(state.editor);
   const patch = buildGraphPatchPreview(authoringGraphSavedSnapshot, authoringGraphSnapshot());
   const patchCount = patch.nodes_added.length + patch.nodes_removed.length + patch.nodes_changed.length + patch.edges_added.length + patch.edges_removed.length + (patch.layout_changed ? 1 : 0);
@@ -13643,41 +15100,160 @@ function renderAuthoringGraphCanvas(readOnly) {
     <section class="panel graph-panel authoring-graph-canvas-panel">
       <div class="panel-header">
         <div>
-          <h3>Graph Canvas</h3>
-          <p>${model.stats.nodeCount} nodes, ${model.stats.edgeCount} edges, ${model.stats.startCount} starts, ${model.stats.endCount} exits.</p>
+          <h3>Flow canvas</h3>
+          <p>${model.stats.nodeCount} steps, ${model.stats.edgeCount} branches, ${model.stats.startCount} starting points, ${model.stats.endCount} finishes.</p>
+          ${authoringGraphConnection ? '<span class="authoring-connection-hint">Select a target input port to connect this branch. Press Escape to cancel.</span>' : ''}
         </div>
         <div class="actions">
           ${invalidBadge}
           <span class="badge neutral">${patchCount} changes</span>
+          <span class="authoring-graph-zoom-controls" role="group" aria-label="Canvas zoom">
+            <button class="icon-button" data-action="authoring-zoom" data-zoom="${zoom - 0.1}" title="Zoom out" aria-label="Zoom out" ${zoom <= 0.5 ? "disabled" : ""}>-</button>
+            <button class="authoring-zoom-value" data-action="authoring-zoom" data-zoom="reset" title="Reset zoom to 100 percent">${Math.round(zoom * 100)}%</button>
+            <button class="icon-button" data-action="authoring-zoom" data-zoom="${zoom + 0.1}" title="Zoom in" aria-label="Zoom in" ${zoom >= 1.75 ? "disabled" : ""}>+</button>
+          </span>
+          <details class="authoring-branch-menu">
+            <summary>Branches ${model.edges.length}</summary>
+            <div class="authoring-branch-menu-list">
+              ${model.edges.map((edge) => renderAuthoringGraphEdge(edge, selection)).join("") || '<span class="muted">No branches</span>'}
+            </div>
+          </details>
           <button class="icon-button" data-action="undo-authoring" title="Undo" ${readOnly || !authoringGraphHistory.undo.length ? "disabled" : ""}>↶</button>
           <button class="icon-button" data-action="redo-authoring" title="Redo" ${readOnly || !authoringGraphHistory.redo.length ? "disabled" : ""}>↷</button>
-          <button class="secondary" data-action="add-node" ${readOnly ? "disabled" : ""}>Add node</button>
-          <button class="secondary" data-action="add-edge" ${readOnly ? "disabled" : ""}>Add edge</button>
+          <div class="authoring-node-menu-wrap">
+            <button class="secondary" data-action="toggle-authoring-node-menu" ${readOnly ? "disabled" : ""}>+ Add node</button>
+            ${state.ui.authoringNodeMenuOpen ? `<div class="authoring-node-menu" role="menu"><button data-action="add-node-type" data-node-type="agent_task" role="menuitem">Agent step</button><button data-action="add-node-type" data-node-type="condition" role="menuitem">Condition</button><button data-action="add-node-type" data-node-type="fanout" role="menuitem">Loop / parallel</button><button data-action="add-node-type" data-node-type="approval" role="menuitem">Approval gate</button><button data-action="add-node-type" data-node-type="human_input" role="menuitem">Ask user</button><button data-action="add-node-type" data-node-type="tool_task" role="menuitem">Tool step</button></div>` : ""}
+          </div>
+          <button class="secondary" data-action="add-edge" ${readOnly ? "disabled" : ""}>Connect</button>
+          <button class="secondary" data-action="fit-authoring-view" title="Fit all steps in the canvas">Fit</button>
+          <button class="icon-button" data-action="reset-authoring-view" title="Reset canvas position and zoom" aria-label="Reset canvas view">Home</button>
+          <button class="secondary" data-action="toggle-authoring-canvas-expanded" aria-pressed="${state.ui.authoringCanvasExpanded ? "true" : "false"}">${state.ui.authoringCanvasExpanded ? "Exit full screen" : "Full screen"}</button>
         </div>
       </div>
       <div class="authoring-graph-workbench">
         <div class="authoring-graph-canvas">
-          <div class="authoring-graph-surface" style="width: ${model.width}px; height: ${model.height}px;">
-            <svg class="authoring-graph-lines" viewBox="0 0 ${model.width} ${model.height}" aria-hidden="true">
-              ${model.edges.map((edge) => renderAuthoringGraphEdgePath(edge, selection)).join("")}
-            </svg>
-            ${model.nodes.map((node) => renderAuthoringGraphNode(node, selection)).join("")}
+          <div class="authoring-graph-zoom-space" style="width: ${Math.ceil(surfaceWidth * zoom) + inspectorScrollReserve}px; height: ${Math.ceil(surfaceHeight * zoom)}px;">
+            <div class="authoring-graph-surface" style="width: ${surfaceWidth}px; height: ${surfaceHeight}px; transform: translate(${pan.x}px, ${pan.y}px) scale(${zoom});">
+              <svg class="authoring-graph-lines" viewBox="0 0 ${surfaceWidth} ${surfaceHeight}" aria-label="Workflow branches">
+                ${model.edges.map((edge) => renderAuthoringGraphEdgePath(edge, selection)).join("")}
+                ${renderAuthoringGraphConnectionPreview(model)}
+              </svg>
+              ${model.nodes.map((node) => renderAuthoringGraphNode(node, selection)).join("")}
+            </div>
           </div>
+          <button class="authoring-canvas-add-node" data-action="toggle-authoring-node-menu" ${readOnly ? "disabled" : ""} title="Add a step to the canvas">+ Add node</button>
         </div>
-        <div class="authoring-graph-edge-list">
-          ${
-            model.edges.length
-              ? model.edges.map((edge) => renderAuthoringGraphEdge(edge, selection)).join("")
-              : '<p class="muted">No edges configured.</p>'
-          }
-        </div>
+        ${inspectorContent ? `<div class="workflow-canvas-inspector">${inspectorContent}</div>` : ""}
       </div>
       <div class="authoring-graph-review-strip">
-        <div><strong>Patch preview</strong><small>+${patch.nodes_added.length} nodes, -${patch.nodes_removed.length} nodes, ~${patch.nodes_changed.length} nodes, +${patch.edges_added.length}/-${patch.edges_removed.length} edges${patch.layout_changed ? ", layout changed" : ""}</small></div>
+        <div><strong>Unsaved changes</strong><small>+${patch.nodes_added.length} steps, -${patch.nodes_removed.length} steps, ~${patch.nodes_changed.length} steps, +${patch.edges_added.length}/-${patch.edges_removed.length} branches${patch.layout_changed ? ", layout changed" : ""}</small></div>
         ${validation.errors.length ? `<ul>${validation.errors.slice(0, 4).map((item) => `<li>${escapeHtml(item.message)}</li>`).join("")}</ul>` : '<span class="badge success">Topology valid</span>'}
       </div>
     </section>
   `;
+}
+
+function getWorkflowAgentOptions() {
+  const versionsByAgent = new Map();
+  for (const version of state.agentVersions) {
+    const existing = versionsByAgent.get(version.agent_id);
+    if (!existing || version.version > existing.version) versionsByAgent.set(version.agent_id, version);
+  }
+  return state.agentDefinitions
+    .filter((definition) => definition.status === "active")
+    .map((definition) => {
+      const version = state.agentVersions.find((item) =>
+        item.agent_id === definition.agent_id && item.version === (definition.published_version || definition.latest_version),
+      ) || versionsByAgent.get(definition.agent_id) || null;
+      const readiness = state.agentReadiness.find((item) =>
+        item.agent_id === definition.agent_id && item.agent_version === (version?.version || definition.published_version || definition.latest_version),
+      ) || null;
+      return { definition, version, readiness };
+    })
+    .sort((left, right) => (left.definition.name || left.definition.agent_id).localeCompare(right.definition.name || right.definition.agent_id));
+}
+
+function getWorkflowAgentBindingSummary(agentId) {
+  const option = getWorkflowAgentOptions().find((item) => item.definition.agent_id === agentId);
+  if (!option) return null;
+  const { definition, version } = option;
+  const skills = version?.skill_policy?.locked_skills || [];
+  const tools = version?.tool_policy?.allowed_tools || [];
+  const memory = version?.memory_policy || {};
+  return {
+    name: definition.name || definition.agent_id,
+    role: version?.role || "worker",
+    version: version?.version || "draft",
+    skills,
+    tools,
+    memoryEnabled: memory.enabled !== false,
+    recallEnabled: memory.automatic_recall !== false,
+    model: version?.model_policy?.model || "Inherited routing",
+  };
+}
+
+function renderWorkflowAgentBinding(node, selectionIndex, readOnly) {
+  if (["condition", "fanout", "reducer", "approval", "human_input", "end"].includes(node.type)) {
+    return `<div class="workflow-agent-profile muted"><strong>System control step</strong><span>This step runs in the DAG control plane and does not call an Agent model.</span></div>`;
+  }
+  const options = getWorkflowAgentOptions();
+  const current = node.agent_id || "";
+  const known = options.some((item) => item.definition.agent_id === current);
+  const summary = getWorkflowAgentBindingSummary(current);
+  return `<label>Assigned Agent<select data-field="node.agent_id" data-index="${selectionIndex}" ${readOnly || node.type === "end" ? "disabled" : ""}><option value="">Unassigned</option>${!known && current ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(`${current} (unavailable)`)}</option>` : ""}${options.map(({ definition, version, readiness }) => { const blocked = readiness?.state === "blocked"; const label = `${definition.name || definition.agent_id} - ${version?.role || "worker"}${blocked ? " (needs setup before run)" : ""}`; return `<option value="${escapeHtml(definition.agent_id)}" ${definition.agent_id === current ? "selected" : ""}>${escapeHtml(label)}</option>`; }).join("")}</select>${summary ? `<span class="workflow-agent-profile" aria-label="Inherited Agent capabilities"><strong>${escapeHtml(`${summary.name} v${summary.version}`)}</strong><span>${escapeHtml(summary.role)} | ${escapeHtml(summary.model)}</span><span>${summary.skills.length} Skills | ${summary.tools.length} tools | Memory ${summary.memoryEnabled ? (summary.recallEnabled ? "recall on" : "on") : "off"}</span></span>` : `<span class="workflow-agent-profile muted">Choose a published Agent. Its Skills, Memory, model route, and permissions are inherited by this step.</span>`}</label>`;
+}
+
+function edgeConditionMode(edge) {
+  const operator = edge?.condition?.operator;
+  return ["exists", "truthy", "equals", "not_equals", "contains"].includes(operator) ? operator : "always";
+}
+
+function workflowConditionOperatorLabel(operator) {
+  return {
+    truthy: "Value is true",
+    falsy: "Value is false",
+    equals: "Value equals",
+    not_equals: "Value does not equal",
+    contains: "Value contains",
+  }[operator] || operator;
+}
+
+function renderEdgeConditionEditor(edge, index, readOnly) {
+  const mode = edgeConditionMode(edge);
+  const needsValue = ["equals", "not_equals", "contains"].includes(mode);
+  return `<section class="workflow-specialized-section"><strong>When should this branch run?</strong><label>Rule<select data-field="edge.conditionMode" data-index="${index}" ${readOnly ? "disabled" : ""}><option value="always" ${mode === "always" ? "selected" : ""}>Always</option><option value="truthy" ${mode === "truthy" ? "selected" : ""}>Value is true</option><option value="exists" ${mode === "exists" ? "selected" : ""}>Value exists</option><option value="equals" ${mode === "equals" ? "selected" : ""}>Value equals</option><option value="not_equals" ${mode === "not_equals" ? "selected" : ""}>Value does not equal</option><option value="contains" ${mode === "contains" ? "selected" : ""}>Value contains</option></select></label>${mode === "always" ? '<small class="field-hint">The branch runs whenever the previous step completes.</small>' : `<label>Value path<input value="${escapeHtml(edge.condition?.path || "result.ok")}" data-field="edge.conditionPath" data-index="${index}" placeholder="result.ok" ${readOnly ? "disabled" : ""} /></label>${needsValue ? `<label>Compare with<input value="${escapeHtml(edge.condition?.value == null ? "" : String(edge.condition.value))}" data-field="edge.conditionValue" data-index="${index}" placeholder="approved" ${readOnly ? "disabled" : ""} /></label>` : ""}`}</section>`;
+}
+
+function renderWorkflowSelectionInspector(readOnly) {
+  const selection = state.ui.authoringGraphSelection;
+  if (selection?.type === "edge" && state.editor.edges[selection.index]) {
+    const edge = state.editor.edges[selection.index];
+    return `<aside class="workflow-step-inspector" aria-label="Branch inspector"><div class="workflow-inspector-heading"><div><span class="task-start-kicker">Selected branch</span><h3>Branch rule</h3></div><button class="icon-button" data-action="close-workflow-inspector" title="Close inspector" aria-label="Close inspector">&times;</button></div><label>Branch name<input value="${escapeHtml(edge.label || "")}" placeholder="On success" data-field="edge.label" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label>${renderEdgeConditionEditor(edge, selection.index, readOnly)}<details class="workflow-advanced-details"><summary>Technical connection</summary><div class="form-grid compact"><label>From port<input value="${escapeHtml(edge.from_port || "success")}" data-field="edge.from_port" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label>To port<input value="${escapeHtml(edge.to_port || "input")}" data-field="edge.to_port" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label class="span-2">Condition JSON<textarea class="code" rows="5" data-field="edge.condition" data-index="${selection.index}" ${readOnly ? "disabled" : ""}>${escapeHtml(edge.condition ? prettyJson(edge.condition) : "")}</textarea></label></div></details><div class="workflow-inspector-footer"><button class="secondary danger" data-action="remove-edge" data-index="${selection.index}" ${readOnly ? "disabled" : ""}>Delete branch</button></div></aside>`;
+  }
+  const node = selection?.type === "node" ? state.editor.nodes[selection.index] : null;
+  if (!node) return `<aside class="workflow-step-inspector workflow-inspector-empty"><span class="workflow-inspector-empty-icon">+</span><h3>Select a step</h3><p>Choose a step on the canvas to edit what it does, who runs it, and how it behaves.</p></aside>`;
+  const outputArtifacts = Array.isArray(node.config?.output_contract?.expected_artifacts) ? node.config.output_contract.expected_artifacts.join("\n") : "";
+  const advancedTypeOptions = NODE_TYPES.map((type) => `<option value="${type}" ${node.type === type ? "selected" : ""}>${escapeHtml(workflowNodeTypeLabel(type))}</option>`).join("");
+  const conditionConfig = node.config?.condition || {};
+  const conditionNeedsValue = ["equals", "not_equals", "contains"].includes(conditionConfig.operator);
+  const loopConfig = node.config?.loop || {};
+  const specialized = node.type === "condition"
+    ? `<section class="workflow-specialized-section"><strong>Condition rule</strong><label>Value path<input value="${escapeHtml(conditionConfig.path || "result.ok")}" data-field="node.condition.path" data-index="${selection.index}" placeholder="result.ok" ${readOnly ? "disabled" : ""} /></label><div class="form-grid compact"><label>Operator<select data-field="node.condition.operator" data-index="${selection.index}" ${readOnly ? "disabled" : ""}>${["truthy","falsy","equals","not_equals","contains"].map((item) => `<option value="${item}" ${conditionConfig.operator === item ? "selected" : ""}>${escapeHtml(workflowConditionOperatorLabel(item))}</option>`).join("")}</select></label>${conditionNeedsValue ? `<label>Compare value<input value="${escapeHtml(conditionConfig.value == null ? "" : String(conditionConfig.value))}" data-field="node.condition.value" data-index="${selection.index}" placeholder="approved" ${readOnly ? "disabled" : ""} /></label>` : ""}</div><small class="field-hint">Outgoing branches can use this result. Label each branch in its Branch inspector.</small></section>`
+    : node.type === "fanout"
+      ? `<section class="workflow-specialized-section"><strong>Loop settings</strong><label>Items path<input value="${escapeHtml(loopConfig.items_path || "items")}" data-field="node.loop.items_path" data-index="${selection.index}" placeholder="items" ${readOnly ? "disabled" : ""} /></label><div class="form-grid compact"><label>Item name<input value="${escapeHtml(loopConfig.item_key || "item")}" data-field="node.loop.item_key" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label>Max iterations<input type="number" min="1" value="${Number(loopConfig.max_iterations || 10)}" data-field="node.loop.max_iterations" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label>Concurrency<input type="number" min="1" value="${Number(loopConfig.concurrency || 1)}" data-field="node.loop.concurrency" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label></div><small class="field-hint">Runs the downstream branch once per item. Connect the Loop output to the repeated step and the reducer/end path.</small></section>`
+      : "";
+  return `
+    <aside class="workflow-step-inspector" aria-label="Step inspector">
+      <div class="workflow-inspector-heading"><div><span class="task-start-kicker">Step ${selection.index + 1}</span><h3>Step inspector</h3></div><button class="icon-button" data-action="close-workflow-inspector" title="Close inspector" aria-label="Close inspector">&times;</button></div>
+      <label>What is this step called?<input value="${escapeHtml(node.name || "")}" data-field="node.name" data-index="${selection.index}" placeholder="Review incoming request" ${readOnly ? "disabled" : ""} /></label>
+      <label>What should it accomplish?<textarea rows="4" data-field="node.objective" data-index="${selection.index}" placeholder="Describe the outcome in business language." ${readOnly ? "disabled" : ""}>${escapeHtml(node.config?.objective || "")}</textarea></label>
+      ${renderWorkflowAgentBinding(node, selection.index, readOnly)}
+      ${specialized}
+      <details class="workflow-data-handoff-details"><summary>Data handoff</summary><label>Input<textarea rows="3" data-field="node.input" data-index="${selection.index}" placeholder="What should this step receive?" ${readOnly ? "disabled" : ""}>${escapeHtml(node.config?.input_prompt || "")}</textarea></label><label>Expected outputs<textarea rows="3" data-field="node.output" data-index="${selection.index}" placeholder="One deliverable per line" ${readOnly ? "disabled" : ""}>${escapeHtml(outputArtifacts)}</textarea></label></details>
+      <div class="workflow-inspector-section"><strong>Human control</strong><label>Pause after this step<select data-field="node.approval_kind" data-index="${selection.index}" ${readOnly ? "disabled" : ""}><option value="">Do not pause</option>${APPROVAL_KINDS.map((kind) => `<option value="${kind}" ${node.approval_kind === kind ? "selected" : ""}>${escapeHtml(kind.replaceAll("_", " "))}</option>`).join("")}</select></label></div>
+      <details class="workflow-advanced-details"><summary>Advanced step settings</summary><div class="form-grid compact"><label>Step type<select data-field="node.type" data-index="${selection.index}" ${readOnly ? "disabled" : ""}>${advancedTypeOptions}</select></label><label>Node ID<input value="${escapeHtml(node.id)}" data-field="node.id" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label>Maximum attempts<input type="number" min="1" max="10" value="${node.retry_policy.max_attempts}" data-field="node.retry_policy.max_attempts" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label>Backoff seconds<input type="number" min="0" max="300" value="${node.retry_policy.backoff_seconds}" data-field="node.retry_policy.backoff_seconds" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label>Timeout seconds<input type="number" min="1" value="${node.timeout_seconds}" data-field="node.timeout_seconds" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label>Parallel steps<input type="number" min="1" value="${node.parallelism}" data-field="node.parallelism" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /></label><label class="span-2">Narrow Skills for this step<input value="${escapeHtml(node.allowed_skills.join(", "))}" list="skill-options" data-field="node.allowed_skills" data-index="${selection.index}" ${readOnly ? "disabled" : ""} /><small class="field-hint">Optional: restrict the selected Agent's Skills for this step. This cannot add Skills or permissions.</small></label><label class="span-2">Raw config JSON<textarea class="code" rows="6" data-field="node.config" data-index="${selection.index}" ${readOnly ? "disabled" : ""}>${escapeHtml(prettyJson(node.config))}</textarea></label><label class="span-2">Human input schema<textarea class="code" rows="5" data-field="node.human_input_schema" data-index="${selection.index}" ${readOnly ? "disabled" : ""}>${escapeHtml(node.human_input_schema ? prettyJson(node.human_input_schema) : "")}</textarea></label></div></details>
+      <div class="workflow-inspector-footer"><button class="secondary danger" data-action="remove-node" data-index="${selection.index}" ${readOnly ? "disabled" : ""}>Delete step</button></div>
+    </aside>`;
 }
 
 function renderNode(node, index, readOnly) {
@@ -13699,7 +15275,7 @@ function renderNode(node, index, readOnly) {
           </select>
         </label>
         <label>Name<input value="${escapeHtml(node.name)}" data-field="node.name" data-index="${index}" ${readOnly ? "disabled" : ""} /></label>
-        <label>Agent<input value="${escapeHtml(node.agent_profile || "")}" list="agent-profile-options" data-field="node.agent_profile" data-index="${index}" ${readOnly || node.type === "end" ? "disabled" : ""} /></label>
+        <label>Agent<input value="${escapeHtml(node.agent_id || "")}" list="agent-options" data-field="node.agent_id" data-index="${index}" ${readOnly || node.type === "end" ? "disabled" : ""} /></label>
         <label>Skills<input value="${escapeHtml(skills)}" list="skill-options" data-field="node.allowed_skills" data-index="${index}" ${readOnly ? "disabled" : ""} /></label>
         <label>Approval
           <select data-field="node.approval_kind" data-index="${index}" ${readOnly ? "disabled" : ""}>
@@ -13742,20 +15318,22 @@ function renderEdge(edge, index, readOnly) {
 
 function renderViewTabs() {
   const tabs = [
-    { id: "plan", label: "Plan", description: "Intent to DAG draft" },
-    { id: "template", label: "Template", description: "Basics and policy" },
-    { id: "dag", label: "DAG", description: "Nodes and edges" },
-    { id: "registry", label: "Registry", description: "Agents and skills" },
-    { id: "review", label: "Review", description: "Validate and publish" },
+    { id: "template", label: "Overview", description: "Name and intended outcome" },
+    { id: "dag", label: "Flow", description: "Steps and branches" },
+    { id: "controls", label: "Controls", description: "Human checkpoints" },
+    { id: "review", label: "Test & publish", description: "Validate and release" },
   ];
   return `
-    <nav class="view-tabs" aria-label="Workspace sections">
+    <nav class="workflow-step-nav" aria-label="Workflow authoring steps">
       ${tabs
         .map(
           (tab) => `
-            <button class="view-tab ${state.activeView === tab.id ? "selected" : ""}" data-action="switch-view" data-view="${tab.id}">
+            <button class="workflow-step-tab ${state.activeView === tab.id ? "selected" : ""}" data-action="switch-view" data-view="${tab.id}" aria-current="${state.activeView === tab.id ? "step" : "false"}">
+              <span class="workflow-step-number">${tabs.indexOf(tab) + 1}</span>
+              <span>
               <strong>${tab.label}</strong>
               <small>${tab.description}</small>
+              </span>
             </button>
           `,
         )
@@ -13764,152 +15342,442 @@ function renderViewTabs() {
   `;
 }
 
+function renderWorkflowIoPanel(readOnly) {
+  return `
+    <section class="panel workflow-contract-panel">
+      <div class="panel-header"><div><h3>Inputs & outputs</h3><p>Describe the business data this workflow receives and delivers.</p></div></div>
+      <div class="form-grid">
+        <label class="span-2">Input contract<textarea class="code" rows="10" data-field="template.inputSchemaText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.inputSchemaText)}</textarea><small class="field-hint">Use JSON Schema for fields the first step can rely on.</small></label>
+        <label>Expected outputs<textarea class="code" rows="8" data-field="template.metadataText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.metadataText)}</textarea><small class="field-hint">Declare files, records, or decisions the workflow should return.</small></label>
+        <label>Runtime policy<textarea class="code" rows="8" data-field="template.policyText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.policyText)}</textarea><small class="field-hint">Advanced policy remains available here until the visual policy editor is enabled.</small></label>
+      </div>
+    </section>
+  `;
+}
+
+function renderWorkflowControlsPanel(readOnly) {
+  const policy = parseJsonObject(state.editor.policyText);
+  const approvalPolicy = policy.ok && policy.value.approval_policy && typeof policy.value.approval_policy === "object" ? policy.value.approval_policy : {};
+  return `
+    <section class="panel workflow-controls-panel">
+      <div class="panel-header"><div><h3>Human controls</h3><p>Decide where the workflow must pause for a person.</p></div></div>
+      <div class="workflow-control-list">
+        <label class="workflow-toggle-row"><input type="checkbox" data-field="workflow.controlRequireApproval" ${approvalPolicy.require_before_write ? "checked" : ""} ${readOnly ? "disabled" : ""} /><span><strong>Require approval before write actions</strong><small>Write-capable steps pause in Inbox until approved.</small></span></label>
+        <label class="workflow-toggle-row"><input type="checkbox" data-field="workflow.controlRequireInput" ${approvalPolicy.require_human_input ? "checked" : ""} ${readOnly ? "disabled" : ""} /><span><strong>Allow human input gates</strong><small>Steps can ask the user for missing decisions or data.</small></span></label>
+      </div>
+      <details class="workflow-advanced-details"><summary>Advanced policy JSON</summary><textarea class="code" rows="10" data-field="template.policyText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.policyText)}</textarea></details>
+    </section>
+  `;
+}
+
 function renderTemplateBasicsPanel(readOnly) {
   return `
     <section class="panel editor-panel">
       <div class="panel-header">
-        <div><h3>Template basics</h3><p>Name, description, workspace, schema, policy, and metadata.</p></div>
+        <div><h3>Workflow overview</h3><p>Give this workflow a clear business name and explain the outcome it should deliver.</p></div>
       </div>
       <div class="form-grid">
-        <label>Name<input value="${escapeHtml(state.editor.name)}" data-field="template.name" ${readOnly ? "disabled" : ""} /></label>
-        <label>Workspace<input value="${escapeHtml(state.editor.workspaceScope)}" data-field="template.workspaceScope" ${readOnly ? "disabled" : ""} /></label>
-        <label class="span-2">Description<textarea rows="3" data-field="template.description" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.description)}</textarea></label>
+        <label class="span-2">Name<input value="${escapeHtml(state.editor.name)}" data-field="template.name" placeholder="Customer support triage" ${readOnly ? "disabled" : ""} /></label>
+        <label class="span-2">What should this workflow accomplish?<textarea rows="6" data-field="template.description" placeholder="Describe the outcome in business language." ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.description)}</textarea></label>
       </div>
+      <div class="workflow-overview-guidance"><strong>Define delivery inside the Flow</strong><span>Each Agent step owns its input and expected outputs. The assigned Agent contributes its published Skills, Memory policy, model route, and permissions.</span></div>
+      <details class="workflow-advanced-details"><summary>Technical defaults</summary><div class="form-grid compact"><label class="span-2">Workspace scope<input value="${escapeHtml(state.editor.workspaceScope)}" data-field="template.workspaceScope" placeholder="default" ${readOnly ? "disabled" : ""} /></label><label>Input schema JSON<textarea class="code" rows="8" data-field="template.inputSchemaText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.inputSchemaText)}</textarea></label><label>Metadata JSON<textarea class="code" rows="8" data-field="template.metadataText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.metadataText)}</textarea></label></div></details>
     </section>
-    <section class="panel json-panel wide-panel">
-      <div class="panel-header"><h3>Schema & policy</h3></div>
-      <div class="json-edit-grid">
-        <label>Input schema<textarea class="code" rows="12" data-field="template.inputSchemaText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.inputSchemaText)}</textarea></label>
-        <label>Policy<textarea class="code" rows="12" data-field="template.policyText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.policyText)}</textarea></label>
-        <label>Agent bindings<textarea class="code" rows="7" data-field="template.bindingsText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.bindingsText)}</textarea></label>
-        <label>Metadata<textarea class="code" rows="7" data-field="template.metadataText" ${readOnly ? "disabled" : ""}>${escapeHtml(state.editor.metadataText)}</textarea></label>
-      </div>
-    </section>
-    ${renderLineagePanel(readOnly)}
   `;
 }
 
 function renderDagEditorPanel(readOnly) {
+  const selection = state.ui.authoringGraphSelection;
+  const hasInspector =
+    (selection?.type === "node" && Boolean(state.editor.nodes[selection.index])) ||
+    (selection?.type === "edge" && Boolean(state.editor.edges[selection.index]));
+  const inspectorContent = hasInspector ? renderWorkflowSelectionInspector(readOnly) : "";
   return `
-    ${renderAuthoringGraphCanvas(readOnly)}
-
-    <section class="panel graph-panel">
-      <div class="panel-header">
-        <div><h3>Nodes</h3><p>${state.editor.nodes.length} configured task or control nodes.</p></div>
-        <button class="secondary" data-action="add-node" ${readOnly ? "disabled" : ""}>Add node</button>
-      </div>
-      <div class="node-list">${state.editor.nodes.map((node, index) => renderNode(node, index, readOnly)).join("")}</div>
-    </section>
-
-    <section class="panel graph-panel">
-      <div class="panel-header">
-        <div><h3>Edges</h3><p>${state.editor.edges.length} transitions between nodes.</p></div>
-        <button class="secondary" data-action="add-edge" ${readOnly ? "disabled" : ""}>Add edge</button>
-      </div>
-      <div class="edge-list">${state.editor.edges.map((edge, index) => renderEdge(edge, index, readOnly)).join("")}</div>
-    </section>
+    <div class="workflow-canvas-shell ${hasInspector ? "has-inspector" : ""} ${state.ui.authoringCanvasExpanded ? "is-expanded" : ""}">
+      ${renderAuthoringGraphCanvas(readOnly, inspectorContent)}
+    </div>
   `;
 }
 
 function renderReviewPanel(input) {
+  const topology = validateGraphTopology(state.editor);
+  const reviewWarnings = [
+    ...topology.errors.map((error) => error.message),
+    ...input.warnings,
+  ];
   return `
     <section class="panel preview-panel wide-panel">
       <div class="panel-header">
-        <div><h3>Validation preview</h3><p>Review graph warnings and the final template payload before saving or publishing.</p></div>
+        <div><h3>Test & publish</h3><p>Validate the workflow, inspect the payload, then publish a saved draft.</p></div>
+        <button class="primary" data-action="publish-draft" ${state.publishing || state.editor.status !== "draft" ? "disabled" : ""}>${state.publishing ? "Publishing..." : "Publish"}</button>
       </div>
       ${
-        input.warnings.length
-          ? `<ul class="warning-list">${input.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+        reviewWarnings.length
+          ? `<ul class="warning-list">${reviewWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
           : '<p class="muted">No local graph warnings.</p>'
       }
-      <pre>${escapeHtml(prettyJson(input.preview))}</pre>
+      <details class="workflow-advanced-details"><summary>Technical payload</summary><pre>${escapeHtml(prettyJson(input.preview))}</pre></details>
     </section>
   `;
 }
 
-function renderAgentHostingPanel() {
-  const runtime = state.runtimeSummary?.execution_runtime || null;
-  const hosting = state.runtimeSummary?.agent_hosting || null;
-  const hostedProfiles = hosting?.profiles || [];
-  const registeredAdapters = Array.isArray(runtime?.registered_adapter_kinds)
-    ? runtime.registered_adapter_kinds
-    : [];
-  const readyCount = hostedProfiles.filter((profile) => profile.health?.status === "ready").length;
-  const needsBindingCount = hostedProfiles.filter((profile) => profile.health?.status === "needs_binding").length;
+function agentDraftStorageKey(agentId = state.agentOrchestration.editingAgentId) {
+  const workspace = state.security.workspaceId || "default";
+  return `${STUDIO_AGENT_DRAFT_STORAGE}:${workspace}:${agentId || "new"}`;
+}
 
-  return `
-    <div class="agent-hosting-workspace">
-      <section class="panel agent-hosting-panel">
-        <div class="panel-header">
-          <div><h3>Subagent Hosting</h3><p>Runtime ownership with My Mate registry bindings.</p></div>
-          <button class="secondary" data-action="refresh-runtime" ${state.runtimeLoading ? "disabled" : ""}>${state.runtimeLoading ? "Refreshing..." : "Refresh"}</button>
-        </div>
-        <div class="workspace-summary-grid compact-summary">
-          <div class="summary-stat">
-            <strong>Hosted</strong>
-            <p>${escapeHtml(String(hostedProfiles.length))}</p>
-          </div>
-          <div class="summary-stat">
-            <strong>Ready</strong>
-            <p>${escapeHtml(String(readyCount))}</p>
-          </div>
-          <div class="summary-stat">
-            <strong>Needs Binding</strong>
-            <p>${escapeHtml(String(needsBindingCount))}</p>
-          </div>
-          <div class="summary-stat">
-            <strong>Runtime</strong>
-            <p>${escapeHtml(getRuntimeExecutionLabel(runtime))}</p>
-          </div>
-          <div class="summary-stat">
-            <strong>Adapters</strong>
-            <p>${escapeHtml(registeredAdapters.join(", ") || "none")}</p>
-          </div>
-        </div>
-        <div class="hosting-list expanded">
-          ${
-            hostedProfiles.length
-              ? hostedProfiles
-                  .map(
-                    (profile) => `
-                      <div class="hosting-item">
-                        <div>
-                          <strong>${escapeHtml(profile.profile_id)}</strong>
-                          <p>${escapeHtml(profile.name)} / ${escapeHtml(runtimeAgentRefOf(profile) || "unbound")}</p>
-                        </div>
-                        <div class="hosting-meta">
-                          <span>${escapeHtml(profile.provider || "provider unset")}</span>
-                          <span>${escapeHtml(profile.model || "model unset")}</span>
-                          <span>${escapeHtml(profile.runtime_mode || runtime?.bridge_execution_mode || "runtime default")}</span>
-                        </div>
-                        <span class="badge ${profile.health?.status === "ready" ? "success" : profile.health?.status === "disabled" ? "neutral" : "warn"}">${escapeHtml(profile.health?.status || "unknown")}</span>
-                        <button class="mini-button" data-action="edit-agent-profile-from-hosting" data-id="${escapeHtml(profile.profile_id)}">Edit</button>
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : '<p class="muted">No agent profiles have been registered yet.</p>'
-          }
+function readLocalAgentDraft(agentId) {
+  try {
+    const raw = globalThis.localStorage?.getItem(agentDraftStorageKey(agentId));
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    return saved?.draft && typeof saved.draft === "object" ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
+function removeLocalAgentDraft(agentId = state.agentOrchestration.editingAgentId) {
+  globalThis.localStorage?.removeItem(agentDraftStorageKey(agentId));
+}
+
+function markAgentDraftDirty() {
+  state.agentOrchestration.agentDraftDirty = true;
+}
+
+function saveLocalAgentDraft() {
+  const orchestration = state.agentOrchestration;
+  const savedAt = new Date().toISOString();
+  globalThis.localStorage?.setItem(agentDraftStorageKey(), JSON.stringify({
+    saved_at: savedAt,
+    editing_agent_id: orchestration.editingAgentId || null,
+    draft: orchestration.agentDraft,
+  }));
+  orchestration.agentDraftDirty = false;
+  orchestration.agentDraftSavedAt = savedAt;
+  orchestration.agentDraftRestored = false;
+  state.notice = `Agent draft saved locally at ${formatWorkspaceTimestamp(savedAt)}.`;
+  render();
+}
+
+function agentDraftValidation(draft) {
+  const issues = [];
+  if (!draft.name.trim()) issues.push("Add an Agent name.");
+  if (!draft.responsibility.trim()) issues.push("Define the responsibility this Agent owns.");
+  issues.push(...validateAgentModelBinding(draft, state.providerConnections));
+  const inputContract = parseJsonObject(draft.inputContractText);
+  const outputContract = parseJsonObject(draft.outputContractText);
+  if (!inputContract.ok) issues.push(`Input contract: ${inputContract.message}`);
+  if (!outputContract.ok) issues.push(`Output contract: ${outputContract.message}`);
+  return issues;
+}
+
+function syncAgentModelBindingSummary() {
+  const summary = document.querySelector(".agent-model-binding-summary");
+  if (!summary) return;
+  const draft = state.agentOrchestration.agentDraft;
+  const binding = modelOptionsForConnection(state.providerConnections, draft.connectionId, draft.model);
+  const ready = isUsableAgentConnection(binding.connection) && Boolean(draft.model) && !binding.unavailableModel;
+  const unbound = !draft.connectionId && !draft.model;
+  summary.classList.toggle("is-ready", ready);
+  summary.classList.toggle("is-blocked", !ready && !unbound);
+  const title = summary.querySelector("strong");
+  const detail = summary.querySelector("small");
+  if (title) title.textContent = ready ? "Pinned and ready" : unbound ? "Unbound design asset" : "Model binding required";
+  if (detail) {
+    detail.textContent = unbound
+      ? "This Agent can be assigned while designing; bind a verified model before execution."
+      : binding.connection
+        ? `${binding.connection.name} / ${draft.model || "select a model"}`
+        : "Configure and verify a Provider Connection in Settings first.";
+  }
+}
+
+function setCsvMembership(raw, value, included) {
+  const items = new Set(parseCsv(raw));
+  if (included) items.add(value);
+  else items.delete(value);
+  return [...items].filter(Boolean).sort().join(", ");
+}
+
+function setAgentCapabilityState(capabilityId, nextState) {
+  if (!capabilityId) return;
+  const draft = state.agentOrchestration.agentDraft;
+  draft.allowedTools = setCsvMembership(draft.allowedTools, capabilityId, nextState === "authorized");
+  draft.deniedTools = setCsvMembership(draft.deniedTools, capabilityId, nextState === "restricted");
+  markAgentDraftDirty();
+  render();
+}
+
+function applyAgentCapabilityBatch(mode) {
+  const draft = state.agentOrchestration.agentDraft;
+  const capabilities = state.agentCapabilities.filter((capability) => capability.kind === "tool");
+  if (mode === "authorize-safe") {
+    for (const capability of capabilities) {
+      if (capability.enabled === false || capability.risk_level === "T2") continue;
+      draft.allowedTools = setCsvMembership(draft.allowedTools, capability.capability_id, true);
+      draft.deniedTools = setCsvMembership(draft.deniedTools, capability.capability_id, false);
+    }
+  } else if (mode === "restrict-sensitive") {
+    for (const capability of capabilities) {
+      if (capability.enabled !== false && capability.risk_level !== "T2") continue;
+      draft.allowedTools = setCsvMembership(draft.allowedTools, capability.capability_id, false);
+      draft.deniedTools = setCsvMembership(draft.deniedTools, capability.capability_id, true);
+    }
+  } else {
+    for (const capability of capabilities) {
+      draft.allowedTools = setCsvMembership(draft.allowedTools, capability.capability_id, false);
+      draft.deniedTools = setCsvMembership(draft.deniedTools, capability.capability_id, false);
+    }
+  }
+  markAgentDraftDirty();
+  render();
+}
+
+async function requestCloseAgentDefinitionEditor() {
+  if (state.agentOrchestration.agentDraftDirty) {
+    const discard = await studioConfirm({
+      type: "warning",
+      title: "Discard unsaved Agent changes?",
+      message: "This editor contains changes that have not been saved as a local draft or published.",
+      detail: "Save the draft first if you want to continue later.",
+      confirmLabel: "Discard changes",
+      destructive: true,
+    });
+    if (!discard) return;
+  }
+  closeAgentDefinitionEditor();
+}
+
+async function reviewAndPublishAgent() {
+  const draft = state.agentOrchestration.agentDraft;
+  const issues = agentDraftValidation(draft);
+  if (issues.length) {
+    state.agentOrchestration.agentValidationVisible = true;
+    state.agentOrchestration.error = issues.join(" ");
+    render();
+    document.querySelector(".agent-editor-validation")?.scrollIntoView?.({ block: "nearest" });
+    return;
+  }
+  const allowed = parseCsv(draft.allowedTools);
+  const denied = parseCsv(draft.deniedTools);
+  const confirmed = await studioConfirm({
+    type: "question",
+    title: state.agentOrchestration.editingAgentId ? "Publish a new Agent version?" : "Publish this Agent?",
+    message: `${draft.name} will become available to the orchestrator after publication.`,
+    detail: [
+      `Role: ${draft.role}`,
+      `Authorized capabilities: ${allowed.length}`,
+      `Restricted capabilities: ${denied.length}`,
+      `Pinned Skills: ${draft.lockedSkills.length}`,
+      `Model: ${draft.connectionId && draft.model ? `${draft.connectionId} / ${draft.model}` : "Unbound (configure before execution)"}`,
+    ].join("\n"),
+    confirmLabel: state.agentOrchestration.editingAgentId ? "Publish new version" : "Publish Agent",
+  });
+  if (confirmed) await createAgentFromEditor();
+}
+
+function repairAgentReadiness(agentId) {
+  const readiness = state.agentReadiness.find((item) => item.agent_id === agentId) || null;
+  const issueText = (readiness?.issues || []).join(" ");
+  if (/provider|connection|model/i.test(issueText)) {
+    openStudioSetup("model");
+    return;
+  }
+  if (/skill/i.test(issueText)) {
+    state.activeNav = "library";
+    buildStudioLocationState();
+    render();
+    return;
+  }
+  openAgentDefinitionEditor(agentId);
+  window.setTimeout(() => document.querySelector("[data-agent-capabilities]")?.scrollIntoView?.({ block: "start" }), 0);
+}
+
+function getAgentSkillOptions() {
+  const options = new Map();
+  for (const skill of state.skills) {
+    if (skill.status !== "disabled" && skill.skill_id) options.set(skill.skill_id, skill.name || skill.skill_id);
+  }
+  for (const entry of state.skillHost.lockfile?.entries || []) {
+    if (entry.skill_id && !options.has(entry.skill_id)) options.set(entry.skill_id, entry.skill_id);
+  }
+  return [...options.entries()].map(([id, name]) => ({ id, name })).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function renderAgentDefinitionEditor() {
+  const orchestration = state.agentOrchestration;
+  const draft = orchestration.agentDraft;
+  const editing = !!orchestration.editingAgentId;
+  const skillOptions = getAgentSkillOptions();
+  const capabilityOptions = state.agentCapabilities.filter((capability) => capability.kind === "tool" && capability.enabled !== false);
+  const selectedCapabilities = new Set(parseCsv(draft.allowedTools));
+  const deniedCapabilities = new Set(parseCsv(draft.deniedTools));
+  const validationIssues = agentDraftValidation(draft);
+  const activeConnections = agentConnectionOptions(state.providerConnections, draft.connectionId);
+  const selectedModelBinding = modelOptionsForConnection(state.providerConnections, draft.connectionId, draft.model);
+  const selectedConnection = selectedModelBinding.connection;
+  const selectedConnectionUsable = isUsableAgentConnection(selectedConnection);
+  const modelBindingReady = selectedConnectionUsable && draft.model && !selectedModelBinding.unavailableModel;
+  const modelBindingUnbound = !draft.connectionId && !draft.model;
+  const roles = [
+    ["orchestrator", "Main Orchestrator"],
+    ["specialist", "Specialist"],
+    ["reviewer", "Reviewer"],
+    ["supervisor", "Supervisor"],
+    ["worker", "General Worker"],
+  ];
+  return `<section class="agent-editor" aria-label="${editing ? "Edit Agent" : "New Agent"}">
+    <header class="agent-editor-header">
+      <div><span class="agent-eyebrow">${editing ? `${escapeHtml(orchestration.editingAgentId)} / immutable version` : "New capability profile"}</span><h3>${editing ? escapeHtml(draft.name) : "Create an Agent"}</h3><p>Identity, responsibility, capabilities, contracts, and model routing.</p></div>
+      <button class="icon-button" data-action="close-agent-creator" title="Close editor" aria-label="Close editor">&times;</button>
+    </header>
+    ${orchestration.agentValidationVisible && validationIssues.length ? `<div class="agent-editor-validation alert danger" role="alert"><strong>Finish required fields before publishing</strong><ul>${validationIssues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}</ul></div>` : orchestration.agentDraftRestored ? `<div class="agent-editor-validation alert info" role="status"><strong>Local draft restored</strong><span>Review the changes, save again, or publish when ready.</span></div>` : ""}
+    <div class="agent-editor-scroll">
+      <section class="agent-editor-section">
+        <div class="agent-section-title"><strong>Overview</strong><small>Reusable identity and ownership boundary.</small></div>
+        <div class="form-grid compact">
+          <label>Name<input data-field="agentDefinition.name" value="${escapeHtml(draft.name)}" placeholder="Research Analyst" /></label>
+          <label>Role<select data-field="agentDefinition.role">${roles.map(([id, label]) => `<option value="${id}" ${draft.role === id ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+          <label class="span-2">Catalog summary<textarea rows="2" data-field="agentDefinition.description" placeholder="Short summary shown in the Agent catalog.">${escapeHtml(draft.description)}</textarea></label>
+          <label class="span-2">Responsibility<textarea rows="3" data-field="agentDefinition.responsibility" placeholder="The outcome this Agent owns.">${escapeHtml(draft.responsibility)}</textarea></label>
         </div>
       </section>
-      <section class="panel registry-manager-panel">
-        ${renderAgentProfileManager()}
+      <section class="agent-editor-section">
+        <div class="agent-section-title"><strong>Instructions</strong><small>Stable operating guidance for every binding.</small></div>
+        <label><textarea rows="7" data-field="agentDefinition.systemPrompt">${escapeHtml(draft.systemPrompt)}</textarea></label>
       </section>
+      <section class="agent-editor-section">
+        <div class="agent-section-title"><strong>Capabilities</strong><small>Choose what this Agent may use. Restricted means the capability is explicitly denied even when it exists in the Workspace.</small></div>
+        <div class="agent-capability-toolbar"><span class="agent-capability-legend"><span class="badge neutral">Available</span><span class="badge success">Authorized</span><span class="badge danger">Restricted</span></span><div class="agent-inline-actions"><button class="secondary compact-button" data-action="agent-capability-batch" data-mode="authorize-safe" type="button">Authorize safe</button><button class="secondary compact-button" data-action="agent-capability-batch" data-mode="restrict-sensitive" type="button">Restrict sensitive</button><button class="secondary compact-button" data-action="agent-capability-batch" data-mode="clear" type="button">Clear</button></div></div>
+        <div class="agent-capability-grid" data-agent-capabilities role="list" aria-label="Agent capabilities">${capabilityOptions.length ? capabilityOptions.map((capability) => { const capabilityId = capability.capability_id; const capabilityState = deniedCapabilities.has(capabilityId) ? "restricted" : selectedCapabilities.has(capabilityId) ? "authorized" : "available"; return `<article class="agent-capability-card state-${capabilityState}" role="listitem"><header><div><strong>${escapeHtml(capability.name || capabilityId)}</strong><small>${escapeHtml(capabilityId)}</small></div><span class="badge ${capabilityState === "authorized" ? "success" : capabilityState === "restricted" ? "danger" : "neutral"}">${capabilityState === "authorized" ? "Authorized" : capabilityState === "restricted" ? "Restricted" : "Available"}</span></header><p>${escapeHtml(capability.description || "No description available.")}</p><div class="agent-capability-meta"><span>${escapeHtml(`${capability.executor} / ${capability.risk_level}`)}</span>${capability.enabled === false ? '<span class="badge danger">Disabled</span>' : ""}</div><div class="agent-capability-states" role="radiogroup" aria-label="${escapeHtml(capability.name || capabilityId)} access"><button type="button" role="radio" aria-checked="${capabilityState === "available"}" class="${capabilityState === "available" ? "selected" : ""}" data-action="set-agent-capability-state" data-capability-id="${escapeHtml(capabilityId)}" data-state="available">Available</button><button type="button" role="radio" aria-checked="${capabilityState === "authorized"}" class="${capabilityState === "authorized" ? "selected" : ""}" data-action="set-agent-capability-state" data-capability-id="${escapeHtml(capabilityId)}" data-state="authorized">Authorize</button><button type="button" role="radio" aria-checked="${capabilityState === "restricted"}" class="${capabilityState === "restricted" ? "selected danger" : ""}" data-action="set-agent-capability-state" data-capability-id="${escapeHtml(capabilityId)}" data-state="restricted">Restrict</button></div></article>`; }).join("") : '<p class="muted">No registered tool capability is available.</p>'}</div>
+        <div class="agent-skill-heading"><strong>Skills</strong><small>Pin reusable procedures into the published Agent version.</small></div>
+        <div class="agent-skill-picker">${skillOptions.length ? skillOptions.map((skill) => `<label class="agent-skill-option"><input type="checkbox" data-field="agentDefinition.lockedSkill" data-skill-id="${escapeHtml(skill.id)}" ${draft.lockedSkills.includes(skill.id) ? "checked" : ""} /><span><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.id)}</small></span><span class="badge ${draft.lockedSkills.includes(skill.id) ? "success" : "neutral"}">${draft.lockedSkills.includes(skill.id) ? "Pinned" : "Available"}</span></label>`).join("") : '<p class="muted">No installed Skill is available yet.</p>'}</div>
+        <div class="form-grid compact">
+          <label class="span-2">Capability tags<input data-field="agentDefinition.capabilityTags" value="${escapeHtml(draft.capabilityTags)}" placeholder="frontend, typescript, accessibility" /></label>
+          <label class="span-2">Denied Skills<input data-field="agentDefinition.deniedSkills" value="${escapeHtml(draft.deniedSkills)}" placeholder="Comma-separated Skill IDs" /></label>
+        </div>
+        <div class="agent-toggle-grid"><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.dynamicSkillActivation" ${draft.dynamicSkillActivation ? "checked" : ""} /><span><strong>Dynamic Skills</strong><small>May activate another installed Skill.</small></span></label><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.allowDelegation" ${draft.allowDelegation ? "checked" : ""} /><span><strong>Sub Agent delegation</strong><small>May delegate within the DAG depth and budget.</small></span></label></div>
+      </section>
+      <section class="agent-editor-section">
+        <div class="agent-section-title"><strong>Execution contract</strong><small>Structured handoff and acceptance boundary.</small></div>
+        <div class="form-grid compact">
+          <label>Input contract<textarea class="code" rows="5" data-field="agentDefinition.inputContractText">${escapeHtml(draft.inputContractText)}</textarea></label>
+          <label>Output contract<textarea class="code" rows="5" data-field="agentDefinition.outputContractText">${escapeHtml(draft.outputContractText)}</textarea></label>
+          <label>Acceptance criteria<textarea rows="4" data-field="agentDefinition.acceptanceCriteriaText" placeholder="One criterion per line">${escapeHtml(draft.acceptanceCriteriaText)}</textarea></label>
+          <label>Verification steps<textarea rows="4" data-field="agentDefinition.verificationStepsText" placeholder="One check per line">${escapeHtml(draft.verificationStepsText)}</textarea></label>
+        </div>
+      </section>
+      <section class="agent-editor-section agent-model-binding-section">
+        <div class="agent-section-title"><strong>Model</strong><small>Optional while designing. A verified Connection and model are required before execution.</small></div>
+        <div class="agent-model-binding-grid">
+          <label>Provider Connection<select data-field="agentDefinition.connectionId"><option value="">No model binding yet</option>${activeConnections.map((connection) => { const usable = isUsableAgentConnection(connection); return `<option value="${escapeHtml(connection.connection_id)}" ${draft.connectionId === connection.connection_id ? "selected" : ""}>${escapeHtml(`${connection.name} / ${connection.provider || connection.protocol || "provider"}${usable ? "" : " (unavailable)"}`)}</option>`; }).join("")}</select></label>
+          <label>Model<select data-field="agentDefinition.model" ${draft.connectionId ? "" : "disabled"}><option value="">${draft.connectionId ? "Select a model" : "Select a Connection first"}</option>${selectedModelBinding.unavailableModel ? `<option value="${escapeHtml(selectedModelBinding.unavailableModel)}" selected>${escapeHtml(`${selectedModelBinding.unavailableModel} (unavailable)`)}</option>` : ""}${selectedModelBinding.models.map((model) => `<option value="${escapeHtml(model)}" ${draft.model === model ? "selected" : ""}>${escapeHtml(model)}</option>`).join("")}</select></label>
+        </div>
+        <div class="agent-model-binding-summary ${modelBindingReady ? "is-ready" : modelBindingUnbound ? "" : "is-blocked"}">
+          <span class="agent-model-binding-indicator" aria-hidden="true"></span>
+          <span><strong>${modelBindingReady ? "Pinned and ready" : modelBindingUnbound ? "Unbound design asset" : "Model binding required"}</strong><small>${modelBindingUnbound ? "Assign this Agent while designing, then bind a verified model before execution." : selectedConnection ? escapeHtml(`${selectedConnection.name} / ${draft.model || "select a model"}`) : "Configure and verify a Provider Connection in Settings first."}</small></span>
+        </div>
+        <details class="agent-model-routing-advanced"><summary><span><strong>Advanced routing</strong><small>Cost, quality, fallback, and escalation policy.</small></span></summary><div class="form-grid compact"><label>Preference<select data-field="agentDefinition.routingPreference">${["quality", "balanced", "cost", "latency"].map((preference) => `<option value="${preference}" ${draft.routingPreference === preference ? "selected" : ""}>${preference}</option>`).join("")}</select></label><label>Fallback models<input data-field="agentDefinition.fallbackModels" value="${escapeHtml(draft.fallbackModels)}" placeholder="model-b, model-c" /></label></div><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.allowModelEscalation" ${draft.allowModelEscalation ? "checked" : ""} /><span><strong>Model escalation</strong><small>Reviewer failure may promote a later attempt.</small></span></label></details>
+      </section>
+      <details class="agent-advanced-orchestration"><summary><span><strong>Advanced policy overrides</strong><small>Memory, continuation, sandbox, budget, and permission ceilings.</small></span></summary><div class="agent-editor-section"><div class="form-grid compact"><label>Autonomy ceiling<select data-field="agentDefinition.autonomyMode">${["review_first", "assisted", "autopilot"].map((mode) => `<option value="${mode}" ${draft.autonomyMode === mode ? "selected" : ""}>${mode.replace("_", " ")}</option>`).join("")}</select></label><label>Memory writes<select data-field="agentDefinition.memoryWriteMode">${["disabled", "review", "automatic"].map((mode) => `<option value="${mode}" ${draft.memoryWriteMode === mode ? "selected" : ""}>${mode}</option>`).join("")}</select></label><label>Compress at %<input type="number" min="50" max="95" data-field="agentDefinition.compressionThreshold" value="${escapeHtml(String(draft.compressionThreshold))}" /></label><label>Continuation rounds<input type="number" min="0" max="32" data-field="agentDefinition.continuationRounds" value="${escapeHtml(String(draft.continuationRounds))}" /></label><label>Sandbox<select data-field="agentDefinition.sandbox">${["auto", "docker", "isolated", "local"].map((mode) => `<option value="${mode}" ${draft.sandbox === mode ? "selected" : ""}>${mode}</option>`).join("")}</select></label><label>Timeout seconds<input type="number" min="30" max="86400" data-field="agentDefinition.timeoutSeconds" value="${escapeHtml(String(draft.timeoutSeconds))}" /></label><label>Maximum tool rounds<input type="number" min="1" max="128" data-field="agentDefinition.maxToolRounds" value="${escapeHtml(String(draft.maxToolRounds))}" /></label><label>Denied capabilities<input data-field="agentDefinition.deniedTools" value="${escapeHtml(draft.deniedTools)}" /></label></div><div class="agent-toggle-grid"><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.memoryEnabled" ${draft.memoryEnabled ? "checked" : ""} /><span><strong>Memory</strong><small>Durable task memory.</small></span></label><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.automaticRecall" ${draft.automaticRecall ? "checked" : ""} /><span><strong>Automatic recall</strong><small>Retrieve before turns.</small></span></label><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.compressionEnabled" ${draft.compressionEnabled ? "checked" : ""} /><span><strong>Context compression</strong><small>Compact before limits.</small></span></label><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.workspaceRead" ${draft.workspaceRead ? "checked" : ""} /><span><strong>Workspace read</strong><small>Capability ceiling.</small></span></label><label class="agent-toggle-row"><input type="checkbox" data-field="agentDefinition.workspaceWrite" ${draft.workspaceWrite ? "checked" : ""} /><span><strong>Workspace write</strong><small>Still subject to user authorization.</small></span></label></div></div></details>
     </div>
-  `;
+    <footer class="agent-editor-actions"><span>${editing ? `Next version: v${escapeHtml(String((state.agentDefinitions.find((item) => item.agent_id === orchestration.editingAgentId)?.latest_version || 0) + 1))}` : "New draft"}${orchestration.agentDraftSavedAt ? ` / saved ${escapeHtml(formatWorkspaceTimestamp(orchestration.agentDraftSavedAt))}` : ""}</span><div class="agent-editor-action-group">${editing ? `<button class="secondary danger-action" data-action="disable-agent-definition" ${orchestration.saving ? "disabled" : ""}>Disable</button>` : ""}<button class="secondary" data-action="close-agent-creator" type="button">Cancel</button><button class="secondary" data-action="save-agent-draft" type="button" ${orchestration.saving ? "disabled" : ""}>Save draft</button><button class="primary" data-action="create-agent-definition" type="button" ${orchestration.saving ? "disabled" : ""}>${orchestration.saving ? "Publishing..." : editing ? "Review and publish" : "Publish Agent"}</button></div></footer>
+  </section>`;
+}
+
+function renderAgentCatalog() {
+  const orchestration = state.agentOrchestration;
+  const activeDefinitions = state.agentDefinitions.filter((agent) => agent.status === "active");
+  const versionFor = (agent) => state.agentVersions.find((version) => version.agent_id === agent.agent_id && version.version === (agent.published_version || agent.latest_version)) || null;
+  const readinessFor = (agent) => state.agentReadiness.find((item) => item.agent_id === agent.agent_id && item.agent_version === (agent.published_version || agent.latest_version)) || null;
+  const renderAgentEntry = (agent) => {
+    const version = versionFor(agent);
+    const skills = version?.skill_policy?.locked_skills || [];
+    const readiness = readinessFor(agent);
+    const blocked = readiness?.state === "blocked";
+    const fixLabel = /provider|connection|model/i.test((readiness?.issues || []).join(" "))
+      ? "Fix model"
+      : /skill/i.test((readiness?.issues || []).join(" ")) ? "Review Skills" : "Repair";
+    return `<article class="agent-library-entry ${blocked ? "is-blocked" : ""}"><button class="agent-library-row ${orchestration.editingAgentId === agent.agent_id ? "selected" : ""}" data-action="edit-agent-definition" data-agent-id="${escapeHtml(agent.agent_id)}" aria-label="Edit ${escapeHtml(agent.name)}"><span class="agent-avatar">${escapeHtml((agent.name || "A").slice(0, 1).toUpperCase())}</span><span class="agent-library-copy"><strong>${escapeHtml(agent.name)}</strong><small>${escapeHtml(`${version?.role || "worker"} / v${agent.published_version || agent.latest_version}`)}</small><span>${escapeHtml(agent.description || (skills.length ? `${skills.length} locked Skills` : "No description"))}</span></span><span class="badge ${blocked ? "danger" : "success"}">${escapeHtml(readiness?.state || "ready")}</span><span class="agent-row-action">Edit</span></button>${blocked ? `<div class="agent-library-blocker" role="alert"><strong>Blocked</strong><span>${escapeHtml((readiness?.issues || []).join(" ") || "This Agent is not ready to run.")}</span><button type="button" class="secondary compact-button" data-action="repair-agent-readiness" data-agent-id="${escapeHtml(agent.agent_id)}">${fixLabel}</button></div>` : ""}</article>`;
+  };
+  return `<div class="agent-catalog-layout ${orchestration.agentCreateOpen ? "is-editing" : "is-browsing"}">
+    <section class="agent-library-pane">
+      <div class="agent-pane-heading"><div><strong>Agent library</strong><small>${activeDefinitions.length} available</small></div><button class="primary compact-button" data-action="open-agent-creator">New Agent</button></div>
+      <div class="agent-library-list">${activeDefinitions.map(renderAgentEntry).join("") || '<div class="agent-library-empty"><strong>No Agents yet</strong><p>Create focused Agents for research, coding, review, document production, or any reusable responsibility.</p></div>'}</div>
+    </section>
+    <section class="agent-detail-pane">${orchestration.agentCreateOpen ? renderAgentDefinitionEditor() : `<div class="agent-detail-empty"><span class="agent-empty-mark">A</span><h3>Reusable, versioned specialists</h3><p>Each Agent owns a responsibility, capability set, execution contract, and model-routing policy. Active DAG runs remain pinned to the version they started with.</p><button class="primary" data-action="open-agent-creator">Create Agent</button></div>`}</section>
+  </div>`;
+}
+
+function renderAgentOrchestrationDesign() {
+  const orchestration = state.agentOrchestration;
+  const activeDefinitions = state.agentDefinitions.filter((agent) => agent.status === "active");
+  const versionFor = (agentId) => state.agentVersions.find((version) => version.agent_id === agentId) || null;
+  const orchestrators = activeDefinitions.filter((agent) => versionFor(agent.agent_id)?.role === "orchestrator");
+  const workers = activeDefinitions.filter((agent) => ["worker", "specialist", "supervisor"].includes(versionFor(agent.agent_id)?.role));
+  const reviewers = activeDefinitions.filter((agent) => versionFor(agent.agent_id)?.role === "reviewer");
+  const templates = currentPublishedWorkflowTemplates(state.templates).slice(0, 6);
+  return `<div class="agent-design-surface">
+    <section class="agent-design-intro"><div><span class="agent-eyebrow">Recommended path</span><h3>Describe the workflow. Let the Main Agent design the graph.</h3><p>The Main Agent clarifies your goal, recommends suitable Agents and Skills, proposes an editable DAG, and only creates a run after you confirm it.</p></div><button class="primary agent-design-button" data-action="design-agent-dag">Design with Main Agent</button></section>
+    <section class="agent-design-band"><div class="agent-section-title"><strong>Start from a template</strong><small>Templates guide the conversation; they do not bypass review.</small></div><div class="agent-template-list">${templates.map((template) => `<button class="agent-template-row" data-action="design-agent-dag" data-template-id="${escapeHtml(template.template_id)}"><span><strong>${escapeHtml(template.name || template.template_id)}</strong><small>${escapeHtml(template.description || `${template.nodes?.length || 0} workflow nodes`)}</small></span><span>Discuss</span></button>`).join("") || '<p class="muted">No published workflow templates are available.</p>'}</div></section>
+    <section class="agent-design-band"><div class="agent-section-title"><strong>Available capabilities</strong><small>The designer can assign these pinned Agent versions.</small></div><div class="agent-roster">${activeDefinitions.map((agent) => { const version = versionFor(agent.agent_id); return `<span class="agent-roster-item"><strong>${escapeHtml(agent.name)}</strong><small>${escapeHtml(`${version?.role || "worker"} / ${(version?.skill_policy?.locked_skills || []).length} Skills`)}</small></span>`; }).join("") || '<p class="muted">Create at least one Agent before designing a multi-agent workflow.</p>'}</div></section>
+    <details class="agent-advanced-orchestration"><summary><span><strong>Advanced orchestration</strong><small>Manual graph creation and reusable execution policies.</small></span></summary>
+      <div class="agent-advanced-copy"><strong>What is an execution policy?</strong><p>An execution policy optionally pins a reusable group of Agents together with concurrency, delegation depth, budget, and Reviewer requirements. It is not required; the Main Agent can compile an equivalent policy for each confirmed workflow.</p></div>
+      <div class="agent-advanced-actions">${orchestration.teams.length ? "" : '<button class="primary" data-action="prepare-recommended-agent-policy">Add recommended policy</button>'}<button class="secondary" data-action="open-agent-team-creator">New execution policy</button><button class="secondary" data-action="new-template">Open visual DAG editor</button></div>
+      ${orchestration.teams.length ? `<div class="agent-policy-list">${orchestration.teams.map((team) => `<div><span><strong>${escapeHtml(team.name)}</strong><small>${escapeHtml(`${team.members?.length || 0} Agents / concurrency ${team.policy?.max_concurrency || 1} / depth ${team.policy?.max_delegation_depth || 0}`)}</small></span><span class="badge neutral">policy</span></div>`).join("")}</div>` : ""}
+      ${orchestration.teamCreateOpen ? `<div class="agent-inline-editor"><div class="form-grid compact"><label>Policy name<input data-field="agentTeam.name" value="${escapeHtml(orchestration.teamDraft.name)}" /></label><label>Main Agent<select data-field="agentTeam.orchestratorAgentId">${orchestrators.map((agent) => `<option value="${escapeHtml(agent.agent_id)}" ${orchestration.teamDraft.orchestratorAgentId === agent.agent_id ? "selected" : ""}>${escapeHtml(agent.name)}</option>`).join("")}</select></label><label>Worker<select data-field="agentTeam.workerAgentId"><option value="">Select Worker</option>${workers.map((agent) => `<option value="${escapeHtml(agent.agent_id)}" ${orchestration.teamDraft.workerAgentId === agent.agent_id ? "selected" : ""}>${escapeHtml(agent.name)}</option>`).join("")}</select></label><label>Reviewer<select data-field="agentTeam.reviewerAgentId"><option value="">No Reviewer</option>${reviewers.map((agent) => `<option value="${escapeHtml(agent.agent_id)}" ${orchestration.teamDraft.reviewerAgentId === agent.agent_id ? "selected" : ""}>${escapeHtml(agent.name)}</option>`).join("")}</select></label><label>Concurrency<input type="number" min="1" max="32" data-field="agentTeam.maxConcurrency" value="${escapeHtml(String(orchestration.teamDraft.maxConcurrency))}" /></label><label>Delegation depth<input type="number" min="0" max="8" data-field="agentTeam.maxDepth" value="${escapeHtml(String(orchestration.teamDraft.maxDepth))}" /></label></div><div class="agent-inline-actions"><button class="secondary" data-action="close-agent-team-creator">Cancel</button><button class="primary" data-action="create-agent-team" ${orchestration.saving || !orchestration.teamDraft.name.trim() || !orchestration.teamDraft.workerAgentId || !orchestration.teamDraft.orchestratorAgentId ? "disabled" : ""}>Save policy</button></div></div>` : ""}
+    </details>
+  </div>`;
+}
+
+function renderAgentRuns() {
+  const orchestration = state.agentOrchestration;
+  const selected = orchestration.detail;
+  const selectedDag = selected?.dag || null;
+  const aggregation = selected?.aggregation || null;
+  const selectedTasks = selected?.tasks || [];
+  const selectedMessages = selected?.messages || [];
+  const selectedGates = selected?.gates || [];
+  const pendingGates = selectedGates.filter((gate) => gate.status === "pending");
+  const retryableDag = !!selectedDag
+    && ["failed", "waiting_human"].includes(selectedDag.status)
+    && pendingGates.length === 0;
+  const aggregationNeedsRecovery = !!selectedDag
+    && ["completed", "failed", "cancelled"].includes(selectedDag.status)
+    && aggregation?.status !== "completed";
+  const nodes = `<div class="agent-dag-node-grid">${selectedDag?.nodes?.map((node) => { const task = selectedTasks.find((item) => item.task_id === node.task_id); const condition = node.condition ? `${node.condition.path} ${node.condition.operator}` : "Always"; return `<article class="agent-dag-node ${escapeHtml(node.status)}"><div><span class="status-dot ${node.status === "completed" ? "success" : node.status === "failed" ? "danger" : node.status === "blocked" ? "warn" : "neutral"}"></span><strong>${escapeHtml(node.name)}</strong><span class="badge neutral">${escapeHtml(node.kind || node.role)}</span></div><small>${escapeHtml(`${node.binding_snapshot.agent_name}@${node.binding_snapshot.agent_version}`)}</small><p>${escapeHtml(task?.objective || "")}</p><small>${escapeHtml(node.depends_on.length ? `${node.join_policy || "all"}: ${node.depends_on.join(", ")}` : "Root node")}</small><small>${escapeHtml(`Condition: ${condition}`)}</small></article>`; }).join("") || '<p class="muted">No nodes have been added.</p>'}</div>`;
+  const gates = pendingGates.length ? `<section class="agent-gate-list"><div class="section-heading"><strong>Human gates</strong><small>${pendingGates.length} pending</small></div>${pendingGates.map((gate) => `<article class="agent-gate-row"><div><strong>${escapeHtml(gate.prompt)}</strong><small>${escapeHtml(`${gate.gate_type} / ${gate.node_id}`)}</small></div>${gate.gate_type === "input" ? `<textarea rows="2" data-agent-gate-response="${escapeHtml(gate.gate_id)}" placeholder='Structured JSON or plain text'></textarea>` : ""}<div class="agent-gate-actions"><button class="secondary danger-action" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="false">Reject</button><button class="primary" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="true">${gate.gate_type === "input" ? "Submit" : "Approve"}</button></div></article>`).join("")}</section>` : "";
+  const stateView = `<details class="agent-dag-state"><summary>DAG state <span>revision ${selectedDag?.state_revision || 0}</span></summary><pre>${escapeHtml(JSON.stringify(selectedDag?.state || {}, null, 2).slice(0, 12000))}</pre></details>`;
+  const messages = `<details class="agent-protocol-log"><summary>Agent communication <span>${selectedMessages.length}</span></summary>${selectedMessages.map((message) => `<div class="agent-message-row"><span class="badge neutral">${escapeHtml(message.message_type)}</span><span><strong>${escapeHtml(message.task_id)}</strong><small>${escapeHtml(message.created_at)}</small></span><p>${escapeHtml(String(message.payload?.summary || message.payload?.message || message.payload?.objective || message.payload?.prompt || ""))}</p></div>`).join("") || '<p class="muted">No Agent messages yet.</p>'}</details>`;
+  const aggregationAlert = aggregationNeedsRecovery
+    ? `<div class="alert warn agent-aggregation-alert"><span><strong>Final summary ${aggregation?.status === "failed" ? "failed" : "is missing"}</strong><small>${escapeHtml(aggregation?.error_message || "Sub Agent work is complete. Retry only the Main Agent summary; completed nodes will not run again.")}</small></span><button class="primary" data-action="aggregate-agent-dag" data-dag-id="${escapeHtml(selectedDag.dag_id)}" ${orchestration.saving || aggregation?.status === "running" ? "disabled" : ""}>${aggregation?.status === "running" ? "Summarizing..." : "Retry final summary"}</button></div>`
+    : "";
+  return `<section class="agent-dag-workspace agent-runs-workspace"><div class="agent-dag-list"><div class="section-heading"><strong>DAG runs</strong><small>${orchestration.dags.length}</small></div>${orchestration.dags.map((dag) => `<button class="agent-dag-row ${orchestration.selectedDagId === dag.dag_id ? "selected" : ""}" data-action="select-agent-dag" data-dag-id="${escapeHtml(dag.dag_id)}"><span class="status-dot ${dag.status === "completed" ? "success" : dag.status === "failed" ? "danger" : dag.status === "waiting_human" ? "warn" : "neutral"}"></span><span><strong>${escapeHtml(dag.title)}</strong><small>${escapeHtml(`${dag.status} / ${dag.nodes?.length || 0} nodes / state r${dag.state_revision || 0}`)}</small></span></button>`).join("") || '<div class="agent-run-empty"><strong>No DAG runs yet</strong><p>Design a workflow with the Main Agent, confirm its proposal, then start the run.</p><button class="primary" data-action="design-agent-dag">Design workflow</button></div>'}</div>
+    <div class="agent-dag-detail"${selectedDag ? ` data-agent-dag-id="${escapeHtml(selectedDag.dag_id)}"` : ""}>${selectedDag ? `<div class="agent-dag-detail-header"><div><h3>${escapeHtml(selectedDag.title)}</h3><p>${escapeHtml(selectedDag.objective)}</p></div><div class="panel-actions"><span class="badge ${selectedDag.status === "completed" ? "success" : selectedDag.status === "failed" ? "danger" : "warn"}">${escapeHtml(selectedDag.status)}</span><button class="secondary" data-action="revise-agent-dag-proposal">Revise proposal</button><button class="primary" data-action="${retryableDag ? "retry-agent-dag" : "run-agent-dag"}" data-dag-id="${escapeHtml(selectedDag.dag_id)}" ${orchestration.saving || ["completed", "cancelled", "running"].includes(selectedDag.status) || (selectedDag.status === "waiting_human" && !retryableDag) ? "disabled" : ""}>${retryableDag ? "Retry" : "Run"}</button><button class="secondary danger-action" data-action="cancel-agent-dag" data-dag-id="${escapeHtml(selectedDag.dag_id)}" ${["completed", "cancelled"].includes(selectedDag.status) ? "disabled" : ""}>Cancel</button></div></div>${aggregationAlert}${gates}${nodes}${stateView}${messages}` : '<div class="agent-detail-empty"><h3>Select a DAG run</h3><p>Inspect routing, state, gates, results, retries, and Agent communication.</p></div>'}</div></section>`;
+}
+
+function renderAgentHostingPanel() {
+  const orchestration = state.agentOrchestration;
+  const errors = [...new Set([orchestration.registryError, orchestration.error].filter(Boolean))];
+  const tabs = [
+    ["agents", "Catalog", state.agentDefinitions.filter((agent) => agent.status === "active").length],
+    ["runs", "Activity", orchestration.dags.length],
+  ];
+  return `<div class="agents-page"><section class="agents-page-header"><div><h3>Agents</h3><p>Define reusable responsibilities and inspect their live delegated work.</p></div><div class="panel-actions"><button class="secondary" data-action="design-agent-dag">Design workflow</button><button class="secondary" data-action="refresh-agent-orchestration" ${orchestration.loading ? "disabled" : ""}>${orchestration.loading ? "Refreshing..." : "Refresh"}</button></div></section>${errors.map((message) => `<div class="alert danger">${escapeHtml(message)}</div>`).join("")}<div class="agent-page-tabs" role="tablist" aria-label="Agent workspace">${tabs.map(([id, label, count]) => `<button id="agent-tab-${id}" role="tab" aria-controls="agent-panel-${id}" tabindex="${orchestration.activeTab === id ? "0" : "-1"}" aria-selected="${orchestration.activeTab === id}" class="${orchestration.activeTab === id ? "selected" : ""}" data-action="switch-agent-tab" data-tab="${id}"><span>${label}</span><small>${count}</small></button>`).join("")}</div><div id="agent-panel-${orchestration.activeTab}" class="agent-page-body" role="tabpanel" aria-labelledby="agent-tab-${orchestration.activeTab}">${orchestration.activeTab === "runs" ? renderAgentRuns() : renderAgentCatalog()}</div></div>`;
 }
 
 function renderSettingsPanel() {
   const runtime = state.runtimeSummary?.execution_runtime || null;
   const capacity = runtime?.node_provisioner?.capacity || null;
   const recovery = runtime?.node_provisioner?.recovery || null;
-  const hosting = state.runtimeSummary?.agent_hosting || null;
   const planner = state.runtimeSummary?.planner || null;
   const registry = state.runtimeSummary?.registry || null;
-  const hostedProfiles = hosting?.profiles || [];
   const identity = state.security.identity;
   const canManageMembers = identity?.permissions?.includes("workspace.manage_members") === true;
   const workspace = identity?.selected_workspace || null;
+  const desktopRuntime = state.desktop.runtimeStatus;
+  const desktopServices = state.desktop.services || [];
 
   return `
     <section class="panel settings-panel">
@@ -13918,6 +15786,32 @@ function renderSettingsPanel() {
         <button class="secondary" data-action="refresh-runtime" ${state.runtimeLoading ? "disabled" : ""}>${state.runtimeLoading ? "Refreshing..." : "Refresh runtime"}</button>
       </div>
       <div class="settings-grid">
+        ${state.desktop.available ? `
+        <section class="subpanel span-2 desktop-runtime-console">
+          <div class="subpanel-header">
+            <div><strong>Desktop Runtime</strong><p>Local services, durable storage, and sandbox Worker readiness.</p></div>
+            <span class="badge ${desktopRuntime?.docker?.status === "ready" ? "success" : "warn"}">${escapeHtml(desktopRuntime?.docker?.status || "checking")}</span>
+          </div>
+          ${state.desktop.error ? `<div class="alert danger">${escapeHtml(state.desktop.error)}</div>` : ""}
+          <div class="desktop-runtime-status-grid">
+            <div class="desktop-runtime-status-list">
+              ${desktopServices.map((service) => `
+                <div><span class="status-dot ${service.status === "ready" ? "success" : service.status === "failed" ? "danger" : "warn"}"></span><strong>${escapeHtml(service.id)}</strong><small>${escapeHtml(service.status)}${service.managed ? " / managed" : " / external"}${service.restart_attempt ? ` / restart ${escapeHtml(String(service.restart_attempt))}` : ""}${service.next_restart_at ? ` / retry ${escapeHtml(formatTimestamp(service.next_restart_at))}` : ""}${service.log_file ? ` / ${escapeHtml(service.log_file)}` : ""}</small></div>
+              `).join("") || '<p class="muted">No Desktop service status is available.</p>'}
+            </div>
+            <div class="desktop-runtime-status-list">
+              ${(desktopRuntime?.images || []).map((image) => `
+                <div><span class="status-dot ${image.status === "ready" ? "success" : "warn"}"></span><strong>${escapeHtml(image.id)}</strong><small>${escapeHtml(image.reference)} / ${escapeHtml(image.status)}${image.recovery ? ` / ${escapeHtml(image.recovery)}` : ""}</small></div>
+              `).join("") || '<p class="muted">Worker images have not been checked.</p>'}
+            </div>
+          </div>
+          <div class="desktop-runtime-actions">
+            <button class="secondary" data-action="refresh-desktop-runtime" ${state.desktop.runtimeBusy ? "disabled" : ""}>Refresh</button>
+            <button class="secondary" data-action="restart-desktop-services" ${state.desktop.runtimeBusy ? "disabled" : ""}>Restart services</button>
+            <button class="primary" data-action="provision-desktop-workers" ${state.desktop.runtimeBusy || desktopRuntime?.docker?.status !== "ready" ? "disabled" : ""}>${state.desktop.runtimeBusy ? "Working..." : "Prepare Workers"}</button>
+          </div>
+        </section>
+        ` : ""}
         <section class="subpanel span-2 security-console" data-security-console="true">
           <div class="subpanel-header">
             <div>
@@ -13976,43 +15870,10 @@ function renderSettingsPanel() {
             `).join("") || '<p class="muted">No security audit events.</p>'}
           </div>
         </section>
-        <section class="subpanel span-2">
-          <div class="subpanel-header">
-            <strong>Subagent Hosting</strong>
-            <span class="badge neutral">${escapeHtml(String(hostedProfiles.length))} profiles</span>
-          </div>
-          <div class="hosting-list">
-            ${
-              hostedProfiles.length
-                ? hostedProfiles
-                    .map(
-                      (profile) => `
-                        <div class="hosting-item">
-                          <div>
-                            <strong>${escapeHtml(profile.profile_id)}</strong>
-                            <p>${escapeHtml(profile.name)} / ${escapeHtml(runtimeAgentRefOf(profile) || "unbound")}</p>
-                          </div>
-                          <div class="hosting-meta">
-                            <span>${escapeHtml(profile.provider || "provider unset")}</span>
-                            <span>${escapeHtml(profile.model || "model unset")}</span>
-                            <span>${escapeHtml(profile.runtime_mode || runtime?.bridge_execution_mode || "runtime default")}</span>
-                          </div>
-                          <span class="badge ${profile.health?.status === "ready" ? "success" : profile.health?.status === "disabled" ? "neutral" : "warn"}">${escapeHtml(profile.health?.status || "unknown")}</span>
-                          <button class="mini-button" data-action="edit-agent-profile-from-hosting" data-id="${escapeHtml(profile.profile_id)}">Edit</button>
-                        </div>
-                      `,
-                    )
-                    .join("")
-                : '<p class="muted">No agent profiles have been registered yet.</p>'
-            }
-          </div>
-        </section>
         <section class="subpanel">
-          <div class="subpanel-header"><strong>Execution Runtime</strong></div>
+          <div class="subpanel-header"><strong>Native Agent Runtime</strong></div>
           <div class="rail-kv-list">
             <div><strong>Dispatcher</strong><span>${escapeHtml(getRuntimeExecutionLabel(runtime))}</span></div>
-            <div><strong>Adapter</strong><span>${escapeHtml(runtime?.adapter_kind || "unknown")}</span></div>
-            <div><strong>Bridge Mode</strong><span>${escapeHtml(runtime?.bridge_execution_mode || "n/a")}</span></div>
             <div><strong>Health</strong><span>${escapeHtml(runtime?.runtime_health?.status || "unknown")}</span></div>
             <div><strong>Detail</strong><span>${escapeHtml(runtime?.runtime_health?.detail || "No runtime detail.")}</span></div>
             <div><strong>Workers</strong><span>${escapeHtml(formatRuntimeCapacityValue(capacity?.active_workers, capacity?.max_concurrent_workers))}</span></div>
@@ -14035,8 +15896,8 @@ function renderSettingsPanel() {
         <section class="subpanel">
           <div class="subpanel-header"><strong>Registry</strong></div>
           <div class="rail-kv-list">
-            <div><strong>Agent Profiles</strong><span>${escapeHtml(String(registry?.agent_profile_count ?? 0))}</span></div>
-            <div><strong>Active Profiles</strong><span>${escapeHtml(String(registry?.active_agent_profile_count ?? 0))}</span></div>
+            <div><strong>Agent Definitions</strong><span>${escapeHtml(String(state.agentDefinitions.length))}</span></div>
+            <div><strong>Active Agents</strong><span>${escapeHtml(String(state.agentDefinitions.filter((agent) => agent.status === "active").length))}</span></div>
             <div><strong>Skills</strong><span>${escapeHtml(String(registry?.skill_count ?? 0))}</span></div>
             <div><strong>Templates</strong><span>${escapeHtml(String(registry?.template_count ?? 0))}</span></div>
           </div>
@@ -14045,17 +15906,6 @@ function renderSettingsPanel() {
     </section>
   `;
 }
-
-function getSelectedOrchestratorProfile() {
-  return (
-    state.orchestratorProfiles.find(
-      (profile) => profile.orchestrator_id === state.orchestrator.selectedProfileId,
-    ) ||
-    state.orchestratorProfiles[0] ||
-    null
-  );
-}
-
 function renderWorkspaceTaskItem(mission) {
   const labels = getTaskInventoryLabels(mission);
   const moving = mission.session_id === state.ui.taskMoveSessionId;
@@ -14126,7 +15976,7 @@ function renderDesktopWorkspaceTree() {
       <div class="workspace-tree-list">
         ${projectGroups.map(({ project, tasks }) => `
           <section class="workspace-tree-project ${project.active ? "active" : ""} ${state.ui.taskMoveProjectId === project.projectId ? "receiving-task" : ""}" data-workspace-drop-project-id="${escapeHtml(project.projectId)}">
-            <div class="workspace-project-row">
+            <div class="workspace-project-row" data-workspace-project-context-id="${escapeHtml(project.projectId)}" data-workspace-project-context-name="${escapeHtml(project.name)}">
               <button class="workspace-project-select" type="button" data-action="select-sidebar-project" data-project-id="${escapeHtml(project.projectId)}" data-registered-project-id="${escapeHtml(project.registeredProjectId || "")}">
                 <span class="workspace-folder-icon" aria-hidden="true">&#128193;</span>
                 <span><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(project.rootPath)}</small></span>
@@ -14135,7 +15985,7 @@ function renderDesktopWorkspaceTree() {
             </div>
             <div class="workspace-task-children">
               ${project.active ? `<button class="workspace-new-task" type="button" data-action="new-task" data-project-id="${escapeHtml(project.projectId)}"><span aria-hidden="true">+</span> New task</button>` : ""}
-              ${tasks.length ? tasks.map(renderWorkspaceTaskItem).join("") : `<p class="workspace-tree-empty">${query ? "No matching tasks" : "No tasks yet"}</p>`}
+              ${tasks.length ? tasks.map(renderWorkspaceTaskItem).join("") : `<p class="workspace-tree-empty">${query ? "No matching missions" : "No missions yet"}</p>`}
             </div>
           </section>
         `).join("")}
@@ -14158,7 +16008,7 @@ function renderOrchestratorSidebarContent() {
     <div class="orchestrator-sidebar">
       <section class="sidebar-panel">
         <div class="sidebar-panel-header">
-          <strong>Tasks</strong>
+          <strong>Mission Workspace</strong>
           ${state.selectedSessionId ? '<button class="mini-button" data-action="new-task">New</button>' : ""}
         </div>
         <div class="template-list">
@@ -14178,7 +16028,7 @@ function renderOrchestratorSidebarContent() {
                     `;
                   })
                   .join("")
-              : '<p class="sidebar-muted">No tasks yet.</p>'
+              : '<p class="sidebar-muted">No missions yet.</p>'
           }
         </div>
       </section>
@@ -14189,20 +16039,138 @@ function renderOrchestratorSidebarContent() {
 function getVisibleOrchestratorMessages(messages) {
   const seen = new Set();
   return messages
-    .filter((message) => message.role === "user" || message.role === "orchestrator")
+    .filter((message) => message.role === "user" || message.role === "orchestrator" || message.kind === "agent_activity")
     .filter((message) => {
       const text = getMessageText(message).trim();
       if (!text) return false;
-      const key = `${message.role}:${text}`;
+      const key = message.kind === "agent_activity"
+        ? String(message.content?.event_key || message.message_id || `${message.role}:${text}`)
+        : `${message.role}:${text}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })
-    .slice(-10);
+    .slice(-40);
+}
+
+function renderAgentActivityMessage(message) {
+  const content = message?.content || {};
+  const status = String(content.event || "started");
+  const tone = delegationStatusTone(status === "started" ? "running" : status);
+  const delegation = (state.workspaceDetail?.agent_delegations || []).find((item) =>
+    item.node_id === content.node_id && (!content.agent_dag_id || item.dag_id === content.agent_dag_id),
+  );
+  const childSessionId = content.child_session_id || delegation?.child_session_id || "";
+  const running = Boolean(delegation && isAgentDelegationRunning(delegation.status));
+  const activityPresentation = buildSubAgentConversationPresentation({
+    messages: delegation?.messages,
+    objective: delegation?.objective,
+    latestSummary: status === "completed" ? content.summary || delegation?.latest_summary : "",
+  });
+  const activitySummary = status === "completed"
+    ? subAgentResultPreview(activityPresentation)
+    : content.summary || content.text || "Agent activity recorded.";
+  return `<article class="conversation-agent-activity ${tone} ${running ? "is-running" : ""}" ${running ? 'aria-busy="true"' : ""}>
+    <span class="status-dot ${tone} ${running ? "agent-running-indicator" : ""}" aria-hidden="true"></span>
+    <div><header><strong>${escapeHtml(content.agent_name || delegation?.agent_name || "Agent")}</strong><span class="badge ${tone}">${escapeHtml(delegationStatusLabel(status === "started" ? "running" : status))}</span></header><small>${escapeHtml(`${content.agent_role || delegation?.role || "worker"} / ${content.model || delegation?.model || "model unavailable"}`)}</small><p>${escapeHtml(activitySummary)}</p></div>
+    <button class="secondary" type="button" data-action="open-agent-delegation-conversation" data-node-id="${escapeHtml(content.node_id || delegation?.node_id || "")}" ${childSessionId ? "" : "disabled"}>${childSessionId ? "Open" : "Pending"}</button>
+  </article>`;
+}
+
+function renderConversationChangeReceipt(message) {
+  const changeSetId = String(message?.content?.workspace_change_set_id || "").trim();
+  const changeSet = state.workspaceDetail?.workspace_change_set || null;
+  const persistedSummary = message?.content?.workspace_change_summary || null;
+  const changes = changeSetId && changeSet?.change_set_id === changeSetId && Array.isArray(changeSet.changes)
+    ? changeSet.changes
+    : changeSetId && persistedSummary?.change_set_id === changeSetId && Array.isArray(persistedSummary.changes)
+      ? persistedSummary.changes
+      : [];
+  if (!changes.length) return "";
+  const addedLines = changes.reduce((total, change) => total + Number(change.added_lines || 0), 0);
+  const deletedLines = changes.reduce((total, change) => total + Number(change.deleted_lines || 0), 0);
+  const visibleFiles = changes.slice(0, 4);
+  const remaining = Math.max(0, changes.length - visibleFiles.length);
+  return `
+    <section class="conversation-change-receipt" aria-label="Changes in this turn">
+      <button class="conversation-change-receipt-button" type="button" data-action="open-workspace-diff-preview" data-change-set-id="${escapeHtml(changeSetId)}" data-path="">
+        <span class="conversation-change-receipt-heading">
+          <span><strong>Changes in this turn</strong><small>${escapeHtml(`${changes.length} file${changes.length === 1 ? "" : "s"} changed`)}</small></span>
+          <span class="conversation-change-receipt-stats"><b class="is-added">+${escapeHtml(String(addedLines))}</b><b class="is-deleted">-${escapeHtml(String(deletedLines))}</b><span aria-hidden="true">&#8250;</span></span>
+        </span>
+        <span class="conversation-change-receipt-files">
+          ${visibleFiles.map((change) => `<span title="${escapeHtml(change.relative_path)}"><i class="task-workboard-file-icon" aria-hidden="true"></i><span>${escapeHtml(change.relative_path)}</span><small>${escapeHtml(change.kind)}</small></span>`).join("")}
+          ${remaining ? `<small>${escapeHtml(String(remaining))} more file${remaining === 1 ? "" : "s"}</small>` : ""}
+        </span>
+      </button>
+    </section>
+  `;
+}
+
+function conversationActionPrimaryText(action) {
+  const args = action?.arguments || {};
+  for (const key of ["command", "script", "query", "url", "path", "relative_path"]) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function conversationActionDuration(action) {
+  const started = Date.parse(action?.started_at || action?.created_at || "");
+  const completed = Date.parse(action?.completed_at || action?.updated_at || "");
+  return Number.isFinite(started) && Number.isFinite(completed) && completed >= started
+    ? completed - started
+    : null;
+}
+
+function renderConversationActionReceipt(message) {
+  const actionIds = [...new Set(Array.isArray(message?.content?.action_ids) ? message.content.action_ids : [])]
+    .filter((actionId) => typeof actionId === "string" && actionId);
+  if (!actionIds.length) return "";
+  const actionMap = new Map(
+    (state.workspaceDetail?.conversation_actions || []).map((action) => [action.action_id, action]),
+  );
+  const actions = actionIds.map((actionId) => actionMap.get(actionId)).filter(Boolean);
+  if (!actions.length) return "";
+  const receiptKey = String(message?.message_id || actionIds.join(":"));
+  const receiptOpen = state.ui.conversationActionExpanded[receiptKey] === true;
+  const failed = actions.filter((action) => action.status === "failed").length;
+  const pending = actions.filter((action) => action.status === "pending_approval" || action.status === "running").length;
+  const commandCount = actions.filter((action) => /(?:command|shell|terminal|exec)/iu.test(action.tool_name) || Boolean(action.arguments?.command)).length;
+  const label = commandCount === actions.length
+    ? `Ran ${actions.length} command${actions.length === 1 ? "" : "s"}`
+    : `Ran ${actions.length} operation${actions.length === 1 ? "" : "s"}`;
+  return `
+    <details class="conversation-action-receipt" data-conversation-action-receipt-key="${escapeHtml(receiptKey)}" ${receiptOpen ? "open" : ""}>
+      <summary>
+        <span class="conversation-action-receipt-icon" aria-hidden="true">&gt;_</span>
+        <span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(failed ? `${failed} failed` : pending ? `${pending} pending` : "Completed")}</small></span>
+        <span class="conversation-action-receipt-chevron" aria-hidden="true">&#8250;</span>
+      </summary>
+      <div class="conversation-action-list">
+        ${actions.map((action, index) => {
+          const primary = conversationActionPrimaryText(action);
+          const duration = conversationActionDuration(action);
+          return `<article class="conversation-action-row">
+            <header><span class="status-dot ${action.status === "succeeded" ? "success" : action.status === "failed" ? "danger" : "warn"}"></span><span><strong>${escapeHtml(action.tool_name || `Operation ${index + 1}`)}</strong><small>${escapeHtml(`${action.executor || "control-plane"} / ${action.risk_level || "T0"}${duration === null ? "" : ` / ${formatDashboardDuration(duration)}`}`)}</small></span><span class="badge ${statusTone(action.status)}">${escapeHtml(String(action.status || "unknown").replaceAll("_", " "))}</span></header>
+            ${primary ? `<pre class="conversation-action-command"><code>${escapeHtml(primary)}</code></pre>` : ""}
+            <details class="conversation-action-details" data-conversation-action-detail-id="${escapeHtml(action.action_id)}" ${state.ui.conversationActionDetailsExpanded[action.action_id] === true ? "open" : ""}><summary>Details</summary><div class="agent-action-readable"><div><strong>Input</strong>${renderAgentReadableValue(action.arguments || {})}</div>${action.result ? `<div><strong>Output</strong>${renderAgentReadableValue(action.result)}</div>` : ""}${action.error_code ? `<div><strong>Error</strong><p>${escapeHtml(action.error_code)}</p></div>` : ""}</div></details>
+          </article>`;
+        }).join("")}
+      </div>
+    </details>
+  `;
 }
 
 function renderOrchestratorConversation(messages) {
+  if (state.workspaceDetail?.session?.metadata?.subagent === true) {
+    return renderSubAgentTaskConversation(messages);
+  }
   const visible = getVisibleOrchestratorMessages(messages);
+  const memoryContexts = new Map(
+    (state.memory.contexts?.items || []).map((context) => [context.context_id, context]),
+  );
   const activeSessionId = state.workspaceDetail?.session?.session_id || state.selectedSessionId || "";
   const stream = state.conversationStream?.sessionId === activeSessionId
     ? state.conversationStream
@@ -14215,6 +16183,7 @@ function renderOrchestratorConversation(messages) {
     <div class="orchestrator-chat-feed">
       ${visible.length ? visible
         .map((message) => {
+          if (message.kind === "agent_activity") return renderAgentActivityMessage(message);
           const role = message.role === "user" ? "user" : "orchestrator";
           const text = getMessageText(message) || message.kind;
           const source = message.content?.response_source || (role === "orchestrator" ? "legacy_local" : "");
@@ -14232,10 +16201,16 @@ function renderOrchestratorConversation(messages) {
               : source === "legacy_local"
                 ? "This historical reply has no Provider evidence and was generated by the legacy local conversation path."
                 : "";
+          const activeSkills = Array.isArray(message.content?.active_skills) ? message.content.active_skills : [];
+          const memoryContext = memoryContexts.get(message.content?.memory_context_id || "") || null;
+          const activatedMemoryCount = Array.isArray(memoryContext?.entries) ? memoryContext.entries.length : 0;
           return `
-            <article class="orchestrator-message ${role}">
-              <header><span>${escapeHtml(role === "user" ? "You" : "My Mate")}</span>${role === "orchestrator" && sourceLabel ? `<small class="conversation-source ${source === "provider" ? "provider" : "fallback"}" title="${escapeHtml(sourceDetail)}">${escapeHtml(sourceLabel)}</small>` : ""}</header>
+            <article class="orchestrator-message ${role}"${message.content?.orchestration_summary === true ? ` data-orchestration-summary="true" data-agent-dag-id="${escapeHtml(message.content?.agent_dag_id || "")}"` : ""}>
+              <header><span>${escapeHtml(role === "user" ? "You" : "My Mate")}</span>${role === "orchestrator" && sourceLabel ? `<small class="conversation-source ${source === "provider" ? "provider" : "fallback"}" title="${escapeHtml(sourceDetail)}">${escapeHtml(sourceLabel)}</small>` : ""}${role === "orchestrator" && message.content?.memory_context_id ? `<small class="conversation-memory-context ${activatedMemoryCount ? "active" : "empty"}" title="${escapeHtml(activatedMemoryCount ? `${activatedMemoryCount} durable Memory item${activatedMemoryCount === 1 ? "" : "s"} influenced this reply.` : "No durable Memory item influenced this reply.")}">Memory ${escapeHtml(String(activatedMemoryCount))}</small>` : ""}</header>
+              ${role === "orchestrator" && activeSkills.length ? `<div class="conversation-active-skills">${activeSkills.map((skill) => `<span title="${escapeHtml(`Invocation ${skill.invocation_id || "unknown"} / ${skill.activation_source || "model"}`)}">Skill: ${escapeHtml(skill.skill_id || "unknown")} <small>v${escapeHtml(skill.version || "?")}</small></span>`).join("")}</div>` : ""}
               ${role === "orchestrator" ? `<div class="conversation-markdown">${renderMarkdown(text)}</div>` : `<p>${escapeHtml(text)}</p>`}
+              ${role === "orchestrator" ? renderConversationActionReceipt(message) : ""}
+              ${role === "orchestrator" ? renderConversationChangeReceipt(message) : ""}
             </article>
           `;
         })
@@ -14248,9 +16223,12 @@ function renderOrchestratorConversation(messages) {
 
 function renderProposalAssignmentEditor(node, index, recommendation) {
   const draft = getProposalNodeDraft(node, index);
-  const recommendationText = recommendation
-    ? `${recommendation.agent_profile_name || recommendation.agent_profile_id || "registry"} / score ${recommendation.score ?? "n/a"}`
-    : "";
+  const agentOptions = getWorkflowAgentOptions();
+  const knownAgent = agentOptions.some(({ definition }) => definition.agent_id === draft.agentId);
+  const bindingSummary = getWorkflowAgentBindingSummary(draft.agentId);
+  const selectedOption = agentOptions.find(({ definition }) => definition.agent_id === draft.agentId) || null;
+  const needsAgent = proposalNodeNeedsAgent(draft.type);
+  const contract = proposalStepContractSummary(draft.contextText, draft.outputContractText);
   const recommendationEvidenceChips = recommendation
     ? buildPlannerEvidenceChips(registryEvidenceChips(recommendation))
     : "";
@@ -14258,40 +16236,24 @@ function renderProposalAssignmentEditor(node, index, recommendation) {
     ? summarizeRegistryRecommendationEvidence(recommendation)
     : [];
   return `
-    <article class="orchestrator-node-card editable">
-      <span>${escapeHtml(String(index + 1))}</span>
+    <article class="proposal-step-card ${needsAgent && !draft.agentId ? "needs-assignment" : ""}">
+      <header class="proposal-step-header">
+        <span class="proposal-step-index">${escapeHtml(String(index + 1))}</span>
+        <div><strong>${escapeHtml(draft.name)}</strong><small>${escapeHtml(proposalNodeKindLabel(draft.type))}</small></div>
+        <span class="badge ${needsAgent ? draft.agentId ? selectedOption?.readiness?.state === "blocked" ? "warn" : "success" : "warn" : "neutral"}">${escapeHtml(needsAgent ? draft.agentId ? selectedOption?.readiness?.state === "blocked" ? "Needs setup" : "Assigned" : "Choose Agent" : "System managed")}</span>
+      </header>
       <div class="proposal-node-editor">
-        <div class="proposal-node-title">
-          <strong>${escapeHtml(draft.name)}</strong>
-          <small>${escapeHtml(draft.type)}${recommendationText ? ` / ${escapeHtml(recommendationText)}` : ""}</small>
+        <div class="proposal-step-purpose">
+          <small>Outcome</small>
+          <p>${escapeHtml(draft.objectiveText)}</p>
         </div>
-        ${
-          recommendation
-            ? `<div class="proposal-recommendation-block">
-                <div class="proposal-recommendation-head">
-                  <strong>${escapeHtml(recommendation.agent_profile_name || recommendation.agent_profile_id || "Registry recommendation")}</strong>
-                  <span class="badge ${Number(recommendation.score || 0) > 0 ? "success" : "warn"}">${escapeHtml(formatPlannerScore(Number(recommendation.score || 0)) || "n/a")}</span>
-                </div>
-                <small>${escapeHtml(recommendation.reason || "No recommendation summary.")}</small>
-                ${recommendationEvidenceChips}
-                ${recommendationEvidenceLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}
-                ${
-                  recommendation.warnings?.length
-                    ? `<ul class="warning-list compact">${recommendation.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
-                    : ""
-                }
-              </div>`
-            : '<p class="muted">No registry recommendation was attached to this node draft.</p>'
-        }
-        <div class="proposal-assignment-grid">
-          <label>Subagent<input value="${escapeHtml(draft.agentProfile)}" list="agent-profile-options" data-field="proposal.agent_profile" data-key="${escapeHtml(draft.key)}" /></label>
-          <label>Skills<input value="${escapeHtml(draft.skillsText)}" list="skill-options" data-field="proposal.allowed_skills" data-key="${escapeHtml(draft.key)}" /></label>
-          <label>Tools<input value="${escapeHtml(draft.toolsText)}" data-field="proposal.allowed_tools" data-key="${escapeHtml(draft.key)}" /></label>
-          <label>Provider<input value="${escapeHtml(draft.provider)}" data-field="proposal.provider" data-key="${escapeHtml(draft.key)}" /></label>
-          <label>Model<input value="${escapeHtml(draft.model)}" data-field="proposal.model" data-key="${escapeHtml(draft.key)}" /></label>
-          <label class="span-2">Input context<textarea rows="2" data-field="proposal.context" data-key="${escapeHtml(draft.key)}">${escapeHtml(draft.contextText)}</textarea></label>
-          <label class="span-2">Output contract<textarea class="code" rows="3" data-field="proposal.output_contract" data-key="${escapeHtml(draft.key)}">${escapeHtml(draft.outputContractText)}</textarea></label>
+        <div class="proposal-step-contract">
+          <div><small>Receives</small>${contract.receives.slice(0, 4).map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
+          <div><small>Delivers</small>${contract.delivers.slice(0, 4).map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
         </div>
+        ${needsAgent ? `<label class="proposal-agent-assignment">Responsible Agent<select data-field="proposal.agent_id" data-key="${escapeHtml(draft.key)}"><option value="">Choose an Agent</option>${!knownAgent && draft.agentId ? `<option value="${escapeHtml(draft.agentId)}" selected>${escapeHtml(`${draft.agentId} (unavailable)`)}</option>` : ""}${agentOptions.map(({ definition, version, readiness }) => `<option value="${escapeHtml(definition.agent_id)}" ${definition.agent_id === draft.agentId ? "selected" : ""}>${escapeHtml(`${definition.name || definition.agent_id} - ${version?.role || "worker"}${readiness?.state === "blocked" ? " (needs setup)" : ""}`)}</option>`).join("")}</select>${bindingSummary ? `<span class="workflow-agent-profile"><strong>${escapeHtml(`${bindingSummary.name} v${bindingSummary.version}`)}</strong><span>${escapeHtml(`${bindingSummary.role} | ${bindingSummary.model}`)}</span><span>Capabilities, Memory, and permissions are inherited from Agent settings.</span></span>` : `<span class="workflow-agent-profile muted">Choose a published Agent. Its model route, Skills, Memory, and permissions are inherited automatically.</span>`}</label>` : '<div class="proposal-system-step"><strong>No Agent assignment needed</strong><span>The control plane handles this routing step automatically.</span></div>'}
+        ${recommendation ? `<details class="proposal-recommendation-details"><summary><span>Why this assignment?</span><span>${escapeHtml(recommendation.agent_name || recommendation.agent_id || "Orchestrator recommendation")}</span></summary><div class="proposal-recommendation-block"><div class="proposal-recommendation-head"><strong>${escapeHtml(recommendation.agent_name || recommendation.agent_id || "Registry recommendation")}</strong><span class="badge ${Number(recommendation.score || 0) > 0 ? "success" : "warn"}">${escapeHtml(formatPlannerScore(Number(recommendation.score || 0)) || "n/a")}</span></div><small>${escapeHtml(recommendation.reason || "Selected from the available Agent registry.")}</small>${recommendationEvidenceChips}${recommendationEvidenceLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}${recommendation.warnings?.length ? `<ul class="warning-list compact">${recommendation.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : ""}</div></details>` : ""}
+        <details class="proposal-technical-details"><summary>Technical details</summary><div class="proposal-technical-body"><div><strong>Step requirements</strong><span>${escapeHtml(parseCsv(draft.skillsText).length ? `${parseCsv(draft.skillsText).length} Skill restriction(s)` : "No step-specific Skill restriction")}</span><span>${escapeHtml(parseCsv(draft.toolsText).length ? `${parseCsv(draft.toolsText).length} tool permission(s)` : "No step-specific tool permission")}</span></div><div><strong>Input contract</strong><pre>${escapeHtml(draft.contextText || "Inherited from Mission state")}</pre></div><div><strong>Output contract</strong><pre>${escapeHtml(draft.outputContractText || "Structured result")}</pre></div></div></details>
       </div>
     </article>
   `;
@@ -14301,37 +16263,48 @@ function renderDagProposalSummary() {
   const candidatePlan = state.planner.candidatePlan;
   const activeProposal = state.planner.activeProposal;
   const dagDraft = getProposalDraftSource();
-  const candidateNodes = candidatePlan?.candidate_plan?.compiled_nodes || [];
-  const dagNodes = dagDraft?.draft_template?.nodes || [];
-  const nodes = dagNodes.length ? dagNodes : candidateNodes;
+  const nodes = getProposalSourceNodes();
   const recommendations = dagDraft?.registry_recommendations || [];
   const validation = dagDraft?.validation || candidatePlan?.validation || null;
   const badge = plannerValidationBadge(validation);
   const sessionId = getActiveProposalSessionId();
   const hasDurableProposal = !!activeProposal?.proposal_id;
   const proposalStatus = activeProposal?.status || "";
+  const capabilityPlanStatus = activeProposal?.metadata?.capability_plan_status || null;
+  const capabilityGapCount = Number(activeProposal?.metadata?.capability_gap_count || 0);
   const canSaveAssignments =
-    hasDurableProposal && proposalStatus !== "rejected" && proposalStatus !== "superseded";
-  const canConfirmProposal = hasDurableProposal && proposalStatus === "review_ready";
-  const canLaunchRun = hasDurableProposal && proposalStatus === "confirmed";
+    hasDurableProposal && (proposalStatus === "draft" || proposalStatus === "review_ready");
+  const canConfirmProposal =
+    hasDurableProposal && proposalStatus === "review_ready" && capabilityPlanStatus !== "partial" && capabilityPlanStatus !== "blocked";
+  const activeCompiledDagId = activeProposal?.compiled_agent_dag_id || "";
+  const visibleDagStatus = state.workspaceDetail?.agent_dag?.dag_id === activeCompiledDagId
+    ? state.workspaceDetail.agent_dag.status
+    : null;
+  const canLaunchRun =
+    hasDurableProposal &&
+    proposalStatus === "confirmed" &&
+    !!activeCompiledDagId &&
+    !["running", "waiting_human", "completed", "failed", "cancelled"].includes(visibleDagStatus);
   const warnings = activeProposal?.warnings || [];
   const checklist = activeProposal?.checklist || [];
   const durableActions = sessionId
     ? `
       <div class="orchestrator-actions">
-        <button class="secondary" data-action="create-dag-proposal" ${state.planner.proposalSaving || state.planner.proposalLoading ? "disabled" : ""}>${state.planner.proposalSaving ? "Creating..." : hasDurableProposal ? "New proposal" : "Create proposal"}</button>
-        <button class="secondary" data-action="save-proposal-assignments" ${state.planner.proposalSaving || !canSaveAssignments ? "disabled" : ""}>${state.planner.proposalSaving ? "Saving..." : "Save assignments"}</button>
-        <button class="primary" data-action="confirm-dag-proposal" ${state.planner.proposalConfirming || !canConfirmProposal ? "disabled" : ""}>${state.planner.proposalConfirming ? "Confirming..." : "Confirm proposal"}</button>
-        <button class="primary" data-action="launch-proposal-run" ${state.proposalDispatching || !canLaunchRun ? "disabled" : ""}>${state.proposalDispatching ? "Launching..." : "Launch run"}</button>
+        <button class="secondary" data-action="create-dag-proposal" ${state.planner.proposalSaving || state.planner.proposalLoading ? "disabled" : ""}>${state.planner.proposalSaving ? "Preparing..." : hasDurableProposal ? "Regenerate plan" : "Build execution plan"}</button>
+        <button class="secondary" data-action="save-proposal-assignments" ${state.planner.proposalSaving || !canSaveAssignments ? "disabled" : ""}>${state.planner.proposalSaving ? "Saving..." : "Save changes"}</button>
+        ${canConfirmProposal ? `<button class="primary" data-action="confirm-dag-proposal" data-proposal-id="${escapeHtml(activeProposal.proposal_id)}" ${state.planner.proposalConfirming ? "disabled" : ""}>${state.planner.proposalConfirming ? "Starting..." : "Approve & start"}</button>` : ""}
+        ${canLaunchRun ? `<button class="primary" data-action="launch-proposal-run" ${state.proposalDispatching ? "disabled" : ""}>${state.proposalDispatching ? "Starting..." : "Start execution"}</button>` : ""}
       </div>
     `
     : "";
   const proposalMeta = hasDurableProposal
     ? `
-      <div class="proposal-record-meta">
-        <span class="badge ${statusTone(proposalStatus)}">${escapeHtml(proposalStatus)}</span>
-        <small>${escapeHtml(activeProposal.proposal_id)}${activeProposal.source_revision ? ` / route v${escapeHtml(activeProposal.source_revision)}` : ""}</small>
+      <div class="proposal-business-summary">
+        <div><span class="badge ${statusTone(proposalStatus)}">${escapeHtml(proposalStatusLabel(proposalStatus))}</span><strong>${escapeHtml(activeProposal.title || "Execution plan")}</strong></div>
+        <p>${escapeHtml(activeProposal.summary || "Review the proposed steps and Agent responsibilities before execution starts.")}</p>
+        <div class="proposal-summary-facts"><span>${escapeHtml(`${nodes.length} step${nodes.length === 1 ? "" : "s"}`)}</span><span>${escapeHtml(activeProposal.orchestration_decision?.mode ? `${activeProposal.orchestration_decision.mode} plan` : "Orchestrated plan")}</span><span>${escapeHtml(capabilityGapCount ? `${capabilityGapCount} capability gap${capabilityGapCount === 1 ? "" : "s"}` : "Agents ready")}</span></div>
       </div>
+      <details class="proposal-protocol-details"><summary>Plan details</summary><div class="rail-kv-list compact-kv-list proposal-protocol-meta"><div><strong>Decision</strong><span>${escapeHtml(activeProposal.orchestration_decision?.mode || "not resolved")}${activeProposal.orchestration_decision?.risk_level ? ` / ${escapeHtml(activeProposal.orchestration_decision.risk_level)} risk` : ""}</span></div><div><strong>Source</strong><span>${escapeHtml(activeProposal.dag_definition?.source?.kind || "legacy")}</span></div><div><strong>Agent readiness</strong><span>${escapeHtml(capabilityPlanStatus || "not checked")}${capabilityGapCount ? ` / ${escapeHtml(String(capabilityGapCount))} blocking gap(s)` : ""}</span></div><div><strong>Proposal ID</strong><span>${escapeHtml(activeProposal.proposal_id)}</span></div><div><strong>Compiled DAG</strong><span>${escapeHtml(activeProposal.compiled_agent_dag_id || "not compiled")}</span></div></div>${renderProposalTracePanel()}</details>
     `
     : state.planner.proposalLoading
       ? '<p class="muted">Loading durable proposals...</p>'
@@ -14357,11 +16330,11 @@ function renderDagProposalSummary() {
   return `
     <section class="subpanel orchestrator-dag-panel">
       <div class="subpanel-header">
-        <strong>DAG Proposal</strong>
-        <span class="badge ${hasDurableProposal ? statusTone(proposalStatus) : badge.tone}">${escapeHtml(hasDurableProposal ? proposalStatus : nodes.length ? `${nodes.length} node(s)` : "not generated")}</span>
+        <strong>Execution proposal</strong>
+        <span class="badge ${hasDurableProposal ? statusTone(proposalStatus) : badge.tone}">${escapeHtml(hasDurableProposal ? proposalStatusLabel(proposalStatus) : nodes.length ? `${nodes.length} steps` : "Not prepared")}</span>
       </div>
       ${proposalMeta}
-      ${hasDurableProposal ? renderProposalTracePanel() : ""}
+      ${state.planner.error ? `<div class="alert danger inline-alert" role="alert">${escapeHtml(state.planner.error)}</div>` : ""}
       ${
         nodes.length
           ? `<div class="orchestrator-node-grid">
@@ -14400,13 +16373,13 @@ function renderMissionSpecCompact(detail) {
       </section>
     `;
   }
+  const contract = detail?.mission_spec_contract?.executionContract || detail?.session?.mission_spec_contract?.executionContract || null;
+  const decision = state.planner.activeProposal?.orchestration_decision || detail?.orchestration_state?.current_decision || null;
   return `
     <section class="subpanel">
-      <div class="subpanel-header"><strong>MissionSpec</strong><span class="badge ${spec.route?.stale ? "warn" : "success"}">${escapeHtml(formatMissionRouteLabel(spec.route))}</span></div>
+      <div class="subpanel-header"><strong>Execution contract</strong><span class="badge ${contract?.status === "satisfied" ? "success" : contract?.status === "blocked" ? "danger" : "warn"}">${escapeHtml(contract?.status || "forming")}</span></div>
       <p class="muted">${escapeHtml(spec.objective || "No objective yet.")}</p>
-      <div class="skill-chip-list">
-        ${(spec.requestedOutputs || []).slice(0, 6).map((item) => `<span class="skill-chip">${escapeHtml(item)}</span>`).join("") || '<span class="skill-chip muted">outputs pending</span>'}
-      </div>
+      <div class="execution-contract-grid"><div><small>Deliverables</small>${(contract?.deliverables || spec.requestedOutputs || []).slice(0, 6).map((item) => `<span>${escapeHtml(item)}</span>`).join("") || '<span class="muted">Still forming</span>'}</div><div><small>Acceptance</small>${(contract?.acceptanceCriteria || []).slice(0, 6).map((item) => `<span>${escapeHtml(item)}</span>`).join("") || '<span class="muted">No explicit criteria yet</span>'}</div><div><small>Verification</small>${(contract?.verificationSteps || []).slice(0, 5).map((item) => `<span>${escapeHtml(item)}</span>`).join("") || '<span class="muted">No checks selected</span>'}</div><div><small>Execution shape</small><span>${escapeHtml(decision?.mode || "direct until reassessed")}</span><span>${escapeHtml(decision?.reason || formatMissionRouteLabel(spec.route))}</span></div></div>
     </section>
   `;
 }
@@ -14618,8 +16591,15 @@ function renderTaskQuality(detail, experience = buildTaskExperience(detail)) {
 function renderGeneratedDecisionQueue(detail) {
   const approvals = Array.isArray(detail?.pending_approvals) ? detail.pending_approvals.length : 0;
   const inputs = Array.isArray(detail?.pending_human_inputs) ? detail.pending_human_inputs.length : 0;
-  if (!approvals && !inputs) return "";
-  return `<section class="task-generated-band task-decision-band"><div><span class="task-start-kicker">Decision</span><h3>${escapeHtml(String(approvals + inputs))} item${approvals + inputs === 1 ? "" : "s"} need you</h3><p>${escapeHtml(`${approvals} approval${approvals === 1 ? "" : "s"} / ${inputs} input request${inputs === 1 ? "" : "s"}`)}</p></div><button class="primary" data-action="open-task-inbox">Review decision</button></section>`;
+  const workspaceChanges = detail?.workspace_change_set?.status === "pending" ? 1 : 0;
+  const decisions = approvals + inputs + workspaceChanges;
+  if (!decisions) return "";
+  const summary = [
+    approvals ? `${approvals} approval${approvals === 1 ? "" : "s"}` : "",
+    inputs ? `${inputs} input request${inputs === 1 ? "" : "s"}` : "",
+    workspaceChanges ? "1 workspace Change Set" : "",
+  ].filter(Boolean).join(" / ");
+  return `<section class="task-generated-band task-decision-band"><div><span class="task-start-kicker">Decision</span><h3>${escapeHtml(String(decisions))} item${decisions === 1 ? "" : "s"} need you</h3><p>${escapeHtml(summary)}</p></div><button class="primary" data-action="open-task-inbox">Review decision</button></section>`;
 }
 
 function renderGeneratedProgress(detail) {
@@ -14675,12 +16655,341 @@ function renderMemoryRecommendationListContent() {
   }).join("") || `<p class="muted">${state.memory.recommendations ? "No relevant memory recommendation for the current Task." : "Select a Task, then refresh Memory Center."}</p>`;
 }
 
+function delegationStatusTone(status) {
+  const value = String(status || "").toLowerCase();
+  if (["completed", "accepted"].includes(value)) return "success";
+  if (["failed", "cancelled"].includes(value)) return "danger";
+  if (value === "running") return "info";
+  if (["waiting_human", "blocked"].includes(value)) return "warn";
+  return "neutral";
+}
+
+function delegationStatusLabel(status) {
+  const labels = {
+    queued: "Queued",
+    accepted: "Accepted",
+    running: "Working",
+    waiting_human: "Waiting for approval",
+    blocked: "Blocked",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+  };
+  return labels[String(status || "")] || String(status || "Queued");
+}
+
+function renderAgentDelegationRunState(status) {
+  const tone = delegationStatusTone(status);
+  const running = isAgentDelegationRunning(status);
+  const label = delegationStatusLabel(status);
+  return `<span class="badge agent-delegation-run-state ${tone} ${running ? "is-running" : ""}" data-agent-delegation-status title="${escapeHtml(running ? "Agent is actively processing this task" : label)}">
+    <span class="status-dot ${tone} ${running ? "agent-running-indicator" : ""}" aria-hidden="true"></span>
+    <span>${escapeHtml(label)}</span>
+  </span>`;
+}
+
+function renderAgentReadableValue(value, depth = 0) {
+  if (value === null || value === undefined || value === "") return '<span class="muted">Not provided</span>';
+  if (typeof value === "boolean") return `<span>${value ? "Yes" : "No"}</span>`;
+  if (typeof value === "number") return `<span>${escapeHtml(String(value))}</span>`;
+  if (typeof value === "string") return `<p>${escapeHtml(value)}</p>`;
+  if (Array.isArray(value)) {
+    if (!value.length) return '<span class="muted">None</span>';
+    return `<ul class="agent-readable-list">${value.map((item) => `<li>${renderAgentReadableValue(item, depth + 1)}</li>`).join("")}</ul>`;
+  }
+  const entries = visibleAgentResultEntries(value, depth);
+  if (!entries.length) return '<span class="muted">No user-facing result</span>';
+  return `<dl class="agent-readable-fields ${depth ? "nested" : ""}">${entries.map(([key, item]) => `
+    <div><dt>${escapeHtml(agentFieldLabel(key))}</dt><dd>${renderAgentReadableValue(item, depth + 1)}</dd></div>
+  `).join("")}</dl>`;
+}
+
+function renderSubAgentResult(result, options = {}) {
+  if (!result) return "";
+  const title = options.title || "Result";
+  return `<section class="agent-readable-result">
+    <header><strong>${escapeHtml(title)}</strong><span class="badge success">Returned</span></header>
+    <div class="agent-readable-result-body">${result.structured
+      ? renderAgentReadableValue(result.structured)
+      : `<div class="conversation-markdown">${renderMarkdown(result.text)}</div>`}</div>
+  </section>`;
+}
+
+function renderSubAgentConversationPresentation(presentation, options = {}) {
+  const assignment = presentation.assignment
+    ? `<article class="agent-conversation-entry assignment"><header><strong>Task assigned</strong><span>Orchestrator</span></header><p>${escapeHtml(presentation.assignment)}</p></article>`
+    : "";
+  const conversation = presentation.conversation.map((entry) => `<article class="agent-conversation-entry ${entry.role}">
+    <header><strong>${entry.role === "user" ? "You" : escapeHtml(options.agentName || "Agent")}</strong><span>${entry.role === "user" ? "Instruction" : entry.source === "event" ? (options.live ? "Live update" : "Work update") : entry.source === "progress" ? "Progress" : "Update"}${entry.created_at ? ` / ${escapeHtml(formatWorkspaceTimestamp(entry.created_at))}` : ""}</span></header>
+    ${entry.role === "agent" ? `<div class="conversation-markdown">${renderMarkdown(entry.text)}</div>` : `<p>${escapeHtml(entry.text)}</p>`}
+  </article>`).join("");
+  return `<div class="agent-conversation-thread">${assignment}${conversation}</div>`;
+}
+
+function subAgentResultPreview(presentation) {
+  const result = presentation.result;
+  if (!result) return "Waiting for this Agent to start.";
+  if (!result.structured) return result.text;
+  const labels = visibleAgentResultEntries(result.structured).map(([key]) => agentFieldLabel(key));
+  return labels.length ? `Returned ${labels.slice(0, 3).join(", ")}${labels.length > 3 ? ` and ${labels.length - 3} more` : ""}.` : "Returned a structured result.";
+}
+
+function renderSubAgentTaskConversation(messages) {
+  const detail = state.workspaceDetail || {};
+  const binding = detail.session?.metadata?.agent_binding_snapshot || {};
+  const presentation = buildSubAgentConversationPresentation({ messages });
+  const resultMessage = presentation.result?.message || null;
+  return `<div class="orchestrator-chat-feed subagent-task-feed">
+    ${renderSubAgentConversationPresentation(presentation, { agentName: binding.agent_name || "Agent" })}
+    ${renderSubAgentResult(presentation.result)}
+    ${resultMessage ? renderConversationActionReceipt(resultMessage) : ""}
+    ${resultMessage ? renderConversationChangeReceipt(resultMessage) : ""}
+    ${!presentation.assignment && !presentation.conversation.length && !presentation.result ? '<p class="muted conversation-empty">This Agent has not started working yet.</p>' : ""}
+  </div>`;
+}
+
+function renderAgentDelegationPanel(detail = state.workspaceDetail) {
+  const delegations = Array.isArray(detail?.agent_delegations) ? detail.agent_delegations : [];
+  if (!delegations.length) return "";
+  const dag = detail?.agent_dag;
+  return `<section class="agent-delegation-panel" data-workspace-focus="agent-work">
+    <header class="agent-delegation-header"><div><span class="task-start-kicker">Orchestration</span><h4>Agent work</h4><p>${escapeHtml(dag?.title || "Delegated workflow")} / ${escapeHtml(delegations.length === 1 ? "1 role" : `${delegations.length} roles`)}</p></div><span class="badge neutral">${escapeHtml(dag?.status || "draft")}</span></header>
+    <div class="agent-delegation-list">
+      ${delegations.map((item) => {
+        const tone = delegationStatusTone(item.status);
+        const running = isAgentDelegationRunning(item.status);
+        const hasConversation = Boolean(item.child_session_id || (item.messages || []).length);
+        const presentation = buildSubAgentConversationPresentation({
+          messages: item.messages,
+          objective: item.objective,
+          latestSummary: item.latest_summary,
+          latestResult: item.latest_result,
+          events: item.events,
+        });
+        const latest = subAgentResultPreview(presentation);
+        return `<article class="agent-delegation-row ${tone} ${running ? "is-running" : ""}" ${running ? 'aria-busy="true"' : ""}>
+          <span class="status-dot ${tone} ${running ? "agent-running-indicator" : ""}" aria-hidden="true"></span>
+          <div class="agent-delegation-main"><div class="agent-delegation-title"><strong>${escapeHtml(item.role_label || item.node_name)}</strong><span class="badge ${tone}">${escapeHtml(delegationStatusLabel(item.status))}</span></div><small>${escapeHtml(item.agent_name)} / ${escapeHtml(item.model || "model unavailable")} / v${escapeHtml(String(item.agent_version || "?"))}</small><p>${escapeHtml(item.objective || item.node_name)}</p><em>${escapeHtml(latest.slice(0, 220))}</em></div>
+          <button class="secondary agent-delegation-open" type="button" data-action="open-agent-delegation-conversation" data-node-id="${escapeHtml(item.node_id)}" ${hasConversation ? "" : "disabled"}>${hasConversation ? "Open conversation" : "Not started"}</button>
+        </article>`;
+      }).join("")}
+    </div>
+  </section>`;
+}
+
+function agentRunEventLabel(type) {
+  return ({
+    "task.assigned": "Task assigned",
+    "agent.started": "Agent started",
+    "agent.progress": "Working",
+    "agent.message.completed": "Result returned",
+    "tool.started": "Tool started",
+    "tool.waiting_approval": "Waiting for approval",
+    "tool.completed": "Tool completed",
+    "tool.failed": "Tool failed",
+    "checkpoint.saved": "Checkpoint saved",
+    "artifact.created": "Artifact created",
+    "handoff.returned": "Returned to Orchestrator",
+    "agent.completed": "Completed",
+    "agent.failed": "Failed",
+    "agent.cancelled": "Cancelled",
+  })[String(type || "")] || "Agent activity";
+}
+
+function agentRunEventTone(event) {
+  if (event?.status === "succeeded") return "success";
+  if (event?.status === "failed" || event?.status === "cancelled") return "danger";
+  if (event?.status === "running") return "info";
+  if (event?.status === "waiting") return "warn";
+  return "neutral";
+}
+
+function isTerminalAgentRunEvent(event) {
+  return ["agent.completed", "agent.failed", "agent.cancelled"].includes(String(event?.type || ""));
+}
+
+function renderAgentActivityTimeline(item) {
+  const events = (item.events || []).filter((event) => event.type !== "agent.message.delta");
+  const activeSequence = isAgentDelegationRunning(item.status) ? Number(events.at(-1)?.sequence || 0) : 0;
+  const historical = !events.length
+    ? `<div class="agent-live-empty"><strong>${escapeHtml(delegationStatusLabel(item.status))}</strong><p>No live events were recorded for this historical Agent run.</p></div>`
+    : "";
+  return `<div class="agent-activity-timeline" data-agent-activity-timeline>
+    ${events.map((event) => {
+      const tone = agentRunEventTone(event);
+      const toolName = typeof event.payload?.tool_name === "string" ? event.payload.tool_name : "";
+      const running = activeSequence > 0 && Number(event.sequence || 0) === activeSequence;
+      return `<article class="agent-activity-event ${tone} ${running ? "is-running" : ""}">
+        <span class="status-dot ${tone} ${running ? "agent-running-indicator" : ""}" aria-hidden="true"></span>
+        <div><header><strong>${escapeHtml(agentRunEventLabel(event.type))}</strong><time>${escapeHtml(formatWorkspaceTimestamp(event.created_at))}</time></header><p>${escapeHtml(event.summary || agentRunEventLabel(event.type))}</p>${toolName ? `<small>${escapeHtml(toolName)}</small>` : ""}</div>
+      </article>`;
+    }).join("")}
+    ${historical}
+  </div>`;
+}
+
+function renderAgentActivityPanel(item) {
+  const actions = Array.isArray(item.actions) ? item.actions : [];
+  return `${renderAgentActivityTimeline(item)}
+    ${actions.length ? `<section class="agent-delegation-actions"><strong>Commands and tools</strong>${actions.map((action) => `<details><summary><span class="status-dot ${action.status === "succeeded" ? "success" : action.status === "failed" ? "danger" : "warn"}"></span><span>${escapeHtml(action.tool_name || "Agent action")}</span><small>${escapeHtml(action.status || "running")}</small></summary><div class="agent-action-readable"><div><strong>Input</strong>${renderAgentReadableValue(action.arguments || {})}</div>${action.result ? `<div><strong>Output</strong>${renderAgentReadableValue(action.result)}</div>` : ""}${action.error_code ? `<div><strong>Error</strong><p>${escapeHtml(action.error_code)}</p></div>` : ""}</div></details>`).join("")}</section>` : ""}`;
+}
+
+function renderAgentConversationPanel(item, presentation) {
+  return `${renderSubAgentConversationPresentation(presentation, {
+    agentName: item.agent_name,
+    live: !["completed", "failed", "cancelled", "blocked"].includes(String(item.status || "")),
+  })}
+    ${!presentation.assignment && !presentation.conversation.length && !presentation.result ? '<div class="agent-live-empty"><strong>Agent has not started yet.</strong></div>' : ""}`;
+}
+
+function renderAgentOutputsPanel(item, presentation) {
+  return `${renderSubAgentResult(presentation.result, { title: "Latest result" })}
+    ${item.artifacts?.length ? `<section class="agent-delegation-artifacts"><strong>Artifacts</strong>${item.artifacts.map((artifact) => artifact.uri ? `<a href="${escapeHtml(artifact.uri)}" download>${escapeHtml(artifact.name || "Artifact")}</a>` : `<span>${escapeHtml(artifact.name || "Artifact")}</span>`).join("")}</section>` : ""}
+    ${!presentation.result && !item.artifacts?.length ? '<div class="agent-live-empty"><strong>No outputs yet.</strong></div>' : ""}`;
+}
+
+function agentEventStreamLabel() {
+  if (agentEventStreamStatus === "open") return "Live";
+  if (agentEventStreamStatus === "error") return "Reconnecting";
+  if (agentEventStreamStatus === "connecting") return "Connecting";
+  return "Recorded";
+}
+
+function renderAgentDelegationLiveSurface() {
+  const nodeId = state.ui.agentDelegationNodeId;
+  const item = (state.workspaceDetail?.agent_delegations || []).find((delegation) => delegation.node_id === nodeId);
+  if (!item) return;
+  const presentation = buildSubAgentConversationPresentation({
+    messages: Array.isArray(item.messages) ? item.messages : [],
+    objective: item.objective,
+    latestSummary: item.latest_summary,
+    latestResult: item.latest_result,
+    events: item.events,
+  });
+  const activity = document.querySelector("[data-agent-activity-panel]");
+  const conversation = document.querySelector("[data-agent-conversation-panel]");
+  const outputs = document.querySelector("[data-agent-outputs-panel]");
+  const streamState = document.querySelector("[data-agent-event-stream-state]");
+  const runState = document.querySelector("[data-agent-delegation-status]");
+  const drawer = document.querySelector("[data-agent-delegation-drawer]");
+  if (activity) activity.innerHTML = renderAgentActivityPanel(item, presentation);
+  if (conversation) conversation.innerHTML = renderAgentConversationPanel(item, presentation);
+  if (outputs) outputs.innerHTML = renderAgentOutputsPanel(item, presentation);
+  if (runState) runState.outerHTML = renderAgentDelegationRunState(item.status);
+  if (drawer) {
+    if (isAgentDelegationRunning(item.status)) drawer.setAttribute("aria-busy", "true");
+    else drawer.removeAttribute("aria-busy");
+  }
+  if (streamState) {
+    streamState.textContent = agentEventStreamLabel();
+    streamState.className = `agent-event-stream-state ${agentEventStreamStatus}`;
+    streamState.title = agentEventStreamError || "Agent activity stream";
+  }
+}
+
+function appendLiveAgentRunEvent(event) {
+  const delegations = state.workspaceDetail?.agent_delegations || [];
+  const item = delegations.find((delegation) => delegation.agent_run_id === event.agent_run_id);
+  if (!item) return;
+  const events = [...(item.events || []), event];
+  item.events = [...new Map(events.map((candidate) => [candidate.event_id, candidate])).values()]
+    .sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0))
+    .slice(-500);
+  item.latest_event_sequence = Math.max(Number(item.latest_event_sequence || 0), Number(event.sequence || 0));
+  item.status = agentDelegationStatusFromEvent(item.status, event);
+  if (["running", "waiting_human", "blocked", "completed", "failed", "cancelled"].includes(item.status)) {
+    item.child_session_status = item.status === "blocked" ? "waiting_human" : item.status;
+  }
+  if (event.type === "agent.message.completed") {
+    if (typeof event.payload?.text === "string" && event.payload.text.trim()) item.latest_summary = event.payload.text.trim();
+    if (event.payload?.result && typeof event.payload.result === "object") item.latest_result = event.payload.result;
+  }
+  renderAgentDelegationLiveSurface();
+}
+
+function openAgentEventStream(item) {
+  closeAgentEventStream();
+  if (!item?.agent_run_id) return;
+  if (["completed", "failed", "cancelled", "blocked"].includes(String(item.status || ""))) return;
+  agentEventStreamRunId = item.agent_run_id;
+  agentEventStreamStatus = "connecting";
+  const afterSequence = Number(item.latest_event_sequence || item.events?.at(-1)?.sequence || 0);
+  const source = new EventSource(`/api/agent-runs/${encodeURIComponent(item.agent_run_id)}/events/stream?after_sequence=${encodeURIComponent(String(afterSequence))}`);
+  agentEventStreamSource = source;
+  source.addEventListener("open", () => {
+    if (agentEventStreamSource !== source) return;
+    agentEventStreamStatus = "open";
+    agentEventStreamError = "";
+    renderAgentDelegationLiveSurface();
+  });
+  source.addEventListener("agent.event", (streamEvent) => {
+    if (agentEventStreamSource !== source) return;
+    try {
+      const event = JSON.parse(streamEvent.data);
+      if (event?.agent_run_id !== agentEventStreamRunId) return;
+      appendLiveAgentRunEvent(event);
+      if (isTerminalAgentRunEvent(event)) {
+        source.close();
+        agentEventStreamSource = null;
+        agentEventStreamRunId = "";
+        agentEventStreamStatus = "idle";
+        agentEventStreamError = "";
+        renderAgentDelegationLiveSurface();
+      }
+    } catch (error) {
+      agentEventStreamError = error.message || "Agent event could not be parsed.";
+    }
+  });
+  source.addEventListener("error", () => {
+    if (agentEventStreamSource !== source) return;
+    agentEventStreamStatus = "error";
+    agentEventStreamError = "Agent activity stream is reconnecting.";
+    renderAgentDelegationLiveSurface();
+  });
+}
+
+function renderAgentDelegationConversationModal(detail = state.workspaceDetail) {
+  const nodeId = state.ui.agentDelegationNodeId;
+  if (!nodeId) return "";
+  const item = (detail?.agent_delegations || []).find((delegation) => delegation.node_id === nodeId);
+  if (!item) return "";
+  const messages = Array.isArray(item.messages) ? item.messages : [];
+  const presentation = buildSubAgentConversationPresentation({
+    messages,
+    objective: item.objective,
+    latestSummary: item.latest_summary,
+    latestResult: item.latest_result,
+    events: item.events,
+  });
+  const selectedTab = ["activity", "conversation", "outputs"].includes(state.ui.agentDelegationTab)
+    ? state.ui.agentDelegationTab
+    : "activity";
+  return `<div class="agent-delegation-backdrop">
+    <section class="agent-delegation-drawer" role="dialog" aria-modal="true" aria-label="${escapeHtml(item.role_label || item.node_name)} conversation" data-agent-delegation-drawer>
+      <header class="agent-delegation-drawer-header"><div><span class="task-start-kicker">Agent conversation</span><h3>${escapeHtml(item.role_label || item.node_name)}</h3><p>${escapeHtml(item.agent_name)} / ${escapeHtml(item.model || "model unavailable")}</p></div><button class="icon-button" type="button" data-action="close-agent-delegation-conversation" title="Close" aria-label="Close Agent conversation">&#10005;</button></header>
+      <div class="agent-delegation-drawer-meta">${renderAgentDelegationRunState(item.status)}<span>${escapeHtml(item.objective || item.node_name)}</span><span class="agent-event-stream-state ${agentEventStreamStatus}" data-agent-event-stream-state>${escapeHtml(agentEventStreamLabel())}</span></div>
+      <nav class="agent-delegation-tabs" role="tablist" aria-label="Agent task views">
+        ${[["activity", "Activity"], ["conversation", "Conversation"], ["outputs", "Outputs"]].map(([tab, label]) => `<button type="button" role="tab" aria-selected="${selectedTab === tab}" class="${selectedTab === tab ? "active" : ""}" data-action="select-agent-delegation-tab" data-tab="${tab}">${label}</button>`).join("")}
+      </nav>
+      <div class="agent-delegation-drawer-body">
+        <section role="tabpanel" class="agent-delegation-tab-panel ${selectedTab === "activity" ? "active" : ""}" data-agent-activity-panel>${renderAgentActivityPanel(item, presentation)}</section>
+        <section role="tabpanel" class="agent-delegation-tab-panel ${selectedTab === "conversation" ? "active" : ""}" data-agent-conversation-panel>${renderAgentConversationPanel(item, presentation)}</section>
+        <section role="tabpanel" class="agent-delegation-tab-panel ${selectedTab === "outputs" ? "active" : ""}" data-agent-outputs-panel>${renderAgentOutputsPanel(item, presentation)}</section>
+      </div>
+      <footer class="agent-delegation-drawer-footer"><span>${item.child_session_id ? "Full Agent task available" : "Agent task is starting"}</span><div>${item.child_session_id ? `<button class="primary" type="button" data-action="open-agent-delegation-task" data-session-id="${escapeHtml(item.child_session_id)}">Open full task</button>` : ""}<button class="secondary" type="button" data-action="close-agent-delegation-conversation">Close</button></div></footer>
+    </section>
+  </div>`;
+}
+
 function renderTaskConversationRail(messages) {
   const visibleMessages = getVisibleOrchestratorMessages(messages);
   const conversationTargets = getConversationTargets();
   const conversationTarget = getTaskConversationTarget(state.workspaceDetail);
   const sendingTarget = getSelectedConversationTarget(conversationTargets) || conversationTarget;
   const attachments = filterConversationInputAttachments(state.workspaceDetail?.attachments);
+  const currentSessionId = state.workspaceDetail?.session?.session_id || "";
+  const ownerSessionId = state.workspaceDetail?.session?.metadata?.coding_workspace_owner_session_id || "";
+  const parentTaskId = ownerSessionId && ownerSessionId !== currentSessionId ? ownerSessionId : "";
   const conversationTargetLabel = conversationTarget
     ? `${conversationTarget.connection.name} / ${conversationTarget.model}`
     : "Model unavailable";
@@ -14693,32 +17002,61 @@ function renderTaskConversationRail(messages) {
       ? "This Session is pinned to this Provider Connection and model."
       : "No verified Provider Connection is available for this Session.";
   const checkpoint = state.workspaceDetail?.task_checkpoint || null;
+  const runtime = checkpoint?.long_task_runtime || null;
+  const providerState = checkpoint?.provider_state || null;
+  const completion = providerState?.completion_contract || null;
+  const tokenMetricLabel = runtime?.input_token_accounting === "estimated"
+    ? "tokens est."
+    : runtime?.input_token_accounting === "mixed"
+      ? "tokens mixed"
+      : "tokens";
+  const longTaskRuntime = runtime ? `<div class="long-task-runtime ${runtime.exhausted ? "exhausted" : ""}" title="Long-task runtime is persisted across restarts">
+    <div class="long-task-runtime-heading"><span>Long task</span><span class="badge ${completion?.status === "satisfied" ? "success" : completion?.status === "blocked" ? "danger" : completion?.status === "incomplete" ? "warn" : "neutral"}">${escapeHtml(completion?.status || checkpoint.status || "running")}</span></div>
+    <div class="long-task-runtime-metrics">
+      <span><strong>${escapeHtml(formatDashboardDuration(runtime.elapsed_ms))}</strong><small>elapsed</small></span>
+      <span><strong>${escapeHtml(`${runtime.turn_attempts}/${runtime.max_turn_attempts}`)}</strong><small>turns</small></span>
+      <span><strong>${escapeHtml(`${runtime.resume_attempts}/${checkpoint.max_resume_attempts}`)}</strong><small>resumes</small></span>
+      <span title="Input accounting: ${escapeHtml(runtime.input_token_accounting || "unavailable")}"><strong>${escapeHtml(String(runtime.cumulative_total_tokens || 0))}</strong><small>${escapeHtml(tokenMetricLabel)}</small></span>
+      <span><strong>${escapeHtml(String(providerState?.compaction_count || 0))}</strong><small>compactions</small></span>
+      <span><strong>${escapeHtml(String(providerState?.tool_rounds || 0))}</strong><small>tool rounds</small></span>
+    </div>
+    ${runtime.exhausted ? `<small class="long-task-runtime-warning">Budget reached: ${escapeHtml(runtime.exhausted_reason || "configured limit")}</small>` : ""}
+  </div>` : "";
   const checkpointNotice = checkpoint?.status === "resumable"
     ? `<div class="task-checkpoint-notice resumable"><span class="status-dot warn"></span><span><strong>Response paused</strong><small>${escapeHtml(checkpoint.next_action || "Continue from the saved task state.")}</small></span><button class="secondary" type="button" data-action="resume-task-checkpoint" ${state.planning ? "disabled" : ""}>Continue</button></div>`
     : checkpoint?.status === "waiting_human"
       ? `<div class="task-checkpoint-notice waiting"><span class="status-dot info"></span><span><strong>Waiting for you</strong><small>${escapeHtml(checkpoint.next_action || "Provide the requested decision or input.")}</small></span></div>`
       : "";
-  return `<section class="task-conversation-rail" data-workspace-focus="task-conversation">
+  return `<section class="task-conversation-rail ${parentTaskId ? "has-parent-task" : ""}" data-workspace-focus="task-conversation">
     <header class="task-conversation-rail-header">
       <div class="task-conversation-title-row"><div><span class="task-start-kicker">Conversation</span><h3>Task conversation</h3></div><button class="icon-button task-conversation-toggle" data-action="hide-task-conversation" title="Hide conversation" aria-label="Hide conversation">&#10005;</button></div>
       <div class="task-conversation-summary-meta"><span class="conversation-model-chip ${conversationTarget ? "verified" : "unavailable"}" title="${escapeHtml(conversationTargetDetail)}">${escapeHtml(conversationTargetLabel)}</span><span class="badge neutral">${escapeHtml(String(visibleMessages.length))}</span></div>
     </header>
+    ${parentTaskId ? `<div class="subagent-parent-banner"><span><strong>Sub Agent task</strong><small>This conversation belongs to a delegated DAG node.</small></span><button class="secondary" type="button" data-action="open-parent-agent-task" data-session-id="${escapeHtml(parentTaskId)}">Back to main task</button></div>` : ""}
     <section class="orchestrator-chat-panel task-conversation-panel">
-      ${renderOrchestratorConversation(messages)}
-      ${checkpointNotice}
-      ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
-      <div class="task-memory-recommendations" data-task-memory-recommendations>${renderTaskMemoryRecommendationContent()}</div>
+      <div class="task-conversation-scroll" data-task-conversation-scroll>
+        ${renderOrchestratorConversation(messages)}
+        ${renderAgentDelegationPanel(state.workspaceDetail)}
+        ${longTaskRuntime}
+        ${checkpointNotice}
+        ${state.planner.error ? `<div class="alert danger inline-alert">${escapeHtml(state.planner.error)}</div>` : ""}
+        <div class="task-memory-recommendations" data-task-memory-recommendations>${renderTaskMemoryRecommendationContent()}</div>
+      </div>
       <div class="orchestrator-composer task-chat-composer" data-conversation-file-drop="true">
         ${attachments.length ? `<div class="task-chat-attachments">${attachments.slice(-6).map((attachment) => `<span class="task-chat-attachment" title="${escapeHtml(attachment.summary || attachment.storage_uri || attachment.name)}"><span>${escapeHtml(attachment.name || "Attached file")}</span><button class="icon-button" type="button" data-action="remove-conversation-attachment" data-attachment-id="${escapeHtml(attachment.attachment_id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(attachment.name || "attachment")}" ${state.attachmentSaving ? "disabled" : ""}>&#10005;</button></span>`).join("")}</div>` : ""}
         <textarea rows="2" aria-label="Message My Mate" data-field="planner.intent" placeholder="Message My Mate" ${state.planning ? "disabled" : ""}>${escapeHtml(state.planner.intent)}</textarea>
-        <div class="task-chat-composer-toolbar"><div class="task-chat-toolbar-start"><button class="icon-button task-chat-attach" type="button" data-action="pick-conversation-file" title="Attach text files" aria-label="Attach text files" ${state.attachmentSaving || state.planning ? "disabled" : ""}>&#128206;</button><input class="hidden-file-input" type="file" multiple data-field="conversation.filePicker" data-key="${escapeHtml(String(state.attachmentFilePickerKey))}" accept=".md,.txt,.json,.csv,.yaml,.yml,.xml,.html,.css,.js,.mjs,.jsx,.ts,.tsx,.py,.java,.go,.rs,.sql,.log,.ini,.toml,.sh,.svg,text/*" /><label class="task-chat-model-picker" title="Model for the next reply"><span class="status-dot ${sendingTarget ? "success" : "warn"}"></span><select aria-label="Conversation model" data-field="planner.conversationTarget" ${state.planning || !conversationTargets.length ? "disabled" : ""}>${conversationTargets.length ? conversationTargets.map((target) => `<option value="${escapeHtml(conversationTargetValue(target.connection.connection_id, target.model))}" ${sendingTarget?.connection.connection_id === target.connection.connection_id && sendingTarget.model === target.model ? "selected" : ""}>${escapeHtml(`${target.connection.name} / ${target.model}`)}</option>`).join("") : '<option value="">Model unavailable</option>'}</select></label></div><button class="icon-button primary task-chat-send" data-action="orchestrator-send-message" title="Send message" aria-label="Send message" ${state.planning || !state.planner.intent.trim() || !sendingTarget ? "disabled" : ""}>&#8593;</button></div>
+        <div class="task-chat-composer-toolbar"><div class="task-chat-toolbar-start"><button class="icon-button task-chat-attach" type="button" data-action="pick-conversation-file" title="Attach files" aria-label="Attach files" ${state.attachmentSaving || state.planning ? "disabled" : ""}>&#128206;</button><input class="hidden-file-input" type="file" multiple data-field="conversation.filePicker" data-key="${escapeHtml(String(state.attachmentFilePickerKey))}" accept=".md,.txt,.json,.csv,.yaml,.yml,.xml,.html,.css,.js,.mjs,.jsx,.ts,.tsx,.py,.java,.go,.rs,.sql,.log,.ini,.toml,.sh,.svg,.pdf,.docx,.pptx,.xlsx,text/*" /><label class="task-chat-model-picker" title="Model for the next reply"><span class="status-dot ${sendingTarget ? "success" : "warn"}"></span><select aria-label="Conversation model" data-field="planner.conversationTarget" ${state.planning || !conversationTargets.length ? "disabled" : ""}>${conversationTargets.length ? conversationTargets.map((target) => `<option value="${escapeHtml(conversationTargetValue(target.connection.connection_id, target.model))}" ${sendingTarget?.connection.connection_id === target.connection.connection_id && sendingTarget.model === target.model ? "selected" : ""}>${escapeHtml(`${target.connection.name} / ${target.model}`)}</option>`).join("") : '<option value="">Model unavailable</option>'}</select></label></div><button class="icon-button primary task-chat-send" data-action="orchestrator-send-message" title="Send message" aria-label="Send message" ${state.planning || !state.planner.intent.trim() || !sendingTarget ? "disabled" : ""}>&#8593;</button></div>
       </div>
     </section>
   </section>`;
 }
 
 function renderTaskTechnicalSection(detail, missionSpec, hasProposal, hasExecutionData, workspace) {
-  return `${missionSpec || hasProposal ? `<details class="task-technical-details" data-workspace-focus="task-plan" ${state.ui.taskPlanExpanded ? "open" : ""}><summary>Plan and technical details</summary><div>${missionSpec ? renderMissionSpecCompact(detail) : ""}${hasProposal ? renderDagProposalSummary() : ""}</div></details>` : ""}
+  const proposalStatus = state.planner.activeProposal?.status || "";
+  const proposalNeedsAction = proposalStatus === "review_ready" || (
+    proposalStatus === "confirmed" && ["draft", "ready"].includes(detail?.agent_dag?.status || "")
+  );
+  return `${missionSpec || hasProposal ? `<details class="task-technical-details ${proposalNeedsAction ? "needs-action" : ""}" data-workspace-focus="task-plan" ${state.ui.taskPlanExpanded || proposalNeedsAction ? "open" : ""}><summary>${proposalNeedsAction ? "DAG review and launch" : "Plan and technical details"}</summary><div>${missionSpec ? renderMissionSpecCompact(detail) : ""}${hasProposal ? renderDagProposalSummary() : ""}</div></details>` : ""}
     ${hasExecutionData ? `<details class="task-runtime-details" data-workspace-focus="task-runtime" ${state.ui.taskRuntimeExpanded ? "open" : ""}><summary><span><strong>Runtime and evidence</strong><small>Progress graph, interventions, artifacts, evaluation, trace, and replay.</small></span><span class="badge ${statusTone(detail?.latest_run?.status || workspace.run_status || "idle")}">${escapeHtml(detail?.latest_run?.status || workspace.run_status || "idle")}</span></summary>${renderExecutionCockpit(detail)}</details>` : ""}`;
 }
 
@@ -14997,56 +17335,196 @@ function renderArtifactPreviewModal() {
   `;
 }
 
+function closeWorkspaceDiffPreview() {
+  state.workspaceDiffPreview = {
+    open: false,
+    loading: false,
+    error: null,
+    changeSetId: "",
+    relativePath: "",
+    detail: null,
+  };
+  render();
+}
+
+async function openWorkspaceDiffPreview(changeSetId, relativePath) {
+  if (!changeSetId) return;
+  state.workspaceDiffPreview = {
+    open: true,
+    loading: true,
+    error: null,
+    changeSetId,
+    relativePath,
+    detail: null,
+  };
+  render();
+  try {
+    const detail = await request(`/api/runtime/workspace-change-sets/${encodeURIComponent(changeSetId)}`);
+    if (!state.workspaceDiffPreview.open || state.workspaceDiffPreview.changeSetId !== changeSetId) return;
+    const changes = Array.isArray(detail.changes) ? detail.changes : [];
+    const selectedPath = changes.some((change) => change.relative_path === relativePath)
+      ? relativePath
+      : changes[0]?.relative_path || "";
+    state.workspaceDiffPreview.detail = detail;
+    state.workspaceDiffPreview.relativePath = selectedPath;
+    state.workspaceDiffPreview.loading = false;
+    if (!selectedPath) {
+      state.workspaceDiffPreview.error = "This Change Set does not contain any files.";
+    } else if (relativePath && selectedPath !== relativePath) {
+      state.workspaceDiffPreview.error = "The selected file is no longer part of this Change Set.";
+    }
+  } catch (error) {
+    if (state.workspaceDiffPreview.changeSetId === changeSetId) {
+      state.workspaceDiffPreview.loading = false;
+      state.workspaceDiffPreview.error = error.message || "Workspace Diff could not be loaded.";
+    }
+  }
+  render();
+}
+
+function renderWorkspaceDiffPreviewModal() {
+  const preview = state.workspaceDiffPreview;
+  if (!preview.open) return "";
+  const changeSet = preview.detail;
+  const change = changeSet?.changes?.find((item) => item.relative_path === preview.relativePath) || null;
+  const status = changeSet?.status || "loading";
+  return `
+    <div class="artifact-preview-backdrop workspace-diff-preview-backdrop">
+      <section class="artifact-preview-modal workspace-diff-preview-modal" role="dialog" aria-modal="true" aria-label="Workspace Diff preview">
+        <header class="artifact-preview-header">
+          <div><span class="task-start-kicker">Review changes</span><h3>${escapeHtml(changeSet?.changes?.length ? `${changeSet.changes.length} changed file${changeSet.changes.length === 1 ? "" : "s"}` : "Workspace changes")}</h3><p>${change ? escapeHtml(`${preview.relativePath} / ${change.kind}`) : "Loading reviewed changes..."}</p></div>
+          <button class="icon-button" data-action="close-workspace-diff-preview" title="Close" aria-label="Close Workspace Diff preview">&#10005;</button>
+        </header>
+        <div class="artifact-preview-body workspace-diff-preview-body">
+          ${preview.loading ? '<div class="artifact-preview-status"><strong>Loading Diff...</strong></div>' : ""}
+          ${preview.error ? `<div class="alert danger">${escapeHtml(preview.error)}</div>` : ""}
+          ${!preview.loading && !preview.error && change ? `<div class="workspace-diff-review-layout">
+            <nav class="workspace-diff-review-files" aria-label="Changed files">
+              ${changeSet.changes.map((item) => `<button type="button" class="workspace-diff-review-file ${item.relative_path === preview.relativePath ? "selected" : ""}" data-action="select-workspace-diff-preview-file" data-path="${escapeHtml(item.relative_path)}" title="${escapeHtml(item.relative_path)}"><span><i class="task-workboard-file-icon" aria-hidden="true"></i><strong>${escapeHtml(item.relative_path)}</strong></span><small>${escapeHtml(item.kind)}</small></button>`).join("")}
+            </nav>
+            <section class="workspace-diff-review-content">
+              <div class="workspace-diff-review-title"><strong>${escapeHtml(preview.relativePath)}</strong><span><b class="is-added">+${escapeHtml(String(change.diff?.lines?.filter((line) => line.kind === "added").length || 0))}</b><b class="is-deleted">-${escapeHtml(String(change.diff?.lines?.filter((line) => line.kind === "deleted").length || 0))}</b></span></div>
+              ${renderWorkspaceDiff(change)}
+            </section>
+          </div>` : ""}
+        </div>
+        <footer class="artifact-preview-footer"><span class="badge ${workspaceChangeTone(status)}">${escapeHtml(status)}</span><div><button class="secondary" data-action="close-workspace-diff-preview">Close</button>${status === "pending" ? `<button class="primary" data-action="review-workspace-change-file" data-change-set-id="${escapeHtml(preview.changeSetId)}" data-path="${escapeHtml(preview.relativePath)}">Review in Inbox</button>` : ""}</div></footer>
+      </section>
+    </div>
+  `;
+}
+
 function renderTaskResults(detail) {
   const deliverables = getExecutionDeliverables(detail).filter(
     (item) => item.status === "returned" || item.status === "completed",
   );
-  const artifacts = Array.isArray(detail?.artifacts) ? detail.artifacts.slice(-6).reverse() : [];
-  const resultItems = deliverables.length
-    ? deliverables.slice(0, 6).map((item) => ({
+  const fileDeliverables = filterWorkboardFileDeliverables(deliverables);
+  const artifacts = Array.isArray(detail?.artifacts) ? detail.artifacts.slice().reverse() : [];
+  const agentDagArtifacts = Array.isArray(detail?.agent_dag_artifacts) ? detail.agent_dag_artifacts : [];
+  const artifactItems = fileDeliverables.length
+    ? fileDeliverables.map((item) => ({
+        kind: "artifact",
         title: item.title || "Result",
         detail: item.summary || item.uri || "Returned deliverable",
         uri: item.uri || "",
         artifactId: item.artifactId || "",
         mimeType: item.mimeType || "",
+        hasPreviousVersion: item.hasPreviousVersion === true,
       }))
     : artifacts.map((artifact) => ({
+        kind: "artifact",
         title: artifact.name || artifact.kind || artifact.artifact_id || "Generated result",
         detail: artifact.summary || artifact.storage_uri || artifact.path || "Generated artifact",
         uri: artifact.storage_uri || artifact.path || "",
         artifactId: artifact.artifact_id || "",
         mimeType: artifact.mime_type || "",
+        hasPreviousVersion: artifact.has_previous_version === true || Number(artifact.version || 1) > 1,
       }));
+  const workspaceChangeSet = detail?.workspace_change_set || null;
+  const workspaceChangeItems = mergeWorkspaceChangeSetHistory(
+    detail?.workspace_change_sets,
+    workspaceChangeSet,
+    detail?.workspace_files,
+  ).map((entry) => {
+        const { change, changeSet } = entry;
+        const workspaceSourceProject = state.desktop.projects.find(
+          (project) => String(project.rootPath || "").toLocaleLowerCase() === String(changeSet.source_root || "").toLocaleLowerCase(),
+        );
+        const canOpenWorkspaceChange = Boolean(workspaceSourceProject) ||
+          String(state.desktop.workspace?.rootPath || "").toLocaleLowerCase() === String(changeSet.source_root || "").toLocaleLowerCase();
+        const sizeBytes = change.after_size_bytes ?? change.before_size_bytes ?? 0;
+        const addedLines = Number(change.added_lines || 0);
+        const deletedLines = Number(change.deleted_lines || 0);
+        return {
+          kind: "workspace-change",
+          title: change.relative_path || "Changed file",
+          detail: `${String(change.kind || "modified").replace(/^./, (value) => value.toUpperCase())} / ${formatWorkspaceBytes(sizeBytes)}`,
+          changeKind: change.kind || "modified",
+          changeSetId: changeSet.change_set_id || "",
+          changeSetStatus: changeSet.status || "pending",
+          relativePath: change.relative_path || "",
+          projectId: workspaceSourceProject?.projectId || "",
+          canOpenWorkspaceChange,
+          uri: "",
+          artifactId: "",
+          mimeType: "",
+          hasPreviousVersion: false,
+          addedLines,
+          deletedLines,
+        };
+      });
+  const agentDagItems = agentDagArtifacts.map((artifact) => ({
+    kind: "agent-artifact",
+    title: artifact.name || artifact.artifact_id || "Agent result",
+    detail: `${artifact.kind || artifact.mime_type || "Agent artifact"}${artifact.size_bytes ? ` / ${formatWorkspaceBytes(artifact.size_bytes)}` : ""}`,
+    uri: artifact.uri || "",
+    artifactId: "",
+    mimeType: artifact.mime_type || "",
+    hasPreviousVersion: false,
+  }));
+  const resultItems = [...workspaceChangeItems, ...agentDagItems, ...artifactItems];
+  const addedLineCount = resultItems.reduce((total, item) => total + Number(item.addedLines || 0), 0);
+  const deletedLineCount = resultItems.reduce((total, item) => total + Number(item.deletedLines || 0), 0);
+  const pageModel = buildWorkboardPage(resultItems, state.ui.workboardQuery, state.ui.workboardPage, 10);
+  const { items: visibleResultItems, filteredCount, page, pageCount, pageSize } = pageModel;
+  if (page !== state.ui.workboardPage) state.ui.workboardPage = page;
+  const visibleResultMarkup = visibleResultItems.length
+    ? `<div class="task-result-list">${visibleResultItems.map((item) => `
+                <article class="task-result-item">
+                  <div class="task-result-file">
+                    <strong title="${escapeHtml(item.detail || item.title)}">${escapeHtml(item.title)}</strong>
+                  </div>
+                  <div class="task-result-side">
+                    ${item.addedLines || item.deletedLines ? `<span class="task-result-delta" aria-label="${escapeHtml(`${item.addedLines || 0} additions and ${item.deletedLines || 0} deletions`)}"><span class="is-added">+${escapeHtml(String(item.addedLines || 0))}</span><span class="is-deleted">-${escapeHtml(String(item.deletedLines || 0))}</span></span>` : `<span class="task-result-meta" title="${escapeHtml(item.detail)}">${escapeHtml(item.mimeType || item.detail || item.changeKind || "file")}</span>`}
+                    <div class="task-result-actions">
+                      ${item.changeSetId && item.changeSetStatus === "pending" ? `<button class="task-result-icon-action" type="button" data-action="open-workspace-diff-preview" data-change-set-id="${escapeHtml(item.changeSetId)}" data-path="${escapeHtml(item.relativePath)}" title="Preview diff for ${escapeHtml(item.title)}" aria-label="Preview diff for ${escapeHtml(item.title)}">&#177;</button>` : ""}
+                      ${item.changeSetId && item.changeSetStatus === "applied" && /(^|\/)index\.html$/i.test(item.relativePath) && state.desktop.available && item.canOpenWorkspaceChange ? `<button class="task-result-preview-action" type="button" data-action="preview-applied-workspace-site" data-path="${escapeHtml(item.relativePath)}" data-project-id="${escapeHtml(item.projectId || "")}" title="Preview ${escapeHtml(item.title)} on localhost">Preview</button>` : ""}
+                      ${item.changeSetId && item.changeSetStatus !== "pending" && state.desktop.available && item.canOpenWorkspaceChange ? `<button class="task-result-icon-action" type="button" data-action="open-applied-workspace-file" data-target="${item.changeKind === "deleted" ? "explorer" : "open-with"}" data-path="${escapeHtml(item.changeKind === "deleted" ? "" : item.relativePath)}" data-project-id="${escapeHtml(item.projectId || "")}" title="${item.changeKind === "deleted" ? "Open containing folder" : "Open with Windows app"}" aria-label="${item.changeKind === "deleted" ? "Open containing folder" : `Open ${escapeHtml(item.title)} with Windows app`}">${item.changeKind === "deleted" ? "&#128193;" : "&#8599;"}</button>` : ""}
+                      ${item.artifactId ? `<button class="task-result-icon-action" type="button" data-action="open-artifact-preview" data-artifact-id="${escapeHtml(item.artifactId)}" title="Preview ${escapeHtml(item.title)}" aria-label="Preview ${escapeHtml(item.title)}">&#9635;</button>` : ""}
+                      ${item.artifactId && item.hasPreviousVersion ? `<button class="task-result-icon-action" type="button" data-action="open-artifact-changes" data-artifact-id="${escapeHtml(item.artifactId)}" title="Show changes for ${escapeHtml(item.title)}" aria-label="Show changes for ${escapeHtml(item.title)}">&#8644;</button>` : ""}
+                      ${String(item.uri || "").startsWith("/api/") ? `<a class="task-result-download task-result-icon-action" href="${escapeHtml(item.uri)}" download title="Download ${escapeHtml(item.title)}" aria-label="Download ${escapeHtml(item.title)}">&#8595;</a>` : ""}
+                    </div>
+                  </div>
+                </article>`).join("")}</div>`
+    : '<div class="task-workboard-empty"><strong>No matching files</strong><p>Try a different name or path.</p></div>';
 
-  const executionStatus = detail?.latest_run?.status || detail?.workspace_state?.run_status || "not started";
-  const decisionCount = getExecutionQueueItems(detail).length;
+  const executionStatus = workspaceChangeSet?.status === "pending"
+    ? "waiting_human"
+    : detail?.latest_run?.status || detail?.workspace_state?.run_status || detail?.session?.status || "not started";
+  const decisionCount = getExecutionQueueItems(detail).length + (workspaceChangeSet?.status === "pending" ? 1 : 0);
   return `
     <section class="task-workboard-panel" data-workspace-focus="task-results">
       <div class="task-results-heading">
-        <div><span class="task-start-kicker">Workboard</span><h3>Files</h3></div>
-        <div class="task-workboard-summary" aria-label="Task output summary">
-          <span>${escapeHtml(String(resultItems.length))} file${resultItems.length === 1 ? "" : "s"}</span>
-          <span class="${escapeHtml(statusTone(executionStatus))}">${escapeHtml(executionStatus)}</span>
-          ${decisionCount ? `<span class="warn">${escapeHtml(String(decisionCount))} pending</span>` : ""}
+        <div class="task-workboard-title">
+          <span class="task-workboard-file-icon" aria-hidden="true">+</span>
+          <div><h3>${escapeHtml(String(resultItems.length))} file${resultItems.length === 1 ? "" : "s"}</h3><div class="task-workboard-delta-summary">${addedLineCount ? `<span class="is-added">+${escapeHtml(String(addedLineCount))}</span>` : ""}${deletedLineCount ? `<span class="is-deleted">-${escapeHtml(String(deletedLineCount))}</span>` : ""}<span class="${escapeHtml(statusTone(executionStatus))}">${escapeHtml(executionStatus)}</span>${decisionCount ? `<span class="warn">${escapeHtml(String(decisionCount))} pending</span>` : ""}</div></div>
+        </div>
+        <div class="task-workboard-header-actions">
+          ${resultItems.length ? `<label class="task-workboard-search"><span class="visually-hidden">Search files</span><input type="search" value="${escapeHtml(state.ui.workboardQuery || "")}" data-field="workboard.query" placeholder="Search files" aria-label="Search Workboard files" /></label>` : ""}
         </div>
       </div>
       ${resultItems.length
-        ? `<div class="task-result-list">${resultItems
-            .map(
-              (item) => `
-                <article class="task-result-item">
-                  <div class="task-result-file">
-                    <strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong>
-                    <span title="${escapeHtml(item.detail)}">${escapeHtml(item.detail || item.mimeType || "Generated file")}</span>
-                  </div>
-                  <div class="task-result-actions">
-                    ${item.artifactId ? `<button class="secondary" type="button" data-action="open-artifact-preview" data-artifact-id="${escapeHtml(item.artifactId)}">Preview</button>` : ""}
-                    ${String(item.uri || "").startsWith("/api/") ? `<a class="task-result-download secondary" href="${escapeHtml(item.uri)}" download>Download</a>` : ""}
-                  </div>
-                </article>
-              `,
-            )
-            .join("")}</div>`
+        ? `<div class="task-workboard-list-frame">${visibleResultMarkup}<footer class="task-workboard-footer"><span>${escapeHtml(`${filteredCount ? (page - 1) * pageSize + 1 : 0}-${Math.min(page * pageSize, filteredCount)} of ${filteredCount}`)}</span><div class="task-workboard-pagination"><button type="button" data-action="workboard-page" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""} aria-label="Previous page" title="Previous page">&#8249;</button><span class="task-workboard-page-indicator">${page} / ${pageCount}</span><button type="button" data-action="workboard-page" data-page="${page + 1}" ${page >= pageCount ? "disabled" : ""} aria-label="Next page" title="Next page">&#8250;</button></div></footer></div>`
         : '<div class="task-workboard-empty"><strong>No outputs yet</strong><p>The task is still in conversation and has not returned a deliverable.</p></div>'}
     </section>
   `;
@@ -15084,14 +17562,9 @@ function renderOrchestratorWorkbench() {
           <div class="task-start-copy"><span class="task-start-kicker">${activeWorkspace ? `New task in ${escapeHtml(activeWorkspace.displayName || activeWorkspace.name)}` : "New task"}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(subtitle)}</p></div>
           ${!taskWorkspaceReady ? `<div class="task-workspace-required"><span><strong>Workspace required</strong><small>Add or create a folder from the left sidebar. New tasks automatically inherit it.</small></span><button class="secondary" data-action="open-workspace-creator">Add Workspace</button></div>` : ""}
           <div class="task-start-composer">
-            <textarea rows="6" aria-label="Task description" data-field="planner.intent" placeholder="Describe the result, constraints, and files or systems involved.">${escapeHtml(state.planner.intent)}</textarea>
+            <textarea rows="7" aria-label="Task description" data-field="planner.intent" placeholder="Tell My Mate what you want to accomplish. Add constraints, files, or acceptance criteria when you know them.">${escapeHtml(state.planner.intent)}</textarea>
             <div class="task-start-actions">
-              <label class="task-model-picker"><span>Conversation model</span><select aria-label="Conversation model" data-field="planner.conversationTarget" ${conversationTargets.length ? "" : "disabled"}>
-                ${conversationTargets.length
-                  ? conversationTargets.map((target) => `<option value="${escapeHtml(conversationTargetValue(target.connection.connection_id, target.model))}" ${selectedConversationTarget?.connection.connection_id === target.connection.connection_id && selectedConversationTarget.model === target.model ? "selected" : ""}>${escapeHtml(`${target.connection.name} / ${target.model}`)}</option>`).join("")
-                  : '<option value="">No verified model</option>'}
-              </select></label>
-              <button class="primary task-start-button" data-action="orchestrator-send-message" ${state.planning || !state.planner.intent.trim() || !selectedConversationTarget || !taskWorkspaceReady ? "disabled" : ""}>${state.planning ? "Preparing task..." : taskWorkspaceReady ? "Start task" : "Add Workspace first"}</button>
+              <button class="primary task-start-button" data-action="orchestrator-send-message" ${state.planning || !state.planner.intent.trim() || !selectedConversationTarget || !taskWorkspaceReady ? "disabled" : ""}>${state.planning ? "Preparing conversation..." : taskWorkspaceReady ? "Start conversation" : "Add Workspace first"}</button>
             </div>
           </div>
           <div class="task-readiness-strip">
@@ -15147,8 +17620,12 @@ function renderDesktopSidebarContent() {
   if (state.activeNav === "missions") {
     return `
       <div class="sidebar-section-header">
-        <strong>Missions</strong>
+        <strong>Mission workspace</strong>
         <button class="mini-button" data-action="refresh-missions">${state.missionsLoading ? "..." : "Ref"}</button>
+      </div>
+      <div class="workspace-inventory-tabs" role="tablist" aria-label="Mission workspace inventory">
+        <button class="selected" type="button" role="tab" aria-selected="true" data-action="switch-nav" data-nav="missions">Missions</button>
+        <button type="button" role="tab" aria-selected="false" data-action="switch-nav" data-nav="sessions">Sessions</button>
       </div>
       ${renderSessionInventoryControls("missions")}
       <div class="template-list">${renderMissionList()}</div>
@@ -15166,11 +17643,27 @@ function renderDesktopSidebarContent() {
       </div>
     `;
   }
+  if (state.activeNav === "scheduled") {
+    const enabled = state.schedules.items.filter((schedule) => schedule.enabled).length;
+    const next = state.schedules.items
+      .filter((schedule) => schedule.enabled && schedule.next_run_at)
+      .sort((left, right) => left.next_run_at.localeCompare(right.next_run_at))[0];
+    return `
+      <div class="sidebar-section-header">
+        <strong>Scheduled</strong>
+        <button class="mini-button" data-action="refresh-schedules">${state.schedules.loading ? "..." : "Ref"}</button>
+      </div>
+      <div class="sidebar-panel">
+        <div class="registry-item"><strong>${enabled} enabled</strong><small>${next ? `Next ${formatWorkspaceTimestamp(next.next_run_at)}` : "No upcoming run"}</small></div>
+      </div>
+    `;
+  }
   if (state.activeNav === "library") {
+    const workflowCount = groupWorkflowFamilies(state.templates).length;
     return `
       <div class="sidebar-section-header"><strong>Library</strong></div>
       <div class="sidebar-panel">
-        <div class="registry-item"><strong>${state.templates.length} workflows</strong><small>Reusable starting points selected automatically for new tasks.</small></div>
+        <div class="registry-item"><strong>${workflowCount} workflows</strong><small>Reusable starting points selected automatically for new tasks.</small></div>
       </div>
     `;
   }
@@ -15186,8 +17679,12 @@ function renderDesktopSidebarContent() {
   if (state.activeNav === "sessions") {
     return `
       <div class="sidebar-section-header">
-        <strong>Sessions</strong>
+        <strong>Mission workspace</strong>
         <button class="mini-button" data-action="refresh-sessions">${state.sessionsLoading ? "..." : "Ref"}</button>
+      </div>
+      <div class="workspace-inventory-tabs" role="tablist" aria-label="Mission workspace inventory">
+        <button type="button" role="tab" aria-selected="false" data-action="switch-nav" data-nav="missions">Missions</button>
+        <button class="selected" type="button" role="tab" aria-selected="true" data-action="switch-nav" data-nav="sessions">Sessions</button>
       </div>
       ${renderSessionInventoryControls("sessions")}
       <div class="template-list">${renderSessionList()}</div>
@@ -15236,18 +17733,22 @@ function renderDesktopSidebarContent() {
     `;
   }
   if (state.activeNav === "agents") {
+    const activeAgents = state.agentDefinitions.filter((agent) => agent.status === "active");
+    const activeRuns = state.agentOrchestration.dags.filter((dag) => ["running", "waiting_human"].includes(dag.status));
     return `
       <div class="sidebar-section-header">
-        <strong>Subagents</strong>
-        <button class="mini-button" data-action="refresh-runtime">${state.runtimeLoading ? "..." : "Ref"}</button>
+        <strong>Agent workspace</strong>
       </div>
-      <button class="primary full" data-action="new-agent-profile">New agent</button>
-      <div class="template-list">${renderAgentHostingSidebarList()}</div>
+      <div class="sidebar-panel agent-sidebar-summary">
+        <div class="registry-item"><strong>${activeAgents.length} Agents</strong><small>Reusable, versioned capability profiles</small></div>
+        <div class="registry-item"><strong>${activeRuns.length} active runs</strong><small>${state.agentOrchestration.dags.length} durable DAGs recorded</small></div>
+      </div>
     `;
   }
   if (state.activeNav === "templates") {
     return `
-      <button class="primary full" data-action="new-template">New template</button>
+      <button class="primary full" data-action="open-workflow-generator">Generate workflow</button>
+      <button class="secondary full" data-action="new-template">New blank workflow</button>
       <div class="template-list">${renderTemplateList()}</div>
     `;
   }
@@ -15282,12 +17783,29 @@ function getOpenWorkspaceChanges() {
   return openWorkspaceChangeSets(state.inbox.workspaceChanges);
 }
 
+function getWorkspaceChangesForReview() {
+  const open = getOpenWorkspaceChanges();
+  const selected = state.inbox.workspaceChanges.find((item) => item.change_set_id === state.inbox.selectedWorkspaceChangeId);
+  if (selected && !open.some((item) => item.change_set_id === selected.change_set_id)) return [selected, ...open];
+  return open;
+}
+
 function getInboxOpenCount() {
   return state.inbox.approvals.length +
     state.inbox.humanInputs.length +
     state.inbox.alerts.length +
     state.inbox.memoryCandidates.length +
+    getVisibleInboxNotifications().filter((notification) => !notification.read_at).length +
     getOpenWorkspaceChanges().length;
+}
+
+function getVisibleInboxNotifications() {
+  const approvalIds = new Set(state.inbox.approvals.map((item) => item.approval_id));
+  const inputIds = new Set(state.inbox.humanInputs.map((item) => item.input_request_id));
+  return (state.inbox.notifications || []).filter((notification) =>
+    !(notification.resource_type === "approval" && approvalIds.has(notification.resource_id)) &&
+    !(notification.resource_type === "human_input" && inputIds.has(notification.resource_id)),
+  );
 }
 
 function workspaceRootLabel(root) {
@@ -15337,7 +17855,7 @@ function renderWorkspaceDiff(change) {
 }
 
 function renderWorkspaceChangeReview() {
-  const changeSets = getOpenWorkspaceChanges();
+  const changeSets = getWorkspaceChangesForReview();
   const selected = selectWorkspaceChangeSet(changeSets, state.inbox.selectedWorkspaceChangeId);
   if (!selected) return "";
   const selectedFile = selectWorkspaceFile(selected, state.inbox.selectedWorkspaceFile);
@@ -15345,6 +17863,12 @@ function renderWorkspaceChangeReview() {
   const confirmAction = state.inbox.confirmWorkspaceChangeAction;
   const actionable = selected.status === "pending";
   const rejectable = ["pending", "blocked", "apply_failed"].includes(selected.status);
+  const sourceProject = state.desktop.projects.find(
+    (project) => String(project.rootPath || "").toLocaleLowerCase() === String(selected.source_root || "").toLocaleLowerCase(),
+  );
+  const appliedFilePath = selectedFile?.kind === "deleted" ? "" : selectedFile?.relative_path || "";
+  const activeSourceWorkspace = String(state.desktop.workspace?.rootPath || "").toLocaleLowerCase() === String(selected.source_root || "").toLocaleLowerCase();
+  const canOpenAppliedFile = Boolean(sourceProject || activeSourceWorkspace);
   return `
     <section class="workspace-change-review" aria-label="Workspace change review">
       <header class="workspace-change-review-header">
@@ -15356,8 +17880,7 @@ function renderWorkspaceChangeReview() {
           <p>${escapeHtml(selected.run_id)} / ${escapeHtml(selected.node_run_id)}</p>
         </div>
         <div class="workspace-change-actions">
-          <button class="secondary danger-action" data-action="stage-workspace-change-action" data-mode="reject" ${!rejectable || isActionLoading("workspace-change", selected.change_set_id) ? "disabled" : ""}>Reject</button>
-          <button class="primary" data-action="stage-workspace-change-action" data-mode="apply" ${!actionable || isActionLoading("workspace-change", selected.change_set_id) ? "disabled" : ""}>Apply changes</button>
+          ${selected.status === "applied" && state.desktop.available ? `<button class="primary" data-action="open-applied-workspace-file" data-target="${selectedFile?.kind === "deleted" ? "explorer" : "open-with"}" data-path="${escapeHtml(appliedFilePath)}" data-project-id="${escapeHtml(sourceProject?.projectId || "")}" ${canOpenAppliedFile ? "" : "disabled"}>${selectedFile?.kind === "deleted" ? "Open folder" : "Open with..."}</button>` : `<button class="secondary danger-action" data-action="stage-workspace-change-action" data-mode="reject" ${!rejectable || isActionLoading("workspace-change", selected.change_set_id) ? "disabled" : ""}>Reject</button><button class="primary" data-action="stage-workspace-change-action" data-mode="apply" ${!actionable || isActionLoading("workspace-change", selected.change_set_id) ? "disabled" : ""}>Apply changes</button>`}
         </div>
       </header>
       ${selected.blocked_reason ? `<div class="workspace-change-blocked"><strong>Application blocked</strong><span>${escapeHtml(selected.blocked_reason)}</span></div>` : ""}
@@ -15411,6 +17934,7 @@ function renderInboxWorkspace() {
   const approvals = state.inbox.approvals || [];
   const humanInputs = state.inbox.humanInputs || [];
   const alerts = state.inbox.alerts || [];
+  const notifications = getVisibleInboxNotifications();
   const count = getInboxOpenCount();
   return `
     <section class="product-surface inbox-surface">
@@ -15421,6 +17945,17 @@ function renderInboxWorkspace() {
       ${state.inbox.error ? `<div class="alert danger">${escapeHtml(state.inbox.error)}</div>` : ""}
       ${renderWorkspaceChangeReview()}
       <div class="inbox-list">
+        ${notifications.map((notification) => `
+          <article class="inbox-item notification-inbox-item ${notification.read_at ? "is-read" : ""}">
+            <span class="inbox-item-kind">${escapeHtml(notification.kind.startsWith("schedule_") ? "Schedule" : "Notice")}</span>
+            <div><strong>${escapeHtml(notification.title)}</strong><p>${escapeHtml(notification.body)}</p><small>${escapeHtml(formatWorkspaceTimestamp(notification.created_at))}</small></div>
+            <div class="inbox-item-actions">
+              ${notification.session_id ? `<button class="primary" data-action="open-notification-task" data-notification-id="${escapeHtml(notification.notification_id)}" data-session-id="${escapeHtml(notification.session_id)}">Open Task</button>` : ""}
+              ${notification.read_at ? "" : `<button class="secondary" data-action="read-notification" data-notification-id="${escapeHtml(notification.notification_id)}">Mark read</button>`}
+              <button class="secondary" data-action="dismiss-notification" data-notification-id="${escapeHtml(notification.notification_id)}">Dismiss</button>
+            </div>
+          </article>
+        `).join("")}
         ${state.inbox.memoryCandidates.map((candidate) => `
           <article class="inbox-item memory-candidate-inbox-item">
             <span class="inbox-item-kind">Memory</span>
@@ -15475,7 +18010,7 @@ function renderInboxWorkspace() {
 }
 
 function renderLibraryWorkspace() {
-  const reusable = state.templates.filter((template) => template.status === "published");
+  const reusable = currentPublishedWorkflowTemplates(state.templates);
   return `
     <section class="product-surface library-surface">
       <div class="product-surface-heading">
@@ -15486,13 +18021,89 @@ function renderLibraryWorkspace() {
         ${reusable.map((template) => `
           <article class="library-item">
             <div><span class="inbox-item-kind">Workflow</span><strong>${escapeHtml(template.name || template.template_id)}</strong><p>${escapeHtml(template.description || "Reusable task workflow")}</p></div>
-            <div class="library-item-meta"><span>${escapeHtml(String(template.nodes?.length || 0))} steps</span><span>v${escapeHtml(String(template.version || 1))}</span></div>
+            <div class="library-item-meta"><span>${escapeHtml(String(template.node_count ?? template.nodes?.length ?? 0))} steps</span><span>Published</span></div>
             <button class="primary" data-action="use-library-workflow" data-id="${escapeHtml(template.template_id)}">Use for a task</button>
           </article>
         `).join("") || '<div class="product-empty"><strong>No reusable workflows yet</strong><span>Add one workflow so tasks can start with a validated route.</span><button class="primary" data-action="open-workflow-builder">Open workflow builder</button></div>'}
       </div>
     </section>
   `;
+}
+
+function scheduleAuthorizationCopy(mode) {
+  if (mode === "review_first") return "The model may prepare a read-only result, then every run returns to Inbox for review before further action.";
+  if (mode === "autopilot") return "The model may use pre-authorized control-plane and sandbox tools up to T2. Desktop, browser, and MCP interaction is never silently approved.";
+  return "The model may use pre-authorized read and low-risk tools. Higher-risk writes or interactive Desktop capabilities stop for attention.";
+}
+
+function renderScheduleManager() {
+  const scheduleDraft = state.schedules.draft;
+  const scheduleDraftValid = scheduleDraft.name.trim() && scheduleDraft.prompt.trim() && scheduleDraft.timezone.trim() &&
+    scheduleDraft.providerConnectionId && scheduleDraft.model &&
+    (scheduleDraft.taskMode !== "resume_task" || scheduleDraft.sessionId) &&
+    (scheduleDraft.recurrenceKind !== "once" || scheduleDraft.onceAt) &&
+    (scheduleDraft.recurrenceKind !== "cron" || scheduleDraft.cronExpression.trim());
+  const conversationTargets = getConversationTargets();
+  const selectedTargetValue = scheduleDraft.providerConnectionId && scheduleDraft.model
+    ? conversationTargetValue(scheduleDraft.providerConnectionId, scheduleDraft.model)
+    : "";
+  return `
+    <section class="schedule-settings-panel scheduled-workspace-panel">
+      <div class="autonomy-policy-heading">
+        <div><h3>Scheduled Tasks</h3><p>${escapeHtml(`${state.schedules.items.length} schedule${state.schedules.items.length === 1 ? "" : "s"}`)}</p></div>
+        <button class="primary" data-action="new-schedule" ${state.schedules.saving ? "disabled" : ""}>New schedule</button>
+      </div>
+      ${state.schedules.error ? `<div class="alert danger">${escapeHtml(state.schedules.error)}</div>` : ""}
+      ${state.schedules.editorOpen ? `
+        <div class="schedule-editor">
+          <div class="schedule-editor-grid">
+            <label><span>Name</span><input data-field="schedule.name" value="${escapeHtml(scheduleDraft.name)}" placeholder="Daily project review" /></label>
+            <label><span>Timezone</span><input data-field="schedule.timezone" value="${escapeHtml(scheduleDraft.timezone)}" placeholder="Asia/Shanghai" /></label>
+            <label><span>Task</span><select data-field="schedule.taskMode"><option value="new_task" ${scheduleDraft.taskMode === "new_task" ? "selected" : ""}>Create a new Task</option><option value="resume_task" ${scheduleDraft.taskMode === "resume_task" ? "selected" : ""}>Resume an existing Task</option></select></label>
+            ${scheduleDraft.taskMode === "resume_task" ? `<label><span>Existing Task</span><select data-field="schedule.sessionId"><option value="">Select Task</option>${state.sessions.map((session) => `<option value="${escapeHtml(session.session_id)}" ${scheduleDraft.sessionId === session.session_id ? "selected" : ""}>${escapeHtml(session.title || session.session_id)}</option>`).join("")}</select></label>` : `<label><span>Task title</span><input data-field="schedule.taskTitle" value="${escapeHtml(scheduleDraft.taskTitle)}" placeholder="Defaults to schedule name" /></label>`}
+            <label class="span-2"><span>Model</span><select data-field="schedule.conversationTarget" ${conversationTargets.length ? "" : "disabled"}><option value="">Select verified model</option>${conversationTargets.map((target) => `<option value="${escapeHtml(conversationTargetValue(target.connection.connection_id, target.model))}" ${selectedTargetValue === conversationTargetValue(target.connection.connection_id, target.model) ? "selected" : ""}>${escapeHtml(`${target.connection.name} / ${target.model}`)}</option>`).join("")}</select></label>
+            <label><span>Autonomy</span><select data-field="schedule.autonomyMode">${AUTONOMY_MODES.map((mode) => `<option value="${mode}" ${scheduleDraft.autonomyMode === mode ? "selected" : ""}>${escapeHtml(autonomyModeCopy(mode).label)}</option>`).join("")}</select></label>
+            <label><span>Recurrence</span><select data-field="schedule.recurrenceKind"><option value="once" ${scheduleDraft.recurrenceKind === "once" ? "selected" : ""}>Once</option><option value="interval" ${scheduleDraft.recurrenceKind === "interval" ? "selected" : ""}>Interval</option><option value="cron" ${scheduleDraft.recurrenceKind === "cron" ? "selected" : ""}>Cron</option></select></label>
+            ${scheduleDraft.recurrenceKind === "once" ? `<label><span>Run at</span><input type="datetime-local" data-field="schedule.onceAt" value="${escapeHtml(scheduleDraft.onceAt)}" /></label>` : scheduleDraft.recurrenceKind === "interval" ? `<label><span>Every (minutes)</span><input type="number" min="1" max="525600" data-field="schedule.intervalMinutes" value="${escapeHtml(String(scheduleDraft.intervalMinutes))}" /></label>` : `<label><span>Cron expression</span><input data-field="schedule.cronExpression" value="${escapeHtml(scheduleDraft.cronExpression)}" placeholder="0 9 * * *" /></label>`}
+            <label class="schedule-enabled-field"><input type="checkbox" data-field="schedule.enabled" ${scheduleDraft.enabled ? "checked" : ""} /><span>Enabled</span></label>
+            <label class="schedule-prompt-field"><span>Instruction</span><textarea rows="4" data-field="schedule.prompt" placeholder="What should My Mate do when this schedule runs?">${escapeHtml(scheduleDraft.prompt)}</textarea></label>
+          </div>
+          <div class="schedule-preauthorization"><strong>Pre-authorization</strong><span>${escapeHtml(scheduleAuthorizationCopy(scheduleDraft.autonomyMode))}</span></div>
+          <div class="schedule-editor-actions"><button class="secondary" data-action="cancel-schedule-editor">Cancel</button><button class="primary" data-action="save-schedule" ${state.schedules.saving || !scheduleDraftValid ? "disabled" : ""}>${state.schedules.editingId ? "Save changes" : "Create schedule"}</button></div>
+        </div>
+      ` : ""}
+      <div class="schedule-list">
+        ${state.schedules.items.map((schedule) => {
+          const recurrence = schedule.recurrence?.kind === "cron"
+            ? `${schedule.recurrence.expression} / ${schedule.timezone}`
+            : schedule.recurrence?.kind === "interval"
+              ? `Every ${schedule.recurrence.interval_minutes} minutes / ${schedule.timezone}`
+              : `Once / ${formatWorkspaceTimestamp(schedule.recurrence?.run_at)}`;
+          const historyOpen = state.schedules.historyId === schedule.schedule_id;
+          const runs = state.schedules.runs[schedule.schedule_id] || [];
+          const modelLabel = schedule.model || state.providerConnections.find((connection) => connection.connection_id === schedule.provider_connection_id)?.default_model || "Workspace default";
+          const agentLabel = schedule.agent_binding_snapshot
+            ? `${schedule.agent_binding_snapshot.agent_name || schedule.agent_binding_snapshot.agent_id}@${schedule.agent_binding_snapshot.agent_version}`
+            : "Legacy Agent binding";
+          return `<article class="schedule-row ${schedule.enabled ? "" : "is-disabled"}">
+            <div class="schedule-row-main"><span class="status-dot ${schedule.enabled ? "success" : "neutral"}"></span><span><strong title="${escapeHtml(schedule.name)}">${escapeHtml(schedule.name)}</strong><small title="${escapeHtml(schedule.prompt)}">${escapeHtml(recurrence)} / ${escapeHtml(modelLabel)} / ${escapeHtml(agentLabel)} / next ${escapeHtml(schedule.next_run_at ? formatWorkspaceTimestamp(schedule.next_run_at) : "disabled")}</small></span></div>
+            <div class="schedule-row-actions">
+              <button class="secondary" data-action="run-schedule" data-schedule-id="${escapeHtml(schedule.schedule_id)}" ${state.schedules.saving ? "disabled" : ""}>Run now</button>
+              <button class="secondary" data-action="toggle-schedule-history" data-schedule-id="${escapeHtml(schedule.schedule_id)}">History</button>
+              <button class="secondary" data-action="edit-schedule" data-schedule-id="${escapeHtml(schedule.schedule_id)}">Edit</button>
+              <button class="secondary" data-action="toggle-schedule" data-schedule-id="${escapeHtml(schedule.schedule_id)}" data-enabled="${schedule.enabled ? "false" : "true"}" ${state.schedules.saving ? "disabled" : ""}>${schedule.enabled ? "Pause" : "Enable"}</button>
+              ${state.schedules.deleteConfirmId === schedule.schedule_id ? `<button class="secondary" data-action="cancel-delete-schedule">Cancel</button><button class="secondary danger-action" data-action="confirm-delete-schedule" data-schedule-id="${escapeHtml(schedule.schedule_id)}">Confirm delete</button>` : `<button class="secondary danger-action" data-action="prepare-delete-schedule" data-schedule-id="${escapeHtml(schedule.schedule_id)}">Delete</button>`}
+            </div>
+            ${historyOpen ? `<div class="schedule-history">${runs.map((run) => `<div><span class="status-dot ${run.status === "completed" ? "success" : run.status === "failed" ? "danger" : "warn"}"></span><strong>${escapeHtml(run.status.replaceAll("_", " "))}</strong><small>${escapeHtml(formatWorkspaceTimestamp(run.started_at))}${run.error_message ? ` / ${escapeHtml(run.error_message)}` : ""}</small>${run.session_id ? `<button class="mini-button" data-action="open-schedule-task" data-session-id="${escapeHtml(run.session_id)}">Open Task</button>` : ""}</div>`).join("") || '<p class="muted">No runs yet.</p>'}</div>` : ""}
+          </article>`;
+        }).join("") || (state.schedules.loading ? '<p class="muted">Loading schedules...</p>' : '<div class="product-empty"><strong>No scheduled Tasks</strong><span>Create one here or ask My Mate in a conversation.</span></div>')}
+      </div>
+    </section>
+  `;
+}
+
+function renderScheduledWorkspace() {
+  return `<section class="product-surface scheduled-surface">${renderScheduleManager()}</section>`;
 }
 
 function renderProductSettingsPanel() {
@@ -15530,7 +18141,7 @@ function renderProductSettingsPanel() {
           }).join("")}
         </div>
       </section>
-      <button class="product-advanced-link" data-action="open-registry-advanced">Open advanced model, agent, and governance settings</button>
+      <button class="product-advanced-link" data-action="open-registry-advanced">Open Build settings for models, agents, and governance</button>
     </section>
   `;
 }
@@ -15607,6 +18218,7 @@ function renderMemoryWorkspace() {
         </div>
       </div>
       ${renderMemoryOnboarding()}
+      ${!records.length ? `<section class="memory-empty-activation"><div><strong>Memory is not influencing replies yet</strong><small>No active canonical Memory exists in this Workspace. Complete guided setup or approve a Memory Candidate from Inbox.</small></div><button class="primary" data-action="start-memory-onboarding">Initialize Memory</button></section>` : ""}
       <div class="memory-status-table" aria-label="Memory activation effectiveness">
         <div><span>Turn contexts</span><strong>${escapeHtml(String(effectiveness?.turn_contexts || 0))}</strong></div>
         <div><span>Accepted recommendations</span><strong>${escapeHtml(String(effectiveness?.accepted_recommendations || 0))}</strong></div>
@@ -15642,7 +18254,7 @@ function renderMemoryWorkspace() {
           return `<article class="memory-recommendation-row"><div><div class="memory-record-meta"><span class="badge neutral">${escapeHtml(view.collection.kind)}</span><small>${escapeHtml(`${view.collection.name} / ${view.share.source_workspace_id} / v${memory.version}`)}</small></div><p>${escapeHtml(memory.content)}</p><small>${escapeHtml(`Sharing: ${view.share.mode} / ${view.share.version_policy} / ${view.freshness}`)}</small>${editingSuggestion ? `<textarea rows="3" data-field="memory.suggestionContent">${escapeHtml(state.memory.suggestionContent)}</textarea>` : ""}</div><div class="memory-record-actions"><span class="badge ${view.freshness === "current" ? "success" : "warn"}">${escapeHtml(view.freshness)}</span>${view.share.mode === "suggest_changes" ? editingSuggestion ? `<button class="secondary" data-action="cancel-memory-suggestion">Cancel</button><button class="primary" data-action="submit-memory-suggestion" ${!state.memory.suggestionContent.trim() ? "disabled" : ""}>Send</button>` : `<button class="secondary" data-action="prepare-memory-suggestion" data-share-id="${escapeHtml(view.share.share_id)}" data-content="${escapeHtml(memory.content)}">Suggest change</button>` : ""}</div></article>`;
         }).join("") || '<p class="muted">No Memory has been shared into this Workspace.</p>'}
       </section>
-      <details class="memory-advanced-section" open>
+      <details class="memory-advanced-section">
         <summary>Team, Organization, and external knowledge</summary>
         <div class="memory-collaboration-grid">
           <section><div class="memory-results-heading"><strong>Collections</strong><small>${collections.length}</small></div>${collections.map((item) => `<p><span class="badge neutral">${escapeHtml(item.kind)}</span> <strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(` ${item.member_workspace_ids.length} Workspaces / owner ${item.owner_workspace_id}`)}</small></p>`).join("") || '<p class="muted">No collection yet.</p>'}<label><span>Name</span><input data-field="memory.collection.name" value="${escapeHtml(state.memory.collectionDraft.name)}" /></label><label><span>Kind</span><select data-field="memory.collection.kind"><option value="team" ${state.memory.collectionDraft.kind === "team" ? "selected" : ""}>Team</option><option value="organization" ${state.memory.collectionDraft.kind === "organization" ? "selected" : ""}>Organization</option></select></label><label><span>Member Workspace IDs</span><input data-field="memory.collection.members" value="${escapeHtml(state.memory.collectionDraft.members)}" placeholder="workspace-a, workspace-b" /></label><button class="primary" data-action="create-memory-collection" ${!state.memory.collectionDraft.name.trim() ? "disabled" : ""}>Create collection</button></section>
@@ -15701,7 +18313,7 @@ function renderMemoryWorkspace() {
         <button class="secondary" data-action="run-memory-maintenance-sweep" ${state.memory.rebuilding ? "disabled" : ""}>Maintain all Workspaces</button>
         <small>${maintenanceSweep ? `${escapeHtml(String(maintenanceSweep.maintained_workspaces || 0))} maintained / ${escapeHtml(String(maintenanceSweep.failed_workspaces?.length || 0))} failed` : maintenance ? `Last maintenance ${escapeHtml(formatWorkspaceTimestamp(maintenance.completed_at))}` : "Maintenance has not run yet"}</small>
       </div>
-      <details class="memory-advanced-section" open>
+      <details class="memory-advanced-section">
         <summary>Security, backup, and retention</summary>
         <div class="memory-status-table">
           <div><span>Active data key</span><strong>${escapeHtml(operations?.key?.active_key_id?.slice(-12) || "-")}</strong></div>
@@ -15738,7 +18350,7 @@ function renderMemoryWorkspace() {
         }).join("") || (result ? '<p class="muted">No visible memories matched.</p>' : "")}
         </div>
       </details>
-      ${settings ? `<details class="memory-advanced-section" open>
+      ${settings ? `<details class="memory-advanced-section">
         <summary>Memory settings</summary>
         <div class="memory-settings-grid">
           <label><span>Background review</span><input type="checkbox" data-field="memory.settings.backgroundEnabled" ${settings.background_review.enabled ? "checked" : ""} /></label>
@@ -15792,6 +18404,9 @@ function renderDesktopCenter(readOnly, warnings, preview) {
   if (state.activeNav === "inbox") {
     return renderInboxWorkspace();
   }
+  if (state.activeNav === "scheduled") {
+    return renderScheduledWorkspace();
+  }
   if (state.activeNav === "library") {
     return renderLibraryWorkspace();
   }
@@ -15802,12 +18417,8 @@ function renderDesktopCenter(readOnly, warnings, preview) {
     return renderMemoryWorkspace();
   }
   if (state.activeNav === "templates") {
-    return `
-      ${renderViewTabs()}
-      <div class="layout-grid single-view">
-        ${renderActiveView(readOnly, warnings, preview)}
-      </div>
-    `;
+    if (state.ui.workflowGeneratorOpen) return renderWorkflowGenerator();
+    return `<div class="workflow-authoring-layout">${renderViewTabs()}<div class="workflow-authoring-content"><div class="layout-grid single-view">${renderActiveView(readOnly, warnings, preview)}</div></div></div>`;
   }
   if (state.activeNav === "agents") {
     return renderAgentHostingPanel();
@@ -15857,6 +18468,73 @@ function renderCommandPalette() {
   `;
 }
 
+function renderStudioDialog() {
+  const current = state.ui.dialog;
+  if (!current) return "";
+  const cancelId = Number.isInteger(current.cancelId) ? current.cancelId : current.buttons.length - 1;
+  const tone = current.type === "error" ? "danger" : current.type === "warning" ? "warn" : "neutral";
+  const label = current.type === "error" ? "High risk" : current.type === "warning" ? "Review required" : current.type === "info" ? "Information" : "Confirmation";
+  return `
+    <div class="studio-dialog-backdrop">
+      <section class="studio-dialog" role="dialog" aria-modal="true" aria-labelledby="studio-dialog-title" aria-describedby="studio-dialog-message">
+        <header class="studio-dialog-header">
+          <div>
+            <span class="badge ${tone}">${label}</span>
+            <h3 id="studio-dialog-title">${escapeHtml(current.title)}</h3>
+          </div>
+          <button class="icon-button" data-action="respond-studio-dialog" data-response="${cancelId}" title="Close" aria-label="Close">&times;</button>
+        </header>
+        <div class="studio-dialog-body">
+          <p id="studio-dialog-message">${escapeHtml(current.message)}</p>
+          ${current.detail ? `<pre class="studio-dialog-detail">${escapeHtml(current.detail)}</pre>` : ""}
+          ${current.input ? `
+            <label class="studio-dialog-input">
+              <span>${escapeHtml(current.input.label || "Note")}</span>
+              <textarea data-field="studio.dialogInput" rows="4" data-dialog-input>${escapeHtml(current.inputValue || "")}</textarea>
+            </label>
+          ` : ""}
+        </div>
+        <footer class="studio-dialog-footer">
+          ${current.buttons.map((button, index) => {
+            const isCancel = index === cancelId;
+            const isDanger = !isCancel && current.type === "error";
+            const className = isCancel ? "secondary" : isDanger ? "secondary danger-action" : "primary";
+            return `<button class="${className}" data-action="respond-studio-dialog" data-response="${index}" ${index === current.defaultId ? "data-dialog-autofocus" : ""}>${escapeHtml(button)}</button>`;
+          }).join("")}
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
+function renderWorkflowVersionHistoryModal() {
+  if (!state.ui.workflowHistoryOpen) return "";
+  const family = workflowFamilyForTemplate(state.templates, state.editor.templateId);
+  const items = family?.items || state.lineage?.items || [];
+  return `
+    <div class="studio-dialog-backdrop workflow-history-backdrop">
+      <section class="studio-dialog workflow-history-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-history-title">
+        <header class="studio-dialog-header">
+          <div><span class="badge neutral">Workflow history</span><h3 id="workflow-history-title">${escapeHtml(family?.displayTemplate?.name || state.editor.name || "Workflow")}</h3></div>
+          <button class="icon-button" data-action="close-workflow-history" title="Close" aria-label="Close version history">&times;</button>
+        </header>
+        <div class="studio-dialog-body">
+          <p>Running tasks keep the exact workflow they started with. History is shown only here for audit and recovery.</p>
+          <div class="workflow-history-list">
+            ${items.map((item) => {
+              const isCurrentPublished = family?.published?.template_id === item.template_id;
+              const isDraft = family?.draft?.template_id === item.template_id;
+              const label = isDraft ? "Unpublished changes" : isCurrentPublished ? "Current" : item.status === "published" ? "Previous release" : item.status;
+              return `<article class="workflow-history-row"><span class="status-dot ${statusTone(item.status)}"></span><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(formatWorkspaceTimestamp(item.updated_at || item.published_at))}</small></div><span class="badge ${statusTone(item.status)}">v${escapeHtml(String(item.version || 1))}</span></article>`;
+            }).join("") || '<div class="product-empty"><strong>No history yet</strong><span>The first release will appear here after publishing.</span></div>'}
+          </div>
+        </div>
+        <footer class="studio-dialog-footer"><span></span><button class="primary" data-action="close-workflow-history">Done</button></footer>
+      </section>
+    </div>
+  `;
+}
+
 function renderActiveView(readOnly, warnings, preview) {
   if (state.activeView === "template") {
     return renderTemplateBasicsPanel(readOnly);
@@ -15864,13 +18542,13 @@ function renderActiveView(readOnly, warnings, preview) {
   if (state.activeView === "dag") {
     return renderDagEditorPanel(readOnly);
   }
-  if (state.activeView === "registry") {
-    return renderRegistryManagerPanel();
+  if (state.activeView === "controls") {
+    return renderWorkflowControlsPanel(readOnly);
   }
   if (state.activeView === "review") {
     return renderReviewPanel({ warnings, preview });
   }
-  return renderPlannerPanel();
+  return renderTemplateBasicsPanel(readOnly);
 }
 
 function captureTaskWorkspaceScroll() {
@@ -15881,16 +18559,16 @@ function captureTaskWorkspaceScroll() {
 
   const center = document.querySelector(".task-workspace-grid .desktop-center");
   const taskList = document.querySelector(".orchestrator-sidebar .template-list");
-  const chatFeed = document.querySelector(".task-conversation-rail .orchestrator-chat-feed");
-  const distanceFromChatBottom = chatFeed
-    ? Math.max(0, chatFeed.scrollHeight - chatFeed.clientHeight - chatFeed.scrollTop)
+  const conversationScroll = document.querySelector(".task-conversation-rail .task-conversation-scroll");
+  const distanceFromChatBottom = conversationScroll
+    ? Math.max(0, conversationScroll.scrollHeight - conversationScroll.clientHeight - conversationScroll.scrollTop)
     : 0;
 
   return {
     sessionId,
     centerTop: center?.scrollTop || 0,
     taskListTop: taskList?.scrollTop || 0,
-    chatTop: chatFeed?.scrollTop || 0,
+    chatTop: conversationScroll?.scrollTop || 0,
     chatPinnedToBottom: distanceFromChatBottom <= 48,
     windowX: window.scrollX,
     windowY: window.scrollY,
@@ -15908,13 +18586,13 @@ function restoreTaskWorkspaceScroll(snapshot) {
     if (state.workspaceDetail?.session?.session_id !== snapshot.sessionId) return;
     const center = document.querySelector(".task-workspace-grid .desktop-center");
     const taskList = document.querySelector(".orchestrator-sidebar .template-list");
-    const chatFeed = document.querySelector(".task-conversation-rail .orchestrator-chat-feed");
+    const conversationScroll = document.querySelector(".task-conversation-rail .task-conversation-scroll");
     if (center) center.scrollTop = snapshot.centerTop;
     if (taskList) taskList.scrollTop = snapshot.taskListTop;
-    if (chatFeed) {
-      chatFeed.scrollTop = snapshot.chatPinnedToBottom
-        ? chatFeed.scrollHeight
-        : Math.min(snapshot.chatTop, Math.max(0, chatFeed.scrollHeight - chatFeed.clientHeight));
+    if (conversationScroll) {
+      conversationScroll.scrollTop = snapshot.chatPinnedToBottom
+        ? conversationScroll.scrollHeight
+        : Math.min(snapshot.chatTop, Math.max(0, conversationScroll.scrollHeight - conversationScroll.clientHeight));
     }
     if (window.matchMedia("(max-width: 1180px)").matches) {
       window.scrollTo(snapshot.windowX, snapshot.windowY);
@@ -15926,6 +18604,10 @@ function restoreTaskWorkspaceScroll(snapshot) {
 }
 
 function renderTaskWorkspaceSurface() {
+  if (isWorkspaceSurfaceNav()) {
+    render();
+    return;
+  }
   if (state.activeNav !== "orchestrator") return;
   studioPerformance.taskSurfaceRenderCount += 1;
   publishStudioPerformance();
@@ -15970,14 +18652,15 @@ function renderTaskWorkspaceSurface() {
   }
 
   for (const child of [...workspace.children]) {
-    if (child.classList?.contains("alert")) child.remove();
+    if (child.classList?.contains("alert") || child.classList?.contains("control-plane-status")) child.remove();
   }
   const alerts = [
-    state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : "",
+    state.error && !isConnectivityError(state.error) ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : "",
     state.notice ? `<div class="alert success">${escapeHtml(state.notice)}</div>` : "",
     state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : "",
   ].filter(Boolean).join("");
-  if (alerts) desktopGrid.insertAdjacentHTML("beforebegin", alerts);
+  const statusBanner = controlPlaneBanner();
+  if (statusBanner || alerts) desktopGrid.insertAdjacentHTML("beforebegin", `${statusBanner}${alerts}`);
 
   desktopGrid.className = `desktop-grid task-workspace-grid ${state.ui.taskConversationVisible ? "" : "task-conversation-hidden"}`.trim();
   center.innerHTML = renderDesktopCenter(readOnly, warnings, preview);
@@ -16001,6 +18684,10 @@ function render() {
   const readOnly = ["published", "archived"].includes(state.editor.status);
   const warnings = validateGraph();
   const selectedTemplate = state.templates.find((item) => item.template_id === state.selectedId) || null;
+  const selectedWorkflowFamily = workflowFamilyForTemplate(state.templates, state.selectedId || state.editor.templateId);
+  const workflowStatusLabel = selectedWorkflowFamily
+    ? workflowDisplayStatus(selectedWorkflowFamily)
+    : state.editor.status === "draft" ? "Draft" : state.editor.status || "Workflow";
   const preview = selectedTemplate || buildDraftPayload();
   const workspaceSession = state.workspaceDetail?.session || null;
   const taskGuidance = state.activeNav === "orchestrator" && workspaceSession
@@ -16008,9 +18695,11 @@ function render() {
     : null;
   const workspaceTitle =
     state.activeNav === "orchestrator"
-      ? workspaceSession?.title || "Tasks"
+      ? workspaceSession?.title || "Mission Workspace"
       : state.activeNav === "inbox"
         ? "Inbox"
+      : state.activeNav === "scheduled"
+        ? "Scheduled"
       : state.activeNav === "library"
         ? "Library"
       : state.activeNav === "settings"
@@ -16024,7 +18713,7 @@ function render() {
           : state.activeNav === "templates"
         ? state.editor.name
         : state.activeNav === "agents"
-          ? "Subagent Hosting"
+          ? "Agents"
         : state.activeNav === "registry"
           ? "Registry Workspace"
           : "System Details";
@@ -16035,6 +18724,8 @@ function render() {
         : "Describe an outcome. My Mate handles planning, model selection, and execution details."
       : state.activeNav === "inbox"
         ? "Approvals, questions, and blocked tasks that specifically need you."
+      : state.activeNav === "scheduled"
+        ? "Run model-backed tasks once or on a recurring schedule with bounded pre-authorization."
       : state.activeNav === "library"
         ? "Reusable workflows and results without exposing authoring internals."
       : state.activeNav === "settings"
@@ -16047,10 +18738,10 @@ function render() {
           ? "Inspect platform workload, operator backlog, and runtime posture in one view."
           : state.activeNav === "memory"
             ? "Inspect hybrid retrieval indexes and optional knowledge providers."
-          : state.activeNav === "templates"
-        ? `${state.editor.templateId || "unsaved draft"}${state.editor.updatedAt ? ` / updated ${new Date(state.editor.updatedAt).toLocaleString()}` : ""}`
+      : state.activeNav === "templates"
+        ? `${workflowStatusLabel}${state.editor.updatedAt ? ` / updated ${new Date(state.editor.updatedAt).toLocaleString()}` : ""}`
         : state.activeNav === "agents"
-          ? "Manage runtime subagent bindings, providers, and model intent."
+          ? "Define capabilities first, then let the Main Agent turn a conversation into an editable multi-agent workflow."
         : state.activeNav === "registry"
           ? "Manage reusable agent profiles and skills."
           : "Observe runtime, planner, and registry ownership boundaries.";
@@ -16059,14 +18750,16 @@ function render() {
       ? taskGuidance?.statusLabel || "ready"
       : state.activeNav === "inbox"
         ? `${getInboxOpenCount()} open`
+      : state.activeNav === "scheduled"
+        ? `${state.schedules.items.filter((schedule) => schedule.enabled).length} enabled`
       : state.activeNav === "library"
-        ? `${state.templates.filter((template) => template.status === "published").length} workflows`
+        ? `${currentPublishedWorkflowTemplates(state.templates).length} workflows`
       : state.activeNav === "settings"
         ? state.providerConnections.some((connection) => connection.verification?.status === "verified") ? "ready" : "check"
       : state.activeNav === "memory"
         ? state.memory.retrievalStatus?.retrieval || "memory"
       : state.activeNav === "templates"
-        ? `${state.editor.status}${state.editor.version ? ` v${state.editor.version}` : ""}`
+        ? workflowStatusLabel
         : state.activeNav === "missions" || state.activeNav === "sessions"
         ? workspaceSession?.status || "idle"
         : state.activeNav;
@@ -16078,8 +18771,8 @@ function render() {
 
   document.getElementById("root").innerHTML = `
     <main class="app-shell ${taskWorkspaceActive ? "task-shell-active" : ""}">
-      <datalist id="agent-profile-options">
-        ${state.agentProfiles.map((profile) => `<option value="${escapeHtml(profile.profile_id)}"></option>`).join("")}
+      <datalist id="agent-options">
+        ${state.agentDefinitions.filter((agent) => agent.status === "active").map((agent) => `<option value="${escapeHtml(agent.agent_id)}"></option>`).join("")}
       </datalist>
       <datalist id="skill-options">
         ${state.skills.map((skill) => `<option value="${escapeHtml(skill.skill_id)}"></option>`).join("")}
@@ -16088,7 +18781,7 @@ function render() {
         <div class="sidebar-header">
           <div>
             <p class="eyebrow">My Mate</p>
-            <h1>Task Workspace</h1>
+            <h1>Mission Workspace</h1>
           </div>
           <div class="sidebar-header-actions">
             <button class="icon-button" data-action="open-command-palette" title="Command palette (Ctrl/Cmd+K)">Cmd</button>
@@ -16113,18 +18806,24 @@ function render() {
               ? workspaceSession ? `${state.ui.taskConversationVisible ? "" : '<button class="icon-button" data-action="show-task-conversation" title="Show conversation" aria-label="Show conversation">&#9776;</button>'}<button class="primary" data-action="new-task">New task</button>` : ""
               : state.activeNav === "inbox"
                 ? `<button class="primary" data-action="refresh-inbox" ${state.inbox.loading ? "disabled" : ""}>${state.inbox.loading ? "Refreshing..." : "Refresh"}</button>`
+              : state.activeNav === "scheduled"
+                ? `<button class="secondary" data-action="refresh-schedules" ${state.schedules.loading ? "disabled" : ""}>${state.schedules.loading ? "Refreshing..." : "Refresh"}</button><button class="primary" data-action="new-schedule">New schedule</button>`
               : state.activeNav === "library"
                 ? `<button class="secondary" data-action="refresh">Refresh library</button>`
               : state.activeNav === "settings"
                 ? `<button class="primary" data-action="open-studio-setup">Run setup</button>`
               : state.activeNav === "memory"
                 ? `<button class="secondary" data-action="refresh-memory" ${state.memoryLoading ? "disabled" : ""}>${state.memoryLoading ? "Refreshing..." : "Refresh"}</button>`
+              : state.activeNav === "agents"
+                ? ""
               : state.activeNav === "templates"
-                ? `
-                  <button class="secondary" data-action="derive-template" ${state.deriving || !state.editor.templateId || state.editor.status === "archived" ? "disabled" : ""}>${state.deriving ? "Deriving..." : "Derive"}</button>
-                  <button class="secondary" data-action="new-template-version" ${state.versioning || state.editor.status !== "published" ? "disabled" : ""}>${state.versioning ? "Creating..." : "New version"}</button>
-                  <button class="secondary" data-action="save-draft" ${state.saving || readOnly ? "disabled" : ""}>${state.saving ? "Saving..." : "Save draft"}</button>
-                  <button class="primary" data-action="publish-draft" ${state.publishing || state.editor.status !== "draft" ? "disabled" : ""}>${state.publishing ? "Publishing..." : "Publish"}</button>
+                ? state.ui.workflowGeneratorOpen ? "" : `
+                  <details class="workflow-more-menu"><summary class="secondary">More</summary><div class="workflow-more-menu-list"><button class="secondary" data-action="open-workflow-generator">Generate from intent</button><button class="secondary" data-action="derive-template" ${state.deriving || !state.editor.templateId || state.editor.status === "archived" ? "disabled" : ""}>${state.deriving ? "Duplicating..." : "Duplicate workflow"}</button><button class="secondary" data-action="show-workflow-history" ${state.editor.templateId ? "" : "disabled"}>Version history</button></div></details>
+                  ${state.editor.status === "published"
+                    ? `<button class="primary" data-action="edit-workflow" ${state.versioning ? "disabled" : ""}>${state.versioning ? "Opening..." : "Edit workflow"}</button>`
+                    : state.editor.status === "archived"
+                      ? ""
+                      : `<button class="secondary" data-action="validate-workflow">Validate</button><button class="primary" data-action="save-draft" ${state.saving ? "disabled" : ""}>${state.saving ? "Saving..." : "Save"}</button>`}
                 `
                 : `
                   <button class="secondary" data-action="refresh-runtime" ${state.runtimeLoading ? "disabled" : ""}>${state.runtimeLoading ? "Refreshing..." : "Runtime Summary"}</button>
@@ -16134,16 +18833,18 @@ function render() {
           </div>
         </header>
 
-        ${state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
+        ${controlPlaneBanner()}
+        ${state.error && !isConnectivityError(state.error) && state.activeNav !== "agents" ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
         ${state.notice ? `<div class="alert success">${escapeHtml(state.notice)}</div>` : ""}
         ${state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : ""}
-        ${state.activeNav === "templates" && readOnly ? '<div class="alert warn">Published templates are read-only in this MVP.</div>' : ""}
+        ${state.activeNav === "templates" && state.editor.status === "published" ? '<div class="alert info"><strong>Published workflow</strong><span>Edit creates protected unpublished changes. Running tasks keep the workflow they started with.</span></div>' : ""}
+        ${state.activeNav === "templates" && state.editor.status === "draft" && selectedWorkflowFamily?.published ? '<div class="alert info"><strong>Unpublished changes</strong><span>The published workflow remains active until these changes are published.</span></div>' : ""}
 
-        <div class="desktop-grid ${taskWorkspaceActive ? "task-workspace-grid" : ""} ${taskWorkspaceActive && !state.ui.taskConversationVisible ? "task-conversation-hidden" : ""} ${["inbox", "library", "settings", "operations", "memory"].includes(state.activeNav) || (state.activeNav === "orchestrator" && !workspaceSession) ? "product-single-column" : ""}">
+        <div class="desktop-grid ${taskWorkspaceActive ? "task-workspace-grid" : ""} ${taskWorkspaceActive && !state.ui.taskConversationVisible ? "task-conversation-hidden" : ""} ${["inbox", "scheduled", "agents", "library", "templates", "settings", "operations", "memory"].includes(state.activeNav) || (state.activeNav === "orchestrator" && !workspaceSession) ? "product-single-column" : ""}">
           <div class="desktop-center">
             ${renderDesktopCenter(readOnly, warnings, preview)}
           </div>
-          ${state.activeNav === "orchestrator" && workspaceSession && state.ui.taskConversationVisible ? renderOrchestratorRail() : state.activeNav === "missions" || state.activeNav === "sessions" || state.activeNav === "dashboard" || state.activeNav === "templates" || state.activeNav === "agents" || state.activeNav === "registry" ? renderDesktopRail() : ""}
+          ${state.activeNav === "orchestrator" && workspaceSession && state.ui.taskConversationVisible ? renderOrchestratorRail() : state.activeNav === "missions" || state.activeNav === "sessions" || state.activeNav === "dashboard" || state.activeNav === "registry" ? renderDesktopRail() : ""}
         </div>
       </section>
     </main>
@@ -16152,7 +18853,12 @@ function render() {
     ${renderStudioSetupModal()}
     ${renderWorkspaceCreator()}
     ${renderArtifactPreviewModal()}
+    ${renderWorkspaceDiffPreviewModal()}
+    ${renderAgentDelegationConversationModal(state.workspaceDetail)}
     ${renderCommandPalette()}
+    ${renderWorkspaceExternalMenu()}
+    ${renderStudioDialog()}
+    ${renderWorkflowVersionHistoryModal()}
   `;
   afterRender();
   restoreTaskWorkspaceScroll(preservedTaskScroll);
@@ -16163,6 +18869,11 @@ function handleChange(target) {
   if (!field) return;
   const value = target.value;
   const index = Number(target.dataset.index);
+
+  if (field === "studio.dialogInput") {
+    if (state.ui.dialog) state.ui.dialog.inputValue = value;
+    return;
+  }
 
   if (field === "setup.connectionId") {
     if (value === NEW_SETUP_CONNECTION_ID) {
@@ -16185,7 +18896,6 @@ function handleChange(target) {
   if (field === "template.description") updateEditor({ description: value });
   if (field === "template.inputSchemaText") updateEditor({ inputSchemaText: value });
   if (field === "template.policyText") updateEditor({ policyText: value });
-  if (field === "template.bindingsText") updateEditor({ bindingsText: value });
   if (field === "template.metadataText") updateEditor({ metadataText: value });
   if (field === "mission.query") {
     state.missionQuery = value;
@@ -16193,6 +18903,18 @@ function handleChange(target) {
   }
   if (field === "session.query") {
     state.sessionQuery = value;
+    return;
+  }
+  if (field === "workboard.query") {
+    state.ui.workboardQuery = value;
+    state.ui.workboardPage = 1;
+    clearTimeout(workboardSearchTimer);
+    workboardSearchTimer = setTimeout(() => {
+      render();
+      const input = document.querySelector('input[data-field="workboard.query"]');
+      input?.focus();
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    }, 100);
     return;
   }
   if (field === "desktop.projectName") {
@@ -16221,6 +18943,111 @@ function handleChange(target) {
       input?.focus();
       input?.setSelectionRange?.(input.value.length, input.value.length);
     }, 120);
+    return;
+  }
+  if (field.startsWith("agentDag.")) {
+    state.agentOrchestration.dagDraft[field.slice("agentDag.".length)] = value;
+    return;
+  }
+  if (field.startsWith("agentDefinition.")) {
+    const key = field.slice("agentDefinition.".length);
+    if (key === "lockedSkill") {
+      const skillId = target.dataset.skillId || "";
+      const selected = new Set(state.agentOrchestration.agentDraft.lockedSkills);
+      if (target.checked) selected.add(skillId);
+      else selected.delete(skillId);
+      state.agentOrchestration.agentDraft.lockedSkills = [...selected].filter(Boolean);
+      markAgentDraftDirty();
+      return;
+    }
+    if (key === "capability") {
+      const capabilityId = target.dataset.capabilityId || "";
+      const selected = new Set(parseCsv(state.agentOrchestration.agentDraft.allowedTools));
+      if (target.checked) selected.add(capabilityId);
+      else selected.delete(capabilityId);
+      state.agentOrchestration.agentDraft.allowedTools = [...selected].filter(Boolean).join(", ");
+      markAgentDraftDirty();
+      return;
+    }
+    if (["dynamicSkillActivation", "allowDelegation", "allowModelEscalation", "memoryEnabled", "automaticRecall", "compressionEnabled", "workspaceRead", "workspaceWrite"].includes(key)) {
+      state.agentOrchestration.agentDraft[key] = target.checked === true;
+      markAgentDraftDirty();
+      return;
+    }
+    if (["maxToolRounds", "compressionThreshold", "continuationRounds", "timeoutSeconds"].includes(key)) {
+      state.agentOrchestration.agentDraft[key] = Number(value);
+      markAgentDraftDirty();
+      return;
+    }
+    state.agentOrchestration.agentDraft[key] = value;
+    markAgentDraftDirty();
+    if (key === "connectionId") {
+      const binding = preferredAgentBinding(state.providerConnections, value, state.agentOrchestration.agentDraft.model);
+      state.agentOrchestration.agentDraft.connectionId = value;
+      state.agentOrchestration.agentDraft.model = binding.connectionId === value ? binding.model : "";
+      render();
+      return;
+    }
+    if (key === "model") {
+      syncAgentModelBindingSummary();
+      return;
+    }
+    const createButton = document.querySelector('[data-action="create-agent-definition"]');
+    if (createButton) {
+      const draft = state.agentOrchestration.agentDraft;
+      createButton.disabled = state.agentOrchestration.saving || !draft.name.trim() || !draft.responsibility.trim();
+    }
+    return;
+  }
+  if (field.startsWith("agentTeam.")) {
+    const key = field.slice("agentTeam.".length);
+    state.agentOrchestration.teamDraft[key] = key === "maxConcurrency" || key === "maxDepth" ? Number(value) : value;
+    return;
+  }
+  if (field.startsWith("agentTask.")) {
+    const key = field.slice("agentTask.".length);
+    state.agentOrchestration.taskDraft[key] = value;
+    if (key === "kind") render();
+    return;
+  }
+  if (field.startsWith("schedule.")) {
+    const key = field.slice("schedule.".length);
+    if (key === "conversationTarget") {
+      const parsed = parseConversationTargetValue(value);
+      state.schedules.draft.providerConnectionId = parsed?.connectionId || "";
+      state.schedules.draft.model = parsed?.model || "";
+      render();
+      return;
+    }
+    const property = {
+      name: "name",
+      prompt: "prompt",
+      taskMode: "taskMode",
+      sessionId: "sessionId",
+      taskTitle: "taskTitle",
+      autonomyMode: "autonomyMode",
+      timezone: "timezone",
+      recurrenceKind: "recurrenceKind",
+      onceAt: "onceAt",
+      intervalMinutes: "intervalMinutes",
+      cronExpression: "cronExpression",
+      enabled: "enabled",
+    }[key];
+    if (!property) return;
+    state.schedules.draft[property] = key === "enabled"
+      ? target.checked === true
+      : key === "intervalMinutes" ? Number(value) : value;
+    if (key === "taskMode" || key === "recurrenceKind" || key === "autonomyMode") render();
+    else {
+      const saveButton = document.querySelector('[data-action="save-schedule"]');
+      if (saveButton) {
+        const draft = state.schedules.draft;
+        saveButton.disabled = state.schedules.saving || !draft.name.trim() || !draft.prompt.trim() || !draft.timezone.trim() ||
+          draft.taskMode === "resume_task" && !draft.sessionId ||
+          draft.recurrenceKind === "once" && !draft.onceAt ||
+          draft.recurrenceKind === "cron" && !draft.cronExpression.trim();
+      }
+    }
     return;
   }
   if (field === "command.query") {
@@ -16428,43 +19255,9 @@ function handleChange(target) {
     updateHumanInputDraft(target.dataset.inputRequestId || "", target.dataset.schemaKey || "", value);
     return;
   }
-  if (field === "orchestrator.selectedProfileId") {
-    state.orchestrator.selectedProfileId = value;
-    const profile = state.orchestratorProfiles.find((item) => item.orchestrator_id === value);
-    if (profile) {
-      applyOrchestratorProfile(profile);
-    } else if (!value) {
-      state.orchestrator.name = "Studio Orchestrator";
-    }
-    return;
-  }
-  if (field === "orchestrator.name") {
-    state.orchestrator.name = value;
-    return;
-  }
-  if (field === "orchestrator.provider") {
-    state.orchestrator.provider = value;
-    return;
-  }
-  if (field === "orchestrator.model") {
-    state.orchestrator.model = value;
-    return;
-  }
-  if (field === "orchestrator.systemPrompt") {
-    state.orchestrator.systemPrompt = value;
-    return;
-  }
-  if (field === "orchestrator.defaultToolsText") {
-    state.orchestrator.defaultToolsText = value;
-    return;
-  }
-  if (field === "orchestrator.defaultSubagentsText") {
-    state.orchestrator.defaultSubagentsText = value;
-    return;
-  }
   if (field === "planner.intent") {
     state.planner.intent = value;
-    state.planner.templateId = "";
+    if (!state.planner.templateLocked) state.planner.templateId = "";
     state.planner.recommendation = null;
     state.planner.candidatePlan = null;
     state.planner.dagDraft = null;
@@ -16497,7 +19290,7 @@ function handleChange(target) {
     state.planner.error = null;
     return;
   }
-  if (field === "proposal.agent_profile") {
+  if (field === "proposal.agent_id") {
     syncProposalOverrideField(target);
     return;
   }
@@ -16546,55 +19339,6 @@ function handleChange(target) {
     if (key === "transport") render();
     return;
   }
-  if (field === "agent.profileId") updateAgentProfileEditor({ profileId: slugify(value) });
-  if (field === "agent.status") updateAgentProfileEditor({ status: value });
-  if (field === "agent.name") updateAgentProfileEditor({ name: value });
-  if (field === "agent.description") updateAgentProfileEditor({ description: value });
-  if (field === "agent.agentRuntime") {
-    const selected = state.providerConnections.find(
-      (connection) => connection.connection_id === state.registryEditor.profile.providerConnectionId,
-    );
-    const compatible = state.providerConnections.filter(
-      (connection) => connection.agent_runtime === value && connection.status === "active",
-    );
-    const nextConnection = selected?.agent_runtime === value
-      ? selected
-      : compatible.length === 1
-        ? compatible[0]
-        : null;
-    updateAgentProfileEditor({
-      agentRuntime: value,
-      providerConnectionId: nextConnection?.connection_id || "",
-      openclawProvider: nextConnection?.provider || state.registryEditor.profile.openclawProvider,
-    });
-    render();
-    return;
-  }
-  if (field === "agent.providerConnectionId") {
-    const selected = state.providerConnections.find((connection) => connection.connection_id === value);
-    updateAgentProfileEditor({
-      providerConnectionId: value,
-      agentRuntime: selected?.agent_runtime || state.registryEditor.profile.agentRuntime,
-      openclawProvider: selected?.provider || state.registryEditor.profile.openclawProvider,
-      openclawAgentId: selected?.models?.includes(state.registryEditor.profile.openclawAgentId)
-        ? state.registryEditor.profile.openclawAgentId
-        : "",
-    });
-    render();
-    return;
-  }
-  if (field === "agent.harnessProfile") updateAgentProfileEditor({ harnessProfile: value });
-  if (field === "agent.openclawAgentId") updateAgentProfileEditor({ openclawAgentId: value });
-  if (field === "agent.openclawProvider") updateAgentProfileEditor({ openclawProvider: value });
-  if (field === "agent.openclawModel") updateAgentProfileEditor({ openclawModel: value });
-  if (field === "agent.openclawRuntimeMode") updateAgentProfileEditor({ openclawRuntimeMode: value });
-  if (field === "agent.defaultSkillsText") updateAgentProfileEditor({ defaultSkillsText: value });
-  if (field === "agent.allowedToolsText") updateAgentProfileEditor({ allowedToolsText: value });
-  if (field === "agent.disallowedSkillsText") {
-    updateAgentProfileEditor({ disallowedSkillsText: value });
-  }
-  if (field === "agent.policyTagsText") updateAgentProfileEditor({ policyTagsText: value });
-  if (field === "agent.metadataText") updateAgentProfileEditor({ metadataText: value });
   if (field === "connection.connectionId") {
     updateProviderConnectionEditor({ connectionId: slugify(value) });
   }
@@ -16672,7 +19416,9 @@ function handleChange(target) {
   if (field === "connection.contextCompressionEnabled") updateProviderConnectionEditor({ contextCompressionEnabled: target.checked });
   if (field === "connection.contextCompressionThresholdPercent") updateProviderConnectionEditor({ contextCompressionThresholdPercent: Number(value) });
   if (field === "connection.maxContinuationRounds") updateProviderConnectionEditor({ maxContinuationRounds: Number(value) });
+  if (field === "connection.maxToolRounds") updateProviderConnectionEditor({ maxToolRounds: Number(value) });
   if (field === "connection.metadataText") updateProviderConnectionEditor({ metadataText: value });
+  if (field === "skillHost.sourcePath") state.skillHost.sourcePath = value;
   if (field === "skill.skillId") updateSkillEditor({ skillId: slugify(value) });
   if (field === "skill.status") updateSkillEditor({ status: value });
   if (field === "skill.name") updateSkillEditor({ name: value });
@@ -16687,16 +19433,40 @@ function handleChange(target) {
   if (field === "node.id") updateNode(index, { id: slugify(value) });
   if (field === "node.type") {
     const patch = { type: value };
-    if (value === "end") {
-      patch.agent_profile = null;
+    if (["condition", "fanout", "reducer", "approval", "human_input", "end"].includes(value)) {
+      patch.agent_id = null;
       patch.allowed_skills = [];
+    }
+    if (value === "end") {
       patch.approval_kind = null;
       patch.human_input_schema = null;
     }
     updateNode(index, patch);
   }
   if (field === "node.name") updateNode(index, { name: value });
-  if (field === "node.agent_profile") updateNode(index, { agent_profile: value.trim() || null });
+  if (field === "node.objective") updateNode(index, { config: { ...state.editor.nodes[index].config, objective: value } });
+  if (field.startsWith("node.condition.")) {
+    const key = field.slice("node.condition.".length);
+    updateNode(index, { config: { ...state.editor.nodes[index].config, condition: { ...(state.editor.nodes[index].config?.condition || {}), [key]: key === "value" ? value : value } } });
+  }
+  if (field.startsWith("node.loop.")) {
+    const key = field.slice("node.loop.".length);
+    const numeric = ["max_iterations", "concurrency"].includes(key);
+    updateNode(index, { config: { ...state.editor.nodes[index].config, loop: { ...(state.editor.nodes[index].config?.loop || {}), [key]: numeric ? Math.max(1, Number(value) || 1) : value } } });
+  }
+  if (field === "node.input") updateNode(index, { config: { ...state.editor.nodes[index].config, input_prompt: value } });
+  if (field === "node.output") {
+    updateNode(index, {
+      config: {
+        ...state.editor.nodes[index].config,
+        output_contract: {
+          ...(state.editor.nodes[index].config?.output_contract || {}),
+          expected_artifacts: value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean),
+        },
+      },
+    });
+  }
+  if (field === "node.agent_id") updateNode(index, { agent_id: value.trim() || null });
   if (field === "node.allowed_skills") {
     updateNode(index, {
       allowed_skills: value
@@ -16708,7 +19478,7 @@ function handleChange(target) {
   if (field === "node.approval_kind") updateNode(index, { approval_kind: value || null });
   if (field === "node.retry_policy.max_attempts") {
     updateNode(index, {
-      retry_policy: { ...state.editor.nodes[index].retry_policy, max_attempts: Number(value) },
+      retry_policy: { ...state.editor.nodes[index].retry_policy, max_attempts: Math.max(1, Math.min(10, Number(value) || 1)) },
     });
   }
   if (field === "node.retry_policy.backoff_seconds") {
@@ -16735,12 +19505,50 @@ function handleChange(target) {
   if (field === "edge.from_port") updateEdge(index, { from_port: value.trim() || null });
   if (field === "edge.to_port") updateEdge(index, { to_port: value.trim() || null });
   if (field === "edge.label") updateEdge(index, { label: value || null });
+  if (field === "edge.conditionMode") {
+    if (value === "always") updateEdge(index, { condition: null });
+    else {
+      const current = state.editor.edges[index].condition || {};
+      updateEdge(index, {
+        condition: {
+          path: current.path || "result.ok",
+          operator: value,
+          ...(["equals", "not_equals", "contains"].includes(value) ? { value: current.value ?? "" } : {}),
+        },
+      });
+    }
+  }
+  if (field === "edge.conditionPath") {
+    const current = state.editor.edges[index].condition || { operator: "truthy" };
+    updateEdge(index, { condition: { ...current, path: value.trim() || "result.ok" } });
+  }
+  if (field === "edge.conditionValue") {
+    const current = state.editor.edges[index].condition || { path: "result.ok", operator: "equals" };
+    let conditionValue = value;
+    try {
+      conditionValue = JSON.parse(value);
+    } catch {
+      // Plain text comparisons are the common authoring case.
+    }
+    updateEdge(index, { condition: { ...current, value: conditionValue } });
+  }
   if (field === "edge.condition") {
     if (!value.trim()) updateEdge(index, { condition: null });
     else {
       const parsed = parseJsonObject(value);
       if (parsed.ok) updateEdge(index, { condition: parsed.value });
     }
+  }
+  if (field === "workflow.controlRequireApproval" || field === "workflow.controlRequireInput") {
+    const parsed = parseJsonObject(state.editor.policyText || "{}");
+    const policy = parsed.ok ? parsed.value : {};
+    const approvalPolicy = {
+      ...(policy.approval_policy && typeof policy.approval_policy === "object" ? policy.approval_policy : {}),
+      ...(field === "workflow.controlRequireApproval" ? { require_before_write: target.checked === true } : {}),
+      ...(field === "workflow.controlRequireInput" ? { require_human_input: target.checked === true } : {}),
+    };
+    state.editor.policyText = prettyJson({ ...policy, approval_policy: approvalPolicy });
+    render();
   }
 }
 
@@ -16754,7 +19562,11 @@ function syncTextareaState(target) {
     field === "memory.editContent" ||
     field === "memory.importText" ||
     field === "memory.suggestionContent" ||
-    field === "memory.external.argumentsText"
+    field === "memory.external.argumentsText" ||
+    field === "schedule.prompt"
+    || field?.startsWith("agentDefinition.")
+    || field?.startsWith("agentDag.")
+    || field?.startsWith("agentTask.")
   ) {
     handleChange(target);
     return;
@@ -16762,7 +19574,7 @@ function syncTextareaState(target) {
 
   if (field === "planner.intent") {
     state.planner.intent = value;
-    state.planner.templateId = "";
+    if (!state.planner.templateLocked) state.planner.templateId = "";
     state.planner.recommendation = null;
     state.planner.candidatePlan = null;
     state.planner.dagDraft = null;
@@ -16788,17 +19600,10 @@ function syncTextareaState(target) {
     syncProposalOverrideField(target);
     return;
   }
-  if (field === "orchestrator.systemPrompt") {
-    state.orchestrator.systemPrompt = value;
-    return;
-  }
   if (field === "template.description") state.editor.description = value;
   if (field === "template.inputSchemaText") state.editor.inputSchemaText = value;
   if (field === "template.policyText") state.editor.policyText = value;
-  if (field === "template.bindingsText") state.editor.bindingsText = value;
   if (field === "template.metadataText") state.editor.metadataText = value;
-  if (field === "agent.description") state.registryEditor.profile.description = value;
-  if (field === "agent.metadataText") state.registryEditor.profile.metadataText = value;
   if (field === "connection.metadataText") state.registryEditor.connection.metadataText = value;
   if (field?.startsWith("mcp.")) state.registryEditor.mcpServer[field.slice(4)] = value;
   if (field === "skill.description") state.registryEditor.skill.description = value;
@@ -16847,6 +19652,21 @@ function fitRuntimeGraphToView(source) {
 }
 
 document.addEventListener("click", (event) => {
+  if (event.target.matches?.(".agent-delegation-backdrop")) {
+    state.ui.agentDelegationNodeId = "";
+    closeAgentEventStream();
+    render();
+    return;
+  }
+  if (event.target.matches?.(".workspace-diff-preview-backdrop")) {
+    closeWorkspaceDiffPreview();
+    return;
+  }
+  if (state.ui.workspaceExternalMenu && !event.target.closest(".workspace-external-menu, .desktop-local-entry, .workspace-project-row")) {
+    state.ui.workspaceExternalMenu = null;
+    render();
+    return;
+  }
   if (event.target.matches?.(".workspace-modal-backdrop")) {
     closeWorkspaceCreator();
     return;
@@ -16854,6 +19674,14 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "select-authoring-node") {
+    selectAuthoringGraphItem("node", button.dataset.index);
+    return;
+  }
+  if (action === "respond-studio-dialog") {
+    void finishStudioDialog(Number(button.dataset.response));
+    return;
+  }
   if (action === "open-command-palette") {
     openCommandPalette();
     return;
@@ -16872,6 +19700,79 @@ document.addEventListener("click", (event) => {
   }
   if (action === "switch-navigation-tab") {
     switchDesktopNavigationTab(button.dataset.tab || "task");
+    return;
+  }
+  if (action === "retry-control-plane") {
+    void retryControlPlane();
+    return;
+  }
+  if (action === "dismiss-control-plane-status") {
+    state.controlPlane.status = state.controlPlane.lastSuccessAt ? "connected" : "unknown";
+    state.controlPlane.lastError = "";
+    render();
+    return;
+  }
+  if (action === "refresh-agent-orchestration") { void Promise.all([loadRegistry(false), refreshAgentOrchestration()]); return; }
+  if (action === "switch-agent-tab") { state.agentOrchestration.activeTab = button.dataset.tab || "agents"; render(); return; }
+  if (action === "open-agent-creator") { openAgentDefinitionEditor(); return; }
+  if (action === "edit-agent-definition") { openAgentDefinitionEditor(button.dataset.agentId || ""); return; }
+  if (action === "close-agent-creator") { void requestCloseAgentDefinitionEditor(); return; }
+  if (action === "save-agent-draft") { saveLocalAgentDraft(); return; }
+  if (action === "create-agent-definition") { void reviewAndPublishAgent(); return; }
+  if (action === "disable-agent-definition") { void disableAgentFromEditor(); return; }
+  if (action === "set-agent-capability-state") { setAgentCapabilityState(button.dataset.capabilityId || "", button.dataset.state || "available"); return; }
+  if (action === "agent-capability-batch") { applyAgentCapabilityBatch(button.dataset.mode || "clear"); return; }
+  if (action === "repair-agent-readiness") { repairAgentReadiness(button.dataset.agentId || ""); return; }
+  if (action === "design-agent-dag") { openAgentDagDesigner(button.dataset.templateId || ""); return; }
+  if (action === "open-agent-team-creator") { state.agentOrchestration.teamCreateOpen = true; state.agentOrchestration.agentCreateOpen = false; render(); return; }
+  if (action === "prepare-recommended-agent-policy") { prepareRecommendedExecutionPolicy(); return; }
+  if (action === "close-agent-team-creator") { state.agentOrchestration.teamCreateOpen = false; render(); return; }
+  if (action === "create-agent-team") { void createAgentTeamFromEditor(); return; }
+  if (action === "open-agent-dag-creator") { openAgentDagDesigner(); return; }
+  if (action === "close-agent-dag-creator") { state.agentOrchestration.createOpen = false; render(); return; }
+  if (action === "create-agent-dag") { openAgentDagDesigner(); return; }
+  if (action === "select-agent-dag") { void loadAgentDagDetail(button.dataset.dagId || ""); return; }
+  if (action === "open-agent-task-editor" || action === "revise-agent-dag-proposal") { reviseAgentDagProposalFromRuns(); return; }
+  if (action === "close-agent-task-editor") { state.agentOrchestration.addTaskOpen = false; render(); return; }
+  if (action === "add-agent-dag-task") { reviseAgentDagProposalFromRuns(); return; }
+  if (action === "run-agent-dag") { void applyAgentDagAction(button.dataset.dagId || "", "run"); return; }
+  if (action === "retry-agent-dag") { void applyAgentDagAction(button.dataset.dagId || "", "retry"); return; }
+  if (action === "aggregate-agent-dag") { void applyAgentDagAction(button.dataset.dagId || "", "aggregate"); return; }
+  if (action === "cancel-agent-dag") { void applyAgentDagAction(button.dataset.dagId || "", "cancel"); return; }
+  if (action === "resolve-agent-dag-gate") { void resolveAgentDagGateFromStudio(button.dataset.dagId || "", button.dataset.gateId || "", button.dataset.approved === "true"); return; }
+  if (action === "open-agent-delegation-conversation") {
+    if (button.dataset.nodeId) {
+      state.ui.agentDelegationNodeId = button.dataset.nodeId;
+      state.ui.agentDelegationTab = "activity";
+      render();
+      const item = (state.workspaceDetail?.agent_delegations || []).find((delegation) => delegation.node_id === button.dataset.nodeId);
+      openAgentEventStream(item);
+    }
+    return;
+  }
+  if (action === "select-agent-delegation-tab") {
+    state.ui.agentDelegationTab = button.dataset.tab || "activity";
+    render();
+    return;
+  }
+  if (action === "open-agent-delegation-task") {
+    const childSessionId = button.dataset.sessionId || "";
+    if (childSessionId) {
+      state.ui.agentDelegationNodeId = "";
+      void openSessionFromCommand("orchestrator", childSessionId);
+    }
+    return;
+  }
+  if (action === "open-parent-agent-task") {
+    const parentSessionId = button.dataset.sessionId || "";
+    if (parentSessionId) void openSessionFromCommand("orchestrator", parentSessionId);
+    return;
+  }
+  if (action === "close-agent-delegation-conversation") {
+    if (event.target.closest?.("[data-agent-delegation-drawer]") && !button.matches?.("[data-action='close-agent-delegation-conversation']")) return;
+    state.ui.agentDelegationNodeId = "";
+    closeAgentEventStream();
+    render();
     return;
   }
   if (action === "new-task") {
@@ -16908,11 +19809,71 @@ document.addEventListener("click", (event) => {
     document.querySelector('textarea[data-field="planner.intent"]')?.focus();
   }
   if (action === "refresh-inbox") void loadInbox();
+  if (action === "refresh-schedules") void loadSchedules();
+  if (action === "new-schedule") {
+    state.schedules.editorOpen = true;
+    state.schedules.editingId = "";
+    state.schedules.draft = emptyScheduleDraft();
+    state.schedules.error = null;
+    render();
+  }
+  if (action === "cancel-schedule-editor") {
+    state.schedules.editorOpen = false;
+    state.schedules.editingId = "";
+    state.schedules.draft = emptyScheduleDraft();
+    render();
+  }
+  if (action === "save-schedule") void saveSchedule();
+  if (action === "edit-schedule") {
+    const schedule = state.schedules.items.find((item) => item.schedule_id === button.dataset.scheduleId);
+    if (schedule) {
+      state.schedules.editorOpen = true;
+      state.schedules.editingId = schedule.schedule_id;
+      state.schedules.draft = scheduleDraftFromRecord(schedule);
+      state.schedules.error = null;
+      render();
+    }
+  }
+  if (action === "toggle-schedule") {
+    void updateScheduleEnabled(button.dataset.scheduleId || "", button.dataset.enabled === "true");
+  }
+  if (action === "run-schedule") void runScheduleNow(button.dataset.scheduleId || "");
+  if (action === "toggle-schedule-history") void loadScheduleRuns(button.dataset.scheduleId || "");
+  if (action === "prepare-delete-schedule") {
+    state.schedules.deleteConfirmId = button.dataset.scheduleId || "";
+    render();
+  }
+  if (action === "cancel-delete-schedule") {
+    state.schedules.deleteConfirmId = "";
+    render();
+  }
+  if (action === "confirm-delete-schedule") void deleteSchedule(button.dataset.scheduleId || "");
+  if (action === "open-schedule-task") {
+    state.selectedSessionId = button.dataset.sessionId || "";
+    switchDesktopNav("orchestrator");
+    if (state.selectedSessionId) void loadSessionWorkspace(state.selectedSessionId);
+  }
+  if (action === "read-notification" || action === "dismiss-notification") {
+    void updateNotification(button.dataset.notificationId || "", action === "read-notification" ? "read" : "dismiss");
+  }
+  if (action === "open-notification-task") {
+    const notificationId = button.dataset.notificationId || "";
+    const sessionId = button.dataset.sessionId || "";
+    if (notificationId) void updateNotification(notificationId, "read");
+    if (sessionId) {
+      state.selectedSessionId = sessionId;
+      switchDesktopNav("orchestrator");
+      void loadSessionWorkspace(sessionId);
+    }
+  }
   if (action === "select-workspace-change-set") {
     selectWorkspaceChangeSetForReview(button.dataset.changeSetId || "");
   }
   if (action === "select-workspace-change-file") {
     selectWorkspaceChangeFileForReview(button.dataset.path || "");
+  }
+  if (action === "review-workspace-change-file") {
+    openWorkspaceChangeFileReview(button.dataset.changeSetId || "", button.dataset.path || "");
   }
   if (action === "stage-workspace-change-action") {
     state.inbox.confirmWorkspaceChangeAction = button.dataset.mode || "";
@@ -16924,6 +19885,14 @@ document.addEventListener("click", (event) => {
   }
   if (action === "confirm-workspace-change-action") {
     void resolveWorkspaceChangeSet(button.dataset.mode || "");
+  }
+  if (action === "open-applied-workspace-file") {
+    void openDesktopWorkspaceExternal(
+      button.dataset.target || "editor",
+      button.dataset.path || "",
+      "default",
+      button.dataset.projectId || "",
+    );
   }
   if (action === "open-inbox-task") {
     const sessionId = button.dataset.sessionId || "";
@@ -16938,6 +19907,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "use-library-workflow") {
     state.planner.templateId = button.dataset.id || "";
+    state.planner.templateLocked = true;
     state.activeNav = "orchestrator";
     state.selectedSessionId = null;
     state.workspaceDetail = null;
@@ -16999,6 +19969,20 @@ document.addEventListener("click", (event) => {
   if (action === "open-desktop-workspace-directory") {
     void loadDesktopWorkspaceDirectory(button.dataset.path || "");
   }
+  if (action === "open-workspace-external") {
+    void openDesktopWorkspaceExternal(
+      button.dataset.target || "explorer",
+      button.dataset.path || "",
+      button.dataset.editorId || "default",
+      button.dataset.projectId || "",
+    );
+  }
+  if (action === "preview-applied-workspace-site") {
+    void previewDesktopWorkspaceSite(
+      button.dataset.path || "",
+      button.dataset.projectId || "",
+    );
+  }
   if (action === "attach-desktop-workspace-file") {
     void attachDesktopWorkspaceFile(button.dataset.path || "");
   }
@@ -17015,6 +19999,20 @@ document.addEventListener("click", (event) => {
   }
   if (action === "open-artifact-preview") {
     void openArtifactPreview(button.dataset.artifactId || "");
+  }
+  if (action === "open-workspace-diff-preview") {
+    void openWorkspaceDiffPreview(button.dataset.changeSetId || "", button.dataset.path || "");
+  }
+  if (action === "close-workspace-diff-preview") {
+    closeWorkspaceDiffPreview();
+  }
+  if (action === "select-workspace-diff-preview-file") {
+    state.workspaceDiffPreview.relativePath = button.dataset.path || "";
+    state.workspaceDiffPreview.error = null;
+    render();
+  }
+  if (action === "open-artifact-changes") {
+    void openArtifactPreview(button.dataset.artifactId || "", "changes");
   }
   if (action === "close-artifact-preview") {
     closeArtifactPreview();
@@ -17067,6 +20065,13 @@ document.addEventListener("click", (event) => {
     pendingWorkspaceFocus = "task-results";
     render();
   }
+  if (action === "workboard-page") {
+    state.ui.workboardPage = Math.max(1, Number(button.dataset.page) || 1);
+    render();
+  }
+  if ((action === "view-task-progress" || action === "review-task-recovery") && openAgentDagActivity(state.workspaceDetail?.agent_dag?.dag_id || "")) {
+    return;
+  }
   if (action === "view-task-progress" || action === "review-task-recovery" || action === "review-task-evidence") {
     state.ui.taskRuntimeExpanded = true;
     pendingWorkspaceFocus = action === "review-task-evidence" ? "task-quality" : "task-runtime";
@@ -17075,11 +20080,6 @@ document.addEventListener("click", (event) => {
   if (action === "review-task-conversation") {
     state.ui.taskConversationExpanded = true;
     pendingWorkspaceFocus = "task-conversation";
-    render();
-  }
-  if (action === "save-orchestrator-profile") void saveOrchestratorProfile();
-  if (action === "toggle-orchestrator-setup") {
-    state.ui.orchestratorSetupExpanded = !state.ui.orchestratorSetupExpanded;
     render();
   }
   if (action === "toggle-workspace-feed-expanded") {
@@ -17165,6 +20165,9 @@ document.addEventListener("click", (event) => {
     render();
   }
   if (action === "refresh-runtime") void loadRuntimeSummary();
+  if (action === "refresh-desktop-runtime") void refreshDesktopRuntimeStatus();
+  if (action === "restart-desktop-services") void restartDesktopServices();
+  if (action === "provision-desktop-workers") void provisionDesktopWorkers();
   if (action === "refresh-runtime-projection") void loadRuntimeGraphForWorkspace();
   if (action === "toggle-runtime-overlay") {
     state.ui.runtimeOverlayOpen = !state.ui.runtimeOverlayOpen;
@@ -17356,12 +20359,6 @@ document.addEventListener("click", (event) => {
   if (action === "apply-governance-change") {
     void decideStudioGovernanceChange(button.dataset.id || "", "apply");
   }
-  if (action === "new-agent-profile") {
-    state.activeNav = "registry";
-    state.ui.registrySection = "agents";
-    state.registryEditor.profile = emptyAgentProfileEditor();
-    render();
-  }
   if (action === "new-provider-connection") {
     state.ui.registrySection = "connections";
     state.registryEditor.connection = emptyProviderConnectionEditor();
@@ -17424,23 +20421,6 @@ document.addEventListener("click", (event) => {
     state.registryEditor.skill = emptySkillEditor();
     render();
   }
-  if (action === "edit-agent-profile") {
-    const profile = state.agentProfiles.find((item) => item.profile_id === button.dataset.id);
-    if (profile) {
-      state.ui.registrySection = "agents";
-      state.registryEditor.profile = editorFromAgentProfile(profile);
-      render();
-    }
-  }
-  if (action === "edit-agent-profile-from-hosting") {
-    const profile = state.agentProfiles.find((item) => item.profile_id === button.dataset.id);
-    if (profile) {
-      state.activeNav = "registry";
-      state.ui.registrySection = "agents";
-      state.registryEditor.profile = editorFromAgentProfile(profile);
-      render();
-    }
-  }
   if (action === "edit-provider-connection") {
     const connection = state.providerConnections.find(
       (item) => item.connection_id === button.dataset.id,
@@ -17461,15 +20441,24 @@ document.addEventListener("click", (event) => {
       render();
     }
   }
-  if (action === "save-agent-profile") void saveAgentProfile();
-  if (action === "disable-agent-profile") void disableAgentProfile();
   if (action === "save-provider-connection") void saveProviderConnection();
   if (action === "test-provider-connection") void testProviderConnection();
   if (action === "disable-provider-connection") void disableProviderConnection();
   if (action === "save-skill") void saveSkill();
   if (action === "disable-skill") void disableSkill();
+  if (action === "reload-skill-packages") void reloadSkillPackages();
+  if (action === "toggle-skill-auto-activation") void saveSkillHostProfile({ auto_activation: button.checked === true });
+  if (action === "scan-skill-package") void scanStudioSkillPackage();
+  if (action === "install-skill-package") void installSkillPackage();
+  if (action === "select-skill-package") void selectSkillPackage(button.dataset.id || "");
+  if (action === "toggle-skill-package") void toggleSkillPackage(button.dataset.id || "", button.dataset.enabled === "true");
   if (action === "new-template") {
+    templateLoadSeq += 1;
+    state.loading = false;
     state.activeNav = "templates";
+    state.ui.workflowGeneratorOpen = false;
+    state.ui.workflowHistoryOpen = false;
+    state.activeView = "template";
     state.selectedId = null;
     state.lineage = null;
     resetAuthoringGraphSelection();
@@ -17479,7 +20468,26 @@ document.addEventListener("click", (event) => {
     state.error = null;
     render();
   }
-  if (action === "select-template") void selectTemplate(button.dataset.id);
+  if (action === "open-workflow-generator") {
+    templateLoadSeq += 1;
+    state.loading = false;
+    state.activeNav = "templates";
+    state.ui.workflowGeneratorOpen = true;
+    state.ui.workflowHistoryOpen = false;
+    state.activeView = "template";
+    state.error = null;
+    state.notice = null;
+    render();
+  }
+  if (action === "close-workflow-generator") {
+    state.ui.workflowGeneratorOpen = false;
+    state.activeView = "template";
+    render();
+  }
+  if (action === "select-template") {
+    state.ui.workflowHistoryOpen = false;
+    void selectTemplate(button.dataset.id);
+  }
   if (action === "plan-intent") void planFromIntent();
   if (action === "refresh-plan-preview") void refreshCandidatePlan();
   if (action === "generate-dag-draft") void generateDagDraft();
@@ -17489,7 +20497,7 @@ document.addEventListener("click", (event) => {
   if (action === "save-dag-draft") void saveDagDraftAsTemplate();
   if (action === "create-dag-proposal") void createDurableDagProposal();
   if (action === "save-proposal-assignments") void saveDurableProposalAssignments();
-  if (action === "confirm-dag-proposal") void confirmDurableProposal();
+  if (action === "confirm-dag-proposal") void confirmDurableProposal(button.dataset.proposalId || "");
   if (action === "launch-proposal-run") void launchConfirmedProposalRun();
   if (action === "select-planner-template") {
     state.planner.templateId = button.dataset.id || "";
@@ -17500,9 +20508,22 @@ document.addEventListener("click", (event) => {
     void refreshCandidatePlan();
   }
   if (action === "save-draft") void saveDraft();
+  if (action === "validate-workflow") {
+    state.activeView = "review";
+    state.notice = "Workflow validation is ready for review.";
+    render();
+  }
   if (action === "publish-draft") void publishDraft();
   if (action === "derive-template") void deriveSelectedTemplate();
-  if (action === "new-template-version") void createSelectedTemplateVersion();
+  if (action === "edit-workflow" || action === "new-template-version") void createSelectedTemplateVersion();
+  if (action === "show-workflow-history") {
+    state.ui.workflowHistoryOpen = true;
+    render();
+  }
+  if (action === "close-workflow-history") {
+    state.ui.workflowHistoryOpen = false;
+    render();
+  }
   if (action === "archive-template") void archiveSelectedTemplate();
   if (action === "select-authoring-node") selectAuthoringGraphItem("node", button.dataset.index);
   if (action === "select-authoring-edge") selectAuthoringGraphItem("edge", button.dataset.index);
@@ -17510,6 +20531,22 @@ document.addEventListener("click", (event) => {
   if (action === "authoring-port-in") handleAuthoringPortIn(Number(button.dataset.index));
   if (action === "undo-authoring") undoAuthoringGraph();
   if (action === "redo-authoring") redoAuthoringGraph();
+  if (action === "authoring-zoom") setAuthoringGraphZoom(button.dataset.zoom === "reset" ? "reset" : Number(button.dataset.zoom));
+  if (action === "fit-authoring-view") fitAuthoringGraphView();
+  if (action === "reset-authoring-view") resetAuthoringGraphView();
+  if (action === "close-workflow-inspector") {
+    resetAuthoringGraphSelection();
+    render();
+    return;
+  }
+  if (action === "toggle-authoring-canvas-expanded") {
+    state.ui.authoringCanvasExpanded = !state.ui.authoringCanvasExpanded;
+    document.body.classList.toggle("workflow-canvas-expanded", state.ui.authoringCanvasExpanded);
+    render();
+    return;
+  }
+  if (action === "toggle-authoring-node-menu") { state.ui.authoringNodeMenuOpen = !state.ui.authoringNodeMenuOpen; render(); }
+  if (action === "add-node-type") addNode(button.dataset.nodeType || "agent_task");
   if (action === "add-node") addNode();
   if (action === "remove-node") removeNode(Number(button.dataset.index));
   if (action === "add-edge") addEdge();
@@ -17517,10 +20554,41 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("change", (event) => handleChange(event.target));
+document.addEventListener("toggle", (event) => {
+  const receipt = event.target.closest?.("details[data-conversation-action-receipt-key]");
+  if (receipt === event.target) {
+    state.ui.conversationActionExpanded[receipt.dataset.conversationActionReceiptKey] = receipt.open;
+    return;
+  }
+  const detail = event.target.closest?.("details[data-conversation-action-detail-id]");
+  if (detail === event.target) {
+    state.ui.conversationActionDetailsExpanded[detail.dataset.conversationActionDetailId] = detail.open;
+  }
+}, true);
+document.addEventListener("contextmenu", (event) => {
+  const projectRow = event.target.closest?.(".workspace-project-row[data-workspace-project-context-id]");
+  const entry = event.target.closest?.(".desktop-local-entry[data-entry-kind='directory']");
+  if (!projectRow && !entry) {
+    if (state.ui.workspaceExternalMenu) {
+      state.ui.workspaceExternalMenu = null;
+      render();
+    }
+    return;
+  }
+  event.preventDefault();
+  state.ui.workspaceExternalMenu = {
+    relativePath: entry?.dataset.entryPath || "",
+    projectId: projectRow?.dataset.workspaceProjectContextId || "",
+    name: projectRow?.dataset.workspaceProjectContextName || entry?.querySelector(".desktop-local-entry-name strong")?.textContent || "Folder",
+    x: Math.min(event.clientX, Math.max(8, window.innerWidth - 220)),
+    y: Math.min(event.clientY, Math.max(8, window.innerHeight - 180)),
+  };
+  render();
+});
 document.addEventListener("input", (event) => {
   if (event.target.matches("textarea[data-field]")) syncTextareaState(event.target);
   if (event.target.matches("input[data-field^='proposal.']")) syncProposalOverrideField(event.target);
-  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='command.query'], input[data-field='memory.query'], input[data-field^='memory.settings.'], input[data-field^='memory.collection.'], input[data-field^='memory.share.'], input[data-field^='memory.external.'], input[data-field^='attachment.'], input[data-field^='desktop.'], input[data-field^='orchestrator.'], input[data-field^='agent.'], input[data-field^='connection.'], input[data-field^='mcp.'], input[data-field^='setup.'], input[data-field^='skill.'], textarea[data-field='execution.interventionText']")) {
+  if (event.target.matches("input[data-field='mission.query'], input[data-field='session.query'], input[data-field='workboard.query'], input[data-field='command.query'], input[data-field='memory.query'], input[data-field^='memory.settings.'], input[data-field^='memory.collection.'], input[data-field^='memory.share.'], input[data-field^='memory.external.'], input[data-field^='agentDefinition.'], input[data-field^='agentDag.'], input[data-field^='agentTask.'], input[data-field^='attachment.'], input[data-field^='desktop.'], input[data-field^='orchestrator.'], input[data-field^='agent.'], input[data-field^='node.'], input[data-field^='connection.'], input[data-field^='mcp.'], input[data-field^='setup.'], input[data-field^='skill.'], input[data-field^='skillHost.'], input[data-field^='template.'], textarea[data-field='execution.interventionText']")) {
     handleChange(event.target);
   }
 });
@@ -17540,10 +20608,42 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("pointerdown", (event) => {
+  const outputHandle = event.target.closest?.(".authoring-port-out");
+  if (outputHandle && state.activeNav === "templates" && state.activeView === "dag") {
+    handleAuthoringPortOut(Number(outputHandle.dataset.index));
+    return;
+  }
+  const canvas = event.target.closest?.(".authoring-graph-canvas");
+  const blankCanvasTarget = canvas && !event.target.closest(".authoring-graph-node, .authoring-graph-line, .authoring-port, button, input, select, textarea, a");
+  if (blankCanvasTarget && event.button === 0 && event.shiftKey && state.activeNav === "templates" && state.activeView === "dag") {
+    const surface = canvas.querySelector(".authoring-graph-surface");
+    if (!surface) return;
+    const rect = surface.getBoundingClientRect();
+    const zoom = Number(state.ui.authoringGraphZoom) || 1;
+    const startX = (event.clientX - rect.left) / zoom;
+    const startY = (event.clientY - rect.top) / zoom;
+    const element = document.createElement("div");
+    element.className = "authoring-graph-marquee";
+    element.style.left = `${startX}px`;
+    element.style.top = `${startY}px`;
+    surface.append(element);
+    authoringGraphMarquee = { surface, element, startX, startY, indexes: [] };
+    canvas.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    return;
+  }
+  if (blankCanvasTarget && (event.button === 0 || event.button === 1) && state.activeNav === "templates" && state.activeView === "dag") {
+    const currentPan = state.ui.authoringGraphPan || { x: 0, y: 0 };
+    authoringCanvasPan = { startX: event.clientX, startY: event.clientY, originX: currentPan.x, originY: currentPan.y, moved: false };
+    canvas.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    return;
+  }
   const nodeElement = event.target.closest(".authoring-graph-node");
   if (
     !nodeElement ||
     event.target.closest(".authoring-port") ||
+    event.target.closest(".authoring-node-edit-control, button, input, select, textarea, a") ||
     event.button !== 0 ||
     state.activeNav !== "templates" ||
     state.activeView !== "dag"
@@ -17564,13 +20664,63 @@ document.addEventListener("pointerdown", (event) => {
     y: position.y,
     moved: false,
   };
+  nodeElement.classList.add("dragging");
   nodeElement.setPointerCapture?.(event.pointerId);
 });
 
 document.addEventListener("pointermove", (event) => {
+  if (authoringGraphConnection && state.activeNav === "templates" && state.activeView === "dag") {
+    const surface = document.querySelector(".authoring-graph-surface");
+    const preview = surface?.querySelector("[data-authoring-connection-preview]");
+    const source = surface?.querySelector(`.authoring-graph-node[data-index="${authoringGraphConnection.sourceIndex}"]`);
+    if (surface && preview && source) {
+      const zoom = Number(state.ui.authoringGraphZoom) || 1;
+      const surfaceRect = surface.getBoundingClientRect();
+      const fromX = source.offsetLeft + source.offsetWidth;
+      const fromY = source.offsetTop + 49;
+      const toX = (event.clientX - surfaceRect.left) / zoom;
+      const toY = (event.clientY - surfaceRect.top) / zoom;
+      preview.setAttribute("d", authoringConnectionPath({ fromX, fromY, toX, toY }));
+    }
+  }
+  if (authoringGraphMarquee) {
+    const { surface, element, startX, startY } = authoringGraphMarquee;
+    const zoom = Number(state.ui.authoringGraphZoom) || 1;
+    const rect = surface.getBoundingClientRect();
+    const currentX = (event.clientX - rect.left) / zoom;
+    const currentY = (event.clientY - rect.top) / zoom;
+    const left = Math.min(startX, currentX);
+    const top = Math.min(startY, currentY);
+    const right = Math.max(startX, currentX);
+    const bottom = Math.max(startY, currentY);
+    element.style.left = `${left}px`;
+    element.style.top = `${top}px`;
+    element.style.width = `${right - left}px`;
+    element.style.height = `${bottom - top}px`;
+    const nodes = [...surface.querySelectorAll(".authoring-graph-node")];
+    const indexes = authoringNodesInRectangle(
+      nodes.map((node) => ({ index: Number(node.dataset.index), left: node.offsetLeft, top: node.offsetTop, width: node.offsetWidth, height: node.offsetHeight })),
+      { startX: left, startY: top, endX: right, endY: bottom },
+    );
+    const selectedIndexes = new Set(indexes);
+    nodes.forEach((node) => node.classList.toggle("marquee-selected", selectedIndexes.has(Number(node.dataset.index))));
+    authoringGraphMarquee.indexes = indexes;
+    return;
+  }
+  if (authoringCanvasPan) {
+    const dx = event.clientX - authoringCanvasPan.startX;
+    const dy = event.clientY - authoringCanvasPan.startY;
+    if (Math.abs(dx) + Math.abs(dy) > 3) authoringCanvasPan.moved = true;
+    setAuthoringGraphPan({ x: authoringCanvasPan.originX + dx, y: authoringCanvasPan.originY + dy });
+    const surface = document.querySelector(".authoring-graph-surface");
+    const zoom = Number(state.ui.authoringGraphZoom) || 1;
+    if (surface) surface.style.transform = `translate(${state.ui.authoringGraphPan.x}px, ${state.ui.authoringGraphPan.y}px) scale(${zoom})`;
+    return;
+  }
   if (!authoringNodeDrag) return;
-  const dx = event.clientX - authoringNodeDrag.startX;
-  const dy = event.clientY - authoringNodeDrag.startY;
+  const zoom = Number(state.ui.authoringGraphZoom) || 1;
+  const dx = (event.clientX - authoringNodeDrag.startX) / zoom;
+  const dy = (event.clientY - authoringNodeDrag.startY) / zoom;
   if (Math.abs(dx) + Math.abs(dy) > 3) authoringNodeDrag.moved = true;
   authoringNodeDrag.x = Math.max(8, authoringNodeDrag.originX + dx);
   authoringNodeDrag.y = Math.max(8, authoringNodeDrag.originY + dy);
@@ -17578,14 +20728,72 @@ document.addEventListener("pointermove", (event) => {
   authoringNodeDrag.element.style.top = `${authoringNodeDrag.y}px`;
 });
 
-document.addEventListener("pointerup", () => {
+document.addEventListener("pointerup", (event) => {
+  const inputHandle = event.target.closest?.(".authoring-port-in");
+  if (inputHandle && authoringGraphConnection && state.activeNav === "templates" && state.activeView === "dag") {
+    handleAuthoringPortIn(Number(inputHandle.dataset.index));
+    return;
+  }
+  const outputHandle = event.target.closest?.(".authoring-port-out");
+  if (outputHandle && authoringGraphConnection && state.activeNav === "templates" && state.activeView === "dag") {
+    handleAuthoringPortOut(Number(outputHandle.dataset.index));
+    return;
+  }
+  if (authoringGraphMarquee) {
+    const indexes = authoringGraphMarquee.indexes;
+    authoringGraphMarquee.element.remove();
+    authoringGraphMarquee = null;
+    state.ui.authoringGraphSelection = indexes.length === 1
+      ? { type: "node", index: indexes[0] }
+      : indexes.length > 1
+        ? { type: "nodes", indexes }
+        : { type: "none", index: null };
+    pendingAuthoringGraphFocus = null;
+    render();
+    return;
+  }
+  if (authoringCanvasPan) {
+    authoringCanvasPan = null;
+    return;
+  }
   if (!authoringNodeDrag) return;
   const drag = authoringNodeDrag;
   authoringNodeDrag = null;
-  if (!drag.moved) return;
+  drag.element.classList.remove("dragging");
+  if (!drag.moved) {
+    selectAuthoringGraphItem("node", Number(drag.element.dataset.index));
+    return;
+  }
   setAuthoringNodePosition(drag.nodeId, { x: drag.x, y: drag.y });
   recordAuthoringMutation();
   render();
+});
+
+document.addEventListener("pointercancel", () => {
+  authoringGraphMarquee?.element?.remove();
+  authoringGraphMarquee = null;
+  authoringCanvasPan = null;
+  if (authoringNodeDrag?.element) authoringNodeDrag.element.classList.remove("dragging");
+  authoringNodeDrag = null;
+});
+
+document.addEventListener("dblclick", (event) => {
+  const canvas = event.target.closest?.(".authoring-graph-canvas");
+  if (
+    !canvas ||
+    event.target.closest(".authoring-graph-node, .authoring-graph-line, .authoring-port, button, input, select, textarea, a") ||
+    state.activeNav !== "templates" ||
+    state.activeView !== "dag" ||
+    ["published", "archived"].includes(state.editor.status)
+  ) return;
+  const surface = canvas.querySelector(".authoring-graph-surface");
+  if (!surface) return;
+  const rect = surface.getBoundingClientRect();
+  const zoom = Number(state.ui.authoringGraphZoom) || 1;
+  addNode("agent_task", {
+    x: Math.max(8, (event.clientX - rect.left) / zoom - 94),
+    y: Math.max(8, (event.clientY - rect.top) / zoom - 49),
+  });
 });
 
 function clearWorkspaceTaskDragState() {
@@ -17660,9 +20868,30 @@ document.addEventListener("drop", (event) => {
 
 document.addEventListener("keydown", (event) => {
   const key = event.key;
+  if (state.ui.dialog && key === "Escape") {
+    event.preventDefault();
+    void finishStudioDialog(state.ui.dialog.cancelId);
+    return;
+  }
+  if (state.ui.dialog && key === "Enter" && !state.ui.dialog.input && !isTextEntryTarget(event.target)) {
+    event.preventDefault();
+    void finishStudioDialog(state.ui.dialog.defaultId);
+    return;
+  }
   if (key === "Escape" && state.artifactPreview.open) {
     event.preventDefault();
     closeArtifactPreview();
+    return;
+  }
+  if (key === "Escape" && state.workspaceDiffPreview.open) {
+    event.preventDefault();
+    closeWorkspaceDiffPreview();
+    return;
+  }
+  if (key === "Escape" && state.ui.agentDelegationNodeId) {
+    event.preventDefault();
+    state.ui.agentDelegationNodeId = "";
+    render();
     return;
   }
   if (key === "Escape" && state.ui.workspaceCreatorOpen) {
@@ -17706,9 +20935,25 @@ document.addEventListener("keydown", (event) => {
     render();
     return;
   }
+  if (key === "Escape" && state.agentOrchestration.agentCreateOpen) {
+    event.preventDefault();
+    void requestCloseAgentDefinitionEditor();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === "k") {
     event.preventDefault();
     openCommandPalette();
+    return;
+  }
+
+  const agentTab = event.target?.closest?.('.agent-page-tabs [role="tab"]');
+  if (agentTab && (key === "ArrowLeft" || key === "ArrowRight" || key === "Home" || key === "End")) {
+    event.preventDefault();
+    const tabs = [...document.querySelectorAll('.agent-page-tabs [role="tab"]')];
+    const currentIndex = Math.max(0, tabs.indexOf(agentTab));
+    const nextIndex = key === "Home" ? 0 : key === "End" ? tabs.length - 1 : (currentIndex + (key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[nextIndex]?.focus();
+    tabs[nextIndex]?.click();
     return;
   }
 
@@ -17763,6 +21008,12 @@ document.addEventListener("keydown", (event) => {
 
   if (isTextEntryTarget(event.target)) return;
   if (state.activeNav === "templates" && state.activeView === "dag") {
+    const branchPath = event.target?.closest?.(".authoring-graph-line[data-authoring-edge-index]");
+    if (branchPath && (key === "Enter" || key === " ")) {
+      event.preventDefault();
+      selectAuthoringGraphItem("edge", branchPath.dataset.authoringEdgeIndex);
+      return;
+    }
     const modifier = event.ctrlKey || event.metaKey;
     if (modifier && key.toLowerCase() === "z") {
       event.preventDefault();
@@ -17782,6 +21033,10 @@ document.addEventListener("keydown", (event) => {
     }
     if (key === "Escape") {
       event.preventDefault();
+      if (state.ui.authoringCanvasExpanded) {
+        state.ui.authoringCanvasExpanded = false;
+        document.body.classList.remove("workflow-canvas-expanded");
+      }
       authoringGraphConnection = null;
       resetAuthoringGraphSelection();
       render();

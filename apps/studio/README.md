@@ -107,25 +107,12 @@ npm run visual:runtime-graph
 Runtime Graph includes a Recovery tab for deadline scans, compensation audit,
 cleanup attempt status, and frozen-identity Replay of the selected failed node.
 
-OpenClaw E2E projection visual check:
-
-```bash
-npm run visual:openclaw
-```
-
-`visual:openclaw` reads the latest
-`tmp/main-openclaw-proposal-e2e/*/summary.json` by default and captures
-screenshots plus `visual-summary.json` under `tmp/openclaw-visual-acceptance/`.
-Pass `-- --summary <path>` to target a specific E2E run. Chrome must be running
-with remote debugging on `CHROME_CDP_PORT` or port `9223`. Pass
-`-- --close-existing-studio-tabs` when stale local Studio tabs make CDP
-navigation unstable.
-
 ## Limits
 
 - Published templates are read-only in this MVP.
-- Graph editing now has a form-backed canvas skeleton, but drag-and-drop canvas
-  editing is not implemented yet.
+- Workflow authoring uses draggable canvas steps, connection handles, a
+  selection Inspector, and zoom controls. Live edge previews while dragging
+  and marquee selection are not implemented yet.
 - Drag/drop context intake stores metadata references only; browser security
   does not expose full local file paths or upload file bytes in this slice.
 - The orchestrator workbench still depends on the existing mission/session

@@ -10,6 +10,9 @@ function detail(input = {}) {
     pending_human_inputs: input.pending_human_inputs || [],
     messages: input.messages || [],
     artifacts: input.artifacts || [],
+    workspace_change_set: input.workspace_change_set || null,
+    workspace_change_sets: input.workspace_change_sets || [],
+    workspace_files: input.workspace_files || [],
     latest_run: input.latest_run || null,
     workspace_state: input.workspace_state || {},
     mission_snapshot: input.mission_snapshot || null,
@@ -27,6 +30,27 @@ test("task guidance prioritizes blocking human decisions", () => {
   assert.equal(guidance.phase, "decision");
   assert.equal(guidance.primaryAction, "open-task-inbox");
   assert.equal(guidance.signals[1].value, "1");
+});
+
+test("task guidance treats a pending Conversation Change Set as a review decision", () => {
+  const guidance = deriveTaskGuidance(
+    detail({
+      session: { status: "waiting_human" },
+      workspace_change_set: {
+        change_set_id: "change-set-1",
+        status: "pending",
+        changes: [
+          { relative_path: "src/index.ts", kind: "modified" },
+          { relative_path: "src/new.ts", kind: "added" },
+        ],
+      },
+    }),
+  );
+  assert.equal(guidance.phase, "decision");
+  assert.equal(guidance.primaryAction, "open-task-inbox");
+  assert.equal(guidance.primaryLabel, "Review decision");
+  assert.equal(guidance.signals[1].value, "1");
+  assert.equal(guidance.signals[2].value, "2");
 });
 
 test("task guidance presents active execution as supervised progress", () => {
@@ -51,6 +75,35 @@ test("task guidance leads completed tasks with returned results", () => {
   assert.equal(guidance.phase, "result");
   assert.equal(guidance.primaryAction, "review-task-results");
   assert.match(guidance.title, /2 results/);
+});
+
+test("task guidance counts the same final Workspace files as Workboard", () => {
+  const guidance = deriveTaskGuidance(
+    detail({
+      session: { status: "completed" },
+      latest_run: { status: "completed" },
+      workspace_change_sets: [
+        {
+          change_set_id: "change-set-1",
+          status: "applied",
+          changes: [
+            { relative_path: "index.html", kind: "added" },
+            { relative_path: "src/app.js", kind: "added" },
+          ],
+        },
+        {
+          change_set_id: "change-set-2",
+          status: "applied",
+          changes: [
+            { relative_path: "src/app.js", kind: "modified" },
+            { relative_path: "src/style.css", kind: "added" },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.equal(guidance.title, "3 results are ready");
+  assert.equal(guidance.signals[2].value, "3");
 });
 
 test("task guidance refreshes stale routes before execution", () => {

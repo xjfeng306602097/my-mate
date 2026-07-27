@@ -205,7 +205,7 @@ async function main() {
         const grid = document.querySelector('.task-workspace-grid');
         const center = grid?.querySelector(':scope > .desktop-center');
         const rail = grid?.querySelector(':scope > .task-conversation-rail-container');
-        const chatFeed = rail?.querySelector('.orchestrator-chat-feed');
+        const conversationScroll = rail?.querySelector('.task-conversation-scroll');
         const centerRect = center?.getBoundingClientRect();
         const railRect = rail?.getBoundingClientRect();
         return {
@@ -223,7 +223,7 @@ async function main() {
             conversationInRail: !!rail?.querySelector('.task-conversation-rail'),
             splitColumns: !!centerRect && !!railRect && centerRect.right <= railRect.left,
             centerOverflowY: center ? getComputedStyle(center).overflowY : '',
-            chatOverflowY: chatFeed ? getComputedStyle(chatFeed).overflowY : '',
+            chatOverflowY: conversationScroll ? getComputedStyle(conversationScroll).overflowY : '',
             documentHeight: document.documentElement.scrollHeight,
             viewportHeight: window.innerHeight,
           },
@@ -236,7 +236,7 @@ async function main() {
     const scrollStability = await client.send("Runtime.evaluate", {
       expression: `(() => {
         const center = document.querySelector('.task-workspace-grid > .desktop-center');
-        const feed = document.querySelector('.task-conversation-rail .orchestrator-chat-feed');
+        const feed = document.querySelector('.task-conversation-rail .task-conversation-scroll');
         const selector = document.querySelector('.task-conversation-rail [data-field="planner.conversationTarget"]');
         if (!center || !feed || !selector) return { supported: false };
         center.scrollTop = Math.min(72, Math.max(0, center.scrollHeight - center.clientHeight));
@@ -244,7 +244,7 @@ async function main() {
         const before = { center: center.scrollTop, feed: feed.scrollTop };
         selector.dispatchEvent(new Event('change', { bubbles: true }));
         const nextCenter = document.querySelector('.task-workspace-grid > .desktop-center');
-        const nextFeed = document.querySelector('.task-conversation-rail .orchestrator-chat-feed');
+        const nextFeed = document.querySelector('.task-conversation-rail .task-conversation-scroll');
         return {
           supported: true,
           before,

@@ -13,8 +13,10 @@ export function countWorkspaceChangeKinds(changeSet) {
 }
 
 export function selectWorkspaceChangeSet(items, selectedId = "") {
-  const open = openWorkspaceChangeSets(items);
-  return open.find((item) => item.change_set_id === selectedId) || open[0] || null;
+  const all = Array.isArray(items) ? items : [];
+  const selected = all.find((item) => item.change_set_id === selectedId);
+  if (selected) return selected;
+  return openWorkspaceChangeSets(all)[0] || null;
 }
 
 export function selectWorkspaceFile(changeSet, selectedPath = "") {

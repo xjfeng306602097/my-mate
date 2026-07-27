@@ -20,7 +20,7 @@ const pending = {
   ],
 };
 
-test("workspace change diff model selects only actionable change sets and files", () => {
+test("workspace change diff model defaults to actionable sets but preserves a selected history item", () => {
   const items = [
     { change_set_id: "applied-1", status: "applied", changes: [] },
     pending,
@@ -28,6 +28,8 @@ test("workspace change diff model selects only actionable change sets and files"
   ];
   assert.deepEqual(openWorkspaceChangeSets(items).map((item) => item.change_set_id), ["pending-1", "blocked-1"]);
   assert.equal(selectWorkspaceChangeSet(items, "blocked-1")?.change_set_id, "blocked-1");
+  assert.equal(selectWorkspaceChangeSet(items, "applied-1")?.change_set_id, "applied-1");
+  assert.equal(selectWorkspaceChangeSet(items, "missing")?.change_set_id, "pending-1");
   assert.equal(selectWorkspaceFile(pending, "src/edit.js")?.kind, "modified");
   assert.equal(selectWorkspaceFile(pending, "missing")?.relative_path, "src/add.js");
 });

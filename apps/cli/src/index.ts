@@ -130,7 +130,7 @@ export function buildProgram(): Command {
   program
     .command("doctor")
     .addOption(new Option("--mode <mode>").choices(["quick", "docker", "model"]).default("quick"))
-    .addOption(new Option("--runtime <runtime>").choices(["local", "docker-worker", "openclaw", "codex", "claude-sdk", "kimi", "glm"]))
+    .addOption(new Option("--runtime <runtime>").choices(["local", "docker-worker", "codex", "claude-sdk", "kimi", "glm"]))
     .option("--provider-connection <id>", "Verify a workspace Provider Connection")
     .option("--model-probe", "Perform an opt-in live provider request")
     .option("--json", "Print the API response as JSON")

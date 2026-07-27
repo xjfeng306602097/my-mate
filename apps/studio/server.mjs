@@ -38,6 +38,7 @@ function readRequestBody(req) {
 async function proxyApi(req, res) {
   try {
     const target = `${GATEWAY_BASE_URL}${req.url}`;
+    const pathname = new URL(req.url || "/", "http://studio.local").pathname;
     const body = ["GET", "HEAD"].includes(req.method || "GET") ? undefined : await readRequestBody(req);
     const upstream = await fetch(target, {
       method: req.method,
@@ -49,11 +50,13 @@ async function proxyApi(req, res) {
           ? { "x-my-mate-workspace-id": req.headers["x-my-mate-workspace-id"] }
           : {}),
         ...(req.headers["x-request-id"] ? { "x-request-id": req.headers["x-request-id"] } : {}),
+        ...(req.headers["last-event-id"] ? { "last-event-id": req.headers["last-event-id"] } : {}),
       },
       body,
     });
     const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
-    const isSse = (req.url || "").match(/^\/api\/sessions\/[^/]+\/stream$/);
+    const isSse = /^\/api\/sessions\/[^/]+\/stream$/u.test(pathname) ||
+      /^\/api\/agent-runs\/[^/]+\/events\/stream$/u.test(pathname);
 
     const contentDisposition = upstream.headers.get("content-disposition");
     const cacheControl = upstream.headers.get("cache-control");
@@ -61,7 +64,7 @@ async function proxyApi(req, res) {
       "content-type": contentType,
       ...(contentDisposition ? { "content-disposition": contentDisposition } : {}),
       ...(cacheControl ? { "cache-control": cacheControl } : {}),
-      ...(isSse ? { "cache-control": "no-cache", connection: "keep-alive" } : {}),
+      ...(isSse ? { "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" } : {}),
     });
 
     if (isSse && upstream.body) {

@@ -9,6 +9,7 @@ const WebSocket = require("ws");
 const MAX_SNAPSHOT_ELEMENTS = 200;
 const DEFAULT_SNAPSHOT_CHARS = 20_000;
 const CDP_START_TIMEOUT_MS = 15_000;
+const BROWSER_SNAPSHOT_TIMEOUT_MS = 30_000;
 const CAPABILITY_IDS = new Set([
   "browser_navigate",
   "browser_snapshot",
@@ -22,6 +23,22 @@ function capabilityError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function withTimeout(promise, timeoutMs, code, message) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(capabilityError(code, message)), timeoutMs);
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }
 
 function isPrivateIpv4(address) {
@@ -100,7 +117,11 @@ function snapshotScript(maxChars) {
     };
     document.querySelectorAll("[data-my-mate-ref]").forEach((element) => element.removeAttribute("data-my-mate-ref"));
     const selector = "a[href],button,input,textarea,select,[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=tab]";
-    const elements = [...document.querySelectorAll(selector)].filter(visible).slice(0, ${MAX_SNAPSHOT_ELEMENTS});
+    const elements = [];
+    for (const element of document.querySelectorAll(selector)) {
+      if (visible(element)) elements.push(element);
+      if (elements.length >= ${MAX_SNAPSHOT_ELEMENTS}) break;
+    }
     const interactive = elements.map((element, index) => {
       const ref = "e" + (index + 1);
       element.setAttribute("data-my-mate-ref", ref);
@@ -111,7 +132,8 @@ function snapshotScript(maxChars) {
       const type = element.getAttribute("type") || "";
       return { ref: "@" + ref, role, label, href, type, disabled: Boolean(element.disabled) };
     });
-    const text = (document.body?.innerText || "").replace(/\\n{3,}/g, "\\n\\n").trim();
+    const contentRoot = document.querySelector("article,main,[role=main]") || document.body;
+    const text = (contentRoot?.innerText || contentRoot?.textContent || "").replace(/\\n{3,}/g, "\\n\\n").trim();
     return {
       url: location.href,
       title: document.title || "",
@@ -347,7 +369,7 @@ class BrowserCapabilityHost {
         approveLabel: "Navigate",
       });
     }
-    await this.navigateSession(browser, parsed.href);
+    await this.navigateSession(browser, parsed.href, args.read_only_extract === true);
     return await this.state(browser, { created: !args.browser_session_id });
   }
 
@@ -450,9 +472,25 @@ class BrowserCapabilityHost {
     if (response.response !== 0) throw capabilityError("browser_action_denied", "Browser action was cancelled by the user.");
   }
 
-  async navigateSession(browser, url) {
+  async navigateSession(browser, url, readOnlyExtract = false) {
     if (browser.mode === "isolated") {
-      await browser.window.loadURL(url);
+      if (readOnlyExtract) {
+        const domReady = new Promise((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(capabilityError("browser_dom_ready_timeout", "Browser page DOM did not become ready in time.")),
+            15_000,
+          );
+          browser.window.webContents.once("dom-ready", () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+        });
+        void browser.window.loadURL(url).catch(() => undefined);
+        await domReady;
+        browser.window.webContents.stop();
+      } else {
+        await browser.window.loadURL(url);
+      }
     } else {
       await browser.client.send("Page.navigate", { url }, 60_000);
       await new Promise((resolve) => setTimeout(resolve, 400));
@@ -484,7 +522,12 @@ class BrowserCapabilityHost {
   }
 
   async snapshot(browser, maxChars) {
-    const result = await this.evaluate(browser, snapshotScript(maxChars));
+    const result = await withTimeout(
+      this.evaluate(browser, snapshotScript(maxChars)),
+      BROWSER_SNAPSHOT_TIMEOUT_MS,
+      "browser_snapshot_timeout",
+      "Browser page snapshot timed out after 30000 ms.",
+    );
     if (!result || typeof result !== "object") throw capabilityError("browser_snapshot_failed", "Browser page could not be read.");
     browser.url = result.url || browser.url;
     browser.title = result.title || browser.title;

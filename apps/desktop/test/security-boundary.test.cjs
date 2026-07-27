@@ -50,10 +50,39 @@ test("Desktop Projects register before a task requests workspace access", () => 
 test("task reassignment stays behind the trusted Desktop workspace bridge", () => {
   assert.match(mainSource, /my-mate:workspace:move-task/u);
   assert.match(mainSource, /async function bindSessionToWorkspaceProject/u);
-  assert.match(mainSource, /access: "snapshot-read"/u);
+  assert.match(mainSource, /options\.access === "sandbox-write" \? "sandbox-write" : "snapshot-read"/u);
   assert.match(mainSource, /projects: publicWorkspaceProjects\(\)/u);
   assert.match(mainSource, /workspace: publicWorkspaceGrant\(\)/u);
   assert.match(preloadSource, /moveTask: \(request\) => ipcRenderer\.invoke\("my-mate:workspace:move-task"/u);
+});
+
+test("external Workspace viewers stay capability-scoped and path validated", () => {
+  assert.match(preloadSource, /openExternal: \(request\) => ipcRenderer\.invoke\("my-mate:workspace:open-external"/u);
+  assert.match(mainSource, /my-mate:workspace:open-external/u);
+  assert.match(mainSource, /requireWorkspace\(event, request\)/u);
+  assert.match(mainSource, /resolveWithinRoot\(grant\.rootPath, relativePath/u);
+  assert.match(mainSource, /\["editor", "explorer", "terminal", "open-with"\]/u);
+  assert.match(mainSource, /shell32\.dll,OpenAs_RunDLL/u);
+  assert.doesNotMatch(preloadSource, /execFile|spawn|powershell|explorer\.exe/u);
+});
+
+test("localhost Workspace previews stay capability-scoped and use the dedicated preview host", () => {
+  assert.match(preloadSource, /preview: \(request\) => ipcRenderer\.invoke\("my-mate:workspace:preview"/u);
+  assert.match(mainSource, /my-mate:workspace:preview/u);
+  assert.match(mainSource, /workspacePreviewHost\.start/u);
+  assert.match(mainSource, /requireWorkspace\(event, request\)/u);
+  assert.match(mainSource, /workspacePreviewHost\.closeAll/u);
+  assert.doesNotMatch(preloadSource, /createServer|127\.0\.0\.1|randomBytes/u);
+});
+
+test("workspace authorization repairs stale Desktop Project registrations", () => {
+  assert.match(mainSource, /bindSessionToWorkspaceProject\(grant, sessionId, \{ access, scope \}\)/u);
+  assert.match(mainSource, /async function reconcileWorkspaceProjects/u);
+  assert.match(mainSource, /registerWorkspaceProject\(project, \{ refresh: true \}\)/u);
+  assert.match(mainSource, /await reconcileWorkspaceProjects\(\)/u);
+  assert.match(mainSource, /local_project_root_mismatch/u);
+  assert.match(mainSource, /local_project_capability_mismatch/u);
+  assert.match(mainSource, /project\.registeredProjectId = null/u);
 });
 
 test("application launch stays named, confirmed, and Desktop-attested", () => {

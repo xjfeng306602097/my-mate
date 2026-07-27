@@ -2941,9 +2941,8 @@ export function buildWorkPackages(
       const agentCounts = new Map<string, number>();
       for (const node of value.nodes) {
         const label =
-          asString(node.agent_profile) ||
-          asString(node.runtime_agent_ref) ||
-          asString(node.openclaw_agent_id);
+          asString(node.agent_id) ||
+          asString(node.runtime_agent_ref);
         if (label) {
           agentCounts.set(label, (agentCounts.get(label) || 0) + 1);
         }

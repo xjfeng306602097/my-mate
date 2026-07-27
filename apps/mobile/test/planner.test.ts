@@ -51,7 +51,7 @@ test("groupValidation prefers structured detail categories when present", () => 
         field: "owner",
         node_id: null,
         node_name: null,
-        agent_profile_id: null,
+        agent_id: null,
         skill_id: null,
       },
       {
@@ -61,7 +61,7 @@ test("groupValidation prefers structured detail categories when present", () => 
         field: null,
         node_id: "node_1",
         node_name: "Planner",
-        agent_profile_id: null,
+        agent_id: null,
         skill_id: "web.search",
       },
     ],

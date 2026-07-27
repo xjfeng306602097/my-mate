@@ -14,7 +14,6 @@ export function classifyWarning(warning: string): WarningGroup["key"] {
   }
   if (
     normalized.includes("agent profile") ||
-    normalized.includes("openclaw agent") ||
     normalized.includes("unknown skill") ||
     normalized.includes("disabled skill") ||
     normalized.includes("registry")

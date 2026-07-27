@@ -4318,12 +4318,12 @@ function MessageBody(props: {
           ? {
               key:
                 asString(recommendation.node_id) ||
-                asString(recommendation.agent_profile_id) ||
+                asString(recommendation.agent_id) ||
                 asString(recommendation.node_name) ||
                 "recommendation",
               name:
-                asString(recommendation.agent_profile_name) ||
-                asString(recommendation.agent_profile_id) ||
+                asString(recommendation.agent_name) ||
+                asString(recommendation.agent_id) ||
                 asString(recommendation.node_name) ||
                 "Registry recommendation",
               summary: getRegistryRecommendationEvidence(recommendation),
