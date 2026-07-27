@@ -11,7 +11,7 @@
     "precheck": "npm --prefix ../../packages/shared-types run build",
     "check": "tsc -p tsconfig.json --noEmit",
     "pretest": "npm --prefix ../../packages/shared-types run build",
-    "test": "node --import tsx --test test/all.test.ts",
+    "test": "node test/run-all.mjs",
     "storage:export": "tsx src/storage-snapshot-cli.ts export",
     "storage:import": "tsx src/storage-snapshot-cli.ts import"
   },
