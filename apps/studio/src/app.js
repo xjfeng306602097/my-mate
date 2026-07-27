@@ -242,6 +242,38 @@ const STUDIO_API_KEY_STORAGE = "my-mate.studio.api-key";
 const STUDIO_WORKSPACE_STORAGE = "my-mate.studio.workspace-id";
 const STUDIO_SETUP_DISMISSED_STORAGE = "my-mate.studio.setup-dismissed";
 const STUDIO_AUTONOMY_STORAGE = "my-mate.studio.autonomy-mode";
+const STUDIO_APPEARANCE_STORAGE = "my-mate.studio.appearance";
+const APPEARANCE_MODES = ["light", "dark", "system"];
+
+function normalizeAppearance(value) {
+  return APPEARANCE_MODES.includes(value) ? value : "system";
+}
+
+function resolveAppearance(mode) {
+  if (mode === "system") {
+    return globalThis.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return mode;
+}
+
+function applyAppearance() {
+  const resolved = resolveAppearance(state.product.appearance);
+  const root = globalThis.document?.documentElement;
+  if (!root) return;
+  if (resolved === "dark") {
+    root.dataset.theme = "dark";
+  } else {
+    delete root.dataset.theme;
+  }
+}
+
+function appearanceModeCopy(mode) {
+  return {
+    light: { label: "Light", detail: "Always use the light theme." },
+    dark: { label: "Dark", detail: "Experimental dark theme." },
+    system: { label: "Follow system", detail: "Match the operating system." },
+  }[mode];
+}
 const STUDIO_AGENT_DRAFT_STORAGE = "my-mate.studio.agent-draft";
 const SESSION_WORKSPACE_CACHE_TTL_MS = 120_000;
 const desktopHost = globalThis.myMateDesktop || null;
@@ -469,6 +501,7 @@ const state = {
   product: {
     autonomyMode: normalizeAutonomyMode(globalThis.localStorage?.getItem(STUDIO_AUTONOMY_STORAGE)),
     autonomySaving: false,
+    appearance: normalizeAppearance(globalThis.localStorage?.getItem(STUDIO_APPEARANCE_STORAGE)),
   },
   error: null,
   notice: null,
@@ -18387,6 +18420,19 @@ function renderProductSettingsPanel() {
           }).join("")}
         </div>
       </section>
+      <section class="autonomy-policy-panel">
+        <div class="autonomy-policy-heading">
+          <div><h3>Appearance</h3><p>Choose how Studio looks on this device. Dark is experimental.</p></div>
+          <span class="badge info">${escapeHtml(appearanceModeCopy(state.product.appearance).label)}</span>
+        </div>
+        <div class="autonomy-options" role="radiogroup" aria-label="Appearance">
+          ${APPEARANCE_MODES.map((mode) => {
+            const copy = appearanceModeCopy(mode);
+            const selected = state.product.appearance === mode;
+            return `<button class="autonomy-option ${selected ? "selected" : ""}" role="radio" aria-checked="${selected}" data-action="save-appearance" data-mode="${escapeHtml(mode)}"><strong>${escapeHtml(copy.label)}</strong><small>${escapeHtml(copy.detail)}</small></button>`;
+          }).join("")}
+        </div>
+      </section>
       <button class="product-advanced-link" data-action="open-registry-advanced">Open Build settings for models, agents, and governance</button>
     </section>
   `;
@@ -20178,6 +20224,12 @@ document.addEventListener("click", (event) => {
   if (action === "save-autonomy-mode") {
     void saveProductAutonomyMode(button.dataset.mode || "assisted");
   }
+  if (action === "save-appearance") {
+    state.product.appearance = normalizeAppearance(button.dataset.mode);
+    globalThis.localStorage?.setItem(STUDIO_APPEARANCE_STORAGE, state.product.appearance);
+    applyAppearance();
+    render();
+  }
   if (action === "open-environment-setup") {
     openStudioSetup("environment");
     if (!state.setup.hostReport && !state.setup.dockerReport) void runSetupEnvironmentChecks();
@@ -21345,6 +21397,10 @@ document.addEventListener("keydown", (event) => {
 });
 
 hydrateStudioLocationState();
+applyAppearance();
+globalThis.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+  if (state.product.appearance === "system") applyAppearance();
+});
 render();
 void initializeDesktopHost();
 void loadSecurity(false).then(async (securityLoaded) => {
