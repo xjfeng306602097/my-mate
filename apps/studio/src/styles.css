@@ -268,6 +268,17 @@ button {
   cursor: pointer;
 }
 
+/* Global keyboard focus ring (design-token based). */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 button:disabled,
 input:disabled,
 select:disabled,

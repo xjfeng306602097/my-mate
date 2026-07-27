@@ -4670,7 +4670,7 @@ function renderHumanInputSchemaForm(input) {
   const draft = getHumanInputDraft(input.input_request_id, schema);
   if (!fields.length) {
     return `
-      <textarea rows="3" data-field="human-input.payload" data-input-request-id="${escapeHtml(input.input_request_id)}" placeholder='{"approved": true}'></textarea>
+      <textarea rows="3" data-field="human-input.payload" data-input-request-id="${escapeHtml(input.input_request_id)}" aria-label="Human input response payload" placeholder='{"approved": true}'></textarea>
     `;
   }
   return `
@@ -4725,7 +4725,7 @@ function renderHumanInputSchemaForm(input) {
               ${field.description ? `<small>${escapeHtml(field.description)}</small>` : ""}
               ${
                 multiline
-                  ? `<textarea rows="3" data-field="human-input.schema" data-input-request-id="${escapeHtml(input.input_request_id)}" data-schema-key="${escapeHtml(key)}" placeholder="${escapeHtml(field.type === "number" || field.type === "integer" ? "Enter a number" : "Enter details")}">${escapeHtml(typeof currentValue === "string" ? currentValue : "")}</textarea>`
+                  ? `<textarea rows="3" data-field="human-input.schema" data-input-request-id="${escapeHtml(input.input_request_id)}" data-schema-key="${escapeHtml(key)}" aria-label="${escapeHtml(`Input field: ${key}`)}" placeholder="${escapeHtml(field.type === "number" || field.type === "integer" ? "Enter a number" : "Enter details")}">${escapeHtml(typeof currentValue === "string" ? currentValue : "")}</textarea>`
                   : `<input value="${escapeHtml(typeof currentValue === "string" ? currentValue : "")}" data-field="human-input.schema" data-input-request-id="${escapeHtml(input.input_request_id)}" data-schema-key="${escapeHtml(key)}" placeholder="${escapeHtml(field.type === "number" || field.type === "integer" ? "Enter a number" : "Enter value")}" />`
               }
             </label>
@@ -5009,7 +5009,7 @@ function renderExecutionInterventionComposer(detail) {
           </select>
         </label>
         <label class="span-2">Instruction
-          <textarea rows="3" data-field="execution.interventionText" placeholder="Describe the runtime adjustment or next-pass guidance.">${escapeHtml(state.executionControl.interventionText || "")}</textarea>
+          <textarea rows="3" data-field="execution.interventionText" aria-label="Runtime intervention guidance" placeholder="Describe the runtime adjustment or next-pass guidance.">${escapeHtml(state.executionControl.interventionText || "")}</textarea>
         </label>
         <button class="primary" data-action="submit-intervention" ${submitting || !sessionId || !state.executionControl.interventionText.trim() ? "disabled" : ""}>${submitting ? "Submitting..." : "Record intervention"}</button>
       </div>
@@ -14001,7 +14001,7 @@ function renderMcpServerModal() {
           <button class="icon-button" data-action="close-mcp-server-modal" aria-label="Close">&times;</button>
         </header>
         <div class="provider-modal-body">
-          ${state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
+          ${state.error ? `<div class="alert danger" role="alert">${escapeHtml(state.error)}</div>` : ""}
           <div class="form-grid compact provider-modal-grid">
             <label class="span-2">Connector
               <select data-field="mcp.presetId" ${editor.mode === "edit" ? "disabled" : ""}>
@@ -14210,7 +14210,7 @@ function renderProviderConnectionModal() {
           <button class="icon-button" data-action="close-provider-connection-modal" title="Close" aria-label="Close">&#10005;</button>
         </header>
         <div class="provider-modal-body">
-          ${state.error ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
+          ${state.error ? `<div class="alert danger" role="alert">${escapeHtml(state.error)}</div>` : ""}
           <div class="form-grid compact provider-modal-grid">
             <label class="span-2">Name<input value="${escapeHtml(editor.name)}" data-field="connection.name" placeholder="Production models" /></label>
             <label>Provider
@@ -16040,7 +16040,7 @@ function renderAgentRuns() {
     && ["completed", "failed", "cancelled"].includes(selectedDag.status)
     && aggregation?.status !== "completed";
   const nodes = `<div class="agent-dag-node-grid">${selectedDag?.nodes?.map((node) => { const task = selectedTasks.find((item) => item.task_id === node.task_id); const condition = node.condition ? `${node.condition.path} ${node.condition.operator}` : "Always"; return `<article class="agent-dag-node ${escapeHtml(node.status)}"><div><span class="status-dot ${node.status === "completed" ? "success" : node.status === "failed" ? "danger" : node.status === "blocked" ? "warn" : "neutral"}"></span><strong>${escapeHtml(node.name)}</strong><span class="badge neutral">${escapeHtml(node.kind || node.role)}</span></div><small>${escapeHtml(`${node.binding_snapshot.agent_name}@${node.binding_snapshot.agent_version}`)}</small><p>${escapeHtml(task?.objective || "")}</p><small>${escapeHtml(node.depends_on.length ? `${node.join_policy || "all"}: ${node.depends_on.join(", ")}` : "Root node")}</small><small>${escapeHtml(`Condition: ${condition}`)}</small></article>`; }).join("") || '<p class="muted">No nodes have been added.</p>'}</div>`;
-  const gates = pendingGates.length ? `<section class="agent-gate-list"><div class="section-heading"><strong>Human gates</strong><small>${pendingGates.length} pending</small></div>${pendingGates.map((gate) => `<article class="agent-gate-row"><div><strong>${escapeHtml(gate.prompt)}</strong><small>${escapeHtml(`${gate.gate_type} / ${gate.node_id}`)}</small></div>${gate.gate_type === "input" ? `<textarea rows="2" data-agent-gate-response="${escapeHtml(gate.gate_id)}" placeholder='Structured JSON or plain text'></textarea>` : ""}<div class="agent-gate-actions"><button class="secondary danger-action" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="false">Reject</button><button class="primary" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="true">${gate.gate_type === "input" ? "Submit" : "Approve"}</button></div></article>`).join("")}</section>` : "";
+  const gates = pendingGates.length ? `<section class="agent-gate-list"><div class="section-heading"><strong>Human gates</strong><small>${pendingGates.length} pending</small></div>${pendingGates.map((gate) => `<article class="agent-gate-row"><div><strong>${escapeHtml(gate.prompt)}</strong><small>${escapeHtml(`${gate.gate_type} / ${gate.node_id}`)}</small></div>${gate.gate_type === "input" ? `<textarea rows="2" data-agent-gate-response="${escapeHtml(gate.gate_id)}" aria-label="Human gate response" placeholder='Structured JSON or plain text'></textarea>` : ""}<div class="agent-gate-actions"><button class="secondary danger-action" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="false">Reject</button><button class="primary" data-action="resolve-agent-dag-gate" data-dag-id="${escapeHtml(selectedDag.dag_id)}" data-gate-id="${escapeHtml(gate.gate_id)}" data-approved="true">${gate.gate_type === "input" ? "Submit" : "Approve"}</button></div></article>`).join("")}</section>` : "";
   const stateView = `<details class="agent-dag-state"><summary>DAG state <span>revision ${selectedDag?.state_revision || 0}</span></summary><pre>${escapeHtml(JSON.stringify(selectedDag?.state || {}, null, 2).slice(0, 12000))}</pre></details>`;
   const messages = `<details class="agent-protocol-log"><summary>Agent communication <span>${selectedMessages.length}</span></summary>${selectedMessages.map((message) => `<div class="agent-message-row"><span class="badge neutral">${escapeHtml(message.message_type)}</span><span><strong>${escapeHtml(message.task_id)}</strong><small>${escapeHtml(message.created_at)}</small></span><p>${escapeHtml(String(message.payload?.summary || message.payload?.message || message.payload?.objective || message.payload?.prompt || ""))}</p></div>`).join("") || '<p class="muted">No Agent messages yet.</p>'}</details>`;
   const aggregationAlert = aggregationNeedsRecovery
@@ -18962,9 +18962,9 @@ function renderTaskWorkspaceSurface() {
     if (child.classList?.contains("alert") || child.classList?.contains("control-plane-status")) child.remove();
   }
   const alerts = [
-    state.error && !isConnectivityError(state.error) ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : "",
-    state.notice ? `<div class="alert success">${escapeHtml(state.notice)}</div>` : "",
-    state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : "",
+    state.error && !isConnectivityError(state.error) ? `<div class="alert danger" role="alert">${escapeHtml(state.error)}</div>` : "",
+    state.notice ? `<div class="alert success" role="status">${escapeHtml(state.notice)}</div>` : "",
+    state.streamError ? `<div class="alert warn" role="status">${escapeHtml(state.streamError)}</div>` : "",
   ].filter(Boolean).join("");
   const statusBanner = controlPlaneBanner();
   if (statusBanner || alerts) desktopGrid.insertAdjacentHTML("beforebegin", `${statusBanner}${alerts}`);
@@ -19142,7 +19142,7 @@ function render() {
 
         ${controlPlaneBanner()}
         ${state.error && !isConnectivityError(state.error) && state.activeNav !== "agents" ? `<div class="alert danger">${escapeHtml(state.error)}</div>` : ""}
-        ${state.notice ? `<div class="alert success">${escapeHtml(state.notice)}</div>` : ""}
+        ${state.notice ? `<div class="alert success" role="status">${escapeHtml(state.notice)}</div>` : ""}
         ${state.streamError ? `<div class="alert warn">${escapeHtml(state.streamError)}</div>` : ""}
         ${state.activeNav === "templates" && state.editor.status === "published" ? '<div class="alert info"><strong>Published workflow</strong><span>Edit creates protected unpublished changes. Running tasks keep the workflow they started with.</span></div>' : ""}
         ${state.activeNav === "templates" && state.editor.status === "draft" && selectedWorkflowFamily?.published ? '<div class="alert info"><strong>Unpublished changes</strong><span>The published workflow remains active until these changes are published.</span></div>' : ""}
