@@ -41,3 +41,17 @@ Agent versions are normalized to the same value when read.
 
 The final compatibility-field removal must not rewrite historical Session,
 Artifact, Run, or audit records.
+
+## Removal status (verified 2026-07-27)
+
+- Step 1 is done: `provider-connection-store.ts` rejects new OpenClaw
+  connections with a retired-provider error, and Agent versions normalize to
+  `runtime_policy.runtime = "native"`.
+- Steps 2-3 are partially done: runtime registration no longer selects
+  OpenClaw, while `services/execution-adapter` still exists for compatibility
+  reads.
+- Steps 4-5 remain gated on the two open `docs/19` items: compatibility reads
+  (`execution-ref.ts`, `types.ts` nullable `openclaw_agent_id`) stay until
+  fallback telemetry reaches zero and the schema-versioned migration is
+  accepted. Six Control Plane source files still carry compatibility
+  references; all are read-only paths.
