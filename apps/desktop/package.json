@@ -11,7 +11,7 @@
     "dist:win": "node scripts/build-windows.cjs",
     "smoke:browser": "electron scripts/browser-capability-smoke.cjs",
     "smoke:browser:user": "electron scripts/browser-user-smoke.cjs",
-    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/build-windows.cjs && node --check src/service-supervisor.cjs && node --check src/runtime-provisioner.cjs && node --check src/notification-host.cjs && node --check src/workspace-capability.cjs && node --check src/workspace-preview.cjs && node --check src/application-capability.cjs && node --check src/browser-capability.cjs && node --test test"
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/build-windows.cjs && node --check src/service-supervisor.cjs && node --check src/runtime-provisioner.cjs && node --check src/notification-host.cjs && node --check src/workspace-capability.cjs && node --check src/workspace-preview.cjs && node --check src/application-capability.cjs && node --check src/browser-capability.cjs && node --test \"test/*.test.cjs\""
   },
   "dependencies": {
     "electron-updater": "6.6.2",
